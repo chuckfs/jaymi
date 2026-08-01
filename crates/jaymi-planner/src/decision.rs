@@ -16,6 +16,11 @@ pub enum Intent {
         /// Directory path to list.
         path: PathBuf,
     },
+    /// Read one supported file into a unified document.
+    ReadFile {
+        /// File path to read.
+        path: PathBuf,
+    },
     /// Request could not be mapped to a supported intent.
     Unknown,
 }
@@ -27,10 +32,16 @@ pub struct DecisionEngine;
 impl DecisionEngine {
     /// Determine user intent without language-model reasoning.
     ///
-    /// Supported list-directory forms:
-    /// - structured [`UserRequest::directory`]
-    /// - content beginning with `list ` followed by a path
+    /// Supported forms:
+    /// - structured [`UserRequest::directory`] / [`UserRequest::file`]
+    /// - content beginning with `list ` or `read ` followed by a path
     pub fn determine_intent(&self, request: &UserRequest) -> Intent {
+        if let Some(path) = &request.file {
+            if !path.as_os_str().is_empty() {
+                return Intent::ReadFile { path: path.clone() };
+            }
+        }
+
         if let Some(path) = &request.directory {
             if !path.as_os_str().is_empty() {
                 return Intent::ListDirectory { path: path.clone() };
@@ -38,8 +49,17 @@ impl DecisionEngine {
         }
 
         let content = request.content.trim();
+        if let Some(rest) = content.strip_prefix("read ") {
+            let path = strip_quotes(rest);
+            if !path.is_empty() {
+                return Intent::ReadFile {
+                    path: PathBuf::from(path),
+                };
+            }
+        }
+
         if let Some(rest) = content.strip_prefix("list ") {
-            let path = rest.trim().trim_matches('"').trim_matches('\'');
+            let path = strip_quotes(rest);
             if !path.is_empty() {
                 return Intent::ListDirectory {
                     path: PathBuf::from(path),
@@ -54,9 +74,14 @@ impl DecisionEngine {
     pub fn required_capability(&self, intent: &Intent) -> Option<Capability> {
         match intent {
             Intent::ListDirectory { .. } => Some(Capability::Search),
+            Intent::ReadFile { .. } => Some(Capability::ReadDocuments),
             Intent::Unknown => None,
         }
     }
+}
+
+fn strip_quotes(value: &str) -> &str {
+    value.trim().trim_matches('"').trim_matches('\'')
 }
 
 #[cfg(test)]
@@ -80,19 +105,40 @@ mod tests {
     }
 
     #[test]
-    fn parses_list_prefix() {
+    fn structured_read_request() {
         let engine = DecisionEngine;
-        let request = UserRequest::new("list \"./docs\"");
+        let request = UserRequest::read_file("README.md");
         assert_eq!(
             engine.determine_intent(&request),
+            Intent::ReadFile {
+                path: PathBuf::from("README.md")
+            }
+        );
+        assert_eq!(
+            engine.required_capability(&engine.determine_intent(&request)),
+            Some(Capability::ReadDocuments)
+        );
+    }
+
+    #[test]
+    fn parses_list_and_read_prefixes() {
+        let engine = DecisionEngine;
+        assert_eq!(
+            engine.determine_intent(&UserRequest::new("list \"./docs\"")),
             Intent::ListDirectory {
                 path: PathBuf::from("./docs")
+            }
+        );
+        assert_eq!(
+            engine.determine_intent(&UserRequest::new("read 'notes.txt'")),
+            Intent::ReadFile {
+                path: PathBuf::from("notes.txt")
             }
         );
     }
 
     #[test]
-    fn unknown_without_list_intent() {
+    fn unknown_without_supported_intent() {
         let engine = DecisionEngine;
         let request = UserRequest::new("hello");
         assert_eq!(engine.determine_intent(&request), Intent::Unknown);

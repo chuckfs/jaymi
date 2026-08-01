@@ -15,6 +15,8 @@ pub struct UserRequest {
     /// When set, the Decision Engine treats this as an explicit list-directory
     /// request without requiring natural-language parsing.
     pub directory: Option<PathBuf>,
+    /// Optional structured file path for read-file intents.
+    pub file: Option<PathBuf>,
 }
 
 impl UserRequest {
@@ -23,6 +25,7 @@ impl UserRequest {
         Self {
             content: content.into(),
             directory: None,
+            file: None,
         }
     }
 
@@ -32,6 +35,17 @@ impl UserRequest {
         Self {
             content: format!("list {}", path.display()),
             directory: Some(path),
+            file: None,
+        }
+    }
+
+    /// Create a structured request to read a single file.
+    pub fn read_file(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        Self {
+            content: format!("read {}", path.display()),
+            directory: None,
+            file: Some(path),
         }
     }
 }

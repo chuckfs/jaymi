@@ -1041,6 +1041,7 @@ dependencies = [
  "jaymi-database",
  "jaymi-logging",
  "jaymi-memory",
+ "jaymi-parsers",
  "jaymi-permissions",
  "jaymi-planner",
  "jaymi-policies",
@@ -1095,6 +1096,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "jaymi-parsers"
+version = "0.1.0"
+dependencies = [
+ "jaymi-core",
+]
+
+[[package]]
 name = "jaymi-permissions"
 version = "0.1.0"
 dependencies = [
@@ -1107,6 +1115,7 @@ version = "0.1.0"
 dependencies = [
  "jaymi-capabilities",
  "jaymi-core",
+ "jaymi-parsers",
  "jaymi-providers",
  "jaymi-tools",
 ]
@@ -1139,6 +1148,7 @@ version = "0.1.0"
 dependencies = [
  "jaymi-capabilities",
  "jaymi-core",
+ "jaymi-parsers",
  "jaymi-providers",
 ]
 

@@ -8,12 +8,14 @@
 pub mod categories;
 pub mod metadata;
 pub mod orchestrator;
+pub mod read_file;
 pub mod registry;
 pub mod search_files;
 pub mod tool;
 
 pub use metadata::ToolMetadata;
 pub use orchestrator::ToolOrchestrator;
+pub use read_file::{ReadFileTool, READ_FILE_TOOL_ID};
 pub use registry::ToolRegistry;
 pub use search_files::{SearchFilesTool, SEARCH_FILES_TOOL_ID};
 pub use tool::{Tool, ToolInput, ToolOutput};

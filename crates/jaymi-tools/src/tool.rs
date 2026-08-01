@@ -1,7 +1,7 @@
 //! Tool interface and structured I/O.
 
 use crate::metadata::ToolMetadata;
-use jaymi_core::{FileEntry, JaymiResult};
+use jaymi_core::{Document, FileEntry, JaymiResult};
 
 /// Structured input supplied by the Planner.
 #[derive(Debug, Default, Clone)]
@@ -17,6 +17,13 @@ impl ToolInput {
             path: Some(path.into()),
         }
     }
+
+    /// Create input for a single-file read operation.
+    pub fn read_file(path: impl Into<std::path::PathBuf>) -> Self {
+        Self {
+            path: Some(path.into()),
+        }
+    }
 }
 
 /// Structured result returned to the Planner.
@@ -26,6 +33,10 @@ pub struct ToolOutput {
     pub success: bool,
     /// Directory listing entries when applicable.
     pub entries: Vec<FileEntry>,
+    /// Unified document produced by the Read pipeline.
+    pub document: Option<Document>,
+    /// Parser selected for a read operation, when any.
+    pub parser_id: Option<String>,
     /// Optional human-readable message.
     pub message: Option<String>,
 }
@@ -36,6 +47,20 @@ impl ToolOutput {
         Self {
             success: true,
             entries,
+            document: None,
+            parser_id: None,
+            message: None,
+        }
+    }
+
+    /// Successful document read.
+    pub fn document(document: Document) -> Self {
+        let parser_id = document.parser_id.clone();
+        Self {
+            success: true,
+            entries: Vec::new(),
+            document: Some(document),
+            parser_id: Some(parser_id),
             message: None,
         }
     }
@@ -45,6 +70,8 @@ impl ToolOutput {
         Self {
             success: false,
             entries: Vec::new(),
+            document: None,
+            parser_id: None,
             message: Some(message.into()),
         }
     }

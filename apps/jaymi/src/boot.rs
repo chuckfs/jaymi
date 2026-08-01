@@ -17,11 +17,12 @@ use jaymi_core::{
 use jaymi_database::Database;
 use jaymi_logging::Logger;
 use jaymi_memory::MemoryEngine;
+use jaymi_parsers::{default_registry, ParserRegistry};
 use jaymi_permissions::PermissionEngine;
 use jaymi_planner::{Planner, PlannerDeps, PlannerResponse};
 use jaymi_policies::PolicyEngine;
 use jaymi_providers::{FilesystemProvider, Provider, ProviderRegistry};
-use jaymi_tools::{SearchFilesTool, ToolOrchestrator, ToolRegistry};
+use jaymi_tools::{ReadFileTool, SearchFilesTool, ToolOrchestrator, ToolRegistry};
 
 use crate::diagnostics::DiagnosticsSnapshot;
 
@@ -82,10 +83,11 @@ impl Application {
         self.boot_service(MemoryEngine::new())?;
         self.boot_service(ContextEngine::new())?;
 
-        // Capability registry + Search capability.
+        // Capability registry + Search / Read capabilities.
         let mut capabilities = CapabilityRegistry::new();
         self.initialize_service(&mut capabilities)?;
         capabilities.register(Capability::Search)?;
+        capabilities.register(Capability::ReadDocuments)?;
         let capabilities = Arc::new(capabilities);
         self.container.register(Arc::clone(&capabilities));
 
@@ -100,11 +102,18 @@ impl Application {
         let providers = Arc::new(providers);
         self.container.register(Arc::clone(&providers));
 
-        // Tool registry + Search Files Tool.
+        // Parser registry with built-in TXT / Markdown / JSON parsers.
+        let parsers = Arc::new(default_registry()?);
+        self.container.register(Arc::clone(&parsers));
+
+        // Tool registry + Search Files / Read File tools.
         let mut tools = ToolRegistry::new();
         self.initialize_service(&mut tools)?;
-        let search_files = SearchFilesTool::new(Arc::clone(&filesystem));
-        tools.register_tool(Arc::new(search_files))?;
+        tools.register_tool(Arc::new(SearchFilesTool::new(Arc::clone(&filesystem))))?;
+        tools.register_tool(Arc::new(ReadFileTool::new(
+            Arc::clone(&filesystem),
+            Arc::clone(&parsers),
+        )))?;
         let tools = Arc::new(tools);
         self.container.register(Arc::clone(&tools));
 
@@ -181,15 +190,21 @@ impl Application {
         planner.handle(UserRequest::list_directory(path.as_ref()))
     }
 
-    /// Build the diagnostics snapshot for the temporary UI.
-    pub fn diagnostics(&self) -> JaymiResult<DiagnosticsSnapshot> {
-        self.diagnostics_with_listing(None)
+    /// Ask the Planner to read a supported file into a unified document.
+    pub fn read_file(&self, path: impl AsRef<Path>) -> JaymiResult<PlannerResponse> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.handle(UserRequest::read_file(path.as_ref()))
     }
 
-    /// Build diagnostics including an optional directory listing response.
-    pub fn diagnostics_with_listing(
+    /// Build the diagnostics snapshot for the temporary UI.
+    pub fn diagnostics(&self) -> JaymiResult<DiagnosticsSnapshot> {
+        self.diagnostics_from_response(None)
+    }
+
+    /// Build diagnostics including an optional Planner response.
+    pub fn diagnostics_from_response(
         &self,
-        listing: Option<PlannerResponse>,
+        response: Option<PlannerResponse>,
     ) -> JaymiResult<DiagnosticsSnapshot> {
         let planner = self.container.resolve::<Planner>()?;
         let database = self.container.resolve::<Database>()?;
@@ -197,6 +212,7 @@ impl Application {
         let providers = self.container.resolve::<Arc<ProviderRegistry>>()?;
         let tools = self.container.resolve::<Arc<ToolRegistry>>()?;
 
+        let document = response.as_ref().and_then(|value| value.document.clone());
         Ok(DiagnosticsSnapshot {
             app_state: self.state.clone(),
             planner_healthy: planner.health_check().healthy,
@@ -204,12 +220,42 @@ impl Application {
             tool_count: tools.len(),
             capability_count: capabilities.len(),
             database_connected: database.is_connected(),
-            listed_path: listing
+            listed_path: response
                 .as_ref()
-                .and_then(|response| response.listed_path.clone()),
-            listing_summary: listing.as_ref().map(|response| response.content.clone()),
-            entries: listing.map(|response| response.entries).unwrap_or_default(),
+                .and_then(|value| value.listed_path.clone()),
+            listing_summary: response.as_ref().and_then(|value| {
+                if value.document.is_none() {
+                    Some(value.content.clone())
+                } else {
+                    None
+                }
+            }),
+            entries: response
+                .as_ref()
+                .map(|value| value.entries.clone())
+                .unwrap_or_default(),
+            read_path: document.as_ref().map(|doc| doc.path.clone()),
+            read_file_type: document.as_ref().map(|doc| doc.file_type.label()),
+            read_parser: document.as_ref().map(|doc| doc.parser_id.clone()),
+            read_success: document.is_some(),
+            read_character_count: document.as_ref().map(|doc| doc.character_count()),
+            read_summary: response.as_ref().and_then(|value| {
+                if value.document.is_some() {
+                    Some(value.content.clone())
+                } else {
+                    None
+                }
+            }),
+            read_text: document.map(|doc| doc.text),
         })
+    }
+
+    /// Backward-compatible alias used by listing-focused call sites.
+    pub fn diagnostics_with_listing(
+        &self,
+        listing: Option<PlannerResponse>,
+    ) -> JaymiResult<DiagnosticsSnapshot> {
+        self.diagnostics_from_response(listing)
     }
 
     /// Shut down subsystems in reverse boot order.
@@ -225,12 +271,11 @@ impl Application {
             planner.shutdown()?;
         }
 
-        // Drop Arc handles held in the container; unique ownership is not
-        // required because registries clear via Drop of the Arc values.
         let _ = self.container.take::<Arc<ToolRegistry>>();
         let _ = self.container.take::<Arc<ProviderRegistry>>();
         let _ = self.container.take::<Arc<CapabilityRegistry>>();
         let _ = self.container.take::<Arc<FilesystemProvider>>();
+        let _ = self.container.take::<Arc<ParserRegistry>>();
 
         shutdown_owned::<ContextEngine>(&mut self.container)?;
         shutdown_owned::<MemoryEngine>(&mut self.container)?;
@@ -263,13 +308,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jaymi_core::EntryType;
+    use jaymi_core::{EntryType, FileType};
     use std::fs::{self, File};
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn boot_registers_search_stack() {
+    fn boot_registers_search_and_read_stack() {
         let app = Application::boot().unwrap();
         assert!(app.state().is_ready());
 
@@ -277,33 +322,40 @@ mod tests {
         assert_eq!(diagnostics.app_state.label(), "Ready");
         assert!(diagnostics.planner_healthy);
         assert_eq!(diagnostics.provider_count, 1);
-        assert_eq!(diagnostics.tool_count, 1);
-        assert_eq!(diagnostics.capability_count, 1);
+        assert_eq!(diagnostics.tool_count, 2);
+        assert_eq!(diagnostics.capability_count, 2);
         assert!(diagnostics.database_connected);
     }
 
     #[test]
     fn list_directory_through_application() {
-        let dir = std::env::temp_dir().join(format!(
-            "jaymi-app-{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir_all(&dir).unwrap();
+        let dir = temp_dir("list");
         let mut file = File::create(dir.join("hello.txt")).unwrap();
         write!(file, "hi").unwrap();
 
         let app = Application::boot().unwrap();
         let response = app.list_directory(&dir).unwrap();
         assert_eq!(response.entries.len(), 1);
-        assert_eq!(response.entries[0].name, "hello.txt");
         assert_eq!(response.entries[0].entry_type, EntryType::File);
+    }
 
-        let snapshot = app.diagnostics_with_listing(Some(response)).unwrap();
-        assert_eq!(snapshot.entries.len(), 1);
-        assert!(snapshot.listing_summary.is_some());
+    #[test]
+    fn read_file_through_application() {
+        let dir = temp_dir("read");
+        let path = dir.join("notes.txt");
+        let mut file = File::create(&path).unwrap();
+        write!(file, "universal reader").unwrap();
+
+        let app = Application::boot().unwrap();
+        let response = app.read_file(&path).unwrap();
+        let document = response.document.as_ref().expect("document");
+        assert_eq!(document.file_type, FileType::PlainText);
+        assert_eq!(document.text, "universal reader");
+
+        let snapshot = app.diagnostics_from_response(Some(response)).unwrap();
+        assert!(snapshot.read_success);
+        assert_eq!(snapshot.read_parser.as_deref(), Some("plain_text"));
+        assert_eq!(snapshot.read_character_count, Some(16));
     }
 
     #[test]
@@ -311,5 +363,17 @@ mod tests {
         let mut app = Application::boot().unwrap();
         app.shutdown().unwrap();
         assert_eq!(app.state().label(), "Starting");
+    }
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "jaymi-app-{label}-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
     }
 }

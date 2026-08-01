@@ -24,6 +24,7 @@ jaymi-core = { workspace = true }
 jaymi-database = { workspace = true }
 jaymi-logging = { workspace = true }
 jaymi-memory = { workspace = true }
+jaymi-parsers = { workspace = true }
 jaymi-permissions = { workspace = true }
 jaymi-planner = { workspace = true }
 jaymi-policies = { workspace = true }
@@ -32,3 +33,6 @@ jaymi-tools = { workspace = true }
 
 [dev-dependencies]
 jaymi-core = { workspace = true }
+jaymi-planner = { workspace = true }
+jaymi-providers = { workspace = true }
+jaymi-tools = { workspace = true }
