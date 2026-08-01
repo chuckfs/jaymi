@@ -6,12 +6,20 @@
 
 #![forbid(unsafe_code)]
 
+pub mod container;
 pub mod error;
+pub mod health;
 pub mod id;
+pub mod lifecycle;
 pub mod request;
 pub mod result;
+pub mod state;
 
+pub use container::ServiceContainer;
 pub use error::JaymiError;
+pub use health::HealthReport;
 pub use id::EntityId;
+pub use lifecycle::Lifecycle;
 pub use request::UserRequest;
 pub use result::JaymiResult;
+pub use state::AppState;
