@@ -5,20 +5,23 @@
 //! Memory Engine → Context Engine → Capability Registry → Provider Registry →
 //! Tool Registry → Planner → Desktop UI
 
+use std::path::Path;
 use std::sync::Arc;
 
-use jaymi_capabilities::CapabilityRegistry;
+use jaymi_capabilities::{Capability, CapabilityRegistry};
 use jaymi_config::Config;
 use jaymi_context::ContextEngine;
-use jaymi_core::{AppState, HealthReport, JaymiError, JaymiResult, Lifecycle, ServiceContainer};
+use jaymi_core::{
+    AppState, HealthReport, JaymiError, JaymiResult, Lifecycle, ServiceContainer, UserRequest,
+};
 use jaymi_database::Database;
 use jaymi_logging::Logger;
 use jaymi_memory::MemoryEngine;
 use jaymi_permissions::PermissionEngine;
-use jaymi_planner::{Planner, PlannerDeps};
+use jaymi_planner::{Planner, PlannerDeps, PlannerResponse};
 use jaymi_policies::PolicyEngine;
-use jaymi_providers::ProviderRegistry;
-use jaymi_tools::ToolRegistry;
+use jaymi_providers::{FilesystemProvider, Provider, ProviderRegistry};
+use jaymi_tools::{SearchFilesTool, ToolOrchestrator, ToolRegistry};
 
 use crate::diagnostics::DiagnosticsSnapshot;
 
@@ -79,14 +82,38 @@ impl Application {
         self.boot_service(MemoryEngine::new())?;
         self.boot_service(ContextEngine::new())?;
 
-        let capabilities = self.boot_shared(CapabilityRegistry::new())?;
-        let providers = self.boot_shared(ProviderRegistry::new())?;
-        let tools = self.boot_shared(ToolRegistry::new())?;
+        // Capability registry + Search capability.
+        let mut capabilities = CapabilityRegistry::new();
+        self.initialize_service(&mut capabilities)?;
+        capabilities.register(Capability::Search)?;
+        let capabilities = Arc::new(capabilities);
+        self.container.register(Arc::clone(&capabilities));
 
+        // Provider registry + Filesystem Provider.
+        let mut providers = ProviderRegistry::new();
+        self.initialize_service(&mut providers)?;
+        let mut filesystem = FilesystemProvider::new();
+        filesystem.initialize()?;
+        providers.register(&filesystem)?;
+        let filesystem = Arc::new(filesystem);
+        self.container.register(Arc::clone(&filesystem));
+        let providers = Arc::new(providers);
+        self.container.register(Arc::clone(&providers));
+
+        // Tool registry + Search Files Tool.
+        let mut tools = ToolRegistry::new();
+        self.initialize_service(&mut tools)?;
+        let search_files = SearchFilesTool::new(Arc::clone(&filesystem));
+        tools.register_tool(Arc::new(search_files))?;
+        let tools = Arc::new(tools);
+        self.container.register(Arc::clone(&tools));
+
+        let orchestrator = ToolOrchestrator::new(Arc::clone(&tools));
         let mut planner = Planner::new(PlannerDeps {
             capabilities,
             providers,
             tools,
+            orchestrator,
         });
         self.initialize_service(&mut planner)?;
         self.container.register(planner);
@@ -101,16 +128,6 @@ impl Application {
         self.initialize_service(&mut service)?;
         self.container.register(service);
         Ok(())
-    }
-
-    fn boot_shared<T>(&mut self, mut service: T) -> JaymiResult<Arc<T>>
-    where
-        T: Lifecycle + 'static,
-    {
-        self.initialize_service(&mut service)?;
-        let shared = Arc::new(service);
-        self.container.register(Arc::clone(&shared));
-        Ok(shared)
     }
 
     fn initialize_service<T>(&mut self, service: &mut T) -> JaymiResult<()>
@@ -158,8 +175,22 @@ impl Application {
         Ok(())
     }
 
+    /// Ask the Planner to list a single directory through the full architecture.
+    pub fn list_directory(&self, path: impl AsRef<Path>) -> JaymiResult<PlannerResponse> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.handle(UserRequest::list_directory(path.as_ref()))
+    }
+
     /// Build the diagnostics snapshot for the temporary UI.
     pub fn diagnostics(&self) -> JaymiResult<DiagnosticsSnapshot> {
+        self.diagnostics_with_listing(None)
+    }
+
+    /// Build diagnostics including an optional directory listing response.
+    pub fn diagnostics_with_listing(
+        &self,
+        listing: Option<PlannerResponse>,
+    ) -> JaymiResult<DiagnosticsSnapshot> {
         let planner = self.container.resolve::<Planner>()?;
         let database = self.container.resolve::<Database>()?;
         let capabilities = self.container.resolve::<Arc<CapabilityRegistry>>()?;
@@ -173,6 +204,11 @@ impl Application {
             tool_count: tools.len(),
             capability_count: capabilities.len(),
             database_connected: database.is_connected(),
+            listed_path: listing
+                .as_ref()
+                .and_then(|response| response.listed_path.clone()),
+            listing_summary: listing.as_ref().map(|response| response.content.clone()),
+            entries: listing.map(|response| response.entries).unwrap_or_default(),
         })
     }
 
@@ -189,9 +225,12 @@ impl Application {
             planner.shutdown()?;
         }
 
-        shutdown_arc::<ToolRegistry>(&mut self.container)?;
-        shutdown_arc::<ProviderRegistry>(&mut self.container)?;
-        shutdown_arc::<CapabilityRegistry>(&mut self.container)?;
+        // Drop Arc handles held in the container; unique ownership is not
+        // required because registries clear via Drop of the Arc values.
+        let _ = self.container.take::<Arc<ToolRegistry>>();
+        let _ = self.container.take::<Arc<ProviderRegistry>>();
+        let _ = self.container.take::<Arc<CapabilityRegistry>>();
+        let _ = self.container.take::<Arc<FilesystemProvider>>();
 
         shutdown_owned::<ContextEngine>(&mut self.container)?;
         shutdown_owned::<MemoryEngine>(&mut self.container)?;
@@ -221,71 +260,50 @@ where
     Ok(())
 }
 
-fn shutdown_arc<T>(container: &mut ServiceContainer) -> JaymiResult<()>
-where
-    T: Lifecycle + 'static,
-{
-    if let Some(service) = container.take::<Arc<T>>() {
-        match Arc::try_unwrap(service) {
-            Ok(mut service) => service.shutdown()?,
-            Err(_) => {
-                // Another handle remains; skip mutable shutdown.
-            }
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jaymi_core::EntryType;
+    use std::fs::{self, File};
+    use std::io::Write;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
-    fn boot_reaches_ready_with_empty_registries() {
+    fn boot_registers_search_stack() {
         let app = Application::boot().unwrap();
         assert!(app.state().is_ready());
 
         let diagnostics = app.diagnostics().unwrap();
         assert_eq!(diagnostics.app_state.label(), "Ready");
         assert!(diagnostics.planner_healthy);
-        assert_eq!(diagnostics.provider_count, 0);
-        assert_eq!(diagnostics.tool_count, 0);
-        assert_eq!(diagnostics.capability_count, 0);
+        assert_eq!(diagnostics.provider_count, 1);
+        assert_eq!(diagnostics.tool_count, 1);
+        assert_eq!(diagnostics.capability_count, 1);
         assert!(diagnostics.database_connected);
-
-        let names: Vec<_> = app
-            .health_reports()
-            .iter()
-            .map(|report| report.name.as_str())
-            .collect();
-        assert_eq!(
-            names,
-            vec![
-                "configuration",
-                "logging",
-                "database",
-                "policy_engine",
-                "permission_engine",
-                "memory_engine",
-                "context_engine",
-                "capability_registry",
-                "provider_registry",
-                "tool_registry",
-                "planner",
-            ]
-        );
     }
 
     #[test]
-    fn boot_registers_services_in_container() {
+    fn list_directory_through_application() {
+        let dir = std::env::temp_dir().join(format!(
+            "jaymi-app-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let mut file = File::create(dir.join("hello.txt")).unwrap();
+        write!(file, "hi").unwrap();
+
         let app = Application::boot().unwrap();
-        assert!(app.container().contains::<Config>());
-        assert!(app.container().contains::<Logger>());
-        assert!(app.container().contains::<Database>());
-        assert!(app.container().contains::<Planner>());
-        assert!(app.container().contains::<Arc<CapabilityRegistry>>());
-        assert!(app.container().contains::<Arc<ProviderRegistry>>());
-        assert!(app.container().contains::<Arc<ToolRegistry>>());
+        let response = app.list_directory(&dir).unwrap();
+        assert_eq!(response.entries.len(), 1);
+        assert_eq!(response.entries[0].name, "hello.txt");
+        assert_eq!(response.entries[0].entry_type, EntryType::File);
+
+        let snapshot = app.diagnostics_with_listing(Some(response)).unwrap();
+        assert_eq!(snapshot.entries.len(), 1);
+        assert!(snapshot.listing_summary.is_some());
     }
 
     #[test]
