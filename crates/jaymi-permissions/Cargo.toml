@@ -1,0 +1,11 @@
+[package]
+name = "jaymi-permissions"
+description = "Permission Engine for authorizing meaningful actions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+jaymi-core = { workspace = true }

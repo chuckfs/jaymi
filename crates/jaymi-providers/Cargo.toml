@@ -1,0 +1,12 @@
+[package]
+name = "jaymi-providers"
+description = "Provider framework connecting Jaymi to resources and services"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+jaymi-capabilities = { workspace = true }
+jaymi-core = { workspace = true }

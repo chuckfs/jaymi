@@ -1,0 +1,11 @@
+[package]
+name = "jaymi-capabilities"
+description = "Capability Engine describing what Jaymi can do"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+jaymi-core = { workspace = true }

@@ -1,0 +1,27 @@
+[package]
+name = "jaymi"
+description = "Jaymi desktop application"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "jaymi"
+path = "src/main.rs"
+
+[dependencies]
+jaymi-capabilities = { workspace = true }
+jaymi-config = { workspace = true }
+jaymi-context = { workspace = true }
+jaymi-core = { workspace = true }
+jaymi-database = { workspace = true }
+jaymi-logging = { workspace = true }
+jaymi-memory = { workspace = true }
+jaymi-permissions = { workspace = true }
+jaymi-planner = { workspace = true }
+jaymi-policies = { workspace = true }
+jaymi-projects = { workspace = true }
+jaymi-providers = { workspace = true }
+jaymi-tools = { workspace = true }

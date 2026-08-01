@@ -1,0 +1,11 @@
+[package]
+name = "jaymi-database"
+description = "Local SQLite knowledge store for Jaymi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+jaymi-core = { workspace = true }

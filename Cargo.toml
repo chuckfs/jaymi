@@ -1,0 +1,40 @@
+[workspace]
+resolver = "2"
+members = [
+    "apps/jaymi",
+    "crates/jaymi-capabilities",
+    "crates/jaymi-config",
+    "crates/jaymi-context",
+    "crates/jaymi-core",
+    "crates/jaymi-database",
+    "crates/jaymi-logging",
+    "crates/jaymi-memory",
+    "crates/jaymi-permissions",
+    "crates/jaymi-planner",
+    "crates/jaymi-policies",
+    "crates/jaymi-projects",
+    "crates/jaymi-providers",
+    "crates/jaymi-tools",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/chuckfs/jaymi"
+authors = ["Jaymi Contributors"]
+
+[workspace.dependencies]
+jaymi-capabilities = { path = "crates/jaymi-capabilities" }
+jaymi-config = { path = "crates/jaymi-config" }
+jaymi-context = { path = "crates/jaymi-context" }
+jaymi-core = { path = "crates/jaymi-core" }
+jaymi-database = { path = "crates/jaymi-database" }
+jaymi-logging = { path = "crates/jaymi-logging" }
+jaymi-memory = { path = "crates/jaymi-memory" }
+jaymi-permissions = { path = "crates/jaymi-permissions" }
+jaymi-planner = { path = "crates/jaymi-planner" }
+jaymi-policies = { path = "crates/jaymi-policies" }
+jaymi-projects = { path = "crates/jaymi-projects" }
+jaymi-providers = { path = "crates/jaymi-providers" }
+jaymi-tools = { path = "crates/jaymi-tools" }
