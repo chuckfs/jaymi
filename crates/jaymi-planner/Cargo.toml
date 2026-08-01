@@ -12,3 +12,6 @@ jaymi-capabilities = { workspace = true }
 jaymi-core = { workspace = true }
 jaymi-providers = { workspace = true }
 jaymi-tools = { workspace = true }
+
+[dev-dependencies]
+jaymi-parsers = { workspace = true }

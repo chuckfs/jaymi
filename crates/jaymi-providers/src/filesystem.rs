@@ -17,8 +17,8 @@ pub const FILESYSTEM_PROVIDER_ID: &str = "filesystem";
 
 /// Local filesystem provider.
 ///
-/// Exposes directory listing for the Search capability. The Planner never calls
-/// this type directly — tools mediate all access.
+/// Exposes directory listing and raw file reads. The Planner never calls this
+/// type directly — tools mediate all access.
 #[derive(Debug)]
 pub struct FilesystemProvider {
     identity: ProviderIdentity,
@@ -33,10 +33,10 @@ impl FilesystemProvider {
                 id: FILESYSTEM_PROVIDER_ID.to_string(),
                 name: "Filesystem".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                description: "Local filesystem access for single-directory listing".to_string(),
+                description: "Local filesystem access for listing and reading files".to_string(),
                 category: ProviderCategory::Local,
                 author: "jaymi".to_string(),
-                capabilities: vec![Capability::Search],
+                capabilities: vec![Capability::Search, Capability::ReadDocuments],
             },
             initialized: false,
         }
@@ -93,6 +93,34 @@ impl FilesystemProvider {
 
         entries.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(entries)
+    }
+
+    /// Read the raw bytes of a single file.
+    ///
+    /// Does not parse, index, or interpret content. Parsing belongs to the
+    /// parser registry invoked by the Read Tool.
+    pub fn read_file(&self, path: &Path) -> JaymiResult<Vec<u8>> {
+        if !self.initialized {
+            return Err(JaymiError::new(
+                "filesystem provider is not initialized".to_string(),
+            ));
+        }
+
+        let path = normalize_path(path)?;
+        let metadata = fs::metadata(&path).map_err(|error| {
+            JaymiError::new(format!("cannot access file {}: {error}", path.display()))
+        })?;
+
+        if !metadata.is_file() {
+            return Err(JaymiError::new(format!(
+                "path is not a file: {}",
+                path.display()
+            )));
+        }
+
+        fs::read(&path).map_err(|error| {
+            JaymiError::new(format!("failed to read file {}: {error}", path.display()))
+        })
     }
 }
 
@@ -224,6 +252,28 @@ mod tests {
         let provider = FilesystemProvider::new();
         let error = provider.list_directory(Path::new(".")).unwrap_err();
         assert!(error.message().contains("not initialized"));
+    }
+
+    #[test]
+    fn read_file_returns_bytes() {
+        let dir = tempfile_dir();
+        let path = dir.join("hello.txt");
+        let mut file = File::create(&path).unwrap();
+        write!(file, "hello").unwrap();
+
+        let mut provider = FilesystemProvider::new();
+        provider.initialize().unwrap();
+        let bytes = provider.read_file(&path).unwrap();
+        assert_eq!(bytes, b"hello");
+    }
+
+    #[test]
+    fn read_file_rejects_directories() {
+        let dir = tempfile_dir();
+        let mut provider = FilesystemProvider::new();
+        provider.initialize().unwrap();
+        let error = provider.read_file(&dir).unwrap_err();
+        assert!(error.message().contains("not a file"));
     }
 
     fn tempfile_dir() -> PathBuf {
