@@ -22,7 +22,10 @@ use jaymi_permissions::PermissionEngine;
 use jaymi_planner::{Planner, PlannerDeps, PlannerResponse};
 use jaymi_policies::PolicyEngine;
 use jaymi_providers::{FilesystemProvider, Provider, ProviderRegistry};
-use jaymi_tools::{ReadContentTool, SearchFilesTool, ToolOrchestrator, ToolRegistry};
+use jaymi_tools::{
+    IndexFilesTool, ReadContentTool, SearchFilesTool, SearchIndexTool, ToolOrchestrator,
+    ToolRegistry,
+};
 
 use crate::diagnostics::DiagnosticsSnapshot;
 
@@ -77,7 +80,14 @@ impl Application {
     fn boot_inner(&mut self) -> JaymiResult<()> {
         self.boot_service(Config::new())?;
         self.boot_service(Logger::new())?;
-        self.boot_service(Database::new())?;
+
+        let data_dir = self.container.resolve::<Config>()?.data_dir.clone();
+        let index_roots = self.container.resolve::<Config>()?.index_roots.clone();
+        let mut database = Database::with_data_dir(&data_dir);
+        self.initialize_service(&mut database)?;
+        let database = Arc::new(database);
+        self.container.register(Arc::clone(&database));
+
         self.boot_service(PolicyEngine::new())?;
         self.boot_service(PermissionEngine::new())?;
         self.boot_service(MemoryEngine::new())?;
@@ -107,10 +117,17 @@ impl Application {
         let contents = Arc::new(default_registry()?);
         self.container.register(Arc::clone(&contents));
 
-        // Tool registry + Search Files / Content tools.
+        // Tool registry + Search / Index / Content tools.
         let mut tools = ToolRegistry::new();
         self.initialize_service(&mut tools)?;
         tools.register_tool(Arc::new(SearchFilesTool::new(Arc::clone(&filesystem))))?;
+        tools.register_tool(Arc::new(SearchIndexTool::new(Arc::clone(&database))))?;
+        let index_tool = Arc::new(IndexFilesTool::new(
+            Arc::clone(&filesystem),
+            Arc::clone(&database),
+            index_roots,
+        ));
+        tools.register_tool(Arc::clone(&index_tool) as Arc<dyn jaymi_tools::Tool>)?;
         tools.register_tool(Arc::new(ReadContentTool::new(
             Arc::clone(&filesystem),
             Arc::clone(&contents),
@@ -127,6 +144,18 @@ impl Application {
         });
         self.initialize_service(&mut planner)?;
         self.container.register(planner);
+
+        // Layer 1: build / refresh the knowledge index at boot (incremental replace per root).
+        // Runs in the background so the conversation shell can open promptly.
+        let background_indexer = index_tool;
+        std::thread::Builder::new()
+            .name("jaymi-knowledge-indexer".into())
+            .spawn(move || {
+                let _ = background_indexer.index_all();
+            })
+            .map_err(|error| {
+                JaymiError::new(format!("failed to start background indexer: {error}"))
+            })?;
 
         Ok(())
     }
@@ -216,7 +245,7 @@ impl Application {
         response: Option<PlannerResponse>,
     ) -> JaymiResult<DiagnosticsSnapshot> {
         let planner = self.container.resolve::<Planner>()?;
-        let database = self.container.resolve::<Database>()?;
+        let database = self.container.resolve::<Arc<Database>>()?;
         let capabilities = self.container.resolve::<Arc<CapabilityRegistry>>()?;
         let providers = self.container.resolve::<Arc<ProviderRegistry>>()?;
         let tools = self.container.resolve::<Arc<ToolRegistry>>()?;
@@ -289,12 +318,12 @@ impl Application {
         let _ = self.container.take::<Arc<CapabilityRegistry>>();
         let _ = self.container.take::<Arc<FilesystemProvider>>();
         let _ = self.container.take::<Arc<ContentRegistry>>();
+        let _ = self.container.take::<Arc<Database>>();
 
         shutdown_owned::<ContextEngine>(&mut self.container)?;
         shutdown_owned::<MemoryEngine>(&mut self.container)?;
         shutdown_owned::<PermissionEngine>(&mut self.container)?;
         shutdown_owned::<PolicyEngine>(&mut self.container)?;
-        shutdown_owned::<Database>(&mut self.container)?;
         shutdown_owned::<Logger>(&mut self.container)?;
         shutdown_owned::<Config>(&mut self.container)?;
 
@@ -335,7 +364,7 @@ mod tests {
         assert_eq!(diagnostics.app_state.label(), "Ready");
         assert!(diagnostics.planner_healthy);
         assert_eq!(diagnostics.provider_count, 1);
-        assert_eq!(diagnostics.tool_count, 2);
+        assert_eq!(diagnostics.tool_count, 4);
         assert_eq!(diagnostics.capability_count, 3);
         assert!(diagnostics.database_connected);
     }

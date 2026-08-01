@@ -370,6 +370,38 @@ The Planner reasons over Content without knowing where it originated.
 
 ⸻
 
+Knowledge Engine
+
+Layer 1 teaches Jaymi what exists on the computer.
+
+Discover
+↓
+Filesystem Provider
+↓
+Index Files Tool
+↓
+SQLite metadata index
+↓
+Search Index Tool
+↓
+Planner
+↓
+Conversation
+
+Jaymi answers “What exists?” from local metadata—without opening Finder.
+
+Supported sources today:
+
+* Files
+* Folders
+* Downloads
+* Documents
+* Workspace
+
+This layer stores metadata only. Content understanding belongs to later layers.
+
+⸻
+
 Projects
 
 Projects are first-class citizens.

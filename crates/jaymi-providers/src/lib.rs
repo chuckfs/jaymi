@@ -14,7 +14,9 @@ pub mod provider;
 pub mod registry;
 
 pub use categories::ProviderCategory;
-pub use filesystem::{FilesystemProvider, FILESYSTEM_PROVIDER_ID};
+pub use filesystem::{
+    FilesystemProvider, DEFAULT_WALK_DEPTH, DEFAULT_WALK_LIMIT, FILESYSTEM_PROVIDER_ID,
+};
 pub use lifecycle::ProviderLifecycle;
 pub use manager::ProviderManager;
 pub use provider::{Provider, ProviderIdentity};

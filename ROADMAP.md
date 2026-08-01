@@ -63,6 +63,16 @@ Jaymi can answer:
 
 without opening Finder.
 
+Status
+
+Implemented through the conversation shell:
+
+* Recursive filesystem discovery
+* SQLite metadata index (`indexed_files`)
+* Boot-time background indexing of configured roots
+* Incremental root replace on rescan
+* Planner intents for existence queries and index refresh
+
 ⸻
 
 Layer 2 — Understanding Engine

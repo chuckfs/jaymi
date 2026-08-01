@@ -8,16 +8,20 @@
 pub mod categories;
 pub mod metadata;
 pub mod orchestrator;
+pub mod index_files;
 pub mod read_content;
 pub mod registry;
 pub mod search_files;
+pub mod search_index;
 pub mod tool;
 
 pub use metadata::ToolMetadata;
 pub use orchestrator::ToolOrchestrator;
+pub use index_files::{IndexFilesTool, INDEX_FILES_TOOL_ID};
 pub use read_content::{ReadContentTool, ReadFileTool, READ_CONTENT_TOOL_ID, READ_FILE_TOOL_ID};
 pub use registry::ToolRegistry;
 pub use search_files::{SearchFilesTool, SEARCH_FILES_TOOL_ID};
+pub use search_index::{SearchIndexTool, SEARCH_INDEX_TOOL_ID};
 pub use tool::{Tool, ToolInput, ToolOutput};
 
 use jaymi_core::{HealthReport, JaymiResult, Lifecycle};

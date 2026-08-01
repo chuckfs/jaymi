@@ -118,6 +118,8 @@ Examples:
 
 Files are indexed rather than duplicated whenever possible.
 
+Layer 1 stores filesystem metadata in SQLite (`indexed_files`) so Jaymi can answer “what exists?” from the knowledge index. Content bytes remain on disk.
+
 ⸻
 
 Artifact

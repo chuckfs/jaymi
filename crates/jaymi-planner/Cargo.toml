@@ -14,4 +14,5 @@ jaymi-providers = { workspace = true }
 jaymi-tools = { workspace = true }
 
 [dev-dependencies]
+jaymi-database = { workspace = true }
 jaymi-parsers = { workspace = true }
