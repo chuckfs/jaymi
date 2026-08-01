@@ -4,7 +4,7 @@ use std::path::PathBuf;
 
 use jaymi_core::{AppState, FileEntry};
 
-/// Read-only view of runtime health, listing results, and document reads.
+/// Read-only view of runtime health, listing results, and content reads.
 #[derive(Debug, Clone)]
 pub struct DiagnosticsSnapshot {
     /// Current application lifecycle state.
@@ -25,11 +25,15 @@ pub struct DiagnosticsSnapshot {
     pub listing_summary: Option<String>,
     /// Structured file metadata returned through the architecture.
     pub entries: Vec<FileEntry>,
-    /// Path of the file that was read.
+    /// Path of the content that was read, when available.
     pub read_path: Option<PathBuf>,
-    /// Detected file type label.
+    /// Content source label (for example File).
+    pub read_source: Option<String>,
+    /// Detected content type label.
     pub read_file_type: Option<String>,
-    /// Parser selected for the read.
+    /// MIME type of the content.
+    pub read_mime_type: Option<String>,
+    /// Content parser selected for the read.
     pub read_parser: Option<String>,
     /// Whether parsing completed successfully.
     pub read_success: bool,

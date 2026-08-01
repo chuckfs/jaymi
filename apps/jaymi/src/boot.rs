@@ -17,12 +17,12 @@ use jaymi_core::{
 use jaymi_database::Database;
 use jaymi_logging::Logger;
 use jaymi_memory::MemoryEngine;
-use jaymi_parsers::{default_registry, ParserRegistry};
+use jaymi_parsers::{default_registry, ContentRegistry};
 use jaymi_permissions::PermissionEngine;
 use jaymi_planner::{Planner, PlannerDeps, PlannerResponse};
 use jaymi_policies::PolicyEngine;
 use jaymi_providers::{FilesystemProvider, Provider, ProviderRegistry};
-use jaymi_tools::{ReadFileTool, SearchFilesTool, ToolOrchestrator, ToolRegistry};
+use jaymi_tools::{ReadContentTool, SearchFilesTool, ToolOrchestrator, ToolRegistry};
 
 use crate::diagnostics::DiagnosticsSnapshot;
 
@@ -87,7 +87,7 @@ impl Application {
         let mut capabilities = CapabilityRegistry::new();
         self.initialize_service(&mut capabilities)?;
         capabilities.register(Capability::Search)?;
-        capabilities.register(Capability::ReadDocuments)?;
+        capabilities.register(Capability::ReadContent)?;
         let capabilities = Arc::new(capabilities);
         self.container.register(Arc::clone(&capabilities));
 
@@ -102,17 +102,17 @@ impl Application {
         let providers = Arc::new(providers);
         self.container.register(Arc::clone(&providers));
 
-        // Parser registry with built-in TXT / Markdown / JSON parsers.
-        let parsers = Arc::new(default_registry()?);
-        self.container.register(Arc::clone(&parsers));
+        // Content registry with built-in TXT / Markdown / JSON parsers.
+        let contents = Arc::new(default_registry()?);
+        self.container.register(Arc::clone(&contents));
 
-        // Tool registry + Search Files / Read File tools.
+        // Tool registry + Search Files / Content tools.
         let mut tools = ToolRegistry::new();
         self.initialize_service(&mut tools)?;
         tools.register_tool(Arc::new(SearchFilesTool::new(Arc::clone(&filesystem))))?;
-        tools.register_tool(Arc::new(ReadFileTool::new(
+        tools.register_tool(Arc::new(ReadContentTool::new(
             Arc::clone(&filesystem),
-            Arc::clone(&parsers),
+            Arc::clone(&contents),
         )))?;
         let tools = Arc::new(tools);
         self.container.register(Arc::clone(&tools));
@@ -190,7 +190,7 @@ impl Application {
         planner.handle(UserRequest::list_directory(path.as_ref()))
     }
 
-    /// Ask the Planner to read a supported file into a unified document.
+    /// Ask the Planner to read a supported file into unified Content.
     pub fn read_file(&self, path: impl AsRef<Path>) -> JaymiResult<PlannerResponse> {
         let planner = self.container.resolve::<Planner>()?;
         planner.handle(UserRequest::read_file(path.as_ref()))
@@ -212,7 +212,7 @@ impl Application {
         let providers = self.container.resolve::<Arc<ProviderRegistry>>()?;
         let tools = self.container.resolve::<Arc<ToolRegistry>>()?;
 
-        let document = response.as_ref().and_then(|value| value.document.clone());
+        let content = response.as_ref().and_then(|value| value.content.clone());
         Ok(DiagnosticsSnapshot {
             app_state: self.state.clone(),
             planner_healthy: planner.health_check().healthy,
@@ -224,8 +224,8 @@ impl Application {
                 .as_ref()
                 .and_then(|value| value.listed_path.clone()),
             listing_summary: response.as_ref().and_then(|value| {
-                if value.document.is_none() {
-                    Some(value.content.clone())
+                if value.content.is_none() {
+                    Some(value.summary.clone())
                 } else {
                     None
                 }
@@ -234,19 +234,23 @@ impl Application {
                 .as_ref()
                 .map(|value| value.entries.clone())
                 .unwrap_or_default(),
-            read_path: document.as_ref().map(|doc| doc.path.clone()),
-            read_file_type: document.as_ref().map(|doc| doc.file_type.label()),
-            read_parser: document.as_ref().map(|doc| doc.parser_id.clone()),
-            read_success: document.is_some(),
-            read_character_count: document.as_ref().map(|doc| doc.character_count()),
+            read_path: content
+                .as_ref()
+                .and_then(|item| item.path.clone()),
+            read_source: content.as_ref().map(|item| item.source.label().to_string()),
+            read_file_type: content.as_ref().map(|item| item.content_type.label()),
+            read_mime_type: content.as_ref().map(|item| item.mime_type.clone()),
+            read_parser: content.as_ref().map(|item| item.parser_id.clone()),
+            read_success: content.is_some(),
+            read_character_count: content.as_ref().map(|item| item.character_count()),
             read_summary: response.as_ref().and_then(|value| {
-                if value.document.is_some() {
-                    Some(value.content.clone())
+                if value.content.is_some() {
+                    Some(value.summary.clone())
                 } else {
                     None
                 }
             }),
-            read_text: document.map(|doc| doc.text),
+            read_text: content.map(|item| item.text),
         })
     }
 
@@ -275,7 +279,7 @@ impl Application {
         let _ = self.container.take::<Arc<ProviderRegistry>>();
         let _ = self.container.take::<Arc<CapabilityRegistry>>();
         let _ = self.container.take::<Arc<FilesystemProvider>>();
-        let _ = self.container.take::<Arc<ParserRegistry>>();
+        let _ = self.container.take::<Arc<ContentRegistry>>();
 
         shutdown_owned::<ContextEngine>(&mut self.container)?;
         shutdown_owned::<MemoryEngine>(&mut self.container)?;
@@ -308,7 +312,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jaymi_core::{EntryType, FileType};
+    use jaymi_core::{ContentSource, ContentType, EntryType};
     use std::fs::{self, File};
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -348,14 +352,16 @@ mod tests {
 
         let app = Application::boot().unwrap();
         let response = app.read_file(&path).unwrap();
-        let document = response.document.as_ref().expect("document");
-        assert_eq!(document.file_type, FileType::PlainText);
-        assert_eq!(document.text, "universal reader");
+        let content = response.content.as_ref().expect("content");
+        assert_eq!(content.source, ContentSource::File);
+        assert_eq!(content.content_type, ContentType::PlainText);
+        assert_eq!(content.text, "universal reader");
 
         let snapshot = app.diagnostics_from_response(Some(response)).unwrap();
         assert!(snapshot.read_success);
         assert_eq!(snapshot.read_parser.as_deref(), Some("plain_text"));
         assert_eq!(snapshot.read_character_count, Some(16));
+        assert_eq!(snapshot.read_source.as_deref(), Some("File"));
     }
 
     #[test]

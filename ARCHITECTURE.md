@@ -177,7 +177,7 @@ Examples include:
 * Vision
 * Generate Images
 * Browse the Web
-* Read Documents
+* Read Content
 * Organize Files
 * Execute Terminal Commands
 * Automate Tasks
@@ -208,7 +208,7 @@ Messages
 
 ↓
 
-Documents
+Content
 
 ↓
 
@@ -324,6 +324,30 @@ Jaymi reasons over understanding—not raw files.
 
 ⸻
 
+Content Pipeline
+
+Readable resources flow through one universal pipeline.
+
+Planner
+↓
+Read Capability
+↓
+Content Tool
+↓
+Provider
+↓
+Content Registry
+↓
+Content Parser
+↓
+Content
+
+Everything becomes Content—files, messages, email, web pages, and future sources alike.
+
+The Planner reasons over Content without knowing where it originated.
+
+⸻
+
 Projects
 
 Projects are first-class citizens.
@@ -358,7 +382,7 @@ Examples include:
 * Search
 * Memory
 * OCR
-* Document parsing
+* Content parsing
 * Embeddings
 * Indexing
 * Context construction

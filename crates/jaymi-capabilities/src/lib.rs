@@ -37,8 +37,8 @@ pub enum Capability {
     GenerateImages,
     /// Web browsing.
     BrowseTheWeb,
-    /// Document reading and parsing.
-    ReadDocuments,
+    /// Universal content reading and parsing.
+    ReadContent,
     /// File organization.
     OrganizeFiles,
     /// Terminal command execution.
@@ -63,7 +63,7 @@ impl Capability {
             Self::Vision => "vision",
             Self::GenerateImages => "generate_images",
             Self::BrowseTheWeb => "browse_the_web",
-            Self::ReadDocuments => "read_documents",
+            Self::ReadContent => "read_content",
             Self::OrganizeFiles => "organize_files",
             Self::ExecuteTerminalCommands => "execute_terminal_commands",
             Self::AutomateTasks => "automate_tasks",

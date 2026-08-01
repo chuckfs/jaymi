@@ -194,7 +194,7 @@ Possible sources include:
 * Git history
 * Terminal state
 * Messages
-* Documents
+* Content
 
 Only relevant information should be retrieved.
 
@@ -236,7 +236,7 @@ Examples include:
 * Code
 * Vision
 * Generate Images
-* Read Documents
+* Read Content
 * Browse Internet
 * Terminal
 * File Management
@@ -266,7 +266,7 @@ Messages Tool
 
 ↓
 
-Documents Tool
+Content Tool
 
 ↓
 

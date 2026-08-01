@@ -163,7 +163,7 @@ Optimize for information gathering.
 Prefer:
 
 * Search providers
-* Document readers
+* Content readers
 * Summarization tools
 * Citation-rich responses
 

@@ -7,7 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod container;
-pub mod document;
+pub mod content;
 pub mod error;
 pub mod file_entry;
 pub mod health;
@@ -18,7 +18,7 @@ pub mod result;
 pub mod state;
 
 pub use container::ServiceContainer;
-pub use document::{Document, DocumentMetadata, FileType};
+pub use content::{Content, ContentMetadata, ContentSource, ContentType};
 pub use error::JaymiError;
 pub use file_entry::{EntryType, FileEntry};
 pub use health::HealthReport;

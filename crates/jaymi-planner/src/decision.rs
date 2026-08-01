@@ -16,7 +16,7 @@ pub enum Intent {
         /// Directory path to list.
         path: PathBuf,
     },
-    /// Read one supported file into a unified document.
+    /// Read one supported file into unified Content.
     ReadFile {
         /// File path to read.
         path: PathBuf,
@@ -74,7 +74,7 @@ impl DecisionEngine {
     pub fn required_capability(&self, intent: &Intent) -> Option<Capability> {
         match intent {
             Intent::ListDirectory { .. } => Some(Capability::Search),
-            Intent::ReadFile { .. } => Some(Capability::ReadDocuments),
+            Intent::ReadFile { .. } => Some(Capability::ReadContent),
             Intent::Unknown => None,
         }
     }
@@ -116,7 +116,7 @@ mod tests {
         );
         assert_eq!(
             engine.required_capability(&engine.determine_intent(&request)),
-            Some(Capability::ReadDocuments)
+            Some(Capability::ReadContent)
         );
     }
 

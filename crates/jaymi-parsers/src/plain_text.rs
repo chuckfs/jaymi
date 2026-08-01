@@ -1,17 +1,16 @@
-//! Plain text parser (`.txt`).
+//! Plain text content parser (`.txt`).
 
-use std::path::Path;
+use jaymi_core::{Content, ContentMetadata, ContentType, JaymiResult};
 
-use jaymi_core::{Document, DocumentMetadata, FileType, JaymiResult};
+use crate::parser::ContentParser;
+use crate::util::{build_content, decode_utf8, title_from_path};
+use crate::ParseRequest;
 
-use crate::parser::FileParser;
-use crate::util::{build_document, decode_utf8, title_from_path};
-
-/// Parser for plain UTF-8 text files.
+/// Parser for plain UTF-8 text resources.
 #[derive(Debug, Default)]
 pub struct PlainTextParser;
 
-impl FileParser for PlainTextParser {
+impl ContentParser for PlainTextParser {
     fn id(&self) -> &'static str {
         "plain_text"
     }
@@ -20,20 +19,20 @@ impl FileParser for PlainTextParser {
         "Plain Text"
     }
 
-    fn supported_types(&self) -> &[FileType] {
-        &[FileType::PlainText]
+    fn supported_types(&self) -> &[ContentType] {
+        &[ContentType::PlainText]
     }
 
-    fn parse(&self, path: &Path, bytes: &[u8]) -> JaymiResult<Document> {
-        let text = decode_utf8(bytes)?;
-        let mut metadata = DocumentMetadata::new();
+    fn parse(&self, request: &ParseRequest<'_>) -> JaymiResult<Content> {
+        let text = decode_utf8(request.bytes)?;
+        let mut metadata = ContentMetadata::new();
         metadata.insert("encoding", "utf-8");
         metadata.insert("line_count", text.lines().count().to_string());
 
-        Ok(build_document(
-            path,
-            FileType::PlainText,
-            title_from_path(path),
+        Ok(build_content(
+            request,
+            ContentType::PlainText,
+            title_from_path(request.path),
             text,
             metadata,
             self.id(),
@@ -44,17 +43,23 @@ impl FileParser for PlainTextParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jaymi_core::ContentSource;
+    use std::path::Path;
 
     #[test]
     fn parses_plain_text() {
         let parser = PlainTextParser;
-        let document = parser
-            .parse(Path::new("/tmp/notes.txt"), b"hello\nworld")
+        let path = Path::new("/tmp/notes.txt");
+        let content = parser
+            .parse(&ParseRequest::file(path, b"hello\nworld"))
             .unwrap();
-        assert_eq!(document.file_type, FileType::PlainText);
-        assert_eq!(document.title.as_deref(), Some("notes"));
-        assert_eq!(document.text, "hello\nworld");
-        assert_eq!(document.parser_id, "plain_text");
-        assert_eq!(document.metadata.get("line_count"), Some("2"));
+        assert_eq!(content.source, ContentSource::File);
+        assert_eq!(content.content_type, ContentType::PlainText);
+        assert_eq!(content.mime_type, "text/plain");
+        assert_eq!(content.title.as_deref(), Some("notes"));
+        assert_eq!(content.text, "hello\nworld");
+        assert_eq!(content.parser_id, "plain_text");
+        assert_eq!(content.metadata.get("line_count"), Some("2"));
+        assert_eq!(content.path.as_deref(), Some(path));
     }
 }

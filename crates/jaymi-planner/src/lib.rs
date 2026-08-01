@@ -15,7 +15,7 @@ use std::sync::Arc;
 use decision::{DecisionEngine, Intent};
 use jaymi_capabilities::{Capability, CapabilityRegistry};
 use jaymi_core::{
-    Document, FileEntry, HealthReport, JaymiError, JaymiResult, Lifecycle, UserRequest,
+    Content, FileEntry, HealthReport, JaymiError, JaymiResult, Lifecycle, UserRequest,
 };
 use jaymi_providers::{ProviderRegistry, FILESYSTEM_PROVIDER_ID};
 use jaymi_tools::{ToolInput, ToolOrchestrator, ToolRegistry};
@@ -39,7 +39,7 @@ const DEPENDENCIES: &[&str] = &[
 #[derive(Debug, Default, Clone)]
 pub struct PlannerResponse {
     /// Human-readable summary of the result.
-    pub content: String,
+    pub summary: String,
     /// Capability selected for the request, when any.
     pub capability: Option<Capability>,
     /// Tool selected for execution, when any.
@@ -50,8 +50,17 @@ pub struct PlannerResponse {
     pub listed_path: Option<std::path::PathBuf>,
     /// Structured directory listing entries.
     pub entries: Vec<FileEntry>,
-    /// Unified document produced by the Read pipeline.
-    pub document: Option<Document>,
+    /// Unified Content produced by the Read pipeline.
+    ///
+    /// The Planner reasons over Content without depending on parsers or formats.
+    pub content: Option<Content>,
+}
+
+impl PlannerResponse {
+    /// Backward-compatible accessor for the human-readable summary string.
+    pub fn message(&self) -> &str {
+        &self.summary
+    }
 }
 
 /// Dependencies required to construct the Planner from registries.
@@ -119,7 +128,7 @@ impl Planner {
     ///
     /// Supported flows:
     /// - list-directory: Search → Search Files Tool → Filesystem Provider
-    /// - read-file: ReadDocuments → Read File Tool → Filesystem Provider → Parser Registry
+    /// - read-file: ReadContent → Content Tool → Provider → Content Registry → Content
     ///
     /// The Planner never accesses the filesystem or parser implementations directly.
     pub fn handle(&self, request: UserRequest) -> JaymiResult<PlannerResponse> {
@@ -130,7 +139,7 @@ impl Planner {
         let intent = self.decision.determine_intent(&request);
         let Some(capability) = self.decision.required_capability(&intent) else {
             return Ok(PlannerResponse {
-                content: "Unsupported request. Try: list <directory> or read <file>".to_string(),
+                summary: "Unsupported request. Try: list <directory> or read <file>".to_string(),
                 ..PlannerResponse::default()
             });
         };
@@ -149,7 +158,7 @@ impl Planner {
             Intent::ListDirectory { path } => self.handle_list_directory(capability, path),
             Intent::ReadFile { path } => self.handle_read_file(capability, path),
             Intent::Unknown => Ok(PlannerResponse {
-                content: "Unsupported request.".to_string(),
+                summary: "Unsupported request.".to_string(),
                 ..PlannerResponse::default()
             }),
         }
@@ -167,7 +176,7 @@ impl Planner {
         self.ensure_success(&output)?;
 
         let provider_id = self.provider_for_tool(&tool_id);
-        let content = format!(
+        let summary = format!(
             "Listed {} entries in {} via {} → {} → {}",
             output.entries.len(),
             path.display(),
@@ -177,13 +186,13 @@ impl Planner {
         );
 
         Ok(PlannerResponse {
-            content,
+            summary,
             capability: Some(capability),
             tool_id: Some(tool_id),
             provider_id,
             listed_path: Some(path),
             entries: output.entries,
-            document: None,
+            content: None,
         })
     }
 
@@ -198,28 +207,28 @@ impl Planner {
             .execute_for_capability(capability, input)?;
         self.ensure_success(&output)?;
 
-        let document = output.document.ok_or_else(|| {
-            JaymiError::new("read tool succeeded without returning a document")
+        let content = output.content.ok_or_else(|| {
+            JaymiError::new("content tool succeeded without returning Content")
         })?;
         let provider_id = self.provider_for_tool(&tool_id);
-        let content = format!(
+        let summary = format!(
             "Read {} ({}) via {} → {} → {} → {}",
             path.display(),
-            document.file_type,
+            content.content_type,
             capability.id(),
             tool_id,
             provider_id.as_deref().unwrap_or("unknown"),
-            document.parser_id
+            content.parser_id
         );
 
         Ok(PlannerResponse {
-            content,
+            summary,
             capability: Some(capability),
             tool_id: Some(tool_id),
             provider_id,
             listed_path: None,
             entries: Vec::new(),
-            document: Some(document),
+            content: Some(content),
         })
     }
 
@@ -303,10 +312,10 @@ impl Lifecycle for Planner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jaymi_core::{EntryType, FileType, Lifecycle};
+    use jaymi_core::{ContentSource, ContentType, EntryType, Lifecycle};
     use jaymi_parsers::default_registry;
     use jaymi_providers::{FilesystemProvider, Provider};
-    use jaymi_tools::{ReadFileTool, SearchFilesTool};
+    use jaymi_tools::{ReadContentTool, SearchFilesTool};
     use std::fs::{self, File};
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -315,7 +324,7 @@ mod tests {
         let mut capabilities = CapabilityRegistry::new();
         capabilities.initialize().unwrap();
         capabilities.register(Capability::Search).unwrap();
-        capabilities.register(Capability::ReadDocuments).unwrap();
+        capabilities.register(Capability::ReadContent).unwrap();
 
         let mut providers = ProviderRegistry::new();
         providers.initialize().unwrap();
@@ -324,7 +333,7 @@ mod tests {
         providers.register(&filesystem).unwrap();
         let filesystem = Arc::new(filesystem);
 
-        let parsers = Arc::new(default_registry().unwrap());
+        let contents = Arc::new(default_registry().unwrap());
 
         let mut tools = ToolRegistry::new();
         tools.initialize().unwrap();
@@ -332,9 +341,9 @@ mod tests {
             .register_tool(Arc::new(SearchFilesTool::new(Arc::clone(&filesystem))))
             .unwrap();
         tools
-            .register_tool(Arc::new(ReadFileTool::new(
+            .register_tool(Arc::new(ReadContentTool::new(
                 Arc::clone(&filesystem),
-                parsers,
+                contents,
             )))
             .unwrap();
         let tools = Arc::new(tools);
@@ -369,7 +378,7 @@ mod tests {
         assert!(planner.discover_capabilities().contains(&Capability::Search));
         assert!(planner
             .discover_capabilities()
-            .contains(&Capability::ReadDocuments));
+            .contains(&Capability::ReadContent));
         assert_eq!(planner.provider_count(), 1);
         assert_eq!(planner.tool_count(), 2);
     }
@@ -397,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn read_file_returns_unified_document() {
+    fn read_file_returns_unified_content() {
         let dir = temp_dir();
         let path = dir.join("spec.md");
         let mut file = File::create(&path).unwrap();
@@ -406,14 +415,16 @@ mod tests {
         let planner = planner_with_search_and_read();
         let response = planner.handle(UserRequest::read_file(&path)).unwrap();
 
-        assert_eq!(response.capability, Some(Capability::ReadDocuments));
-        assert_eq!(response.tool_id.as_deref(), Some("read_file"));
-        let document = response.document.expect("document");
-        assert_eq!(document.file_type, FileType::Markdown);
-        assert_eq!(document.title.as_deref(), Some("Spec"));
-        assert_eq!(document.parser_id, "markdown");
-        assert!(document.text.contains("Details."));
-        assert!(response.content.contains("markdown"));
+        assert_eq!(response.capability, Some(Capability::ReadContent));
+        assert_eq!(response.tool_id.as_deref(), Some("read_content"));
+        let content = response.content.expect("content");
+        assert_eq!(content.source, ContentSource::File);
+        assert_eq!(content.content_type, ContentType::Markdown);
+        assert_eq!(content.mime_type, "text/markdown");
+        assert_eq!(content.title.as_deref(), Some("Spec"));
+        assert_eq!(content.parser_id, "markdown");
+        assert!(content.text.contains("Details."));
+        assert!(response.summary.contains("markdown"));
     }
 
     #[test]
@@ -421,7 +432,7 @@ mod tests {
         let planner = planner_with_search_and_read();
         let response = planner.handle(UserRequest::new("sing a song")).unwrap();
         assert!(response.entries.is_empty());
-        assert!(response.document.is_none());
+        assert!(response.content.is_none());
         assert!(response.capability.is_none());
     }
 }
