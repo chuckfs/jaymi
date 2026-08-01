@@ -1,0 +1,17 @@
+[package]
+name = "jaymi-planner"
+description = "Planner orchestration kernel for Jaymi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+jaymi-capabilities = { workspace = true }
+jaymi-context = { workspace = true }
+jaymi-core = { workspace = true }
+jaymi-memory = { workspace = true }
+jaymi-permissions = { workspace = true }
+jaymi-policies = { workspace = true }
+jaymi-tools = { workspace = true }

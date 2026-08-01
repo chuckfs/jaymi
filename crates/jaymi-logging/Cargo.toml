@@ -1,0 +1,11 @@
+[package]
+name = "jaymi-logging"
+description = "Logging for the Jaymi personal AI environment"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+jaymi-core = { workspace = true }

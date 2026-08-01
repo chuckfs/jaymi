@@ -1,0 +1,11 @@
+[package]
+name = "jaymi-projects"
+description = "Project workspaces as first-class citizens in Jaymi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+jaymi-core = { workspace = true }
