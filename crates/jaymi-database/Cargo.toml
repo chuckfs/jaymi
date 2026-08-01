@@ -9,3 +9,4 @@ authors.workspace = true
 
 [dependencies]
 jaymi-core = { workspace = true }
+rusqlite = { version = "0.32", features = ["bundled"] }

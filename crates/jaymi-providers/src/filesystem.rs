@@ -1,6 +1,7 @@
-//! Filesystem Provider — local directory listing.
+//! Filesystem Provider — local directory listing and discovery.
 //!
-//! Lists a single directory. Does not recurse, index, or interpret content.
+//! Supports non-recursive listing, recursive metadata walks for indexing,
+//! and raw file reads. Does not interpret content.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,10 +16,16 @@ use crate::provider::{Provider, ProviderIdentity};
 /// Provider ID used for registration and tool metadata.
 pub const FILESYSTEM_PROVIDER_ID: &str = "filesystem";
 
+/// Default maximum depth for recursive discovery walks.
+pub const DEFAULT_WALK_DEPTH: usize = 6;
+
+/// Default maximum entries returned from a single walk.
+pub const DEFAULT_WALK_LIMIT: usize = 5_000;
+
 /// Local filesystem provider.
 ///
-/// Exposes directory listing and raw file reads. The Planner never calls this
-/// type directly — tools mediate all access.
+/// Exposes directory listing, recursive discovery, and raw file reads.
+/// The Planner never calls this type directly — tools mediate all access.
 #[derive(Debug)]
 pub struct FilesystemProvider {
     identity: ProviderIdentity,
@@ -33,7 +40,8 @@ impl FilesystemProvider {
                 id: FILESYSTEM_PROVIDER_ID.to_string(),
                 name: "Filesystem".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                description: "Local filesystem access for listing and reading files".to_string(),
+                description: "Local filesystem access for listing, discovery, and reading files"
+                    .to_string(),
                 category: ProviderCategory::Local,
                 author: "jaymi".to_string(),
                 capabilities: vec![Capability::Search, Capability::ReadContent],
@@ -92,6 +100,39 @@ impl FilesystemProvider {
         }
 
         entries.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(entries)
+    }
+
+    /// Recursively discover filesystem metadata under `root`.
+    ///
+    /// Used by the knowledge indexer. Skips common noise directories and does not
+    /// follow symlinks. Returns at most `limit` entries.
+    pub fn walk_directory(
+        &self,
+        root: &Path,
+        max_depth: usize,
+        limit: usize,
+    ) -> JaymiResult<Vec<FileEntry>> {
+        if !self.initialized {
+            return Err(JaymiError::new(
+                "filesystem provider is not initialized".to_string(),
+            ));
+        }
+        if !root.exists() {
+            return Ok(Vec::new());
+        }
+
+        let root = normalize_path(root)?;
+        if !root.is_dir() {
+            return Err(JaymiError::new(format!(
+                "path is not a directory: {}",
+                root.display()
+            )));
+        }
+
+        let mut entries = Vec::new();
+        walk_recursive(&root, &root, 0, max_depth, limit, &mut entries)?;
+        entries.sort_by(|left, right| left.path.cmp(&right.path));
         Ok(entries)
     }
 
@@ -171,6 +212,72 @@ fn normalize_path(path: &Path) -> JaymiResult<PathBuf> {
     })
 }
 
+fn walk_recursive(
+    root: &Path,
+    current: &Path,
+    depth: usize,
+    max_depth: usize,
+    limit: usize,
+    out: &mut Vec<FileEntry>,
+) -> JaymiResult<()> {
+    if out.len() >= limit || depth > max_depth {
+        return Ok(());
+    }
+
+    let read_dir = match fs::read_dir(current) {
+        Ok(value) => value,
+        Err(_) => return Ok(()),
+    };
+
+    for entry in read_dir.flatten() {
+        if out.len() >= limit {
+            break;
+        }
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if should_skip_name(&name) {
+            continue;
+        }
+
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(value) => value,
+            Err(_) => continue,
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+
+        let file_entry = file_entry_from_metadata(name, path.clone(), &metadata);
+        // Include the entry itself for files; directories are included so the
+        // index can answer “what folders exist?”
+        out.push(file_entry);
+
+        if metadata.is_dir() && depth < max_depth {
+            walk_recursive(root, &path, depth + 1, max_depth, limit, out)?;
+        }
+    }
+    Ok(())
+}
+
+fn should_skip_name(name: &str) -> bool {
+    matches!(
+        name,
+        ".git"
+            | ".svn"
+            | ".hg"
+            | "node_modules"
+            | "target"
+            | ".cache"
+            | "__pycache__"
+            | ".venv"
+            | "venv"
+            | ".idea"
+            | ".vscode"
+            | "dist"
+            | "build"
+    ) || name.starts_with('.')
+}
+
 fn file_entry_from_dir_entry(entry: fs::DirEntry) -> JaymiResult<FileEntry> {
     let path = entry.path();
     let name = entry.file_name().to_string_lossy().into_owned();
@@ -180,7 +287,10 @@ fn file_entry_from_dir_entry(entry: fs::DirEntry) -> JaymiResult<FileEntry> {
             path.display()
         ))
     })?;
+    Ok(file_entry_from_metadata(name, path, &metadata))
+}
 
+fn file_entry_from_metadata(name: String, path: PathBuf, metadata: &fs::Metadata) -> FileEntry {
     let entry_type = if metadata.file_type().is_symlink() {
         EntryType::Symlink
     } else if metadata.is_dir() {
@@ -191,13 +301,13 @@ fn file_entry_from_dir_entry(entry: fs::DirEntry) -> JaymiResult<FileEntry> {
         EntryType::Other
     };
 
-    Ok(FileEntry::new(
+    FileEntry::new(
         name,
         entry_type,
         path,
         metadata.len(),
         system_time_to_unix(metadata.modified().ok()),
-    ))
+    )
 }
 
 fn system_time_to_unix(time: Option<SystemTime>) -> Option<u64> {

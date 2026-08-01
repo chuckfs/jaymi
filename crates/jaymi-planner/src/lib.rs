@@ -18,7 +18,10 @@ use jaymi_core::{
     Content, FileEntry, HealthReport, JaymiError, JaymiResult, Lifecycle, UserRequest,
 };
 use jaymi_providers::{ProviderRegistry, FILESYSTEM_PROVIDER_ID};
-use jaymi_tools::{ToolInput, ToolOrchestrator, ToolRegistry};
+use jaymi_tools::{
+    ToolInput, ToolOrchestrator, ToolRegistry, INDEX_FILES_TOOL_ID, READ_CONTENT_TOOL_ID,
+    SEARCH_FILES_TOOL_ID, SEARCH_INDEX_TOOL_ID,
+};
 use reasoning::ReasoningEngine;
 
 const NAME: &str = "planner";
@@ -81,16 +84,33 @@ impl PlannerResponse {
             let path = self
                 .listed_path
                 .as_ref()
-                .map(|value| value.display().to_string())
-                .unwrap_or_else(|| "that folder".to_string());
-            let mut body = format!(
-                "I found {} item{} in {}:\n",
-                self.entries.len(),
-                if self.entries.len() == 1 { "" } else { "s" },
-                path
-            );
-            for entry in &self.entries {
+                .map(|value| value.display().to_string());
+            let mut body = if let Some(path) = path {
+                format!(
+                    "I found {} item{} in {}:\n",
+                    self.entries.len(),
+                    if self.entries.len() == 1 { "" } else { "s" },
+                    path
+                )
+            } else {
+                format!(
+                    "{}\n\n",
+                    if self.summary.is_empty() {
+                        format!(
+                            "I found {} item{}:",
+                            self.entries.len(),
+                            if self.entries.len() == 1 { "" } else { "s" }
+                        )
+                    } else {
+                        self.summary.clone()
+                    }
+                )
+            };
+            for entry in self.entries.iter().take(40) {
                 body.push_str(&format!("• {} ({})\n", entry.name, entry.entry_type.label()));
+            }
+            if self.entries.len() > 40 {
+                body.push_str(&format!("…and {} more\n", self.entries.len() - 40));
             }
             return body.trim_end().to_string();
         }
@@ -165,6 +185,8 @@ impl Planner {
     /// Supported flows:
     /// - chat: Chat capability (no tools yet — conversational acknowledgment)
     /// - list-directory: Search → Search Files Tool → Filesystem Provider
+    /// - query-index: Search → Search Index Tool → Database
+    /// - index-knowledge: Search → Index Files Tool → Filesystem + Database
     /// - read-file: ReadContent → Content Tool → Provider → Content Registry → Content
     ///
     /// The Planner never accesses the filesystem or parser implementations directly.
@@ -176,7 +198,8 @@ impl Planner {
         let intent = self.decision.determine_intent(&request);
         let Some(capability) = self.decision.required_capability(&intent) else {
             return Ok(PlannerResponse {
-                summary: "Say hello, or try `list <directory>` / `read <file>`.".to_string(),
+                summary: "Say hello, ask what exists, or try `list <directory>` / `read <file>`."
+                    .to_string(),
                 ..PlannerResponse::default()
             });
         };
@@ -194,9 +217,15 @@ impl Planner {
         match intent {
             Intent::ListDirectory { path } => self.handle_list_directory(capability, path),
             Intent::ReadFile { path } => self.handle_read_file(capability, path),
+            Intent::QueryIndex {
+                query,
+                source_root,
+            } => self.handle_query_index(capability, query, source_root),
+            Intent::IndexKnowledge => self.handle_index_knowledge(capability),
             Intent::Chat { message } => self.handle_chat(capability, message),
             Intent::Unknown => Ok(PlannerResponse {
-                summary: "Say hello, or try `list <directory>` / `read <file>`.".to_string(),
+                summary: "Say hello, ask what exists, or try `list <directory>` / `read <file>`."
+                    .to_string(),
                 ..PlannerResponse::default()
             }),
         }
@@ -210,7 +239,7 @@ impl Planner {
         let summary = format!(
             "Thanks — I heard you.\n\n\
 I’m still learning how to talk freely, but I can already help with your files.\n\
-Try `list <directory>` or `read <file>`.\n\n\
+Ask “what exists?”, or try `list <directory>` / `read <file>` / `index my files`.\n\n\
 You said: “{message}”"
         );
 
@@ -225,16 +254,65 @@ You said: “{message}”"
         })
     }
 
+    fn handle_query_index(
+        &self,
+        capability: Capability,
+        query: Option<String>,
+        source_root: Option<String>,
+    ) -> JaymiResult<PlannerResponse> {
+        let input = ToolInput::search_index(query, source_root.clone(), Some(40));
+        let output = self
+            .orchestrator
+            .execute(SEARCH_INDEX_TOOL_ID, input)?;
+        self.ensure_success(&output)?;
+
+        let summary = output
+            .message
+            .clone()
+            .unwrap_or_else(|| "Searched the knowledge index.".to_string());
+
+        Ok(PlannerResponse {
+            summary,
+            capability: Some(capability),
+            tool_id: Some(SEARCH_INDEX_TOOL_ID.to_string()),
+            provider_id: Some(FILESYSTEM_PROVIDER_ID.to_string()),
+            listed_path: None,
+            entries: output.entries,
+            content: None,
+        })
+    }
+
+    fn handle_index_knowledge(&self, capability: Capability) -> JaymiResult<PlannerResponse> {
+        let output = self
+            .orchestrator
+            .execute(INDEX_FILES_TOOL_ID, ToolInput::index_roots())?;
+        self.ensure_success(&output)?;
+
+        let summary = output
+            .message
+            .clone()
+            .unwrap_or_else(|| "Updated the knowledge index.".to_string());
+
+        Ok(PlannerResponse {
+            summary,
+            capability: Some(capability),
+            tool_id: Some(INDEX_FILES_TOOL_ID.to_string()),
+            provider_id: Some(FILESYSTEM_PROVIDER_ID.to_string()),
+            listed_path: None,
+            entries: Vec::new(),
+            content: None,
+        })
+    }
+
     fn handle_list_directory(
         &self,
         capability: Capability,
         path: std::path::PathBuf,
     ) -> JaymiResult<PlannerResponse> {
         let input = ToolInput::list_directory(path.clone());
-        let (tool_id, output) = self
-            .orchestrator
-            .execute_for_capability(capability, input)?;
+        let output = self.orchestrator.execute(SEARCH_FILES_TOOL_ID, input)?;
         self.ensure_success(&output)?;
+        let tool_id = SEARCH_FILES_TOOL_ID.to_string();
 
         let provider_id = self.provider_for_tool(&tool_id);
         let summary = format!(
@@ -260,10 +338,11 @@ You said: “{message}”"
         path: std::path::PathBuf,
     ) -> JaymiResult<PlannerResponse> {
         let input = ToolInput::read_file(path.clone());
-        let (tool_id, output) = self
+        let output = self
             .orchestrator
-            .execute_for_capability(capability, input)?;
+            .execute(READ_CONTENT_TOOL_ID, input)?;
         self.ensure_success(&output)?;
+        let tool_id = READ_CONTENT_TOOL_ID.to_string();
 
         let content = output.content.ok_or_else(|| {
             JaymiError::new("content tool succeeded without returning Content")
@@ -368,9 +447,10 @@ impl Lifecycle for Planner {
 mod tests {
     use super::*;
     use jaymi_core::{ContentSource, ContentType, EntryType, Lifecycle};
+    use jaymi_database::{Database, IndexRoot};
     use jaymi_parsers::default_registry;
     use jaymi_providers::{FilesystemProvider, Provider};
-    use jaymi_tools::{ReadContentTool, SearchFilesTool};
+    use jaymi_tools::{IndexFilesTool, ReadContentTool, SearchFilesTool, SearchIndexTool};
     use std::fs::{self, File};
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -389,12 +469,27 @@ mod tests {
         providers.register(&filesystem).unwrap();
         let filesystem = Arc::new(filesystem);
 
+        let mut database = Database::new();
+        database.initialize().unwrap();
+        let database = Arc::new(database);
+
         let contents = Arc::new(default_registry().unwrap());
+        let roots = vec![IndexRoot::new("workspace", temp_dir())];
 
         let mut tools = ToolRegistry::new();
         tools.initialize().unwrap();
         tools
             .register_tool(Arc::new(SearchFilesTool::new(Arc::clone(&filesystem))))
+            .unwrap();
+        tools
+            .register_tool(Arc::new(SearchIndexTool::new(Arc::clone(&database))))
+            .unwrap();
+        tools
+            .register_tool(Arc::new(IndexFilesTool::new(
+                Arc::clone(&filesystem),
+                Arc::clone(&database),
+                roots,
+            )))
             .unwrap();
         tools
             .register_tool(Arc::new(ReadContentTool::new(
@@ -437,7 +532,7 @@ mod tests {
             .discover_capabilities()
             .contains(&Capability::ReadContent));
         assert_eq!(planner.provider_count(), 1);
-        assert_eq!(planner.tool_count(), 2);
+        assert_eq!(planner.tool_count(), 4);
     }
 
     #[test]
@@ -493,6 +588,67 @@ mod tests {
         assert_eq!(response.capability, Some(Capability::Chat));
         assert!(response.tool_id.is_none());
         assert!(response.assistant_text().contains("What can you help with?"));
+    }
+
+    #[test]
+    fn what_exists_queries_knowledge_index() {
+        let dir = temp_dir();
+        write!(File::create(dir.join("invoice.txt")).unwrap(), "alpha").unwrap();
+
+        let mut capabilities = CapabilityRegistry::new();
+        capabilities.initialize().unwrap();
+        capabilities.register(Capability::Chat).unwrap();
+        capabilities.register(Capability::Search).unwrap();
+        capabilities.register(Capability::ReadContent).unwrap();
+
+        let mut providers = ProviderRegistry::new();
+        providers.initialize().unwrap();
+        let mut filesystem = FilesystemProvider::new();
+        filesystem.initialize().unwrap();
+        providers.register(&filesystem).unwrap();
+        let filesystem = Arc::new(filesystem);
+
+        let mut database = Database::new();
+        database.initialize().unwrap();
+        let database = Arc::new(database);
+        let contents = Arc::new(default_registry().unwrap());
+
+        let mut tools = ToolRegistry::new();
+        tools.initialize().unwrap();
+        tools
+            .register_tool(Arc::new(SearchFilesTool::new(Arc::clone(&filesystem))))
+            .unwrap();
+        tools
+            .register_tool(Arc::new(SearchIndexTool::new(Arc::clone(&database))))
+            .unwrap();
+        tools
+            .register_tool(Arc::new(IndexFilesTool::new(
+                Arc::clone(&filesystem),
+                Arc::clone(&database),
+                vec![IndexRoot::new("workspace", dir.clone())],
+            )))
+            .unwrap();
+        tools
+            .register_tool(Arc::new(ReadContentTool::new(filesystem, contents)))
+            .unwrap();
+        let tools = Arc::new(tools);
+        let mut planner = Planner::new(PlannerDeps {
+            capabilities: Arc::new(capabilities),
+            providers: Arc::new(providers),
+            tools: Arc::clone(&tools),
+            orchestrator: ToolOrchestrator::new(tools),
+        });
+        planner.initialize().unwrap();
+
+        planner
+            .handle(UserRequest::new("index my files"))
+            .unwrap();
+        let response = planner
+            .handle(UserRequest::new("What exists?"))
+            .unwrap();
+        assert_eq!(response.capability, Some(Capability::Search));
+        assert_eq!(response.tool_id.as_deref(), Some("search_index"));
+        assert!(response.entries.iter().any(|entry| entry.name == "invoice.txt"));
     }
 
     #[test]
