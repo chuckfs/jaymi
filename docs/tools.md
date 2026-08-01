@@ -332,6 +332,254 @@ A Tool should do one thing exceptionally well.
 
 ⸻
 
+Tool Metadata
+
+Every Tool should describe itself using metadata.
+
+This allows the Planner to make intelligent decisions without hardcoding provider-specific logic.
+
+Rather than asking:
+
+“Should I use Tool A or Tool B?”
+
+The Planner asks:
+
+“Which available Tool best satisfies this request according to the current policy?”
+
+Every Tool should expose the following information.
+
+⸻
+
+Identity
+
+* Tool ID
+* Human-readable name
+* Version
+* Description
+* Provider
+* Supported capabilities
+
+⸻
+
+Execution
+
+Describe how the Tool behaves during execution.
+
+Execution Mode
+
+Possible values include:
+
+* Synchronous
+* Asynchronous
+* Streaming
+
+⸻
+
+Estimated Runtime
+
+Approximate execution time.
+
+Examples:
+
+* Instant (<100 ms)
+* Fast (<1 s)
+* Medium (<10 s)
+* Slow (>10 s)
+
+This value is only an estimate and should not be treated as a guarantee.
+
+⸻
+
+Resource Cost
+
+Represents the relative computational expense of running the Tool.
+
+Possible values:
+
+* Very Low
+* Low
+* Medium
+* High
+* Very High
+
+This allows the Planner to prefer lightweight solutions whenever possible.
+
+⸻
+
+Memory Usage
+
+Estimated memory requirements.
+
+Examples:
+
+* Tiny
+* Small
+* Moderate
+* Large
+* Extreme
+
+This enables future scheduling decisions on memory-constrained systems.
+
+⸻
+
+GPU Requirements
+
+Examples:
+
+* None
+* Optional
+* Recommended
+* Required
+
+⸻
+
+Privacy
+
+Every Tool declares where execution occurs.
+
+Possible values:
+
+* Local Only
+* Cloud Only
+* Local Preferred
+* Cloud Optional
+* Hybrid
+
+The Planner uses this information to respect the user’s privacy preferences.
+
+⸻
+
+Internet Requirements
+
+Possible values:
+
+* Never
+* Optional
+* Required
+
+The Planner should avoid unnecessary internet access whenever possible.
+
+⸻
+
+Permissions
+
+Every Tool declares the permissions required before execution.
+
+Examples:
+
+* Read Files
+* Write Files
+* Delete Files
+* Read Messages
+* Run Terminal Commands
+* Network Access
+
+The Planner remains responsible for enforcing permissions.
+
+⸻
+
+Reliability
+
+Tools should describe their expected reliability.
+
+Possible values:
+
+* Experimental
+* Stable
+* Production
+
+The Planner may prefer more stable tools when multiple options exist.
+
+⸻
+
+Result Type
+
+Every Tool should describe the type of data it returns.
+
+Examples:
+
+* Text
+* Image
+* Structured Data
+* File
+* Stream
+* Diff
+* Search Results
+
+This allows downstream components to process results consistently.
+
+⸻
+
+Supported Context
+
+Tools should declare which contextual information they can use.
+
+Examples:
+
+* Active Project
+* Conversation
+* Memory
+* Files
+* Search Results
+* Git Repository
+* Terminal State
+
+The Planner should avoid supplying unnecessary context.
+
+⸻
+
+Tool Selection
+
+When multiple Tools satisfy the same Capability, the Planner evaluates them using their metadata.
+
+Typical considerations include:
+
+* User preferences
+* Privacy policy
+* Available hardware
+* Internet availability
+* Required permissions
+* Estimated execution time
+* Resource cost
+* Reliability
+* Provider availability
+
+Example:
+
+Generate Image
+
+Available Tools
+
+• Local FLUX
+
+* Local Only
+* High GPU Cost
+* Fast
+
+• Cloud Image Provider
+
+* Cloud Only
+* Higher Quality
+* Internet Required
+
+If the user’s policy is “Offline First,” the Planner selects the local Tool automatically.
+
+If local execution is unavailable or unsuitable, the Planner may request permission to use an alternative.
+
+⸻
+
+Design Principle
+
+The Planner should never contain provider-specific rules.
+
+Instead, every Tool should describe itself well enough that intelligent decisions emerge naturally from metadata.
+
+Adding a new Tool should not require changing the Planner.
+
+The Planner learns about new capabilities by inspecting Tool metadata rather than relying on hardcoded logic.
+
+⸻
+
 Long-Term Vision
 
 As Jaymi grows, hundreds of Tools may exist.
