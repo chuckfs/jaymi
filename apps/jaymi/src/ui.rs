@@ -1,6 +1,6 @@
 //! Temporary diagnostics desktop UI.
 //!
-//! Displays runtime health, directory listing results, and unified document
+//! Displays runtime health, directory listing results, and unified Content
 //! reads from the Planner pipeline. Chat is intentionally out of scope.
 
 use eframe::egui;
@@ -115,7 +115,7 @@ impl eframe::App for DiagnosticsApp {
 
             ui.add_space(12.0);
             ui.separator();
-            ui.heading("Read File");
+            ui.heading("Read Content");
             ui.horizontal(|ui| {
                 ui.label("Path:");
                 ui.add(
@@ -145,9 +145,23 @@ impl eframe::App for DiagnosticsApp {
                     .unwrap_or_else(|| "-".to_string())
             ));
             ui.label(format!(
-                "File type: {}",
+                "Source: {}",
+                self.snapshot
+                    .read_source
+                    .clone()
+                    .unwrap_or_else(|| "-".to_string())
+            ));
+            ui.label(format!(
+                "Content type: {}",
                 self.snapshot
                     .read_file_type
+                    .clone()
+                    .unwrap_or_else(|| "-".to_string())
+            ));
+            ui.label(format!(
+                "MIME type: {}",
+                self.snapshot
+                    .read_mime_type
                     .clone()
                     .unwrap_or_else(|| "-".to_string())
             ));
@@ -176,7 +190,7 @@ impl eframe::App for DiagnosticsApp {
                 .id_salt("read_text_scroll")
                 .max_height(220.0)
                 .show(ui, |ui| {
-                    let text = self.snapshot.read_text.as_deref().unwrap_or("(no document loaded)");
+                    let text = self.snapshot.read_text.as_deref().unwrap_or("(no content loaded)");
                     ui.monospace(text);
                 });
         });

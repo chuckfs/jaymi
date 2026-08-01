@@ -36,7 +36,7 @@ impl FilesystemProvider {
                 description: "Local filesystem access for listing and reading files".to_string(),
                 category: ProviderCategory::Local,
                 author: "jaymi".to_string(),
-                capabilities: vec![Capability::Search, Capability::ReadDocuments],
+                capabilities: vec![Capability::Search, Capability::ReadContent],
             },
             initialized: false,
         }
@@ -98,7 +98,7 @@ impl FilesystemProvider {
     /// Read the raw bytes of a single file.
     ///
     /// Does not parse, index, or interpret content. Parsing belongs to the
-    /// parser registry invoked by the Read Tool.
+    /// content registry invoked by the Content Tool.
     pub fn read_file(&self, path: &Path) -> JaymiResult<Vec<u8>> {
         if !self.initialized {
             return Err(JaymiError::new(

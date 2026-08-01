@@ -1,23 +1,26 @@
-//! File parser trait implemented by every format-specific parser.
+//! Content parser trait implemented by every format-specific parser.
 
-use std::path::Path;
+use jaymi_core::{Content, ContentType, JaymiResult};
 
-use jaymi_core::{Document, FileType, JaymiResult};
+use crate::ParseRequest;
 
-/// Converts raw file bytes into a [`Document`].
+/// Converts a raw resource into unified [`Content`].
 ///
 /// Parsers must remain focused: extract text and lightweight metadata only.
 /// No semantic analysis, indexing, embeddings, or OCR.
-pub trait FileParser: Send + Sync {
+///
+/// New formats are added by implementing this trait and registering with the
+/// [`crate::ContentRegistry`] — no Planner changes required.
+pub trait ContentParser: Send + Sync {
     /// Stable parser identifier (for example `plain_text`).
     fn id(&self) -> &'static str;
 
     /// Human-readable parser name.
     fn name(&self) -> &'static str;
 
-    /// File types this parser can handle.
-    fn supported_types(&self) -> &[FileType];
+    /// Content types this parser can handle.
+    fn supported_types(&self) -> &[ContentType];
 
-    /// Parse file bytes from `path` into a unified document.
-    fn parse(&self, path: &Path, bytes: &[u8]) -> JaymiResult<Document>;
+    /// Parse a resource described by [`ParseRequest`] into unified Content.
+    fn parse(&self, request: &ParseRequest<'_>) -> JaymiResult<Content>;
 }

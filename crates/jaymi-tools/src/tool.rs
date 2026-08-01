@@ -1,12 +1,12 @@
 //! Tool interface and structured I/O.
 
 use crate::metadata::ToolMetadata;
-use jaymi_core::{Document, FileEntry, JaymiResult};
+use jaymi_core::{Content, FileEntry, JaymiResult};
 
 /// Structured input supplied by the Planner.
 #[derive(Debug, Default, Clone)]
 pub struct ToolInput {
-    /// Directory path for tools that list filesystem contents.
+    /// Path for tools that operate on filesystem resources.
     pub path: Option<std::path::PathBuf>,
 }
 
@@ -18,7 +18,7 @@ impl ToolInput {
         }
     }
 
-    /// Create input for a single-file read operation.
+    /// Create input for a single-file content read operation.
     pub fn read_file(path: impl Into<std::path::PathBuf>) -> Self {
         Self {
             path: Some(path.into()),
@@ -33,9 +33,9 @@ pub struct ToolOutput {
     pub success: bool,
     /// Directory listing entries when applicable.
     pub entries: Vec<FileEntry>,
-    /// Unified document produced by the Read pipeline.
-    pub document: Option<Document>,
-    /// Parser selected for a read operation, when any.
+    /// Unified content produced by the Read pipeline.
+    pub content: Option<Content>,
+    /// Content parser selected for a read operation, when any.
     pub parser_id: Option<String>,
     /// Optional human-readable message.
     pub message: Option<String>,
@@ -47,19 +47,19 @@ impl ToolOutput {
         Self {
             success: true,
             entries,
-            document: None,
+            content: None,
             parser_id: None,
             message: None,
         }
     }
 
-    /// Successful document read.
-    pub fn document(document: Document) -> Self {
-        let parser_id = document.parser_id.clone();
+    /// Successful content read.
+    pub fn content(content: Content) -> Self {
+        let parser_id = content.parser_id.clone();
         Self {
             success: true,
             entries: Vec::new(),
-            document: Some(document),
+            content: Some(content),
             parser_id: Some(parser_id),
             message: None,
         }
@@ -70,7 +70,7 @@ impl ToolOutput {
         Self {
             success: false,
             entries: Vec::new(),
-            document: None,
+            content: None,
             parser_id: None,
             message: Some(message.into()),
         }

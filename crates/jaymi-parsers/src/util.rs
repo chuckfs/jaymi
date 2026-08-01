@@ -1,14 +1,19 @@
-//! Shared helpers for format parsers.
+//! Shared helpers for content parsers.
 
+use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use jaymi_core::{Document, DocumentMetadata, EntityId, FileType, JaymiError, JaymiResult};
+use jaymi_core::{
+    Content, ContentMetadata, ContentSource, ContentType, EntityId, JaymiError, JaymiResult,
+};
 
-/// Decode file bytes as UTF-8 text.
+use crate::ParseRequest;
+
+/// Decode resource bytes as UTF-8 text.
 pub fn decode_utf8(bytes: &[u8]) -> JaymiResult<String> {
     String::from_utf8(bytes.to_vec())
-        .map_err(|error| JaymiError::new(format!("file is not valid UTF-8: {error}")))
+        .map_err(|error| JaymiError::new(format!("content is not valid UTF-8: {error}")))
 }
 
 /// Current Unix epoch seconds.
@@ -19,36 +24,69 @@ pub fn now_unix() -> u64 {
         .unwrap_or(0)
 }
 
-/// Build a document identity from path and parser.
-pub fn document_id(path: &Path, parser_id: &str) -> EntityId {
-    EntityId::new(format!("doc:{}:{}", parser_id, path.display()))
+/// Build a content identity from source, parser, and optional path.
+pub fn content_id(source: ContentSource, parser_id: &str, path: Option<&Path>) -> EntityId {
+    let location = path
+        .map(|value| value.display().to_string())
+        .unwrap_or_else(|| "anonymous".to_string());
+    EntityId::new(format!("content:{}:{}:{location}", source.id(), parser_id))
 }
 
 /// Default title from the file stem when the format has no explicit title.
-pub fn title_from_path(path: &Path) -> Option<String> {
-    path.file_stem()
+pub fn title_from_path(path: Option<&Path>) -> Option<String> {
+    path.and_then(|value| value.file_stem())
         .map(|stem| stem.to_string_lossy().into_owned())
         .filter(|value| !value.is_empty())
 }
 
-/// Assemble a [`Document`] with common fields filled in.
-pub fn build_document(
-    path: &Path,
-    file_type: FileType,
+/// Read created/modified timestamps from the filesystem when available.
+pub fn file_timestamps(path: Option<&Path>) -> (Option<u64>, Option<u64>) {
+    let Some(path) = path else {
+        return (None, None);
+    };
+    let Ok(metadata) = fs::metadata(path) else {
+        return (None, None);
+    };
+    (
+        system_time_secs(metadata.created().ok()),
+        system_time_secs(metadata.modified().ok()),
+    )
+}
+
+fn system_time_secs(value: Option<SystemTime>) -> Option<u64> {
+    value.and_then(|time| time.duration_since(UNIX_EPOCH).ok().map(|d| d.as_secs()))
+}
+
+/// Assemble [`Content`] with common fields filled in.
+pub fn build_content(
+    request: &ParseRequest<'_>,
+    content_type: ContentType,
     title: Option<String>,
     text: String,
-    mut metadata: DocumentMetadata,
+    mut metadata: ContentMetadata,
     parser_id: &str,
-) -> Document {
+) -> Content {
     metadata.insert("byte_length", text.len().to_string());
-    metadata.insert("extension", extension_of(path));
-    Document {
-        id: document_id(path, parser_id),
-        path: path.to_path_buf(),
-        file_type,
+    if let Some(path) = request.path {
+        metadata.insert("extension", extension_of(path));
+    }
+
+    let (created, modified) = match (request.created, request.modified) {
+        (None, None) => file_timestamps(request.path),
+        other => other,
+    };
+
+    Content {
+        id: content_id(request.source, parser_id, request.path),
+        source: request.source,
+        path: request.path.map(Path::to_path_buf),
+        mime_type: content_type.mime_type().to_string(),
+        content_type,
         title,
         text,
         metadata,
+        created,
+        modified,
         parsed_at: now_unix(),
         parser_id: parser_id.to_string(),
     }

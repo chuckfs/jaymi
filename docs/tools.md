@@ -29,7 +29,7 @@ Every tool performs exactly one well-defined job.
 Examples include:
 
 * Search files
-* Read a document
+* Read content
 * Execute a terminal command
 * Generate an image
 * Create a Git commit
@@ -266,6 +266,18 @@ Local Filesystem
 
 Another example:
 
+Content Tool
+↓
+Filesystem Provider
+↓
+Content Registry
+↓
+Content Parser
+↓
+Content
+
+Another example:
+
 Generate Image Tool
 ↓
 Image Provider
@@ -275,6 +287,8 @@ Local Image Model
 The Tool knows which Provider to call.
 
 The Provider knows how to interact with the resource.
+
+Content Tools return unified Content. Future message, email, web, and vision providers can produce Content without Planner changes.
 
 ⸻
 

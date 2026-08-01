@@ -1,6 +1,6 @@
 //! Jaymi desktop application entry point.
 //!
-//! Supports list-directory and universal file-read pipelines through the Planner.
+//! Supports list-directory and universal content-read pipelines through the Planner.
 
 use std::env;
 use std::path::PathBuf;
@@ -125,31 +125,41 @@ fn parse_command(args: &[String]) -> JaymiResult<Command> {
 }
 
 fn print_read_response(response: &PlannerResponse) {
-    let document = match &response.document {
-        Some(document) => document,
+    let content = match &response.content {
+        Some(content) => content,
         None => {
-            println!("{}", response.content);
+            println!("{}", response.summary);
             return;
         }
     };
 
-    println!("File type: {}", document.file_type);
-    println!("Parser: {}", document.parser_id);
-    if let Some(title) = &document.title {
+    println!("Source: {}", content.source);
+    println!("Content type: {}", content.content_type);
+    println!("MIME type: {}", content.mime_type);
+    println!("Parser: {}", content.parser_id);
+    if let Some(title) = &content.title {
         println!("Title: {title}");
     }
-    println!("Path: {}", document.path.display());
-    println!("Character count: {}", document.character_count());
-    println!("Parsed at (unix): {}", document.parsed_at);
+    if let Some(path) = &content.path {
+        println!("Path: {}", path.display());
+    }
+    println!("Character count: {}", content.character_count());
+    if let Some(created) = content.created {
+        println!("Created (unix): {created}");
+    }
+    if let Some(modified) = content.modified {
+        println!("Modified (unix): {modified}");
+    }
+    println!("Parsed at (unix): {}", content.parsed_at);
     println!("Metadata:");
-    if document.metadata.is_empty() {
+    if content.metadata.is_empty() {
         println!("  (none)");
     } else {
-        for (key, value) in document.metadata.iter() {
+        for (key, value) in content.metadata.iter() {
             println!("  {key}: {value}");
         }
     }
     println!();
     println!("Parsed text (preview):");
-    println!("{}", document.preview(500));
+    println!("{}", content.preview(500));
 }

@@ -1,14 +1,14 @@
-//! Read File Tool — reads a file through the Filesystem Provider and parsers.
+//! Content Tool — reads a resource through a Provider and the Content Registry.
 //!
 //! Architecture path:
-//! Planner → ReadDocuments → Read File Tool → Filesystem Provider →
-//! Parser Registry → Specific Parser → Unified Document
+//! Planner → Read Capability → Content Tool → Provider →
+//! Content Registry → Content Parser → Unified Content
 
 use std::sync::Arc;
 
 use jaymi_capabilities::Capability;
 use jaymi_core::{JaymiError, JaymiResult};
-use jaymi_parsers::ParserRegistry;
+use jaymi_parsers::{ContentRegistry, ParseRequest};
 use jaymi_providers::{FilesystemProvider, FILESYSTEM_PROVIDER_ID};
 
 use crate::metadata::{
@@ -18,27 +18,36 @@ use crate::metadata::{
 use crate::tool::{Tool, ToolInput, ToolOutput};
 
 /// Stable tool identifier used by the Planner and registries.
-pub const READ_FILE_TOOL_ID: &str = "read_file";
+pub const READ_CONTENT_TOOL_ID: &str = "read_content";
 
-/// Tool that reads one supported file into a unified [`jaymi_core::Document`].
+/// Backward-compatible alias for Slice 3 call sites.
+pub const READ_FILE_TOOL_ID: &str = READ_CONTENT_TOOL_ID;
+
+/// Tool that reads one supported file into unified [`jaymi_core::Content`].
+///
+/// Today this tool is file-backed. Future content tools can target other
+/// providers while still returning Content to the Planner.
 #[derive(Debug)]
-pub struct ReadFileTool {
+pub struct ReadContentTool {
     metadata: ToolMetadata,
     filesystem: Arc<FilesystemProvider>,
-    parsers: Arc<ParserRegistry>,
+    contents: Arc<ContentRegistry>,
 }
 
-impl ReadFileTool {
-    /// Create a Read File tool bound to filesystem and parser services.
-    pub fn new(filesystem: Arc<FilesystemProvider>, parsers: Arc<ParserRegistry>) -> Self {
+/// Backward-compatible alias for Slice 3 naming.
+pub type ReadFileTool = ReadContentTool;
+
+impl ReadContentTool {
+    /// Create a Content Tool bound to filesystem and content-registry services.
+    pub fn new(filesystem: Arc<FilesystemProvider>, contents: Arc<ContentRegistry>) -> Self {
         Self {
             metadata: ToolMetadata {
-                id: READ_FILE_TOOL_ID.to_string(),
-                name: "Read File".to_string(),
+                id: READ_CONTENT_TOOL_ID.to_string(),
+                name: "Read Content".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                description: "Read a supported file into a unified document".to_string(),
+                description: "Read a supported resource into unified Content".to_string(),
                 provider: FILESYSTEM_PROVIDER_ID.to_string(),
-                capabilities: vec![Capability::ReadDocuments],
+                capabilities: vec![Capability::ReadContent],
                 execution_mode: ExecutionMode::Synchronous,
                 estimated_runtime: EstimatedRuntime::Fast,
                 resource_cost: ResourceCost::VeryLow,
@@ -50,12 +59,12 @@ impl ReadFileTool {
                 result_type: ResultType::StructuredData,
             },
             filesystem,
-            parsers,
+            contents,
         }
     }
 }
 
-impl Tool for ReadFileTool {
+impl Tool for ReadContentTool {
     fn metadata(&self) -> &ToolMetadata {
         &self.metadata
     }
@@ -63,8 +72,8 @@ impl Tool for ReadFileTool {
     fn validate(&self, input: &ToolInput) -> JaymiResult<()> {
         match &input.path {
             Some(path) if !path.as_os_str().is_empty() => Ok(()),
-            Some(_) => Err(JaymiError::new("file path must not be empty")),
-            None => Err(JaymiError::new("read file tool requires a file path")),
+            Some(_) => Err(JaymiError::new("content path must not be empty")),
+            None => Err(JaymiError::new("content tool requires a path")),
         }
     }
 
@@ -73,26 +82,26 @@ impl Tool for ReadFileTool {
         let path = input
             .path
             .as_ref()
-            .ok_or_else(|| JaymiError::new("file path is required"))?;
+            .ok_or_else(|| JaymiError::new("content path is required"))?;
 
-        let file_type = ParserRegistry::detect_type(path).ok_or_else(|| {
+        let content_type = ContentRegistry::detect_type(path).ok_or_else(|| {
             JaymiError::new(format!(
-                "cannot detect file type for {}",
+                "cannot detect content type for {}",
                 path.display()
             ))
         })?;
 
-        let parser = self.parsers.resolve(&file_type)?;
+        let parser = self.contents.resolve(&content_type)?;
         let bytes = self.filesystem.read_file(path)?;
-        let document = parser.parse(path, &bytes)?;
-        Ok(ToolOutput::document(document))
+        let content = parser.parse(&ParseRequest::file(path, &bytes))?;
+        Ok(ToolOutput::content(content))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jaymi_core::FileType;
+    use jaymi_core::{ContentSource, ContentType};
     use jaymi_parsers::default_registry;
     use jaymi_providers::Provider;
     use std::fs::{self, File};
@@ -108,15 +117,17 @@ mod tests {
 
         let mut filesystem = FilesystemProvider::new();
         filesystem.initialize().unwrap();
-        let parsers = Arc::new(default_registry().unwrap());
-        let tool = ReadFileTool::new(Arc::new(filesystem), parsers);
+        let contents = Arc::new(default_registry().unwrap());
+        let tool = ReadContentTool::new(Arc::new(filesystem), contents);
 
         let output = tool.execute(&ToolInput::read_file(&path)).unwrap();
         assert!(output.success);
-        let document = output.document.unwrap();
-        assert_eq!(document.file_type, FileType::Markdown);
-        assert_eq!(document.title.as_deref(), Some("Hello"));
+        let content = output.content.unwrap();
+        assert_eq!(content.source, ContentSource::File);
+        assert_eq!(content.content_type, ContentType::Markdown);
+        assert_eq!(content.title.as_deref(), Some("Hello"));
         assert_eq!(output.parser_id.as_deref(), Some("markdown"));
+        assert!(content.path.is_some());
     }
 
     #[test]
@@ -127,16 +138,16 @@ mod tests {
 
         let mut filesystem = FilesystemProvider::new();
         filesystem.initialize().unwrap();
-        let parsers = Arc::new(default_registry().unwrap());
-        let tool = ReadFileTool::new(Arc::new(filesystem), parsers);
+        let contents = Arc::new(default_registry().unwrap());
+        let tool = ReadContentTool::new(Arc::new(filesystem), contents);
 
         let error = tool.execute(&ToolInput::read_file(&path)).unwrap_err();
-        assert!(error.message().contains("no parser registered"));
+        assert!(error.message().contains("no content parser registered"));
     }
 
     fn temp_dir() -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "jaymi-read-tool-{}",
+            "jaymi-read-content-tool-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
