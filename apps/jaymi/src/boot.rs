@@ -83,9 +83,10 @@ impl Application {
         self.boot_service(MemoryEngine::new())?;
         self.boot_service(ContextEngine::new())?;
 
-        // Capability registry + Search / Read capabilities.
+        // Capability registry + Chat / Search / Read capabilities.
         let mut capabilities = CapabilityRegistry::new();
         self.initialize_service(&mut capabilities)?;
+        capabilities.register(Capability::Chat)?;
         capabilities.register(Capability::Search)?;
         capabilities.register(Capability::ReadContent)?;
         let capabilities = Arc::new(capabilities);
@@ -196,7 +197,15 @@ impl Application {
         planner.handle(UserRequest::read_file(path.as_ref()))
     }
 
-    /// Build the diagnostics snapshot for the temporary UI.
+    /// Submit a conversational message through the Planner pipeline.
+    ///
+    /// The UI must not call tools or providers directly — only this path.
+    pub fn send_message(&self, message: impl AsRef<str>) -> JaymiResult<PlannerResponse> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.handle(UserRequest::new(message.as_ref()))
+    }
+
+    /// Build the diagnostics snapshot for settings and tests.
     pub fn diagnostics(&self) -> JaymiResult<DiagnosticsSnapshot> {
         self.diagnostics_from_response(None)
     }
@@ -327,7 +336,7 @@ mod tests {
         assert!(diagnostics.planner_healthy);
         assert_eq!(diagnostics.provider_count, 1);
         assert_eq!(diagnostics.tool_count, 2);
-        assert_eq!(diagnostics.capability_count, 2);
+        assert_eq!(diagnostics.capability_count, 3);
         assert!(diagnostics.database_connected);
     }
 

@@ -21,6 +21,11 @@ pub enum Intent {
         /// File path to read.
         path: PathBuf,
     },
+    /// Free-form conversational message.
+    Chat {
+        /// Message text from the user.
+        message: String,
+    },
     /// Request could not be mapped to a supported intent.
     Unknown,
 }
@@ -35,6 +40,7 @@ impl DecisionEngine {
     /// Supported forms:
     /// - structured [`UserRequest::directory`] / [`UserRequest::file`]
     /// - content beginning with `list ` or `read ` followed by a path
+    /// - any other non-empty content as conversational chat
     pub fn determine_intent(&self, request: &UserRequest) -> Intent {
         if let Some(path) = &request.file {
             if !path.as_os_str().is_empty() {
@@ -67,6 +73,12 @@ impl DecisionEngine {
             }
         }
 
+        if !content.is_empty() {
+            return Intent::Chat {
+                message: content.to_string(),
+            };
+        }
+
         Intent::Unknown
     }
 
@@ -75,6 +87,7 @@ impl DecisionEngine {
         match intent {
             Intent::ListDirectory { .. } => Some(Capability::Search),
             Intent::ReadFile { .. } => Some(Capability::ReadContent),
+            Intent::Chat { .. } => Some(Capability::Chat),
             Intent::Unknown => None,
         }
     }
@@ -138,9 +151,25 @@ mod tests {
     }
 
     #[test]
-    fn unknown_without_supported_intent() {
+    fn free_form_message_is_chat() {
         let engine = DecisionEngine;
         let request = UserRequest::new("hello");
+        assert_eq!(
+            engine.determine_intent(&request),
+            Intent::Chat {
+                message: "hello".to_string()
+            }
+        );
+        assert_eq!(
+            engine.required_capability(&engine.determine_intent(&request)),
+            Some(Capability::Chat)
+        );
+    }
+
+    #[test]
+    fn empty_message_is_unknown() {
+        let engine = DecisionEngine;
+        let request = UserRequest::new("   ");
         assert_eq!(engine.determine_intent(&request), Intent::Unknown);
     }
 }

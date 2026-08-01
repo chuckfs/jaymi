@@ -324,6 +324,28 @@ Jaymi reasons over understanding—not raw files.
 
 ⸻
 
+Conversation Shell
+
+The desktop experience opens into a conversation.
+
+Conversation
+↓
+Planner
+↓
+Capability
+↓
+Tool
+↓
+Provider
+↓
+Response
+
+The conversation never disappears.
+
+Future Coding, Creation, and Research workspaces expand from the right of the conversation rather than replacing it.
+
+⸻
+
 Content Pipeline
 
 Readable resources flow through one universal pipeline.

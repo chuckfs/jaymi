@@ -1,6 +1,7 @@
 //! Jaymi desktop application entry point.
 //!
-//! Supports list-directory and universal content-read pipelines through the Planner.
+//! Default launch opens the conversation-first shell.
+//! CLI `read` / `list` / `--headless` continue to exercise Planner pipelines.
 
 use std::env;
 use std::path::PathBuf;
@@ -27,31 +28,24 @@ fn main() -> JaymiResult<()> {
             let response = app.read_file(&path)?;
             print_read_response(&response);
             if !headless {
-                let snapshot = app.diagnostics_from_response(Some(response))?;
-                ui::run_diagnostics(
-                    app,
-                    env::current_dir()
-                        .unwrap_or_else(|_| PathBuf::from("."))
-                        .display()
-                        .to_string(),
-                    path.display().to_string(),
-                    snapshot,
-                )
-                .map_err(|error| JaymiError::new(format!("desktop UI failed: {error}")))?;
+                ui::run_conversation(app)
+                    .map_err(|error| JaymiError::new(format!("desktop UI failed: {error}")))?;
                 return Ok(());
             }
         }
-        Command::List { path } | Command::Default { path } => {
-            let listing = app.list_directory(&path).ok();
-            let read_default = env::current_dir()
-                .ok()
-                .map(|cwd| cwd.join("README.md"))
-                .filter(|candidate| candidate.is_file())
-                .map(|candidate| candidate.display().to_string())
-                .unwrap_or_default();
-            let snapshot = app.diagnostics_from_response(listing)?;
-
+        Command::List { path } => {
+            let listing = app.list_directory(&path)?;
             if headless {
+                print_listing(&app, Some(listing))?;
+            } else {
+                ui::run_conversation(app)
+                    .map_err(|error| JaymiError::new(format!("desktop UI failed: {error}")))?;
+                return Ok(());
+            }
+        }
+        Command::Conversation => {
+            if headless {
+                let snapshot = app.diagnostics()?;
                 println!("Jaymi");
                 println!("Status: {}", snapshot.app_state.label());
                 println!("Planner: {}", snapshot.planner_label());
@@ -59,31 +53,11 @@ fn main() -> JaymiResult<()> {
                 println!("Tools: {}", snapshot.tool_count);
                 println!("Capabilities: {}", snapshot.capability_count);
                 println!("Database: {}", snapshot.database_label());
-                if let Some(summary) = &snapshot.listing_summary {
-                    println!();
-                    println!("{summary}");
-                }
-                for entry in &snapshot.entries {
-                    println!(
-                        "{}\t{}\t{}\t{}\t{}",
-                        entry.name,
-                        entry.entry_type,
-                        entry.path.display(),
-                        entry.size,
-                        entry
-                            .modified
-                            .map(|value| value.to_string())
-                            .unwrap_or_else(|| "-".to_string())
-                    );
-                }
+                println!();
+                println!("Conversation shell ready.");
             } else {
-                ui::run_diagnostics(
-                    app,
-                    path.display().to_string(),
-                    read_default,
-                    snapshot,
-                )
-                .map_err(|error| JaymiError::new(format!("desktop UI failed: {error}")))?;
+                ui::run_conversation(app)
+                    .map_err(|error| JaymiError::new(format!("desktop UI failed: {error}")))?;
                 return Ok(());
             }
         }
@@ -97,7 +71,7 @@ fn main() -> JaymiResult<()> {
 enum Command {
     Read { path: PathBuf },
     List { path: PathBuf },
-    Default { path: PathBuf },
+    Conversation,
 }
 
 fn parse_command(args: &[String]) -> JaymiResult<Command> {
@@ -119,9 +93,36 @@ fn parse_command(args: &[String]) -> JaymiResult<Command> {
         });
     }
 
-    Ok(Command::Default {
-        path: env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-    })
+    Ok(Command::Conversation)
+}
+
+fn print_listing(app: &Application, listing: Option<PlannerResponse>) -> JaymiResult<()> {
+    let snapshot = app.diagnostics_from_response(listing)?;
+    println!("Jaymi");
+    println!("Status: {}", snapshot.app_state.label());
+    println!("Planner: {}", snapshot.planner_label());
+    println!("Providers: {}", snapshot.provider_count);
+    println!("Tools: {}", snapshot.tool_count);
+    println!("Capabilities: {}", snapshot.capability_count);
+    println!("Database: {}", snapshot.database_label());
+    if let Some(summary) = &snapshot.listing_summary {
+        println!();
+        println!("{summary}");
+    }
+    for entry in &snapshot.entries {
+        println!(
+            "{}\t{}\t{}\t{}\t{}",
+            entry.name,
+            entry.entry_type,
+            entry.path.display(),
+            entry.size,
+            entry
+                .modified
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "-".to_string())
+        );
+    }
+    Ok(())
 }
 
 fn print_read_response(response: &PlannerResponse) {

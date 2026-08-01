@@ -61,6 +61,42 @@ impl PlannerResponse {
     pub fn message(&self) -> &str {
         &self.summary
     }
+
+    /// Conversation-facing text derived from this response.
+    ///
+    /// The UI should display this rather than inventing provider/tool details.
+    pub fn assistant_text(&self) -> String {
+        if let Some(content) = &self.content {
+            let mut body = String::new();
+            if let Some(title) = &content.title {
+                body.push_str(&format!("I read “{title}”.\n\n"));
+            } else if let Some(path) = &content.path {
+                body.push_str(&format!("I read {}.\n\n", path.display()));
+            }
+            body.push_str(&content.preview(900));
+            return body;
+        }
+
+        if !self.entries.is_empty() {
+            let path = self
+                .listed_path
+                .as_ref()
+                .map(|value| value.display().to_string())
+                .unwrap_or_else(|| "that folder".to_string());
+            let mut body = format!(
+                "I found {} item{} in {}:\n",
+                self.entries.len(),
+                if self.entries.len() == 1 { "" } else { "s" },
+                path
+            );
+            for entry in &self.entries {
+                body.push_str(&format!("• {} ({})\n", entry.name, entry.entry_type.label()));
+            }
+            return body.trim_end().to_string();
+        }
+
+        self.summary.clone()
+    }
 }
 
 /// Dependencies required to construct the Planner from registries.
@@ -127,6 +163,7 @@ impl Planner {
     /// Process a user request through the architectural pipeline.
     ///
     /// Supported flows:
+    /// - chat: Chat capability (no tools yet — conversational acknowledgment)
     /// - list-directory: Search → Search Files Tool → Filesystem Provider
     /// - read-file: ReadContent → Content Tool → Provider → Content Registry → Content
     ///
@@ -139,7 +176,7 @@ impl Planner {
         let intent = self.decision.determine_intent(&request);
         let Some(capability) = self.decision.required_capability(&intent) else {
             return Ok(PlannerResponse {
-                summary: "Unsupported request. Try: list <directory> or read <file>".to_string(),
+                summary: "Say hello, or try `list <directory>` / `read <file>`.".to_string(),
                 ..PlannerResponse::default()
             });
         };
@@ -157,11 +194,35 @@ impl Planner {
         match intent {
             Intent::ListDirectory { path } => self.handle_list_directory(capability, path),
             Intent::ReadFile { path } => self.handle_read_file(capability, path),
+            Intent::Chat { message } => self.handle_chat(capability, message),
             Intent::Unknown => Ok(PlannerResponse {
-                summary: "Unsupported request.".to_string(),
+                summary: "Say hello, or try `list <directory>` / `read <file>`.".to_string(),
                 ..PlannerResponse::default()
             }),
         }
+    }
+
+    fn handle_chat(
+        &self,
+        capability: Capability,
+        message: String,
+    ) -> JaymiResult<PlannerResponse> {
+        let summary = format!(
+            "Thanks — I heard you.\n\n\
+I’m still learning how to talk freely, but I can already help with your files.\n\
+Try `list <directory>` or `read <file>`.\n\n\
+You said: “{message}”"
+        );
+
+        Ok(PlannerResponse {
+            summary,
+            capability: Some(capability),
+            tool_id: None,
+            provider_id: None,
+            listed_path: None,
+            entries: Vec::new(),
+            content: None,
+        })
     }
 
     fn handle_list_directory(
@@ -177,12 +238,9 @@ impl Planner {
 
         let provider_id = self.provider_for_tool(&tool_id);
         let summary = format!(
-            "Listed {} entries in {} via {} → {} → {}",
+            "Listed {} entries in {}.",
             output.entries.len(),
-            path.display(),
-            capability.id(),
-            tool_id,
-            provider_id.as_deref().unwrap_or("unknown")
+            path.display()
         );
 
         Ok(PlannerResponse {
@@ -212,12 +270,9 @@ impl Planner {
         })?;
         let provider_id = self.provider_for_tool(&tool_id);
         let summary = format!(
-            "Read {} ({}) via {} → {} → {} → {}",
+            "Read {} ({}) with {}.",
             path.display(),
             content.content_type,
-            capability.id(),
-            tool_id,
-            provider_id.as_deref().unwrap_or("unknown"),
             content.parser_id
         );
 
@@ -323,6 +378,7 @@ mod tests {
     fn planner_with_search_and_read() -> Planner {
         let mut capabilities = CapabilityRegistry::new();
         capabilities.initialize().unwrap();
+        capabilities.register(Capability::Chat).unwrap();
         capabilities.register(Capability::Search).unwrap();
         capabilities.register(Capability::ReadContent).unwrap();
 
@@ -375,6 +431,7 @@ mod tests {
     fn planner_initializes_from_registries() {
         let planner = planner_with_search_and_read();
         assert!(planner.health_check().healthy);
+        assert!(planner.discover_capabilities().contains(&Capability::Chat));
         assert!(planner.discover_capabilities().contains(&Capability::Search));
         assert!(planner
             .discover_capabilities()
@@ -428,11 +485,22 @@ mod tests {
     }
 
     #[test]
-    fn planner_does_not_call_filesystem_for_unknown_intent() {
+    fn chat_message_flows_through_chat_capability() {
+        let planner = planner_with_search_and_read();
+        let response = planner
+            .handle(UserRequest::new("What can you help with?"))
+            .unwrap();
+        assert_eq!(response.capability, Some(Capability::Chat));
+        assert!(response.tool_id.is_none());
+        assert!(response.assistant_text().contains("What can you help with?"));
+    }
+
+    #[test]
+    fn planner_does_not_call_filesystem_for_chat_intent() {
         let planner = planner_with_search_and_read();
         let response = planner.handle(UserRequest::new("sing a song")).unwrap();
         assert!(response.entries.is_empty());
         assert!(response.content.is_none());
-        assert!(response.capability.is_none());
+        assert_eq!(response.capability, Some(Capability::Chat));
     }
 }
