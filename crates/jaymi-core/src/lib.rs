@@ -8,6 +8,7 @@
 
 pub mod container;
 pub mod error;
+pub mod file_entry;
 pub mod health;
 pub mod id;
 pub mod lifecycle;
@@ -17,6 +18,7 @@ pub mod state;
 
 pub use container::ServiceContainer;
 pub use error::JaymiError;
+pub use file_entry::{EntryType, FileEntry};
 pub use health::HealthReport;
 pub use id::EntityId;
 pub use lifecycle::Lifecycle;

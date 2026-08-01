@@ -1,7 +1,7 @@
 //! Jaymi application library.
 //!
 //! Exposes the boot sequence and diagnostics types for the desktop binary and
-//! unit tests.
+//! tests.
 
 #![forbid(unsafe_code)]
 

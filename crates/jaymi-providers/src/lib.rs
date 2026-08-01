@@ -7,12 +7,14 @@
 #![forbid(unsafe_code)]
 
 pub mod categories;
+pub mod filesystem;
 pub mod lifecycle;
 pub mod manager;
 pub mod provider;
 pub mod registry;
 
 pub use categories::ProviderCategory;
+pub use filesystem::{FilesystemProvider, FILESYSTEM_PROVIDER_ID};
 pub use lifecycle::ProviderLifecycle;
 pub use manager::ProviderManager;
 pub use provider::{Provider, ProviderIdentity};
