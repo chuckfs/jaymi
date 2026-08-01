@@ -1,29 +1,38 @@
 //! Jaymi desktop application entry point.
 //!
-//! Layer 0 — Foundation: the desktop shell wires configuration, logging,
-//! database, and the Planner kernel. Conversation UI and full orchestration
-//! behavior will be implemented in later milestones.
+//! Milestone 1 establishes the deterministic boot sequence and a temporary
+//! diagnostics window. Conversation UI and AI behavior remain out of scope.
 
-use jaymi_config::Config;
-use jaymi_core::JaymiResult;
-use jaymi_database::Database;
-use jaymi_logging::Logger;
-use jaymi_planner::Planner;
+use jaymi::{ui, Application};
+use jaymi_core::{JaymiError, JaymiResult};
 
 fn main() -> JaymiResult<()> {
-    run()
-}
+    let headless = std::env::args().any(|arg| arg == "--headless");
 
-/// Boot the architectural skeleton.
-fn run() -> JaymiResult<()> {
-    let _logger = Logger::init()?;
-    let _config = Config::load()?;
-    let _database = Database::open()?;
-    let _planner = Planner::default();
+    let mut app = Application::boot().map_err(|error| {
+        JaymiError::new(format!("Jaymi failed to start: {}", error.message()))
+    })?;
 
-    // Desktop UI and Planner-driven execution are intentionally deferred.
-    // Layer 0 exit criteria: launch and execute a simple tool through the
-    // planner — not yet implemented beyond the skeleton.
-    println!("Jaymi architectural skeleton initialized.");
+    if !app.state().is_ready() {
+        return Err(JaymiError::new("Jaymi boot completed without Ready state"));
+    }
+
+    let snapshot = app.diagnostics()?;
+
+    if headless {
+        println!("Jaymi");
+        println!("Status: {}", snapshot.app_state.label());
+        println!("Planner: {}", snapshot.planner_label());
+        println!("Providers: {}", snapshot.provider_count);
+        println!("Tools: {}", snapshot.tool_count);
+        println!("Capabilities: {}", snapshot.capability_count);
+        println!("Database: {}", snapshot.database_label());
+    } else {
+        ui::run_diagnostics(snapshot).map_err(|error| {
+            JaymiError::new(format!("desktop UI failed: {error}"))
+        })?;
+    }
+
+    app.shutdown()?;
     Ok(())
 }
