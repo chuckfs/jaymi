@@ -90,13 +90,22 @@ impl Lifecycle for MemoryEngine {
     }
 
     fn health_check(&self) -> HealthReport {
+        // Lifecycle may be initialized, but retrieval/promotion are stubs.
+        // Do not report operational health until memory storage exists.
         HealthReport::new(
             NAME,
             self.initialized,
-            self.initialized,
+            false,
             self.version(),
             DEPENDENCIES,
         )
+        .with_details(vec![
+            ("status".to_string(), "stub".to_string()),
+            (
+                "note".to_string(),
+                "retrieve/promote not implemented".to_string(),
+            ),
+        ])
     }
 
     fn shutdown(&mut self) -> JaymiResult<()> {
@@ -110,9 +119,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn initialize_enables_health() {
+    fn initialize_marks_stub_not_operational() {
         let mut engine = MemoryEngine::new();
         engine.initialize().unwrap();
-        assert!(engine.health_check().healthy);
+        let health = engine.health_check();
+        assert!(health.initialized);
+        assert!(!health.healthy);
+        assert!(health
+            .details
+            .iter()
+            .any(|(key, value)| key == "status" && value == "stub"));
     }
 }

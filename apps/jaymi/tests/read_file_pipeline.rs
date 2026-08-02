@@ -19,7 +19,7 @@ fn read_request_flows_through_every_layer() {
     let mut file = File::create(&path).unwrap();
     write!(file, "# Guide\n\nWelcome to Jaymi.\n").unwrap();
 
-    let app = Application::boot().expect("boot");
+    let app = Application::boot_with_data_dir(temp_dir("read-data")).expect("boot");
     let response = app.read_file(&path).expect("read");
 
     assert_eq!(
@@ -58,7 +58,7 @@ fn read_supports_txt_and_json() {
     write!(File::create(&txt).unwrap(), "plain").unwrap();
     write!(File::create(&json).unwrap(), "{{\"name\":\"Demo\"}}").unwrap();
 
-    let app = Application::boot().expect("boot");
+    let app = Application::boot_with_data_dir(temp_dir("formats-data")).expect("boot");
 
     let txt_doc = app.read_file(&txt).unwrap().document.unwrap();
     assert_eq!(txt_doc.file_type, FileType::PlainText);

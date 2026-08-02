@@ -32,9 +32,55 @@ impl ToolOrchestrator {
 
     /// Execute a selected tool with structured input.
     pub fn execute(&self, tool_id: &str, input: ToolInput) -> JaymiResult<ToolOutput> {
+        let path = input
+            .path
+            .as_ref()
+            .map(|value| value.display().to_string())
+            .unwrap_or_else(|| "-".to_string());
+        jaymi_logging::info(
+            "tools",
+            format!("execute tool={tool_id} path={path}"),
+        );
+
         let tool = self.registry.get(tool_id)?;
-        tool.validate(&input)?;
-        tool.execute(&input)
+        if let Err(error) = tool.validate(&input) {
+            jaymi_logging::warn(
+                "tools",
+                format!("tool={tool_id} validation failed: {}", error.message()),
+            );
+            return Err(error);
+        }
+
+        match tool.execute(&input) {
+            Ok(output) => {
+                if output.success {
+                    jaymi_logging::info(
+                        "tools",
+                        format!(
+                            "tool={tool_id} completed success=true entries={} has_document={}",
+                            output.entries.len(),
+                            output.document.is_some()
+                        ),
+                    );
+                } else {
+                    jaymi_logging::warn(
+                        "tools",
+                        format!(
+                            "tool={tool_id} completed success=false message={:?}",
+                            output.message
+                        ),
+                    );
+                }
+                Ok(output)
+            }
+            Err(error) => {
+                jaymi_logging::error(
+                    "tools",
+                    format!("tool={tool_id} execution failed: {}", error.message()),
+                );
+                Err(error)
+            }
+        }
     }
 
     /// Select and execute a tool for a capability in one step.

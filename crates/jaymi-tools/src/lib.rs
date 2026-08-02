@@ -13,7 +13,10 @@ pub mod registry;
 pub mod search_files;
 pub mod tool;
 
-pub use metadata::ToolMetadata;
+pub use metadata::{
+    EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
+    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata,
+};
 pub use orchestrator::ToolOrchestrator;
 pub use read_file::{ReadFileTool, READ_FILE_TOOL_ID};
 pub use registry::ToolRegistry;

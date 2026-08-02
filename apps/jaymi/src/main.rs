@@ -52,13 +52,19 @@ fn main() -> JaymiResult<()> {
             let snapshot = app.diagnostics_from_response(listing)?;
 
             if headless {
-                println!("Jaymi");
-                println!("Status: {}", snapshot.app_state.label());
-                println!("Planner: {}", snapshot.planner_label());
-                println!("Providers: {}", snapshot.provider_count);
-                println!("Tools: {}", snapshot.tool_count);
-                println!("Capabilities: {}", snapshot.capability_count);
-                println!("Database: {}", snapshot.database_label());
+                println!("{}", snapshot.render_dashboard());
+                println!();
+                println!("Request blocked: {}", snapshot.request_blocked_label());
+                println!(
+                    "Policy: {} — {}",
+                    snapshot.policy_allowed_label(),
+                    snapshot.policy_summary_label()
+                );
+                println!(
+                    "Permission: {} — {}",
+                    snapshot.permission_decision_label(),
+                    snapshot.permission_explanation_label()
+                );
                 if let Some(summary) = &snapshot.listing_summary {
                     println!();
                     println!("{summary}");

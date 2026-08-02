@@ -53,45 +53,61 @@ impl FilesystemProvider {
     /// [`EntryType::Symlink`] without being followed for type detection.
     pub fn list_directory(&self, path: &Path) -> JaymiResult<Vec<FileEntry>> {
         if !self.initialized {
+            jaymi_logging::error(
+                "providers",
+                "filesystem list_directory rejected: provider is not initialized",
+            );
             return Err(JaymiError::new(
                 "filesystem provider is not initialized".to_string(),
             ));
         }
 
+        jaymi_logging::info(
+            "providers",
+            format!("filesystem list_directory path={}", path.display()),
+        );
+
         let path = normalize_path(path)?;
         let metadata = fs::metadata(&path).map_err(|error| {
-            JaymiError::new(format!(
-                "cannot access directory {}: {error}",
-                path.display()
-            ))
+            let message = format!("cannot access directory {}: {error}", path.display());
+            jaymi_logging::error("providers", &message);
+            JaymiError::new(message)
         })?;
 
         if !metadata.is_dir() {
-            return Err(JaymiError::new(format!(
-                "path is not a directory: {}",
-                path.display()
-            )));
+            let message = format!("path is not a directory: {}", path.display());
+            jaymi_logging::warn("providers", &message);
+            return Err(JaymiError::new(message));
         }
 
         let read_dir = fs::read_dir(&path).map_err(|error| {
-            JaymiError::new(format!(
-                "failed to read directory {}: {error}",
-                path.display()
-            ))
+            let message = format!("failed to read directory {}: {error}", path.display());
+            jaymi_logging::error("providers", &message);
+            JaymiError::new(message)
         })?;
 
         let mut entries = Vec::new();
         for entry in read_dir {
             let entry = entry.map_err(|error| {
-                JaymiError::new(format!(
+                let message = format!(
                     "failed to read directory entry in {}: {error}",
                     path.display()
-                ))
+                );
+                jaymi_logging::error("providers", &message);
+                JaymiError::new(message)
             })?;
             entries.push(file_entry_from_dir_entry(entry)?);
         }
 
         entries.sort_by(|left, right| left.name.cmp(&right.name));
+        jaymi_logging::info(
+            "providers",
+            format!(
+                "filesystem list_directory completed path={} entries={}",
+                path.display(),
+                entries.len()
+            ),
+        );
         Ok(entries)
     }
 
@@ -101,26 +117,50 @@ impl FilesystemProvider {
     /// parser registry invoked by the Read Tool.
     pub fn read_file(&self, path: &Path) -> JaymiResult<Vec<u8>> {
         if !self.initialized {
+            jaymi_logging::error(
+                "providers",
+                "filesystem read_file rejected: provider is not initialized",
+            );
             return Err(JaymiError::new(
                 "filesystem provider is not initialized".to_string(),
             ));
         }
 
+        jaymi_logging::info(
+            "providers",
+            format!("filesystem read_file path={}", path.display()),
+        );
+
         let path = normalize_path(path)?;
         let metadata = fs::metadata(&path).map_err(|error| {
-            JaymiError::new(format!("cannot access file {}: {error}", path.display()))
+            let message = format!("cannot access file {}: {error}", path.display());
+            jaymi_logging::error("providers", &message);
+            JaymiError::new(message)
         })?;
 
         if !metadata.is_file() {
-            return Err(JaymiError::new(format!(
-                "path is not a file: {}",
-                path.display()
-            )));
+            let message = format!("path is not a file: {}", path.display());
+            jaymi_logging::warn("providers", &message);
+            return Err(JaymiError::new(message));
         }
 
-        fs::read(&path).map_err(|error| {
-            JaymiError::new(format!("failed to read file {}: {error}", path.display()))
-        })
+        fs::read(&path)
+            .map(|bytes| {
+                jaymi_logging::info(
+                    "providers",
+                    format!(
+                        "filesystem read_file completed path={} bytes={}",
+                        path.display(),
+                        bytes.len()
+                    ),
+                );
+                bytes
+            })
+            .map_err(|error| {
+                let message = format!("failed to read file {}: {error}", path.display());
+                jaymi_logging::error("providers", &message);
+                JaymiError::new(message)
+            })
     }
 }
 

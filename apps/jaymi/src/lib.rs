@@ -10,4 +10,4 @@ pub mod diagnostics;
 pub mod ui;
 
 pub use boot::Application;
-pub use diagnostics::DiagnosticsSnapshot;
+pub use diagnostics::{DiagnosticsSnapshot, OperationalStatus, SubsystemStatus};

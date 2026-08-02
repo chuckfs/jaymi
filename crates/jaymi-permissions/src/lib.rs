@@ -8,22 +8,27 @@
 pub mod categories;
 pub mod scope;
 
-use categories::PermissionCategory;
-use jaymi_core::{HealthReport, JaymiResult, Lifecycle};
-use scope::PermissionScope;
+use jaymi_core::{HealthReport, JaymiError, JaymiResult, Lifecycle};
+
+pub use categories::{PermissionAction, PermissionCategory};
+pub use scope::PermissionScope;
 
 const NAME: &str = "permission_engine";
 const DEPENDENCIES: &[&str] = &["configuration", "logging", "database", "policy_engine"];
 
-/// A request for user approval before a protected action.
+/// A request for authorization before a protected action.
 #[derive(Debug, Clone)]
 pub struct PermissionRequest {
     /// Category of the requested action.
     pub category: PermissionCategory,
+    /// Specific action class within the category.
+    pub action: PermissionAction,
     /// Scope requested for the grant.
     pub scope: PermissionScope,
-    /// Plain-language explanation shown to the user.
+    /// Plain-language explanation of the action.
     pub explanation: String,
+    /// Optional resource path or identifier.
+    pub resource: Option<String>,
 }
 
 /// Possible outcomes of a permission check.
@@ -35,6 +40,44 @@ pub enum PermissionDecision {
     Denied,
     /// User approval is required before proceeding.
     RequiresApproval,
+}
+
+impl PermissionDecision {
+    /// Stable label for diagnostics.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Allowed => "allowed",
+            Self::Denied => "denied",
+            Self::RequiresApproval => "requires_approval",
+        }
+    }
+
+    /// Whether execution may proceed without an approval UI.
+    pub fn allows_execution(self) -> bool {
+        matches!(self, Self::Allowed)
+    }
+}
+
+/// Structured permission check result returned to the Planner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionCheckResult {
+    /// Final decision.
+    pub decision: PermissionDecision,
+    /// Explanation associated with the check.
+    pub explanation: String,
+    /// Category that was evaluated.
+    pub category: PermissionCategory,
+    /// Action that was evaluated.
+    pub action: PermissionAction,
+    /// Optional resource involved.
+    pub resource: Option<String>,
+}
+
+impl PermissionCheckResult {
+    /// True when the Planner may execute the tool.
+    pub fn allows_execution(&self) -> bool {
+        self.decision.allows_execution()
+    }
 }
 
 /// Permission Engine lifecycle.
@@ -49,11 +92,45 @@ impl PermissionEngine {
         Self::default()
     }
 
+    /// Returns true after initialization.
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
+    }
+
     /// Evaluate whether an action is authorized.
     ///
-    /// Lifecycle milestone: defaults to requiring approval. No policy logic yet.
-    pub fn check(&self, _request: &PermissionRequest) -> JaymiResult<PermissionDecision> {
-        Ok(PermissionDecision::RequiresApproval)
+    /// Slice 0.4: read-only filesystem actions are allowed automatically.
+    /// Destructive, network, and other actions are denied (no approval UI yet).
+    pub fn check(&self, request: &PermissionRequest) -> JaymiResult<PermissionCheckResult> {
+        self.ensure_initialized()?;
+
+        let decision = match (request.category, request.action) {
+            (PermissionCategory::Filesystem, PermissionAction::Read) => {
+                PermissionDecision::Allowed
+            }
+            (PermissionCategory::Filesystem, _) => PermissionDecision::Denied,
+            (PermissionCategory::Internet, _) => PermissionDecision::Denied,
+            (PermissionCategory::Terminal, _) => PermissionDecision::Denied,
+            (PermissionCategory::Communication, _) => PermissionDecision::RequiresApproval,
+            (PermissionCategory::System, _) => PermissionDecision::RequiresApproval,
+            (PermissionCategory::AiProviders, _) => PermissionDecision::RequiresApproval,
+        };
+
+        Ok(PermissionCheckResult {
+            decision,
+            explanation: request.explanation.clone(),
+            category: request.category,
+            action: request.action,
+            resource: request.resource.clone(),
+        })
+    }
+
+    fn ensure_initialized(&self) -> JaymiResult<()> {
+        if self.initialized {
+            Ok(())
+        } else {
+            Err(JaymiError::new("permission engine is not initialized"))
+        }
     }
 }
 
@@ -83,6 +160,10 @@ impl Lifecycle for PermissionEngine {
             self.version(),
             DEPENDENCIES,
         )
+        .with_details(vec![(
+            "read_only_filesystem".to_string(),
+            "auto_allowed".to_string(),
+        )])
     }
 
     fn shutdown(&mut self) -> JaymiResult<()> {
@@ -95,11 +176,63 @@ impl Lifecycle for PermissionEngine {
 mod tests {
     use super::*;
 
+    fn read_request() -> PermissionRequest {
+        PermissionRequest {
+            category: PermissionCategory::Filesystem,
+            action: PermissionAction::Read,
+            scope: PermissionScope::Once,
+            explanation: "List a directory".into(),
+            resource: Some("/tmp".into()),
+        }
+    }
+
     #[test]
     fn lifecycle_health_requires_initialize() {
         let mut engine = PermissionEngine::new();
         assert!(!engine.health_check().healthy);
         engine.initialize().unwrap();
         assert!(engine.health_check().healthy);
+    }
+
+    #[test]
+    fn allows_filesystem_read() {
+        let mut engine = PermissionEngine::new();
+        engine.initialize().unwrap();
+        let result = engine.check(&read_request()).unwrap();
+        assert_eq!(result.decision, PermissionDecision::Allowed);
+        assert!(result.allows_execution());
+    }
+
+    #[test]
+    fn denies_filesystem_write() {
+        let mut engine = PermissionEngine::new();
+        engine.initialize().unwrap();
+        let result = engine
+            .check(&PermissionRequest {
+                category: PermissionCategory::Filesystem,
+                action: PermissionAction::Write,
+                scope: PermissionScope::Once,
+                explanation: "Write a file".into(),
+                resource: Some("/tmp/a.txt".into()),
+            })
+            .unwrap();
+        assert_eq!(result.decision, PermissionDecision::Denied);
+        assert!(!result.allows_execution());
+    }
+
+    #[test]
+    fn denies_internet_actions() {
+        let mut engine = PermissionEngine::new();
+        engine.initialize().unwrap();
+        let result = engine
+            .check(&PermissionRequest {
+                category: PermissionCategory::Internet,
+                action: PermissionAction::Network,
+                scope: PermissionScope::Once,
+                explanation: "Call an API".into(),
+                resource: None,
+            })
+            .unwrap();
+        assert_eq!(result.decision, PermissionDecision::Denied);
     }
 }

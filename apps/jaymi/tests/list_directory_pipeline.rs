@@ -22,7 +22,7 @@ fn list_directory_request_flows_through_every_layer() {
     fs::create_dir(dir.join("nested")).unwrap();
     write_file(&dir.join("nested").join("hidden.txt"), "nope");
 
-    let app = Application::boot().expect("boot");
+    let app = Application::boot_with_data_dir(temp_dir("list-data")).expect("boot");
     let response: PlannerResponse = app.list_directory(&dir).expect("list");
 
     assert_eq!(
@@ -69,7 +69,7 @@ fn list_directory_rejects_files() {
     let file = dir.join("file.txt");
     write_file(&file, "x");
 
-    let app = Application::boot().expect("boot");
+    let app = Application::boot_with_data_dir(temp_dir("list-reject-data")).expect("boot");
     let error = app.list_directory(&file).expect_err("file should fail");
     assert!(
         error.message().contains("not a directory")

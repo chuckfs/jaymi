@@ -32,7 +32,13 @@ jaymi-providers = { workspace = true }
 jaymi-tools = { workspace = true }
 
 [dev-dependencies]
+jaymi-capabilities = { workspace = true }
+jaymi-config = { workspace = true }
 jaymi-core = { workspace = true }
+jaymi-database = { workspace = true }
+jaymi-logging = { workspace = true }
+jaymi-permissions = { workspace = true }
 jaymi-planner = { workspace = true }
+jaymi-policies = { workspace = true }
 jaymi-providers = { workspace = true }
 jaymi-tools = { workspace = true }

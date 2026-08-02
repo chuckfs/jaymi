@@ -88,13 +88,21 @@ impl Lifecycle for ContextEngine {
     }
 
     fn health_check(&self) -> HealthReport {
+        // Lifecycle may be initialized, but assemble() is a stub.
         HealthReport::new(
             NAME,
             self.initialized,
-            self.initialized,
+            false,
             self.version(),
             DEPENDENCIES,
         )
+        .with_details(vec![
+            ("status".to_string(), "stub".to_string()),
+            (
+                "note".to_string(),
+                "context assembly not implemented".to_string(),
+            ),
+        ])
     }
 
     fn shutdown(&mut self) -> JaymiResult<()> {

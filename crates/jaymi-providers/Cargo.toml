@@ -10,3 +10,4 @@ authors.workspace = true
 [dependencies]
 jaymi-capabilities = { workspace = true }
 jaymi-core = { workspace = true }
+jaymi-logging = { workspace = true }

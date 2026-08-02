@@ -110,6 +110,18 @@ impl ParserRegistry {
         self.parsers.read().map(|guard| guard.len()).unwrap_or(0)
     }
 
+    /// Registered parser identifiers (sorted).
+    pub fn parser_ids(&self) -> Vec<String> {
+        self.parsers
+            .read()
+            .map(|guard| {
+                let mut ids: Vec<String> = guard.keys().cloned().collect();
+                ids.sort();
+                ids
+            })
+            .unwrap_or_default()
+    }
+
     /// Returns true when no parsers are registered.
     pub fn is_empty(&self) -> bool {
         self.len() == 0

@@ -13,6 +13,8 @@ pub struct HealthReport {
     pub version: String,
     /// Declared dependency names.
     pub dependencies: Vec<String>,
+    /// Optional subsystem-specific health details (key/value).
+    pub details: Vec<(String, String)>,
 }
 
 impl HealthReport {
@@ -30,7 +32,14 @@ impl HealthReport {
             healthy,
             version: version.into(),
             dependencies: dependencies.iter().map(|dep| (*dep).to_string()).collect(),
+            details: Vec::new(),
         }
+    }
+
+    /// Attach subsystem-specific health details.
+    pub fn with_details(mut self, details: Vec<(String, String)>) -> Self {
+        self.details = details;
+        self
     }
 
     /// Convenience constructor for a healthy, initialized subsystem.

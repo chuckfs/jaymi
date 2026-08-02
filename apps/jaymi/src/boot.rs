@@ -5,7 +5,7 @@
 //! Memory Engine → Context Engine → Capability Registry → Provider Registry →
 //! Tool Registry → Planner → Desktop UI
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use jaymi_capabilities::{Capability, CapabilityRegistry};
@@ -60,9 +60,18 @@ impl Application {
 
     /// Run the deterministic boot sequence through Planner initialization.
     pub fn boot() -> JaymiResult<Self> {
+        Self::boot_with_data_dir_override(None)
+    }
+
+    /// Boot using an explicit data directory (used by tests and isolated runs).
+    pub fn boot_with_data_dir(data_dir: impl AsRef<Path>) -> JaymiResult<Self> {
+        Self::boot_with_data_dir_override(Some(data_dir.as_ref().to_path_buf()))
+    }
+
+    fn boot_with_data_dir_override(data_dir: Option<PathBuf>) -> JaymiResult<Self> {
         let mut app = Self::new();
 
-        if let Err(error) = app.boot_inner() {
+        if let Err(error) = app.boot_inner(data_dir) {
             app.state = AppState::Error {
                 message: error.message().to_string(),
             };
@@ -74,12 +83,40 @@ impl Application {
         Ok(app)
     }
 
-    fn boot_inner(&mut self) -> JaymiResult<()> {
-        self.boot_service(Config::new())?;
-        self.boot_service(Logger::new())?;
-        self.boot_service(Database::new())?;
-        self.boot_service(PolicyEngine::new())?;
-        self.boot_service(PermissionEngine::new())?;
+    fn boot_inner(&mut self, data_dir_override: Option<PathBuf>) -> JaymiResult<()> {
+        let config = match data_dir_override {
+            Some(data_dir) => Config::with_data_dir(data_dir),
+            None => Config::new(),
+        };
+        self.boot_service(config)?;
+
+        let (data_dir, log_level) = {
+            let config = self.container.resolve::<Config>()?;
+            (
+                PathBuf::from(&config.data_dir),
+                map_log_level(config.settings().log_level),
+            )
+        };
+        self.boot_service(Logger::with_data_dir_and_level(&data_dir, log_level))?;
+        {
+            let logger = self.container.resolve::<Logger>()?;
+            logger.info(
+                "boot",
+                format!("Jaymi startup data_dir={}", data_dir.display()),
+            );
+        }
+        self.boot_service(Database::with_data_dir(&data_dir))?;
+
+        let mut policies = PolicyEngine::new();
+        self.initialize_service(&mut policies)?;
+        let policies = Arc::new(policies);
+        self.container.register(Arc::clone(&policies));
+
+        let mut permissions = PermissionEngine::new();
+        self.initialize_service(&mut permissions)?;
+        let permissions = Arc::new(permissions);
+        self.container.register(Arc::clone(&permissions));
+
         self.boot_service(MemoryEngine::new())?;
         self.boot_service(ContextEngine::new())?;
 
@@ -123,9 +160,16 @@ impl Application {
             providers,
             tools,
             orchestrator,
+            policies,
+            permissions,
         });
         self.initialize_service(&mut planner)?;
         self.container.register(planner);
+
+        {
+            let logger = self.container.resolve::<Logger>()?;
+            logger.info("boot", "Jaymi startup complete");
+        }
 
         Ok(())
     }
@@ -153,9 +197,12 @@ impl Application {
         })?;
 
         let report = service.health_check();
-        if !report.initialized || !report.healthy {
+        // Boot requires successful initialization. Operational readiness
+        // (`healthy`) is surfaced honestly in diagnostics and may be false for
+        // stub subsystems that are intentionally not feature-complete yet.
+        if !report.initialized {
             return Err(JaymiError::new(format!(
-                "subsystem {} failed health check after initialize",
+                "subsystem {} failed to initialize",
                 service.name()
             )));
         }
@@ -172,10 +219,10 @@ impl Application {
             let satisfied = self
                 .health_reports
                 .iter()
-                .any(|report| report.name == *dependency && report.healthy);
+                .any(|report| report.name == *dependency && report.initialized);
             if !satisfied {
                 return Err(JaymiError::new(format!(
-                    "missing healthy dependency '{}' for {}",
+                    "missing initialized dependency '{}' for {}",
                     dependency,
                     service.name()
                 )));
@@ -206,25 +253,307 @@ impl Application {
         &self,
         response: Option<PlannerResponse>,
     ) -> JaymiResult<DiagnosticsSnapshot> {
+        use crate::diagnostics::{OperationalStatus, SubsystemStatus};
+
         let planner = self.container.resolve::<Planner>()?;
         let database = self.container.resolve::<Database>()?;
+        let logger = self.container.resolve::<Logger>()?;
+        let config = self.container.resolve::<Config>()?;
+        let policies = self.container.resolve::<Arc<PolicyEngine>>()?;
+        let permissions = self.container.resolve::<Arc<PermissionEngine>>()?;
+        let memory = self.container.resolve::<MemoryEngine>()?;
         let capabilities = self.container.resolve::<Arc<CapabilityRegistry>>()?;
         let providers = self.container.resolve::<Arc<ProviderRegistry>>()?;
         let tools = self.container.resolve::<Arc<ToolRegistry>>()?;
+        let parsers = self.container.resolve::<Arc<ParserRegistry>>()?;
+
+        let planner_health = planner.health_check();
+        let database_health = database.health_check();
+        let logger_health = logger.health_check();
+        let config_health = config.health_check();
+        let policies_health = policies.health_check();
+        let permissions_health = permissions.health_check();
+        let memory_health = memory.health_check();
+
+        let capability_ids: Vec<String> = capabilities
+            .list()
+            .into_iter()
+            .map(|capability| capability.id().to_string())
+            .collect();
+        let provider_ids: Vec<String> = providers
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|identity| identity.id)
+            .collect();
+        let tool_ids: Vec<String> = tools
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|metadata| metadata.id)
+            .collect();
+        let parser_ids = parsers.parser_ids();
+        let active_policies: Vec<String> = policies
+            .resolve()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|policy| policy.name)
+            .collect();
+
+        let logging_level = match logger.min_level() {
+            jaymi_logging::LogLevel::Info => "info",
+            jaymi_logging::LogLevel::Warn => "warn",
+            jaymi_logging::LogLevel::Error => "error",
+        }
+        .to_string();
+
+        let indexing_enabled = config.settings().indexing_enabled;
+        let permission_mode = "filesystem read auto-allowed; write/internet denied".to_string();
+
+        let subsystems = vec![
+            SubsystemStatus::new(
+                "Planner",
+                if planner_health.healthy {
+                    OperationalStatus::Operational
+                } else if planner_health.initialized {
+                    OperationalStatus::Degraded
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                format!(
+                    "initialized={} tools={} providers={}",
+                    planner_health.initialized,
+                    planner.tool_count(),
+                    planner.provider_count()
+                ),
+            ),
+            SubsystemStatus::new(
+                "Database",
+                if database.is_connected() && database_health.healthy {
+                    OperationalStatus::Operational
+                } else if database_health.initialized {
+                    OperationalStatus::Degraded
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                format!(
+                    "schema v{} · {} · {}",
+                    database.schema_version(),
+                    database.migration_status().display(),
+                    database.path().display()
+                ),
+            ),
+            SubsystemStatus::new(
+                "Configuration",
+                if config_health.healthy {
+                    OperationalStatus::Operational
+                } else if config_health.initialized {
+                    OperationalStatus::Degraded
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                format!(
+                    "log_level={} theme={} indexing_enabled={} · {}",
+                    config.settings().log_level.as_str(),
+                    config.settings().theme.as_str(),
+                    indexing_enabled,
+                    config.config_path().display()
+                ),
+            ),
+            SubsystemStatus::new(
+                "Logging",
+                if logger_health.healthy {
+                    OperationalStatus::Operational
+                } else if logger_health.initialized {
+                    OperationalStatus::Degraded
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                format!(
+                    "level={} · {}",
+                    logging_level,
+                    logger.log_path().display()
+                ),
+            ),
+            SubsystemStatus::new(
+                "Permissions",
+                if permissions_health.healthy {
+                    OperationalStatus::Operational
+                } else if permissions_health.initialized {
+                    OperationalStatus::Stub
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                permission_mode.clone(),
+            ),
+            SubsystemStatus::new(
+                "Policies",
+                if policies_health.healthy {
+                    OperationalStatus::Operational
+                } else if policies_health.initialized {
+                    OperationalStatus::Stub
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                if active_policies.is_empty() {
+                    "no active policies".to_string()
+                } else {
+                    format!("active: {}", active_policies.join(", "))
+                },
+            ),
+            SubsystemStatus::new(
+                "Providers",
+                if providers.is_initialized() && !provider_ids.is_empty() {
+                    OperationalStatus::Operational
+                } else if providers.is_initialized() {
+                    OperationalStatus::Degraded
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                if provider_ids.is_empty() {
+                    "none registered".to_string()
+                } else {
+                    format!("{} · {}", provider_ids.len(), provider_ids.join(", "))
+                },
+            ),
+            SubsystemStatus::new(
+                "Capabilities",
+                if capabilities.is_initialized() && !capability_ids.is_empty() {
+                    OperationalStatus::Operational
+                } else if capabilities.is_initialized() {
+                    OperationalStatus::Degraded
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                if capability_ids.is_empty() {
+                    "none registered".to_string()
+                } else {
+                    format!("{} · {}", capability_ids.len(), capability_ids.join(", "))
+                },
+            ),
+            SubsystemStatus::new(
+                "Tools",
+                if tools.is_initialized() && !tool_ids.is_empty() {
+                    OperationalStatus::Operational
+                } else if tools.is_initialized() {
+                    OperationalStatus::Degraded
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                if tool_ids.is_empty() {
+                    "none registered".to_string()
+                } else {
+                    format!("{} · {}", tool_ids.len(), tool_ids.join(", "))
+                },
+            ),
+            SubsystemStatus::new(
+                "Parser Registry",
+                if parsers.is_initialized() && !parser_ids.is_empty() {
+                    OperationalStatus::Operational
+                } else if parsers.is_initialized() {
+                    OperationalStatus::Degraded
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                if parser_ids.is_empty() {
+                    "none registered".to_string()
+                } else {
+                    format!("{} · {}", parser_ids.len(), parser_ids.join(", "))
+                },
+            ),
+            SubsystemStatus::new(
+                "Index Status",
+                OperationalStatus::NotImplemented,
+                format!(
+                    "no indexer wired (config indexing_enabled={indexing_enabled})"
+                ),
+            ),
+            SubsystemStatus::new(
+                "Memory Status",
+                if memory_health.initialized {
+                    OperationalStatus::Stub
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                memory_health
+                    .details
+                    .iter()
+                    .find(|(key, _)| key == "note")
+                    .map(|(_, value)| value.clone())
+                    .unwrap_or_else(|| "memory engine not operational".to_string()),
+            ),
+            SubsystemStatus::new(
+                "Project Status",
+                OperationalStatus::NotImplemented,
+                "jaymi-projects not wired into boot".to_string(),
+            ),
+            SubsystemStatus::new(
+                "Reasoning Status",
+                if planner.reasoning_implemented() {
+                    OperationalStatus::Operational
+                } else {
+                    OperationalStatus::NotImplemented
+                },
+                format!("backend={}", planner.reasoning_status()),
+            ),
+        ];
 
         let document = response.as_ref().and_then(|value| value.document.clone());
         Ok(DiagnosticsSnapshot {
             app_state: self.state.clone(),
-            planner_healthy: planner.health_check().healthy,
+            subsystems,
+            planner_healthy: planner_health.healthy,
             provider_count: providers.len(),
+            provider_ids,
             tool_count: tools.len(),
+            tool_ids,
             capability_count: capabilities.len(),
+            capability_ids,
+            parser_count: parsers.len(),
+            parser_ids,
             database_connected: database.is_connected(),
+            database_path: Some(database.path().display().to_string()),
+            database_schema_version: Some(database.schema_version()),
+            database_migration_status: Some(database.migration_status().display()),
+            logging_healthy: logger_health.healthy,
+            logging_path: Some(logger.log_path().display().to_string()),
+            logging_dir: Some(logger.log_dir().display().to_string()),
+            logging_level: Some(logging_level),
+            config_path: Some(config.config_path().display().to_string()),
+            config_log_level: Some(config.settings().log_level.as_str().to_string()),
+            config_theme: Some(config.settings().theme.as_str().to_string()),
+            config_indexing_enabled: Some(indexing_enabled),
+            active_policies,
+            permission_mode: Some(permission_mode),
+            permission_decision: response.as_ref().and_then(|value| {
+                value
+                    .permission_result
+                    .as_ref()
+                    .map(|result| result.decision.as_str().to_string())
+            }),
+            permission_explanation: response.as_ref().and_then(|value| {
+                value
+                    .permission_result
+                    .as_ref()
+                    .map(|result| result.explanation.clone())
+            }),
+            policy_allowed: response
+                .as_ref()
+                .and_then(|value| value.policy_evaluation.as_ref().map(|evaluation| evaluation.allowed)),
+            policy_summary: response.as_ref().and_then(|value| {
+                value
+                    .policy_evaluation
+                    .as_ref()
+                    .map(|evaluation| evaluation.summary())
+            }),
+            request_blocked: response.as_ref().map(|value| value.blocked).unwrap_or(false),
             listed_path: response
                 .as_ref()
                 .and_then(|value| value.listed_path.clone()),
             listing_summary: response.as_ref().and_then(|value| {
-                if value.document.is_none() {
+                if value.document.is_none() && !value.blocked {
+                    Some(value.content.clone())
+                } else if value.blocked {
                     Some(value.content.clone())
                 } else {
                     None
@@ -267,6 +596,10 @@ impl Application {
     }
 
     fn shutdown_initialized(&mut self) -> JaymiResult<()> {
+        if let Ok(logger) = self.container.resolve::<Logger>() {
+            logger.info("boot", "Jaymi shutdown beginning");
+        }
+
         if let Some(mut planner) = self.container.take::<Planner>() {
             planner.shutdown()?;
         }
@@ -279,8 +612,8 @@ impl Application {
 
         shutdown_owned::<ContextEngine>(&mut self.container)?;
         shutdown_owned::<MemoryEngine>(&mut self.container)?;
-        shutdown_owned::<PermissionEngine>(&mut self.container)?;
-        shutdown_owned::<PolicyEngine>(&mut self.container)?;
+        let _ = self.container.take::<Arc<PermissionEngine>>();
+        let _ = self.container.take::<Arc<PolicyEngine>>();
         shutdown_owned::<Database>(&mut self.container)?;
         shutdown_owned::<Logger>(&mut self.container)?;
         shutdown_owned::<Config>(&mut self.container)?;
@@ -305,6 +638,14 @@ where
     Ok(())
 }
 
+fn map_log_level(level: jaymi_config::LogLevel) -> jaymi_logging::LogLevel {
+    match level {
+        jaymi_config::LogLevel::Error => jaymi_logging::LogLevel::Error,
+        jaymi_config::LogLevel::Warn => jaymi_logging::LogLevel::Warn,
+        jaymi_config::LogLevel::Info => jaymi_logging::LogLevel::Info,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -315,7 +656,8 @@ mod tests {
 
     #[test]
     fn boot_registers_search_and_read_stack() {
-        let app = Application::boot().unwrap();
+        let data_dir = temp_dir("boot-data");
+        let app = Application::boot_with_data_dir(&data_dir).unwrap();
         assert!(app.state().is_ready());
 
         let diagnostics = app.diagnostics().unwrap();
@@ -325,6 +667,45 @@ mod tests {
         assert_eq!(diagnostics.tool_count, 2);
         assert_eq!(diagnostics.capability_count, 2);
         assert!(diagnostics.database_connected);
+        assert_eq!(
+            diagnostics.database_path.as_ref().map(std::path::PathBuf::from),
+            Some(data_dir.join("jaymi.db"))
+        );
+        assert_eq!(diagnostics.database_schema_version, Some(1));
+        assert_eq!(
+            diagnostics.database_migration_status.as_deref(),
+            Some("applied")
+        );
+        assert!(data_dir.join("jaymi.db").exists());
+        assert!(diagnostics.logging_healthy);
+        assert_eq!(
+            diagnostics.logging_path.as_ref().map(std::path::PathBuf::from),
+            Some(data_dir.join("logs").join("jaymi.log"))
+        );
+        assert!(data_dir.join("logs").join("jaymi.log").exists());
+        assert!(data_dir.join("config.json").exists());
+        assert_eq!(
+            diagnostics.config_path.as_ref().map(std::path::PathBuf::from),
+            Some(data_dir.join("config.json"))
+        );
+        assert_eq!(diagnostics.config_log_level.as_deref(), Some("info"));
+        assert_eq!(diagnostics.config_theme.as_deref(), Some("system"));
+        assert_eq!(diagnostics.config_indexing_enabled, Some(true));
+
+        use crate::diagnostics::OperationalStatus;
+        assert_eq!(
+            diagnostics.subsystem("Planner").unwrap().status,
+            OperationalStatus::Operational
+        );
+        assert_eq!(
+            diagnostics.subsystem("Memory Status").unwrap().status,
+            OperationalStatus::Stub
+        );
+        assert_eq!(
+            diagnostics.subsystem("Reasoning Status").unwrap().status,
+            OperationalStatus::NotImplemented
+        );
+        assert!(!diagnostics.render_dashboard().contains("Healthy"));
     }
 
     #[test]
@@ -333,7 +714,7 @@ mod tests {
         let mut file = File::create(dir.join("hello.txt")).unwrap();
         write!(file, "hi").unwrap();
 
-        let app = Application::boot().unwrap();
+        let app = Application::boot_with_data_dir(temp_dir("list-data")).unwrap();
         let response = app.list_directory(&dir).unwrap();
         assert_eq!(response.entries.len(), 1);
         assert_eq!(response.entries[0].entry_type, EntryType::File);
@@ -346,7 +727,7 @@ mod tests {
         let mut file = File::create(&path).unwrap();
         write!(file, "universal reader").unwrap();
 
-        let app = Application::boot().unwrap();
+        let app = Application::boot_with_data_dir(temp_dir("read-data")).unwrap();
         let response = app.read_file(&path).unwrap();
         let document = response.document.as_ref().expect("document");
         assert_eq!(document.file_type, FileType::PlainText);
@@ -360,7 +741,7 @@ mod tests {
 
     #[test]
     fn shutdown_returns_to_starting() {
-        let mut app = Application::boot().unwrap();
+        let mut app = Application::boot_with_data_dir(temp_dir("shutdown-data")).unwrap();
         app.shutdown().unwrap();
         assert_eq!(app.state().label(), "Starting");
     }

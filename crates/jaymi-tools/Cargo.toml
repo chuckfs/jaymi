@@ -12,3 +12,4 @@ jaymi-capabilities = { workspace = true }
 jaymi-core = { workspace = true }
 jaymi-parsers = { workspace = true }
 jaymi-providers = { workspace = true }
+jaymi-logging = { workspace = true }

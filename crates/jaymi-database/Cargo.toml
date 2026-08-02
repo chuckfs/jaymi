@@ -9,3 +9,4 @@ authors.workspace = true
 
 [dependencies]
 jaymi-core = { workspace = true }
+rusqlite = { workspace = true }
