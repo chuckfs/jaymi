@@ -1,13 +1,11 @@
-//! Query Inventory Tool — answer discovery questions through the Search Engine.
+//! Search Knowledge Tool — retrieve inventory hits through the Search Engine.
 
 use std::sync::Arc;
 
 use jaymi_capabilities::Capability;
-use jaymi_core::{format_citations, DiscoveryQueryKind, JaymiResult};
+use jaymi_core::{format_citations, JaymiResult, SearchRequest};
 use jaymi_providers::FILESYSTEM_PROVIDER_ID;
-use jaymi_search::{
-    hits_to_citations, hits_to_entries, request_from_discovery, SearchEngine, SearchEngineApi,
-};
+use jaymi_search::{hits_to_citations, hits_to_entries, SearchEngine, SearchEngineApi};
 
 use crate::metadata::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
@@ -16,30 +14,30 @@ use crate::metadata::{
 use crate::tool::{Tool, ToolInput, ToolOutput};
 
 /// Stable tool identifier used by the Planner and registries.
-pub const QUERY_INVENTORY_TOOL_ID: &str = "query_inventory";
+pub const SEARCH_KNOWLEDGE_TOOL_ID: &str = "search_knowledge";
 
-/// Tool that queries indexed knowledge through the Search Engine.
+/// Tool that runs structured searches through the Search Engine.
 ///
 /// Architecture path:
-/// Planner → Discover → Query Inventory Tool → Search Engine → Knowledge Store
-pub struct QueryInventoryTool {
+/// Planner → Search capability → Search Knowledge Tool → Search Engine → Knowledge Store
+pub struct SearchKnowledgeTool {
     metadata: ToolMetadata,
     search: Arc<SearchEngine>,
 }
 
-impl QueryInventoryTool {
-    /// Create a query tool bound to the Search Engine.
+impl SearchKnowledgeTool {
+    /// Create a search tool bound to the Search Engine.
     pub fn new(search: Arc<SearchEngine>) -> Self {
         Self {
             metadata: ToolMetadata {
-                id: QUERY_INVENTORY_TOOL_ID.to_string(),
-                name: "Query Inventory".to_string(),
+                id: SEARCH_KNOWLEDGE_TOOL_ID.to_string(),
+                name: "Search Knowledge".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 description:
-                    "Answer discovery questions through the Search Engine without filesystem traversal"
+                    "Search the local knowledge inventory through the unified Search Engine"
                         .to_string(),
                 provider: FILESYSTEM_PROVIDER_ID.to_string(),
-                capabilities: vec![Capability::Discover],
+                capabilities: vec![Capability::Search],
                 execution_mode: ExecutionMode::Synchronous,
                 estimated_runtime: EstimatedRuntime::Fast,
                 resource_cost: ResourceCost::VeryLow,
@@ -55,50 +53,46 @@ impl QueryInventoryTool {
     }
 }
 
-impl Tool for QueryInventoryTool {
+impl Tool for SearchKnowledgeTool {
     fn metadata(&self) -> &ToolMetadata {
         &self.metadata
     }
 
-    fn validate(&self, _input: &ToolInput) -> JaymiResult<()> {
-        Ok(())
+    fn validate(&self, input: &ToolInput) -> JaymiResult<()> {
+        match &input.search {
+            Some(request) if request.has_primary_dimension() => Ok(()),
+            Some(_) => Ok(()), // empty request browses inventory via metadata strategy
+            None => Ok(()),
+        }
     }
 
     fn execute(&self, input: &ToolInput) -> JaymiResult<ToolOutput> {
         self.validate(input)?;
-        let kind = input.discovery.clone().unwrap_or(DiscoveryQueryKind::All);
-        let request = request_from_discovery(&kind);
+        let request = input.search.clone().unwrap_or_else(|| SearchRequest {
+            limit: Some(100),
+            ..SearchRequest::default()
+        });
         let results = self.search.search(&request)?;
         let rows = results.len();
         let entries = hits_to_entries(&results.hits);
         let citations = hits_to_citations(&results.hits);
         if entries.is_empty() {
-            let message = match &kind {
-                DiscoveryQueryKind::Collections => {
-                    "No active collections yet. Index well-known folders first.".to_string()
-                }
-                DiscoveryQueryKind::ByCollection { name, .. } => {
-                    format!("Collection '{name}' is unknown or empty in the inventory.")
-                }
-                other => format!(
-                    "No inventory matches for {} via search engine (strategy={}). Index files first if the inventory is empty.",
-                    other.label(),
-                    results.strategy
-                ),
-            };
             return Ok(ToolOutput {
                 success: true,
                 entries,
                 citations,
                 document: None,
                 parser_id: None,
-                message: Some(message),
+                message: Some(format!(
+                    "No search matches via search → search_knowledge (strategy={})",
+                    results.strategy
+                )),
             });
         }
         let mut message = format!(
-            "Found {rows} inventoried entries for {} via discover → query_inventory → search (strategy={} citations={})",
-            kind.label(),
+            "Found {rows} search hits via search → search_knowledge (strategy={} duration_ms={} citations={})",
             results.strategy,
+            results.duration_ms,
             citations.len()
         );
         let cite_block = format_citations(&citations);

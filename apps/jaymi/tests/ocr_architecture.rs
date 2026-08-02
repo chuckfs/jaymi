@@ -32,7 +32,7 @@ fn ocr_provider_registers_without_planner_or_engine() {
 
     let snapshot = app.diagnostics().expect("diagnostics");
     assert!(snapshot.provider_ids.iter().any(|id| id == OCR_PROVIDER_ID));
-    assert_eq!(snapshot.provider_count, 2);
+    assert_eq!(snapshot.provider_count, 3);
 
     let row = snapshot.subsystem("OCR Provider").expect("OCR row");
     assert_eq!(row.status, OperationalStatus::Stub);

@@ -52,6 +52,10 @@ pub struct ContentMetadataView {
     pub title: Option<String>,
     /// Optional language tag.
     pub language: Option<String>,
+    /// Optional author.
+    pub author: Option<String>,
+    /// Document tags.
+    pub tags: Vec<String>,
     /// Structural enrichment snapshot.
     pub enrichment: ContentEnrichment,
     /// Image metadata when present.
@@ -67,6 +71,8 @@ impl ContentMetadataView {
             content_type: content.content_type.clone(),
             title: content.title.clone(),
             language: content.language.clone(),
+            author: content.author.clone(),
+            tags: content.tags.clone(),
             enrichment: content.enrichment.clone(),
             image: content.image.clone(),
         }
@@ -114,6 +120,44 @@ pub struct ContentStatistics {
     pub cache_hits: u64,
 }
 
+/// One full-text hit from normalized content (no SQLite types exposed).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentTextHit {
+    /// Source path identity.
+    pub source_id: String,
+    /// Optional document title.
+    pub title: Option<String>,
+    /// Full plain text body.
+    pub plain_text: String,
+    /// Structural sections for match localization.
+    pub sections: Vec<crate::enrichment::Section>,
+}
+
+/// One structured metadata hit (SQL filters — never FTS).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentMetadataHit {
+    /// Source path identity.
+    pub source_id: String,
+    /// Optional document title.
+    pub title: Option<String>,
+    /// Logical content type.
+    pub content_type: String,
+    /// Optional language tag.
+    pub language: Option<String>,
+    /// Optional author.
+    pub author: Option<String>,
+    /// Document tags.
+    pub tags: Vec<String>,
+    /// Headings for localization.
+    pub headings: Vec<crate::enrichment::Heading>,
+    /// Filesystem modification time when available.
+    pub modified: Option<i64>,
+    /// Filesystem creation time when available.
+    pub created: Option<i64>,
+    /// Content extraction timestamp.
+    pub extraction_timestamp: i64,
+}
+
 /// Health snapshot for the Content Intelligence subsystem.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContentHealth {
@@ -154,4 +198,14 @@ pub trait ContentIntelligence: Send + Sync {
 
     /// Retrieve content subsystem health.
     fn retrieve_health(&self) -> JaymiResult<ContentHealth>;
+
+    /// Full-text search over normalized document contents.
+    fn search_full_text(&self, query: &str, limit: usize) -> JaymiResult<Vec<ContentTextHit>>;
+
+    /// Structured metadata search (SQL filters — never FTS).
+    fn search_metadata(
+        &self,
+        query: &jaymi_core::MetadataFilters,
+        limit: usize,
+    ) -> JaymiResult<Vec<ContentMetadataHit>>;
 }

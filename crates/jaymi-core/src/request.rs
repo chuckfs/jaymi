@@ -2,6 +2,8 @@
 
 use std::path::PathBuf;
 
+use crate::search::SearchRequest;
+
 /// Structured discovery query kinds answered from the knowledge database.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum DiscoveryQueryKind {
@@ -90,6 +92,8 @@ pub struct UserRequest {
     pub discovery_kind: Option<DiscoveryQueryKind>,
     /// Optional structured root path for an index/discovery scan.
     pub index_root: Option<PathBuf>,
+    /// Optional structured Search Engine request.
+    pub search: Option<SearchRequest>,
 }
 
 impl UserRequest {
@@ -102,6 +106,7 @@ impl UserRequest {
             discover: false,
             discovery_kind: None,
             index_root: None,
+            search: None,
         }
     }
 
@@ -115,6 +120,7 @@ impl UserRequest {
             discover: false,
             discovery_kind: None,
             index_root: None,
+            search: None,
         }
     }
 
@@ -128,6 +134,31 @@ impl UserRequest {
             discover: false,
             discovery_kind: None,
             index_root: None,
+            search: None,
+        }
+    }
+
+    /// Create a structured Search Engine request.
+    pub fn search(request: SearchRequest) -> Self {
+        let content = request
+            .free_text
+            .as_ref()
+            .map(|text| format!("search {text}"))
+            .or_else(|| {
+                request
+                    .filename
+                    .as_ref()
+                    .map(|name| format!("find file {name}"))
+            })
+            .unwrap_or_else(|| "search".to_string());
+        Self {
+            content,
+            directory: None,
+            file: None,
+            discover: false,
+            discovery_kind: None,
+            index_root: None,
+            search: Some(request),
         }
     }
 
@@ -140,6 +171,7 @@ impl UserRequest {
             discover: true,
             discovery_kind: Some(DiscoveryQueryKind::All),
             index_root: None,
+            search: None,
         }
     }
 
@@ -178,6 +210,7 @@ impl UserRequest {
             discover: true,
             discovery_kind: Some(kind),
             index_root: None,
+            search: None,
         }
     }
 
@@ -191,6 +224,7 @@ impl UserRequest {
             discover: false,
             discovery_kind: None,
             index_root: Some(path),
+            search: None,
         }
     }
 }

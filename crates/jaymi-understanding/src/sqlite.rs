@@ -70,6 +70,54 @@ impl SqliteContentStore {
     pub fn image_count(&self) -> JaymiResult<u64> {
         self.database.content_image_count()
     }
+
+    /// Full-text search over stored normalized content.
+    pub fn search_full_text(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> JaymiResult<Vec<crate::api::ContentTextHit>> {
+        let rows = self.database.search_content_fts(query, limit)?;
+        let mut hits = Vec::with_capacity(rows.len());
+        for row in rows {
+            let sections: Vec<Section> = serde_json::from_str(&row.sections_json).unwrap_or_default();
+            hits.push(crate::api::ContentTextHit {
+                source_id: row.source_id,
+                title: row.title,
+                plain_text: row.plain_text,
+                sections,
+            });
+        }
+        Ok(hits)
+    }
+
+    /// Structured metadata search (SQL filters — never FTS).
+    pub fn search_metadata(
+        &self,
+        query: &jaymi_database::ContentMetadataQuery,
+    ) -> JaymiResult<Vec<crate::api::ContentMetadataHit>> {
+        let rows = self.database.search_content_metadata(query)?;
+        Ok(rows
+            .into_iter()
+            .map(|row| {
+                let headings: Vec<Heading> =
+                    serde_json::from_str(&row.headings_json).unwrap_or_default();
+                let tags: Vec<String> = serde_json::from_str(&row.tags_json).unwrap_or_default();
+                crate::api::ContentMetadataHit {
+                    source_id: row.source_id,
+                    title: row.title,
+                    content_type: row.content_type,
+                    language: row.language,
+                    author: row.author,
+                    tags,
+                    headings,
+                    modified: row.modified,
+                    created: row.created,
+                    extraction_timestamp: row.extraction_timestamp,
+                }
+            })
+            .collect())
+    }
 }
 
 fn content_to_record(content: &Content) -> JaymiResult<ContentRecord> {
@@ -103,6 +151,9 @@ fn content_to_record(content: &Content) -> JaymiResult<ContentRecord> {
             .map_err(|error| JaymiError::new(format!("enrichment encode: {error}")))?,
         enrichment_version: content.enrichment.version.clone(),
         image_metadata_json,
+        author: content.author.clone(),
+        tags_json: serde_json::to_string(&content.tags)
+            .map_err(|error| JaymiError::new(format!("tags encode: {error}")))?,
     })
 }
 
@@ -143,6 +194,8 @@ fn record_to_content(record: ContentRecord) -> JaymiResult<Content> {
         plain_text: record.plain_text,
         title: record.title,
         language: record.language,
+        author: record.author,
+        tags: serde_json::from_str(&record.tags_json).unwrap_or_default(),
         parser_used: record.parser_used,
         parser_version: record.parser_version,
         extraction_timestamp: record.extraction_timestamp,

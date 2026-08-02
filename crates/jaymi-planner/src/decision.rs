@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use jaymi_capabilities::Capability;
-use jaymi_core::{DiscoveryQueryKind, UserRequest};
+use jaymi_core::{DiscoveryQueryKind, SearchRequest, UserRequest};
 
 /// Deterministic intents recognized by the Planner.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +26,11 @@ pub enum Intent {
         /// Discovery query kind.
         kind: DiscoveryQueryKind,
     },
+    /// Search the knowledge inventory through the Search Engine.
+    SearchKnowledge {
+        /// Structured search request.
+        request: SearchRequest,
+    },
     /// Recursively scan roots into the discovery inventory.
     IndexRoots {
         /// Optional explicit root; otherwise configured roots are used.
@@ -42,6 +47,12 @@ pub struct DecisionEngine;
 impl DecisionEngine {
     /// Determine user intent without language-model reasoning.
     pub fn determine_intent(&self, request: &UserRequest) -> Intent {
+        if let Some(search) = &request.search {
+            return Intent::SearchKnowledge {
+                request: search.clone(),
+            };
+        }
+
         if let Some(kind) = &request.discovery_kind {
             return Intent::DiscoverInventory { kind: kind.clone() };
         }
@@ -77,6 +88,10 @@ impl DecisionEngine {
 
         if let Some(kind) = parse_discovery_kind(&lower, content) {
             return Intent::DiscoverInventory { kind };
+        }
+
+        if let Some(request) = parse_search_request(&lower, content) {
+            return Intent::SearchKnowledge { request };
         }
 
         if let Some(rest) = content.strip_prefix("index ") {
@@ -117,12 +132,37 @@ impl DecisionEngine {
     pub fn required_capability(&self, intent: &Intent) -> Option<Capability> {
         match intent {
             Intent::ListDirectory { .. } => Some(Capability::Search),
+            Intent::SearchKnowledge { .. } => Some(Capability::Search),
             Intent::ReadFile { .. } => Some(Capability::ReadDocuments),
             Intent::DiscoverInventory { .. } => Some(Capability::Discover),
             Intent::IndexRoots { .. } => Some(Capability::Index),
             Intent::Unknown => None,
         }
     }
+}
+
+fn parse_search_request(lower: &str, original: &str) -> Option<SearchRequest> {
+    if let Some(_rest) = lower
+        .strip_prefix("search ")
+        .or_else(|| lower.strip_prefix("find "))
+        .or_else(|| lower.strip_prefix("find file "))
+    {
+        let query = if lower.starts_with("search ") {
+            strip_quotes(&original["search ".len()..])
+        } else if lower.starts_with("find file ") {
+            strip_quotes(&original["find file ".len()..])
+        } else {
+            strip_quotes(&original["find ".len()..])
+        };
+        if query.is_empty() {
+            return None;
+        }
+        if lower.starts_with("find file ") {
+            return Some(SearchRequest::filename(query));
+        }
+        return Some(SearchRequest::free_text(query));
+    }
+    None
 }
 
 fn parse_discovery_kind(lower: &str, original: &str) -> Option<DiscoveryQueryKind> {
@@ -390,6 +430,29 @@ mod tests {
         assert_eq!(
             engine.required_capability(&Intent::IndexRoots { path: None }),
             Some(Capability::Index)
+        );
+    }
+
+    #[test]
+    fn parses_search_requests() {
+        let engine = DecisionEngine;
+        assert_eq!(
+            engine.determine_intent(&UserRequest::new("search fungi")),
+            Intent::SearchKnowledge {
+                request: SearchRequest::free_text("fungi"),
+            }
+        );
+        assert_eq!(
+            engine.determine_intent(&UserRequest::new("find file report.pdf")),
+            Intent::SearchKnowledge {
+                request: SearchRequest::filename("report.pdf"),
+            }
+        );
+        assert_eq!(
+            engine.required_capability(&Intent::SearchKnowledge {
+                request: SearchRequest::free_text("x"),
+            }),
+            Some(Capability::Search)
         );
     }
 

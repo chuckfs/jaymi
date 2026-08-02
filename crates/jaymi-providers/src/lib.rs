@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 pub mod categories;
+pub mod embedding;
 pub mod filesystem;
 pub mod lifecycle;
 pub mod manager;
@@ -15,6 +16,10 @@ pub mod provider;
 pub mod registry;
 
 pub use categories::ProviderCategory;
+pub use embedding::{
+    cosine_similarity, EmbeddingProvider, EmbeddingProviderStatus, EmbeddingVector,
+    LocalEmbeddingProvider, EMBEDDING_PROVIDER_ID, LOCAL_EMBEDDING_DIMS, LOCAL_EMBEDDING_MODEL,
+};
 pub use filesystem::{FilesystemProvider, FILESYSTEM_PROVIDER_ID};
 pub use lifecycle::ProviderLifecycle;
 pub use manager::ProviderManager;

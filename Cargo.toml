@@ -17,6 +17,7 @@ members = [
     "crates/jaymi-policies",
     "crates/jaymi-projects",
     "crates/jaymi-providers",
+    "crates/jaymi-search",
     "crates/jaymi-tools",
     "crates/jaymi-understanding",
 ]
@@ -44,6 +45,7 @@ jaymi-planner = { path = "crates/jaymi-planner" }
 jaymi-policies = { path = "crates/jaymi-policies" }
 jaymi-projects = { path = "crates/jaymi-projects" }
 jaymi-providers = { path = "crates/jaymi-providers" }
+jaymi-search = { path = "crates/jaymi-search" }
 jaymi-tools = { path = "crates/jaymi-tools" }
 jaymi-understanding = { path = "crates/jaymi-understanding" }
 dirs = "6"

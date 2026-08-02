@@ -3,7 +3,7 @@
 //! Startup order:
 //! Configuration → Logging → Database → Policy Engine → Permission Engine →
 //! Memory Engine → Context Engine → Capability Registry → Provider Registry →
-//! Knowledge → Understanding → Discovery → Tools → Planner → Desktop UI
+//! Knowledge → Understanding → Search → Discovery → Tools → Planner → Desktop UI
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,7 +13,7 @@ use jaymi_config::Config;
 use jaymi_context::ContextEngine;
 use jaymi_core::{
     AppState, DiscoveryQueryKind, HealthReport, JaymiError, JaymiResult, Lifecycle,
-    ServiceContainer, UserRequest,
+    SearchRequest, ServiceContainer, UserRequest,
 };
 use jaymi_database::Database;
 use jaymi_discovery::{DiscoveryEngine, FilesystemWatcher};
@@ -25,11 +25,13 @@ use jaymi_permissions::PermissionEngine;
 use jaymi_planner::{Planner, PlannerDeps, PlannerResponse};
 use jaymi_policies::PolicyEngine;
 use jaymi_providers::{
-    FilesystemProvider, OcrProvider, PlaceholderOcrProvider, Provider, ProviderRegistry,
+    EmbeddingProvider, FilesystemProvider, LocalEmbeddingProvider, OcrProvider,
+    PlaceholderOcrProvider, Provider, ProviderRegistry,
 };
+use jaymi_search::{EmbeddingQueue, SearchEngine, SearchEngineApi, SemanticDeps};
 use jaymi_tools::{
-    QueryInventoryTool, ReadFileTool, ScanFilesystemTool, SearchFilesTool, ToolOrchestrator,
-    ToolRegistry,
+    QueryInventoryTool, ReadFileTool, ScanFilesystemTool, SearchFilesTool, SearchKnowledgeTool,
+    ToolOrchestrator, ToolRegistry,
 };
 use jaymi_understanding::{
     format_parser_usage, ContentIntelligence, ContentIntelligenceApi, SqliteContentStore,
@@ -167,6 +169,13 @@ impl Application {
         let ocr = Arc::new(ocr);
         self.container.register(Arc::clone(&ocr));
 
+        let mut embedding_impl = LocalEmbeddingProvider::new();
+        embedding_impl.initialize()?;
+        providers.register(&embedding_impl)?;
+        let embedding_impl = Arc::new(embedding_impl);
+        self.container.register(Arc::clone(&embedding_impl));
+        let embedding: Arc<dyn EmbeddingProvider> = embedding_impl;
+
         let providers = Arc::new(providers);
         self.container.register(Arc::clone(&providers));
 
@@ -180,14 +189,22 @@ impl Application {
         let knowledge = Arc::new(knowledge);
         self.container.register(Arc::clone(&knowledge));
 
+        // Embedding queue (async generation) — separate from normalized content.
+        let mut embedding_queue =
+            EmbeddingQueue::new(Arc::clone(&database), Arc::clone(&embedding));
+        self.initialize_service(&mut embedding_queue)?;
+        let embedding_queue = Arc::new(embedding_queue);
+        self.container.register(Arc::clone(&embedding_queue));
+
         // Content store + Understanding Engine (Layer 2).
         let content = Arc::new(SqliteContentStore::new(Arc::clone(&database)));
         self.container.register(Arc::clone(&content));
-        let mut understanding = UnderstandingEngine::new(
+        let mut understanding = UnderstandingEngine::with_embedding_scheduler(
             Arc::clone(&knowledge),
             Arc::clone(&content),
             Arc::clone(&filesystem),
             Arc::clone(&parsers),
+            Some(Arc::clone(&embedding_queue) as Arc<dyn jaymi_understanding::EmbeddingScheduler>),
         );
         self.initialize_service(&mut understanding)?;
         let understanding = Arc::new(understanding);
@@ -196,6 +213,19 @@ impl Application {
         // Content Intelligence API — stable consumer surface (hides parsers/SQLite).
         let content_api = Arc::new(ContentIntelligenceApi::new(Arc::clone(&understanding)));
         self.container.register(Arc::clone(&content_api));
+
+        // Search Engine — single retrieval entry point (Planner tools use this, not SQLite).
+        let mut search = SearchEngine::with_semantic(
+            Arc::clone(&knowledge),
+            Some(Arc::clone(&content_api)),
+            Some(SemanticDeps {
+                database: Arc::clone(&database),
+                provider: Arc::clone(&embedding),
+            }),
+        );
+        self.initialize_service(&mut search)?;
+        let search = Arc::new(search);
+        self.container.register(Arc::clone(&search));
 
         // Discovery engine (Layer 1) — explicit scans only; no boot-time crawl.
         let (discovery_roots, indexing_enabled) = {
@@ -225,13 +255,14 @@ impl Application {
         let watcher = Arc::new(watcher);
         self.container.register(Arc::clone(&watcher));
 
-        // Tool registry + Layer 0 and Layer 1 tools.
+        // Tool registry + Layer 0–3 tools.
         let mut tools = ToolRegistry::new();
         self.initialize_service(&mut tools)?;
         tools.register_tool(Arc::new(SearchFilesTool::new(Arc::clone(&filesystem))))?;
+        tools.register_tool(Arc::new(SearchKnowledgeTool::new(Arc::clone(&search))))?;
         tools.register_tool(Arc::new(ReadFileTool::new(Arc::clone(&content_api))))?;
         tools.register_tool(Arc::new(ScanFilesystemTool::new(Arc::clone(&discovery))))?;
-        tools.register_tool(Arc::new(QueryInventoryTool::new(Arc::clone(&knowledge))))?;
+        tools.register_tool(Arc::new(QueryInventoryTool::new(Arc::clone(&search))))?;
         let tools = Arc::new(tools);
         self.container.register(Arc::clone(&tools));
 
@@ -330,7 +361,7 @@ impl Application {
         planner.handle(UserRequest::index_root(path.as_ref()))
     }
 
-    /// Ask the Planner what files exist using the knowledge database only.
+    /// Ask the Planner what files exist using the Search Engine (inventory).
     pub fn discover_inventory(&self) -> JaymiResult<PlannerResponse> {
         let planner = self.container.resolve::<Planner>()?;
         planner.handle(UserRequest::discover_inventory())
@@ -340,6 +371,12 @@ impl Application {
     pub fn discover_query(&self, kind: DiscoveryQueryKind) -> JaymiResult<PlannerResponse> {
         let planner = self.container.resolve::<Planner>()?;
         planner.handle(UserRequest::discover_query(kind))
+    }
+
+    /// Ask the Planner a structured Search Engine request.
+    pub fn search(&self, request: SearchRequest) -> JaymiResult<PlannerResponse> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.handle(UserRequest::search(request))
     }
 
     /// Ask the Planner to list active logical collections from the inventory.
@@ -367,6 +404,7 @@ impl Application {
         let knowledge = self.container.resolve::<Arc<SqliteKnowledgeStore>>()?;
         let understanding = self.container.resolve::<Arc<UnderstandingEngine>>()?;
         let content_api = self.container.resolve::<Arc<ContentIntelligenceApi>>()?;
+        let search = self.container.resolve::<Arc<SearchEngine>>()?;
         let watcher = self.container.resolve::<Arc<FilesystemWatcher>>()?;
         let policies = self.container.resolve::<Arc<PolicyEngine>>()?;
         let permissions = self.container.resolve::<Arc<PermissionEngine>>()?;
@@ -374,6 +412,8 @@ impl Application {
         let capabilities = self.container.resolve::<Arc<CapabilityRegistry>>()?;
         let providers = self.container.resolve::<Arc<ProviderRegistry>>()?;
         let ocr = self.container.resolve::<Arc<PlaceholderOcrProvider>>()?;
+        let embedding = self.container.resolve::<Arc<LocalEmbeddingProvider>>()?;
+        let embedding_queue = self.container.resolve::<Arc<EmbeddingQueue>>()?;
         let tools = self.container.resolve::<Arc<ToolRegistry>>()?;
         let parsers = self.container.resolve::<Arc<ParserRegistry>>()?;
 
@@ -389,10 +429,13 @@ impl Application {
         let understanding_health = understanding.health_check();
         let understanding_stats = understanding.stats().ok();
         let content_health = content_api.retrieve_health().ok();
+        let search_health = search.health().ok();
         let discovery_stats = knowledge.stats().ok();
         let collection_stats = knowledge.collection_stats().ok();
         let watcher_diagnostics = watcher.diagnostics();
         let ocr_status = ocr.ocr_status();
+        let embedding_status = embedding.embedding_status();
+        let embedding_diagnostics = embedding_queue.diagnostics().unwrap_or_default();
 
         let capability_ids: Vec<String> = capabilities
             .list()
@@ -552,6 +595,44 @@ impl Application {
                     ocr_status.engine,
                     ocr_status.available,
                     ocr_status.detail
+                ),
+            ),
+            SubsystemStatus::new(
+                "Embedding Provider",
+                if !embedding_status.initialized {
+                    OperationalStatus::Unavailable
+                } else if embedding_status.available {
+                    OperationalStatus::Operational
+                } else {
+                    OperationalStatus::Degraded
+                },
+                format!(
+                    "id={} · model={} · dims={} · {}",
+                    embedding_status.provider_id,
+                    embedding_status.model_id,
+                    embedding_status.dimensions,
+                    embedding_status.detail
+                ),
+            ),
+            SubsystemStatus::new(
+                "Embedding Queue",
+                if embedding_diagnostics.running {
+                    OperationalStatus::Operational
+                } else if embedding_queue.health_check().initialized {
+                    OperationalStatus::Degraded
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                format!(
+                    "indexed={} · model={} · queue={} · processed={} · last={}",
+                    embedding_diagnostics.indexed_embeddings,
+                    embedding_diagnostics.model_id,
+                    embedding_diagnostics.queue_depth,
+                    embedding_diagnostics.processed,
+                    embedding_diagnostics
+                        .last_source_id
+                        .clone()
+                        .unwrap_or_else(|| "-".to_string())
                 ),
             ),
             SubsystemStatus::new(
@@ -739,6 +820,19 @@ impl Application {
                     .unwrap_or_else(|| "unavailable".to_string()),
             ),
             SubsystemStatus::new(
+                "Search Engine",
+                match &search_health {
+                    Some(health) if health.healthy => OperationalStatus::Operational,
+                    Some(health) if health.initialized => OperationalStatus::Degraded,
+                    Some(_) => OperationalStatus::Unavailable,
+                    None => OperationalStatus::Unavailable,
+                },
+                search_health
+                    .as_ref()
+                    .map(|health| health.detail.clone())
+                    .unwrap_or_else(|| "unavailable".to_string()),
+            ),
+            SubsystemStatus::new(
                 "Watcher Status",
                 match &watcher_diagnostics.status {
                     jaymi_discovery::WatcherStatus::Watching
@@ -919,6 +1013,7 @@ impl Application {
         }
         let _ = self.container.take::<Arc<DiscoveryEngine>>();
         let _ = self.container.take::<Arc<ContentIntelligenceApi>>();
+        let _ = self.container.take::<Arc<SearchEngine>>();
         let _ = self.container.take::<Arc<UnderstandingEngine>>();
         let _ = self.container.take::<Arc<SqliteContentStore>>();
         let _ = self.container.take::<Arc<SqliteKnowledgeStore>>();
@@ -981,12 +1076,12 @@ mod tests {
         let diagnostics = app.diagnostics().unwrap();
         assert_eq!(diagnostics.app_state.label(), "Ready");
         assert!(diagnostics.planner_healthy);
-        assert_eq!(diagnostics.provider_count, 2);
+        assert_eq!(diagnostics.provider_count, 3);
         assert!(diagnostics
             .provider_ids
             .iter()
             .any(|id| id == OCR_PROVIDER_ID));
-        assert_eq!(diagnostics.tool_count, 4);
+        assert_eq!(diagnostics.tool_count, 5);
         assert_eq!(diagnostics.capability_count, 4);
         assert!(diagnostics.database_connected);
         assert_eq!(

@@ -35,6 +35,8 @@ pub enum Capability {
     Vision,
     /// Optical character recognition (image → text).
     Ocr,
+    /// Generate and compare content embeddings (model-agnostic).
+    Embeddings,
     /// Image generation.
     GenerateImages,
     /// Web browsing.
@@ -68,6 +70,7 @@ impl Capability {
             Self::Code => "code",
             Self::Vision => "vision",
             Self::Ocr => "ocr",
+            Self::Embeddings => "embeddings",
             Self::GenerateImages => "generate_images",
             Self::BrowseTheWeb => "browse_the_web",
             Self::ReadDocuments => "read_documents",

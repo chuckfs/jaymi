@@ -1,0 +1,16 @@
+[package]
+name = "jaymi-search"
+description = "Unified Search Engine for Jaymi retrieval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+jaymi-core = { workspace = true }
+jaymi-database = { workspace = true }
+jaymi-knowledge = { workspace = true }
+jaymi-logging = { workspace = true }
+jaymi-providers = { workspace = true }
+jaymi-understanding = { workspace = true }

@@ -15,7 +15,7 @@ use std::sync::Arc;
 use decision::{DecisionEngine, Intent};
 use jaymi_capabilities::{Capability, CapabilityRegistry};
 use jaymi_core::{
-    Document, FileEntry, HealthReport, JaymiError, JaymiResult, Lifecycle, UserRequest,
+    Citation, Document, FileEntry, HealthReport, JaymiError, JaymiResult, Lifecycle, UserRequest,
 };
 use jaymi_permissions::{
     PermissionAction, PermissionCategory, PermissionCheckResult, PermissionEngine,
@@ -25,6 +25,8 @@ use jaymi_policies::{ExecutionCandidate, PolicyEngine, PolicyEvaluation};
 use jaymi_providers::ProviderRegistry;
 use jaymi_tools::{
     InternetRequirement, PrivacyMode, ToolInput, ToolOrchestrator, ToolRegistry,
+    QUERY_INVENTORY_TOOL_ID, READ_FILE_TOOL_ID, SCAN_FILESYSTEM_TOOL_ID, SEARCH_FILES_TOOL_ID,
+    SEARCH_KNOWLEDGE_TOOL_ID,
 };
 use reasoning::ReasoningEngine;
 
@@ -57,6 +59,8 @@ pub struct PlannerResponse {
     pub listed_path: Option<std::path::PathBuf>,
     /// Structured directory listing entries.
     pub entries: Vec<FileEntry>,
+    /// Explainable citations for retrieved search / inventory hits.
+    pub citations: Vec<Citation>,
     /// Unified document produced by the Read pipeline.
     pub document: Option<Document>,
     /// Policy evaluation for the selected tool, when evaluated.
@@ -179,7 +183,7 @@ impl Planner {
                 "unsupported request; no capability mapped for intent",
             );
             return Ok(PlannerResponse {
-                content: "Unsupported request. Try: list <directory>, read <file>, index <path>, or ask what files exist".to_string(),
+                content: "Unsupported request. Try: list <directory>, read <file>, search <query>, index <path>, or ask what files exist".to_string(),
                 ..PlannerResponse::default()
             });
         };
@@ -203,6 +207,9 @@ impl Planner {
             Intent::ReadFile { path } => self.handle_read_file(capability, path),
             Intent::DiscoverInventory { kind } => {
                 self.handle_discover_inventory(capability, kind)
+            }
+            Intent::SearchKnowledge { request } => {
+                self.handle_search_knowledge(capability, request)
             }
             Intent::IndexRoots { path } => self.handle_index_roots(capability, path),
             Intent::Unknown => {
@@ -243,7 +250,13 @@ impl Planner {
         path: std::path::PathBuf,
     ) -> JaymiResult<PlannerResponse> {
         let input = ToolInput::list_directory(path.clone());
-        let prepared = self.prepare_execution(capability, &input, &path, "List directory")?;
+        let prepared = self.prepare_execution(
+            capability,
+            Some(SEARCH_FILES_TOOL_ID),
+            &input,
+            &path,
+            "List directory",
+        )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
         }
@@ -269,6 +282,7 @@ impl Planner {
             provider_id,
             listed_path: Some(path),
             entries: output.entries,
+            citations: output.citations,
             document: None,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
@@ -282,7 +296,13 @@ impl Planner {
         path: std::path::PathBuf,
     ) -> JaymiResult<PlannerResponse> {
         let input = ToolInput::read_file(path.clone());
-        let prepared = self.prepare_execution(capability, &input, &path, "Read file")?;
+        let prepared = self.prepare_execution(
+            capability,
+            Some(READ_FILE_TOOL_ID),
+            &input,
+            &path,
+            "Read file",
+        )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
         }
@@ -312,6 +332,7 @@ impl Planner {
             provider_id,
             listed_path: None,
             entries: Vec::new(),
+            citations: Vec::new(),
             document: Some(document),
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
@@ -332,8 +353,13 @@ impl Planner {
             .clone()
             .unwrap_or_else(|| std::path::PathBuf::from("inventory"));
         let input = ToolInput::discover(kind);
-        let prepared =
-            self.prepare_execution(capability, &input, &resource_path, "Query inventory")?;
+        let prepared = self.prepare_execution(
+            capability,
+            Some(QUERY_INVENTORY_TOOL_ID),
+            &input,
+            &resource_path,
+            "Query inventory",
+        )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
         }
@@ -345,7 +371,7 @@ impl Planner {
         let provider_id = prepared.provider_id.clone();
         let content = output.message.unwrap_or_else(|| {
             format!(
-                "Found {} inventoried entries via {} → {} (database only)",
+                "Found {} inventoried entries via {} → {} (search engine)",
                 output.entries.len(),
                 capability.id(),
                 tool_id
@@ -359,6 +385,57 @@ impl Planner {
             provider_id,
             listed_path,
             entries: output.entries,
+            citations: output.citations,
+            document: None,
+            policy_evaluation: prepared.policy_evaluation,
+            permission_result: prepared.permission_result,
+            blocked: false,
+        })
+    }
+
+    fn handle_search_knowledge(
+        &self,
+        capability: Capability,
+        request: jaymi_core::SearchRequest,
+    ) -> JaymiResult<PlannerResponse> {
+        let resource_path = request
+            .folder
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from("search"));
+        let input = ToolInput::search(request);
+        let prepared = self.prepare_execution(
+            capability,
+            Some(SEARCH_KNOWLEDGE_TOOL_ID),
+            &input,
+            &resource_path,
+            "Search knowledge",
+        )?;
+        if let Some(blocked) = prepared.blocked_response {
+            return Ok(blocked);
+        }
+
+        let tool_id = prepared.tool_id.clone();
+        let output = self.orchestrator.execute(&tool_id, input)?;
+        self.ensure_success(&output)?;
+
+        let provider_id = prepared.provider_id.clone();
+        let content = output.message.unwrap_or_else(|| {
+            format!(
+                "Found {} search hits via {} → {}",
+                output.entries.len(),
+                capability.id(),
+                tool_id
+            )
+        });
+
+        Ok(PlannerResponse {
+            content,
+            capability: Some(capability),
+            tool_id: Some(tool_id),
+            provider_id,
+            listed_path: Some(resource_path),
+            entries: output.entries,
+            citations: output.citations,
             document: None,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
@@ -377,9 +454,15 @@ impl Planner {
         let input = ToolInput {
             path: path.clone(),
             discovery: None,
+            search: None,
         };
-        let prepared =
-            self.prepare_execution(capability, &input, &resource_path, "Index filesystem")?;
+        let prepared = self.prepare_execution(
+            capability,
+            Some(SCAN_FILESYSTEM_TOOL_ID),
+            &input,
+            &resource_path,
+            "Index filesystem",
+        )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
         }
@@ -400,6 +483,7 @@ impl Planner {
             provider_id,
             listed_path: path,
             entries: Vec::new(),
+            citations: Vec::new(),
             document: None,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
@@ -411,16 +495,31 @@ impl Planner {
     fn prepare_execution(
         &self,
         capability: Capability,
+        preferred_tool_id: Option<&str>,
         _input: &ToolInput,
         path: &std::path::Path,
         action_label: &str,
     ) -> JaymiResult<PreparedExecution> {
-        let tool_id = self.orchestrator.select(capability)?.ok_or_else(|| {
-            JaymiError::new(format!(
-                "no tool registered for capability {}",
-                capability.id()
-            ))
-        })?;
+        let tool_id = if let Some(preferred) = preferred_tool_id {
+            match self.tools.get(preferred) {
+                Ok(tool) if tool.metadata().capabilities.contains(&capability) => {
+                    preferred.to_string()
+                }
+                _ => self.orchestrator.select(capability)?.ok_or_else(|| {
+                    JaymiError::new(format!(
+                        "no tool registered for capability {}",
+                        capability.id()
+                    ))
+                })?,
+            }
+        } else {
+            self.orchestrator.select(capability)?.ok_or_else(|| {
+                JaymiError::new(format!(
+                    "no tool registered for capability {}",
+                    capability.id()
+                ))
+            })?
+        };
 
         let tool = self.tools.get(&tool_id)?;
         let metadata = tool.metadata();

@@ -31,6 +31,7 @@ fn diagnostics_dashboard_reports_honest_subsystem_states() {
         ("Collections", OperationalStatus::Operational),
         ("Understanding", OperationalStatus::Operational),
         ("Content Intelligence", OperationalStatus::Operational),
+        ("Search Engine", OperationalStatus::Operational),
         ("Watcher Status", OperationalStatus::Operational),
         ("Memory Status", OperationalStatus::Stub),
         ("Project Status", OperationalStatus::NotImplemented),
@@ -91,6 +92,16 @@ fn diagnostics_dashboard_reports_honest_subsystem_states() {
         .iter()
         .any(|name| name == "Offline First"));
     assert_eq!(snapshot.config_indexing_enabled, Some(true));
+    assert!(snapshot
+        .subsystem("Content Intelligence")
+        .unwrap()
+        .detail
+        .contains("documents="));
+    assert!(snapshot
+        .subsystem("Search Engine")
+        .unwrap()
+        .detail
+        .contains("searches="));
     assert!(snapshot
         .subsystem("Index Status")
         .unwrap()

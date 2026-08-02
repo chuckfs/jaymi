@@ -2,12 +2,14 @@
 //!
 //! Converts Knowledge Items into normalized Content and persists them.
 //! Consumers access content through [`ContentIntelligence`] — never parsers
-//! or SQLite directly. No OCR engines, embeddings, summaries, or LLMs.
+//! or SQLite directly. Embedding generation is scheduled asynchronously via
+//! [`EmbeddingScheduler`] and stored separately from content.
 
 #![forbid(unsafe_code)]
 
 mod api;
 mod content;
+mod embedding_schedule;
 mod engine;
 mod enrichment;
 mod image_content;
@@ -16,10 +18,11 @@ mod sqlite;
 mod store;
 
 pub use api::{
-    ContentHealth, ContentIntelligence, ContentLoad, ContentMetadataView, ContentSource,
-    ContentStatistics, ParserInfo,
+    ContentHealth, ContentIntelligence, ContentLoad, ContentMetadataHit, ContentMetadataView,
+    ContentSource, ContentStatistics, ContentTextHit, ParserInfo,
 };
 pub use content::Content;
+pub use embedding_schedule::EmbeddingScheduler;
 pub use engine::{
     format_parser_usage, usage_map, UnderstandOutcome, UnderstandingEngine, UnderstandingStats,
 };

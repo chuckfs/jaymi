@@ -10,6 +10,7 @@ use jaymi_parsers::ParserRegistry;
 use jaymi_providers::FilesystemProvider;
 
 use crate::content::Content;
+use crate::embedding_schedule::EmbeddingScheduler;
 use crate::sqlite::SqliteContentStore;
 use crate::store::ContentStore;
 
@@ -68,6 +69,7 @@ pub struct UnderstandingEngine {
     content: Arc<SqliteContentStore>,
     filesystem: Arc<FilesystemProvider>,
     parsers: Arc<ParserRegistry>,
+    embedding_scheduler: Option<Arc<dyn EmbeddingScheduler>>,
     runtime: Mutex<RuntimeStats>,
 }
 
@@ -79,12 +81,24 @@ impl UnderstandingEngine {
         filesystem: Arc<FilesystemProvider>,
         parsers: Arc<ParserRegistry>,
     ) -> Self {
+        Self::with_embedding_scheduler(knowledge, content, filesystem, parsers, None)
+    }
+
+    /// Create an uninitialized engine that schedules embeddings after upserts.
+    pub fn with_embedding_scheduler(
+        knowledge: Arc<SqliteKnowledgeStore>,
+        content: Arc<SqliteContentStore>,
+        filesystem: Arc<FilesystemProvider>,
+        parsers: Arc<ParserRegistry>,
+        embedding_scheduler: Option<Arc<dyn EmbeddingScheduler>>,
+    ) -> Self {
         Self {
             initialized: false,
             knowledge,
             content,
             filesystem,
             parsers,
+            embedding_scheduler,
             runtime: Mutex::new(RuntimeStats::default()),
         }
     }
@@ -172,6 +186,18 @@ impl UnderstandingEngine {
         let mut content = Content::from_document(&document, parser.version());
         self.attach_image_thumbnail(&mut content, &bytes);
         self.content.upsert(&content)?;
+        if let Some(scheduler) = &self.embedding_scheduler {
+            if let Err(error) = scheduler.schedule(&content.source_id) {
+                jaymi_logging::warn(
+                    "understanding",
+                    &format!(
+                        "embedding schedule failed for {}: {}",
+                        content.source_id,
+                        error.message()
+                    ),
+                );
+            }
+        }
         Ok(UnderstandOutcome::Parsed(content))
     }
 

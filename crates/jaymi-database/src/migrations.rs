@@ -5,7 +5,7 @@ use rusqlite::{params, Connection};
 use jaymi_core::{JaymiError, JaymiResult};
 
 /// Latest schema version applied by this build.
-pub const CURRENT_SCHEMA_VERSION: u32 = 6;
+pub const CURRENT_SCHEMA_VERSION: u32 = 9;
 
 struct Migration {
     version: u32,
@@ -132,6 +132,58 @@ const MIGRATIONS: &[Migration] = &[
         ALTER TABLE content ADD COLUMN image_metadata_json TEXT;
     "#,
     },
+    Migration {
+        version: 7,
+        sql: r#"
+        CREATE VIRTUAL TABLE content_fts USING fts5(
+            source_id UNINDEXED,
+            title,
+            plain_text,
+            tokenize = 'unicode61'
+        );
+
+        INSERT INTO content_fts(source_id, title, plain_text)
+        SELECT source_id, COALESCE(title, ''), plain_text FROM content;
+
+        CREATE TRIGGER content_fts_ad AFTER DELETE ON content BEGIN
+            DELETE FROM content_fts WHERE source_id = old.source_id;
+        END;
+    "#,
+    },
+    Migration {
+        version: 8,
+        sql: r#"
+        ALTER TABLE content ADD COLUMN author TEXT;
+        ALTER TABLE content ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]';
+
+        CREATE INDEX IF NOT EXISTS idx_content_language ON content(language);
+        CREATE INDEX IF NOT EXISTS idx_content_author ON content(author);
+    "#,
+    },
+    Migration {
+        version: 9,
+        sql: r#"
+        CREATE TABLE content_embeddings (
+            source_id TEXT PRIMARY KEY NOT NULL,
+            model_id TEXT NOT NULL,
+            dims INTEGER NOT NULL,
+            vector BLOB NOT NULL,
+            content_hash TEXT NOT NULL,
+            embedded_at INTEGER NOT NULL,
+            FOREIGN KEY (source_id) REFERENCES content(source_id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX idx_content_embeddings_model ON content_embeddings(model_id);
+
+        CREATE TABLE embedding_queue (
+            source_id TEXT PRIMARY KEY NOT NULL,
+            enqueued_at INTEGER NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_error TEXT,
+            FOREIGN KEY (source_id) REFERENCES content(source_id) ON DELETE CASCADE
+        );
+    "#,
+    },
 ];
 
 /// Read the highest applied schema version, or `0` when uninitialized.
@@ -198,6 +250,9 @@ pub fn verify_schema(connection: &Connection) -> JaymiResult<()> {
         "discovered_items",
         "discovery_scans",
         "content",
+        "content_fts",
+        "content_embeddings",
+        "embedding_queue",
     ] {
         let exists: i64 = connection
             .query_row(

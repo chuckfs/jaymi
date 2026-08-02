@@ -249,7 +249,7 @@ fn knowledge_queries_answer_from_database_only() {
     let planner = app.container().resolve::<Planner>().expect("planner");
 
     let all = app.discover_inventory().expect("all");
-    assert!(all.content.contains("database only"));
+    assert!(all.content.contains("search"));
     assert!(all.entries.iter().any(|e| e.name == "report.pdf"));
 
     let pdfs = app
@@ -368,7 +368,7 @@ fn collections_generate_and_answer_without_manual_paths() {
         downloads_response.tool_id.as_deref(),
         Some("query_inventory")
     );
-    assert!(downloads_response.content.contains("database only"));
+    assert!(downloads_response.content.contains("search"));
     assert!(downloads_response
         .entries
         .iter()

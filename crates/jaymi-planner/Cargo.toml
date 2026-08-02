@@ -20,4 +20,5 @@ jaymi-policies = { workspace = true }
 jaymi-database = { workspace = true }
 jaymi-knowledge = { workspace = true }
 jaymi-parsers = { workspace = true }
+jaymi-search = { workspace = true }
 jaymi-understanding = { workspace = true }

@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod citation;
 pub mod collection_names;
 pub mod container;
 pub mod document;
@@ -16,8 +17,10 @@ pub mod id;
 pub mod lifecycle;
 pub mod request;
 pub mod result;
+pub mod search;
 pub mod state;
 
+pub use citation::{format_citations, Citation};
 pub use collection_names::{
     is_known_collection_name, parse_collection_slug, COLLECTION_SLUGS,
 };
@@ -30,4 +33,5 @@ pub use id::EntityId;
 pub use lifecycle::Lifecycle;
 pub use request::{DiscoveryQueryKind, UserRequest};
 pub use result::JaymiResult;
+pub use search::{MetadataFilters, SearchRequest};
 pub use state::AppState;

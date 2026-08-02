@@ -67,9 +67,10 @@ fn knowledge_api_is_single_interface_after_boot() {
         .unwrap();
     assert!(under.len() >= 3);
 
-    // Planner discover path still goes through Knowledge via query_inventory.
+    // Planner discover path goes through Search Engine via query_inventory.
     let response = app.discover_inventory().expect("discover");
     assert_eq!(response.tool_id.as_deref(), Some("query_inventory"));
+    assert!(response.content.contains("search"));
     assert!(response.entries.iter().any(|entry| entry.name == "a.pdf"));
 }
 

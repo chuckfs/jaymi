@@ -6,8 +6,8 @@ use std::sync::Arc;
 use jaymi_core::{JaymiResult, Lifecycle};
 
 use crate::api::{
-    ContentHealth, ContentIntelligence, ContentLoad, ContentMetadataView, ContentSource,
-    ContentStatistics, ParserInfo,
+    ContentHealth, ContentIntelligence, ContentLoad, ContentMetadataHit, ContentMetadataView,
+    ContentSource, ContentStatistics, ContentTextHit, ParserInfo,
 };
 use crate::content::Content;
 use crate::engine::UnderstandingEngine;
@@ -96,5 +96,32 @@ impl ContentIntelligence for ContentIntelligenceApi {
             detail,
             statistics,
         })
+    }
+
+    fn search_full_text(&self, query: &str, limit: usize) -> JaymiResult<Vec<ContentTextHit>> {
+        self.engine.content_store().search_full_text(query, limit)
+    }
+
+    fn search_metadata(
+        &self,
+        filters: &jaymi_core::MetadataFilters,
+        limit: usize,
+    ) -> JaymiResult<Vec<ContentMetadataHit>> {
+        let query = jaymi_database::ContentMetadataQuery {
+            content_type: filters.content_type.clone(),
+            language: filters.language.clone(),
+            author_contains: filters.author.clone(),
+            tag: filters.tag.clone(),
+            heading_contains: filters.heading_contains.clone(),
+            title_contains: filters.title_contains.clone(),
+            modified_after: filters.modified_after,
+            modified_before: filters.modified_before,
+            created_after: filters.created_after,
+            created_before: filters.created_before,
+            extracted_after: filters.extracted_after,
+            extracted_before: filters.extracted_before,
+            limit: Some(limit),
+        };
+        self.engine.content_store().search_metadata(&query)
     }
 }

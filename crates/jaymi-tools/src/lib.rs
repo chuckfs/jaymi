@@ -13,6 +13,7 @@ pub mod read_file;
 pub mod registry;
 pub mod scan_filesystem;
 pub mod search_files;
+pub mod search_knowledge;
 pub mod tool;
 
 pub use metadata::{
@@ -25,6 +26,7 @@ pub use read_file::{ReadFileTool, READ_FILE_TOOL_ID};
 pub use registry::ToolRegistry;
 pub use scan_filesystem::{ScanFilesystemTool, SCAN_FILESYSTEM_TOOL_ID};
 pub use search_files::{SearchFilesTool, SEARCH_FILES_TOOL_ID};
+pub use search_knowledge::{SearchKnowledgeTool, SEARCH_KNOWLEDGE_TOOL_ID};
 pub use tool::{Tool, ToolInput, ToolOutput};
 
 use jaymi_core::{HealthReport, JaymiResult, Lifecycle};

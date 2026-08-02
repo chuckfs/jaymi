@@ -23,6 +23,10 @@ pub struct Content {
     pub title: Option<String>,
     /// Optional language tag from deterministic enrichment.
     pub language: Option<String>,
+    /// Optional document author preserved from parser metadata.
+    pub author: Option<String>,
+    /// User / document tags preserved as searchable metadata.
+    pub tags: Vec<String>,
     /// Parser that produced this content.
     pub parser_used: String,
     /// Parser version string.
@@ -55,6 +59,13 @@ impl Content {
         } else {
             None
         };
+        let author = document
+            .metadata
+            .get("author")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let tags = parse_tags_from_metadata(&document.metadata);
         Self {
             content_id: Self::id_for_source(&source_id),
             source_id,
@@ -62,6 +73,8 @@ impl Content {
             plain_text: document.text.clone(),
             title: document.title.clone(),
             language: enrichment.language.clone(),
+            author,
+            tags,
             parser_used: document.parser_id.clone(),
             parser_version: parser_version.to_string(),
             extraction_timestamp: document.parsed_at as i64,
@@ -73,6 +86,12 @@ impl Content {
     /// Rebuild an ephemeral document for Planner/tool responses.
     pub fn to_document(&self) -> Document {
         let mut metadata = enrichment_metadata(&self.enrichment, self.language.as_deref());
+        if let Some(author) = &self.author {
+            metadata.insert("author", author.as_str());
+        }
+        if !self.tags.is_empty() {
+            metadata.insert("tags", self.tags.join(","));
+        }
         if let Some(image) = &self.image {
             append_image_metadata(&mut metadata, image);
         }
@@ -87,6 +106,17 @@ impl Content {
             parser_id: self.parser_used.clone(),
         }
     }
+}
+
+fn parse_tags_from_metadata(metadata: &DocumentMetadata) -> Vec<String> {
+    let Some(raw) = metadata.get("tags") else {
+        return Vec::new();
+    };
+    raw.split([',', ';'])
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 fn append_image_metadata(metadata: &mut DocumentMetadata, image: &ImageContent) {

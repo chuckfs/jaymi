@@ -7,13 +7,21 @@
 #![forbid(unsafe_code)]
 
 pub mod content;
+pub mod embeddings;
 pub mod entities;
 pub mod events;
 pub mod inventory;
 pub mod migrations;
 pub mod relationships;
 
-pub use content::{ContentCounts, ContentRecord};
+pub use content::{
+    build_fts_and_query, build_fts_match_query, ContentCounts, ContentFtsHit, ContentMetadataHit,
+    ContentMetadataQuery, ContentRecord,
+};
+pub use embeddings::{
+    blob_to_vector, content_embedding_hash, vector_to_blob, EmbeddingCounts, EmbeddingQueueItem,
+    EmbeddingRecord, EmbeddingSimilarityHit,
+};
 pub use inventory::{
     DiscoveredCounts, DiscoveredItemRecord, DiscoveredQuery, DiscoveryScanInput,
     DiscoveryScanRecord, DiscoverySort,

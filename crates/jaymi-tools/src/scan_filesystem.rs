@@ -93,6 +93,7 @@ impl Tool for ScanFilesystemTool {
         Ok(ToolOutput {
             success: true,
             entries: Vec::new(),
+            citations: Vec::new(),
             document: None,
             parser_id: None,
             message: Some(message),

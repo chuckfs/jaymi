@@ -1,7 +1,7 @@
 //! Tool interface and structured I/O.
 
 use crate::metadata::ToolMetadata;
-use jaymi_core::{DiscoveryQueryKind, Document, FileEntry, JaymiResult};
+use jaymi_core::{Citation, DiscoveryQueryKind, Document, FileEntry, JaymiResult, SearchRequest};
 
 /// Structured input supplied by the Planner.
 #[derive(Debug, Default, Clone)]
@@ -10,6 +10,8 @@ pub struct ToolInput {
     pub path: Option<std::path::PathBuf>,
     /// Structured discovery query for inventory tools.
     pub discovery: Option<DiscoveryQueryKind>,
+    /// Structured Search Engine request.
+    pub search: Option<SearchRequest>,
 }
 
 impl ToolInput {
@@ -18,6 +20,7 @@ impl ToolInput {
         Self {
             path: Some(path.into()),
             discovery: None,
+            search: None,
         }
     }
 
@@ -26,6 +29,7 @@ impl ToolInput {
         Self {
             path: Some(path.into()),
             discovery: None,
+            search: None,
         }
     }
 
@@ -38,6 +42,16 @@ impl ToolInput {
         Self {
             path,
             discovery: Some(kind),
+            search: None,
+        }
+    }
+
+    /// Create input for a Search Engine request.
+    pub fn search(request: SearchRequest) -> Self {
+        Self {
+            path: request.folder.clone(),
+            discovery: None,
+            search: Some(request),
         }
     }
 }
@@ -49,6 +63,8 @@ pub struct ToolOutput {
     pub success: bool,
     /// Directory listing entries when applicable.
     pub entries: Vec<FileEntry>,
+    /// Explainable citations for search / inventory hits.
+    pub citations: Vec<Citation>,
     /// Unified document produced by the Read pipeline.
     pub document: Option<Document>,
     /// Parser selected for a read operation, when any.
@@ -63,6 +79,7 @@ impl ToolOutput {
         Self {
             success: true,
             entries,
+            citations: Vec::new(),
             document: None,
             parser_id: None,
             message: None,
@@ -75,6 +92,7 @@ impl ToolOutput {
         Self {
             success: true,
             entries: Vec::new(),
+            citations: Vec::new(),
             document: Some(document),
             parser_id: Some(parser_id),
             message: None,
@@ -86,6 +104,7 @@ impl ToolOutput {
         Self {
             success: false,
             entries: Vec::new(),
+            citations: Vec::new(),
             document: None,
             parser_id: None,
             message: Some(message.into()),
