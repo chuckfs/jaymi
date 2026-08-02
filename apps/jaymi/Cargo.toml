@@ -26,6 +26,7 @@ jaymi-discovery = { workspace = true }
 jaymi-knowledge = { workspace = true }
 jaymi-logging = { workspace = true }
 jaymi-memory = { workspace = true }
+jaymi-memory-engine = { workspace = true }
 jaymi-parsers = { workspace = true }
 jaymi-permissions = { workspace = true }
 jaymi-planner = { workspace = true }
@@ -43,6 +44,8 @@ jaymi-database = { workspace = true }
 jaymi-discovery = { workspace = true }
 jaymi-knowledge = { workspace = true }
 jaymi-logging = { workspace = true }
+jaymi-memory = { workspace = true }
+jaymi-memory-engine = { workspace = true }
 jaymi-parsers = { workspace = true }
 jaymi-permissions = { workspace = true }
 jaymi-planner = { workspace = true }

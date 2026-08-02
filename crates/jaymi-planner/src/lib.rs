@@ -17,6 +17,14 @@ use jaymi_capabilities::{Capability, CapabilityRegistry};
 use jaymi_core::{
     Citation, Document, FileEntry, HealthReport, JaymiError, JaymiResult, Lifecycle, UserRequest,
 };
+use jaymi_memory_engine::{
+    AppendMessageRequest, ArchiveConversationRequest, AssembleContextRequest, AssembledMemoryContext,
+    Conversation, ConversationArchive, ConversationMessage, ConversationMeta,
+    CreateConversationRequest, CreatePersonalMemoryRequest, MemoryEngineApi, MemoryQuery,
+    MemoryRecord, PersonalContext, ProjectContext, ProjectMeta, PromoteMemoryRequest,
+    PromotionAskDecision, PromotionSuggestQuery, PromotionSuggestion, RegisterProjectRequest,
+    StoreMemoryRequest, StoreProjectMemoryRequest, UpdatePersonalMemoryRequest,
+};
 use jaymi_permissions::{
     PermissionAction, PermissionCategory, PermissionCheckResult, PermissionEngine,
     PermissionRequest, PermissionScope,
@@ -69,6 +77,14 @@ pub struct PlannerResponse {
     pub permission_result: Option<PermissionCheckResult>,
     /// True when policy or permission blocked tool execution.
     pub blocked: bool,
+    /// Restored project context, when a project was activated or is active.
+    pub project_context: Option<ProjectContext>,
+    /// Promotion suggestions from the Memory Engine (never auto-applied).
+    pub promotion_suggestions: Vec<PromotionSuggestion>,
+    /// Whether the Planner should ask the user about promotions.
+    pub promotion_ask: PromotionAskDecision,
+    /// Relevant memories assembled for this request (never a full dump).
+    pub memory_context: Option<AssembledMemoryContext>,
 }
 
 /// Dependencies required to construct the Planner from registries.
@@ -86,6 +102,8 @@ pub struct PlannerDeps {
     pub policies: Arc<PolicyEngine>,
     /// Permission engine consulted before tool execution.
     pub permissions: Arc<PermissionEngine>,
+    /// Memory Engine — Planner never accesses memory storage directly.
+    pub memory: Arc<dyn MemoryEngineApi>,
 }
 
 /// Planner kernel.
@@ -102,6 +120,7 @@ pub struct Planner {
     orchestrator: ToolOrchestrator,
     policies: Arc<PolicyEngine>,
     permissions: Arc<PermissionEngine>,
+    memory: Arc<dyn MemoryEngineApi>,
 }
 
 impl Planner {
@@ -117,6 +136,7 @@ impl Planner {
             orchestrator: deps.orchestrator,
             policies: deps.policies,
             permissions: deps.permissions,
+            memory: deps.memory,
         }
     }
 
@@ -150,6 +170,203 @@ impl Planner {
         self.reasoning.is_implemented()
     }
 
+    /// Ask the Memory Engine for relevant memories.
+    ///
+    /// The Planner requests memory; it never reads the Knowledge Store directly.
+    pub fn retrieve_memory(&self, query: &MemoryQuery) -> JaymiResult<Vec<MemoryRecord>> {
+        self.ensure_ready()?;
+        self.memory.retrieve(query)
+    }
+
+    /// Ask the Memory Engine to assemble only relevant memories for a request.
+    pub fn assemble_memory_context(
+        &self,
+        request: &AssembleContextRequest,
+    ) -> JaymiResult<AssembledMemoryContext> {
+        self.ensure_ready()?;
+        self.memory.assemble_context(request)
+    }
+
+    /// Store an intentional memory through the Memory Engine.
+    pub fn store_memory(&self, request: &StoreMemoryRequest) -> JaymiResult<MemoryRecord> {
+        self.ensure_ready()?;
+        self.memory.store(request)
+    }
+
+    /// Forget a memory through the Memory Engine.
+    pub fn forget_memory(&self, memory_id: &str) -> JaymiResult<()> {
+        self.ensure_ready()?;
+        self.memory.forget(memory_id)
+    }
+
+    /// Promote a memory up the durability ladder (intentional only).
+    pub fn promote_memory(
+        &self,
+        request: &PromoteMemoryRequest,
+    ) -> JaymiResult<MemoryRecord> {
+        self.ensure_ready()?;
+        self.memory.promote(request)
+    }
+
+    /// Ask the Memory Engine for promotion suggestions (never applies them).
+    pub fn suggest_memory_promotions(
+        &self,
+        query: &PromotionSuggestQuery,
+    ) -> JaymiResult<Vec<PromotionSuggestion>> {
+        self.ensure_ready()?;
+        self.memory.suggest_promotions(query)
+    }
+
+    /// Decide whether to ask the user about promotion suggestions.
+    pub fn decide_promotion_ask(
+        &self,
+        suggestions: &[PromotionSuggestion],
+    ) -> PromotionAskDecision {
+        PromotionAskDecision::from_suggestions(suggestions)
+    }
+
+    /// Archive a conversation through the Memory Engine.
+    pub fn archive_conversation(
+        &self,
+        request: &ArchiveConversationRequest,
+    ) -> JaymiResult<ConversationArchive> {
+        self.ensure_ready()?;
+        self.memory.archive_conversation(request)
+    }
+
+    /// Create a persisted conversation through the Memory Engine.
+    pub fn create_conversation(
+        &self,
+        request: &CreateConversationRequest,
+    ) -> JaymiResult<ConversationMeta> {
+        self.ensure_ready()?;
+        self.memory.create_conversation(request)
+    }
+
+    /// Append a message to a conversation through the Memory Engine.
+    pub fn append_message(
+        &self,
+        request: &AppendMessageRequest,
+    ) -> JaymiResult<ConversationMessage> {
+        self.ensure_ready()?;
+        self.memory.append_message(request)
+    }
+
+    /// Load an entire conversation through the Memory Engine.
+    pub fn load_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> JaymiResult<Option<Conversation>> {
+        self.ensure_ready()?;
+        self.memory.load_conversation(conversation_id)
+    }
+
+    /// Register a project for memory attachment.
+    pub fn register_project(
+        &self,
+        request: &RegisterProjectRequest,
+    ) -> JaymiResult<ProjectMeta> {
+        self.ensure_ready()?;
+        self.memory.register_project(request)
+    }
+
+    /// Activate a project for automatic memory retrieval.
+    pub fn set_active_project(
+        &self,
+        project_id: Option<&str>,
+    ) -> JaymiResult<Option<ProjectMeta>> {
+        self.ensure_ready()?;
+        self.memory.set_active_project(project_id)
+    }
+
+    /// Activate a conversation for memory context assembly.
+    pub fn set_active_conversation(&self, conversation_id: Option<&str>) -> JaymiResult<()> {
+        self.ensure_ready()?;
+        self.memory.set_active_conversation(conversation_id)
+    }
+
+    /// Store categorized project memory.
+    pub fn store_project_memory(
+        &self,
+        request: &StoreProjectMemoryRequest,
+    ) -> JaymiResult<MemoryRecord> {
+        self.ensure_ready()?;
+        self.memory.store_project_memory(request)
+    }
+
+    /// Restore project context through the Memory Engine.
+    pub fn restore_project_context(&self, project_id: &str) -> JaymiResult<ProjectContext> {
+        self.ensure_ready()?;
+        self.memory.restore_project_context(project_id)
+    }
+
+    /// Create an intentional personal preference through the Memory Engine.
+    pub fn create_personal_memory(
+        &self,
+        request: &CreatePersonalMemoryRequest,
+    ) -> JaymiResult<MemoryRecord> {
+        self.ensure_ready()?;
+        self.memory.create_personal_memory(request)
+    }
+
+    /// Update a personal preference through the Memory Engine.
+    pub fn update_personal_memory(
+        &self,
+        request: &UpdatePersonalMemoryRequest,
+    ) -> JaymiResult<MemoryRecord> {
+        self.ensure_ready()?;
+        self.memory.update_personal_memory(request)
+    }
+
+    /// Delete a personal preference through the Memory Engine.
+    pub fn delete_personal_memory(&self, memory_id: &str) -> JaymiResult<()> {
+        self.ensure_ready()?;
+        self.memory.delete_personal_memory(memory_id)
+    }
+
+    /// Load active personal preferences through the Memory Engine.
+    pub fn personal_context(&self) -> JaymiResult<PersonalContext> {
+        self.ensure_ready()?;
+        self.memory.personal_context()
+    }
+
+    fn ensure_ready(&self) -> JaymiResult<()> {
+        if self.initialized {
+            Ok(())
+        } else {
+            Err(JaymiError::new("planner is not initialized"))
+        }
+    }
+
+    fn handle_continue_project(&self, name: &str) -> JaymiResult<PlannerResponse> {
+        let Some(project) = self.memory.find_project_by_name(name)? else {
+            return Ok(PlannerResponse {
+                content: format!(
+                    "No project named \"{name}\" is registered. Register the project before continuing."
+                ),
+                ..PlannerResponse::default()
+            });
+        };
+        self.memory
+            .set_active_project(Some(project.id.as_str()))?;
+        let context = self.memory.restore_project_context(project.id.as_str())?;
+        jaymi_logging::info(
+            "planner",
+            format!(
+                "restored project context id={} name={} entries={}",
+                context.project_id,
+                context.name,
+                context.entry_count()
+            ),
+        );
+        let content = format_project_context_summary(&context);
+        Ok(PlannerResponse {
+            content,
+            project_context: Some(context),
+            ..PlannerResponse::default()
+        })
+    }
+
     /// Process a user request through the architectural pipeline.
     ///
     /// Flow for tool-backed intents:
@@ -176,7 +393,54 @@ impl Planner {
             ),
         );
 
+        // RetrieveMemory stage — Memory Engine assembles only relevant memories.
+        let memory_context = self.assemble_memory_context(&AssembleContextRequest {
+            text: request.content.clone(),
+            conversation_id: self.memory.active_conversation_id(),
+            project_id: None,
+            limit: Some(12),
+            ..AssembleContextRequest::default()
+        })?;
+        let memories = memory_context.records();
+        jaymi_logging::info(
+            "planner",
+            format!(
+                "assembled {} relevant memories (candidates={} truncated={})",
+                memories.len(),
+                memory_context.candidate_count,
+                memory_context.truncated
+            ),
+        );
+
+        // Memory Engine suggests promotions; Planner never auto-applies them.
+        let promotion_suggestions = self.suggest_memory_promotions(&PromotionSuggestQuery {
+            conversation_id: self.memory.active_conversation_id(),
+            project_id: self.memory.active_project_id(),
+            min_importance: None,
+            limit: Some(5),
+        })?;
+        let promotion_ask = self.decide_promotion_ask(&promotion_suggestions);
+        if !promotion_suggestions.is_empty() {
+            jaymi_logging::info(
+                "planner",
+                format!(
+                    "promotion suggestions={} ask={:?}",
+                    promotion_suggestions.len(),
+                    promotion_ask
+                ),
+            );
+        }
+
         let intent = self.decision.determine_intent(&request);
+
+        if let Intent::ContinueProject { name } = &intent {
+            let mut response = self.handle_continue_project(name)?;
+            response.promotion_suggestions = promotion_suggestions;
+            response.promotion_ask = promotion_ask;
+            response.memory_context = Some(memory_context);
+            return Ok(response);
+        }
+
         let Some(capability) = self.decision.required_capability(&intent) else {
             jaymi_logging::warn(
                 "planner",
@@ -184,6 +448,9 @@ impl Planner {
             );
             return Ok(PlannerResponse {
                 content: "Unsupported request. Try: list <directory>, read <file>, search <query>, index <path>, or ask what files exist".to_string(),
+                promotion_suggestions,
+                promotion_ask,
+                memory_context: Some(memory_context),
                 ..PlannerResponse::default()
             });
         };
@@ -212,6 +479,7 @@ impl Planner {
                 self.handle_search_knowledge(capability, request)
             }
             Intent::IndexRoots { path } => self.handle_index_roots(capability, path),
+            Intent::ContinueProject { .. } => unreachable!("continue project handled earlier"),
             Intent::Unknown => {
                 jaymi_logging::warn("planner", "unknown intent after capability mapping");
                 Ok(PlannerResponse {
@@ -219,6 +487,16 @@ impl Planner {
                     ..PlannerResponse::default()
                 })
             }
+        };
+
+        let result = match result {
+            Ok(mut response) => {
+                response.promotion_suggestions = promotion_suggestions;
+                response.promotion_ask = promotion_ask;
+                response.memory_context = Some(memory_context);
+                Ok(response)
+            }
+            Err(error) => Err(error),
         };
 
         match &result {
@@ -287,6 +565,10 @@ impl Planner {
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
             blocked: false,
+            project_context: None,
+            promotion_suggestions: Vec::new(),
+            promotion_ask: PromotionAskDecision::Defer,
+            memory_context: None,
         })
     }
 
@@ -337,6 +619,10 @@ impl Planner {
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
             blocked: false,
+            project_context: None,
+            promotion_suggestions: Vec::new(),
+            promotion_ask: PromotionAskDecision::Defer,
+            memory_context: None,
         })
     }
 
@@ -390,6 +676,10 @@ impl Planner {
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
             blocked: false,
+            project_context: None,
+            promotion_suggestions: Vec::new(),
+            promotion_ask: PromotionAskDecision::Defer,
+            memory_context: None,
         })
     }
 
@@ -440,6 +730,10 @@ impl Planner {
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
             blocked: false,
+            project_context: None,
+            promotion_suggestions: Vec::new(),
+            promotion_ask: PromotionAskDecision::Defer,
+            memory_context: None,
         })
     }
 
@@ -488,6 +782,10 @@ impl Planner {
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
             blocked: false,
+            project_context: None,
+            promotion_suggestions: Vec::new(),
+            promotion_ask: PromotionAskDecision::Defer,
+            memory_context: None,
         })
     }
 
@@ -653,6 +951,20 @@ struct PreparedExecution {
     blocked_response: Option<PlannerResponse>,
 }
 
+fn format_project_context_summary(context: &ProjectContext) -> String {
+    format!(
+        "Restored project \"{}\". conversations={} architecture_decisions={} tasks={} coding_preferences={} important_files={} milestones={} linked_conversations={}",
+        context.name,
+        context.conversations.len(),
+        context.architecture_decisions.len(),
+        context.tasks.len(),
+        context.coding_preferences.len(),
+        context.important_files.len(),
+        context.milestones.len(),
+        context.conversation_ids.len()
+    )
+}
+
 fn truncate_for_log(value: &str) -> String {
     const MAX: usize = 120;
     let trimmed = value.trim();
@@ -737,6 +1049,7 @@ mod tests {
     use jaymi_core::{EntryType, FileType, Lifecycle};
     use jaymi_database::Database;
     use jaymi_knowledge::SqliteKnowledgeStore;
+    use jaymi_memory_engine::{InMemoryMemoryStore, MemoryEngine};
     use jaymi_parsers::default_registry;
     use jaymi_permissions::PermissionDecision;
     use jaymi_providers::{FilesystemProvider, Provider, FILESYSTEM_PROVIDER_ID};
@@ -749,6 +1062,12 @@ mod tests {
     use std::io::Write;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn test_memory_engine() -> Arc<dyn MemoryEngineApi> {
+        let mut engine = MemoryEngine::with_store(Arc::new(InMemoryMemoryStore::new()));
+        engine.initialize().unwrap();
+        Arc::new(engine)
+    }
 
     fn planner_with_search_and_read() -> Planner {
         planner_with_tools(|tools, filesystem, content_api| {
@@ -823,6 +1142,7 @@ mod tests {
             orchestrator,
             policies: Arc::new(policies),
             permissions: Arc::new(permissions),
+            memory: test_memory_engine(),
         });
         planner.initialize().unwrap();
         planner

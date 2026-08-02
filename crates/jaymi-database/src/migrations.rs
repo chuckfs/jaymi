@@ -5,7 +5,7 @@ use rusqlite::{params, Connection};
 use jaymi_core::{JaymiError, JaymiResult};
 
 /// Latest schema version applied by this build.
-pub const CURRENT_SCHEMA_VERSION: u32 = 9;
+pub const CURRENT_SCHEMA_VERSION: u32 = 12;
 
 struct Migration {
     version: u32,
@@ -184,6 +184,116 @@ const MIGRATIONS: &[Migration] = &[
         );
     "#,
     },
+    Migration {
+        version: 10,
+        sql: r#"
+        CREATE TABLE memories (
+            memory_id TEXT PRIMARY KEY NOT NULL,
+            scope TEXT NOT NULL,
+            summary TEXT NOT NULL,
+            content TEXT NOT NULL,
+            conversation_id TEXT,
+            project_id TEXT,
+            importance INTEGER NOT NULL DEFAULT 50,
+            confidence INTEGER NOT NULL DEFAULT 50,
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            source TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            archived_at INTEGER
+        );
+
+        CREATE INDEX idx_memories_scope_status ON memories(scope, status);
+        CREATE INDEX idx_memories_project ON memories(project_id);
+        CREATE INDEX idx_memories_conversation ON memories(conversation_id);
+
+        CREATE TABLE conversation_archives (
+            archive_id TEXT PRIMARY KEY NOT NULL,
+            conversation_id TEXT NOT NULL,
+            title TEXT,
+            content TEXT NOT NULL,
+            archived_at INTEGER NOT NULL,
+            promoted_memory_id TEXT
+        );
+
+        CREATE INDEX idx_conversation_archives_conversation
+            ON conversation_archives(conversation_id);
+    "#,
+    },
+    Migration {
+        version: 11,
+        sql: r#"
+        CREATE TABLE conversations (
+            conversation_id TEXT PRIMARY KEY NOT NULL,
+            title TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active'
+        );
+
+        CREATE TABLE conversation_messages (
+            message_id TEXT PRIMARY KEY NOT NULL,
+            conversation_id TEXT NOT NULL,
+            role TEXT NOT NULL,
+            content TEXT NOT NULL,
+            created_at INTEGER NOT NULL,
+            sequence_no INTEGER NOT NULL,
+            FOREIGN KEY (conversation_id) REFERENCES conversations(conversation_id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_conversation_messages_order
+            ON conversation_messages(conversation_id, sequence_no);
+
+        CREATE TABLE conversation_attachments (
+            attachment_id TEXT PRIMARY KEY NOT NULL,
+            message_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            name TEXT,
+            uri TEXT,
+            mime_type TEXT,
+            size_bytes INTEGER,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            FOREIGN KEY (message_id) REFERENCES conversation_messages(message_id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_conversation_attachments_message
+            ON conversation_attachments(message_id);
+
+        CREATE TABLE conversation_references (
+            reference_id TEXT PRIMARY KEY NOT NULL,
+            message_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            target_id TEXT,
+            label TEXT,
+            uri TEXT,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            FOREIGN KEY (message_id) REFERENCES conversation_messages(message_id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_conversation_references_message
+            ON conversation_references(message_id);
+    "#,
+    },
+    Migration {
+        version: 12,
+        sql: r#"
+        CREATE TABLE projects (
+            project_id TEXT PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL,
+            slug TEXT NOT NULL UNIQUE,
+            root_path TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active'
+        );
+        CREATE INDEX idx_projects_name ON projects(name);
+        CREATE INDEX idx_projects_slug ON projects(slug);
+
+        ALTER TABLE memories ADD COLUMN kind TEXT;
+        CREATE INDEX idx_memories_project_kind ON memories(project_id, kind);
+
+        ALTER TABLE conversations ADD COLUMN project_id TEXT;
+        CREATE INDEX idx_conversations_project ON conversations(project_id);
+    "#,
+    },
 ];
 
 /// Read the highest applied schema version, or `0` when uninitialized.
@@ -253,6 +363,13 @@ pub fn verify_schema(connection: &Connection) -> JaymiResult<()> {
         "content_fts",
         "content_embeddings",
         "embedding_queue",
+        "memories",
+        "conversation_archives",
+        "conversations",
+        "conversation_messages",
+        "conversation_attachments",
+        "conversation_references",
+        "projects",
     ] {
         let exists: i64 = connection
             .query_row(

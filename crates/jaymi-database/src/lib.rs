@@ -7,16 +7,23 @@
 #![forbid(unsafe_code)]
 
 pub mod content;
+pub mod conversations;
 pub mod embeddings;
 pub mod entities;
 pub mod events;
 pub mod inventory;
+pub mod memory;
 pub mod migrations;
+pub mod projects;
 pub mod relationships;
 
 pub use content::{
     build_fts_and_query, build_fts_match_query, ContentCounts, ContentFtsHit, ContentMetadataHit,
     ContentMetadataQuery, ContentRecord,
+};
+pub use conversations::{
+    ConversationAttachmentRecord, ConversationMessageRecord, ConversationRecord,
+    ConversationReferenceRecord, LoadedConversationRecord, LoadedMessageRecord,
 };
 pub use embeddings::{
     blob_to_vector, content_embedding_hash, vector_to_blob, EmbeddingCounts, EmbeddingQueueItem,
@@ -26,6 +33,8 @@ pub use inventory::{
     DiscoveredCounts, DiscoveredItemRecord, DiscoveredQuery, DiscoveryScanInput,
     DiscoveryScanRecord, DiscoverySort,
 };
+pub use memory::{ConversationArchiveRecord, MemoryRecord, MemorySearchQuery};
+pub use projects::ProjectRecord;
 
 use std::fmt;
 use std::fs;

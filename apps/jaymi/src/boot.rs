@@ -19,7 +19,14 @@ use jaymi_database::Database;
 use jaymi_discovery::{DiscoveryEngine, FilesystemWatcher};
 use jaymi_knowledge::{KnowledgeStore, SqliteKnowledgeStore};
 use jaymi_logging::Logger;
-use jaymi_memory::MemoryEngine;
+use jaymi_memory::{
+    AppendMessageRequest, ArchiveConversationRequest, AssembleContextRequest, AssembledMemoryContext,
+    Conversation, ConversationMessage, ConversationMeta, CreateConversationRequest,
+    CreatePersonalMemoryRequest, MemoryEngine, MemoryEngineApi, MemoryQuery, MemoryRecord,
+    PersonalContext, ProjectContext, ProjectMeta, PromoteMemoryRequest, PromotionAskDecision,
+    PromotionSuggestQuery, PromotionSuggestion, RegisterProjectRequest, SqliteMemoryStore,
+    StoreMemoryRequest, StoreProjectMemoryRequest, UpdatePersonalMemoryRequest,
+};
 use jaymi_parsers::{default_registry, ParserRegistry};
 use jaymi_permissions::PermissionEngine;
 use jaymi_planner::{Planner, PlannerDeps, PlannerResponse};
@@ -141,7 +148,12 @@ impl Application {
         let permissions = Arc::new(permissions);
         self.container.register(Arc::clone(&permissions));
 
-        self.boot_service(MemoryEngine::new())?;
+        // Memory Engine — centralized intentional memory (Planner never touches storage).
+        let mut memory = MemoryEngine::new(Arc::new(SqliteMemoryStore::new(Arc::clone(&database))));
+        self.initialize_service(&mut memory)?;
+        let memory = Arc::new(memory);
+        self.container.register(Arc::clone(&memory));
+
         self.boot_service(ContextEngine::new())?;
 
         // Capability registry + Layer 0 and Layer 1 capabilities.
@@ -274,6 +286,7 @@ impl Application {
             orchestrator,
             policies,
             permissions,
+            memory: Arc::clone(&memory) as Arc<dyn MemoryEngineApi>,
         });
         self.initialize_service(&mut planner)?;
         self.container.register(planner);
@@ -379,6 +392,171 @@ impl Application {
         planner.handle(UserRequest::search(request))
     }
 
+    /// Ask the Planner to retrieve memories through the Memory Engine.
+    pub fn retrieve_memory(&self, query: &MemoryQuery) -> JaymiResult<Vec<MemoryRecord>> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.retrieve_memory(query)
+    }
+
+    /// Ask the Memory Engine (via Planner) to assemble relevant context.
+    pub fn assemble_memory_context(
+        &self,
+        request: &AssembleContextRequest,
+    ) -> JaymiResult<AssembledMemoryContext> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.assemble_memory_context(request)
+    }
+
+    /// Ask the Planner to store an intentional memory.
+    pub fn store_memory(&self, request: &StoreMemoryRequest) -> JaymiResult<MemoryRecord> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.store_memory(request)
+    }
+
+    /// Ask the Planner to forget a memory.
+    pub fn forget_memory(&self, memory_id: &str) -> JaymiResult<()> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.forget_memory(memory_id)
+    }
+
+    /// Ask the Planner to promote a memory up the durability ladder.
+    pub fn promote_memory(
+        &self,
+        request: &PromoteMemoryRequest,
+    ) -> JaymiResult<MemoryRecord> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.promote_memory(request)
+    }
+
+    /// Ask the Memory Engine (via Planner) for promotion suggestions.
+    pub fn suggest_memory_promotions(
+        &self,
+        query: &PromotionSuggestQuery,
+    ) -> JaymiResult<Vec<PromotionSuggestion>> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.suggest_memory_promotions(query)
+    }
+
+    /// Decide whether to ask the user about promotion suggestions.
+    pub fn decide_promotion_ask(
+        &self,
+        suggestions: &[PromotionSuggestion],
+    ) -> JaymiResult<PromotionAskDecision> {
+        let planner = self.container.resolve::<Planner>()?;
+        Ok(planner.decide_promotion_ask(suggestions))
+    }
+
+    /// Ask the Planner to archive a conversation.
+    pub fn archive_conversation(
+        &self,
+        request: &ArchiveConversationRequest,
+    ) -> JaymiResult<jaymi_memory::ConversationArchive> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.archive_conversation(request)
+    }
+
+    /// Ask the Planner to create a persisted conversation.
+    pub fn create_conversation(
+        &self,
+        request: &CreateConversationRequest,
+    ) -> JaymiResult<ConversationMeta> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.create_conversation(request)
+    }
+
+    /// Ask the Planner to append a message to a conversation.
+    pub fn append_message(
+        &self,
+        request: &AppendMessageRequest,
+    ) -> JaymiResult<ConversationMessage> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.append_message(request)
+    }
+
+    /// Ask the Planner to load an entire conversation exactly as stored.
+    pub fn load_conversation(
+        &self,
+        conversation_id: &str,
+    ) -> JaymiResult<Option<Conversation>> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.load_conversation(conversation_id)
+    }
+
+    /// Register a project so memory can be attached to it.
+    pub fn register_project(
+        &self,
+        request: &RegisterProjectRequest,
+    ) -> JaymiResult<ProjectMeta> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.register_project(request)
+    }
+
+    /// Activate a project for automatic memory retrieval.
+    pub fn set_active_project(
+        &self,
+        project_id: Option<&str>,
+    ) -> JaymiResult<Option<ProjectMeta>> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.set_active_project(project_id)
+    }
+
+    /// Activate a conversation for memory context assembly.
+    pub fn set_active_conversation(&self, conversation_id: Option<&str>) -> JaymiResult<()> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.set_active_conversation(conversation_id)
+    }
+
+    /// Store categorized project memory through the Planner.
+    pub fn store_project_memory(
+        &self,
+        request: &StoreProjectMemoryRequest,
+    ) -> JaymiResult<MemoryRecord> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.store_project_memory(request)
+    }
+
+    /// Restore project context through the Planner.
+    pub fn restore_project_context(&self, project_id: &str) -> JaymiResult<ProjectContext> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.restore_project_context(project_id)
+    }
+
+    /// Continue working on a named project (restores project memory automatically).
+    pub fn continue_project(&self, name: &str) -> JaymiResult<PlannerResponse> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.handle(UserRequest::new(format!("Continue working on {name}.")))
+    }
+
+    /// Create an intentional personal preference through the Planner.
+    pub fn create_personal_memory(
+        &self,
+        request: &CreatePersonalMemoryRequest,
+    ) -> JaymiResult<MemoryRecord> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.create_personal_memory(request)
+    }
+
+    /// Update a personal preference through the Planner.
+    pub fn update_personal_memory(
+        &self,
+        request: &UpdatePersonalMemoryRequest,
+    ) -> JaymiResult<MemoryRecord> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.update_personal_memory(request)
+    }
+
+    /// Delete a personal preference through the Planner.
+    pub fn delete_personal_memory(&self, memory_id: &str) -> JaymiResult<()> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.delete_personal_memory(memory_id)
+    }
+
+    /// Load active personal preferences through the Planner.
+    pub fn personal_context(&self) -> JaymiResult<PersonalContext> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.personal_context()
+    }
+
     /// Ask the Planner to list active logical collections from the inventory.
     pub fn list_collections(&self) -> JaymiResult<PlannerResponse> {
         self.discover_query(DiscoveryQueryKind::Collections)
@@ -408,7 +586,7 @@ impl Application {
         let watcher = self.container.resolve::<Arc<FilesystemWatcher>>()?;
         let policies = self.container.resolve::<Arc<PolicyEngine>>()?;
         let permissions = self.container.resolve::<Arc<PermissionEngine>>()?;
-        let memory = self.container.resolve::<MemoryEngine>()?;
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
         let capabilities = self.container.resolve::<Arc<CapabilityRegistry>>()?;
         let providers = self.container.resolve::<Arc<ProviderRegistry>>()?;
         let ocr = self.container.resolve::<Arc<PlaceholderOcrProvider>>()?;
@@ -423,7 +601,14 @@ impl Application {
         let config_health = config.health_check();
         let policies_health = policies.health_check();
         let permissions_health = permissions.health_check();
-        let memory_health = memory.health_check();
+        let memory_report = memory.health_check();
+        let memory_status = memory.health().unwrap_or_else(|_| jaymi_memory::MemoryHealth {
+            initialized: memory_report.initialized,
+            healthy: false,
+            version: memory_report.version.clone(),
+            detail: "memory engine health unavailable".into(),
+            statistics: jaymi_memory::MemoryStats::default(),
+        });
         let discovery_health = discovery.health_check();
         let knowledge_health = knowledge.health_check();
         let understanding_health = understanding.health_check();
@@ -866,17 +1051,14 @@ impl Application {
             ),
             SubsystemStatus::new(
                 "Memory Status",
-                if memory_health.initialized {
-                    OperationalStatus::Stub
+                if memory_status.healthy {
+                    OperationalStatus::Operational
+                } else if memory_status.initialized {
+                    OperationalStatus::Degraded
                 } else {
                     OperationalStatus::Unavailable
                 },
-                memory_health
-                    .details
-                    .iter()
-                    .find(|(key, _)| key == "note")
-                    .map(|(_, value)| value.clone())
-                    .unwrap_or_else(|| "memory engine not operational".to_string()),
+                memory_status.detail.clone(),
             ),
             SubsystemStatus::new(
                 "Project Status",
@@ -1019,7 +1201,11 @@ impl Application {
         let _ = self.container.take::<Arc<SqliteKnowledgeStore>>();
 
         shutdown_owned::<ContextEngine>(&mut self.container)?;
-        shutdown_owned::<MemoryEngine>(&mut self.container)?;
+        if let Some(memory) = self.container.take::<Arc<MemoryEngine>>() {
+            if let Ok(mut memory) = Arc::try_unwrap(memory) {
+                memory.shutdown()?;
+            }
+        }
         let _ = self.container.take::<Arc<PermissionEngine>>();
         let _ = self.container.take::<Arc<PolicyEngine>>();
         if let Some(database) = self.container.take::<Arc<Database>>() {
@@ -1123,7 +1309,7 @@ mod tests {
         );
         assert_eq!(
             diagnostics.subsystem("Memory Status").unwrap().status,
-            OperationalStatus::Stub
+            OperationalStatus::Operational
         );
         assert_eq!(
             diagnostics.subsystem("Reasoning Status").unwrap().status,

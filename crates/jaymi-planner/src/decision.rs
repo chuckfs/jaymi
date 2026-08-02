@@ -36,6 +36,11 @@ pub enum Intent {
         /// Optional explicit root; otherwise configured roots are used.
         path: Option<PathBuf>,
     },
+    /// Resume work on a named project and restore its memory context.
+    ContinueProject {
+        /// Project display name (e.g. "Jaymi").
+        name: String,
+    },
     /// Request could not be mapped to a supported intent.
     Unknown,
 }
@@ -85,6 +90,10 @@ impl DecisionEngine {
 
         let content = request.content.trim();
         let lower = content.to_ascii_lowercase();
+
+        if let Some(name) = parse_continue_project(&lower, content) {
+            return Intent::ContinueProject { name };
+        }
 
         if let Some(kind) = parse_discovery_kind(&lower, content) {
             return Intent::DiscoverInventory { kind };
@@ -136,9 +145,37 @@ impl DecisionEngine {
             Intent::ReadFile { .. } => Some(Capability::ReadDocuments),
             Intent::DiscoverInventory { .. } => Some(Capability::Discover),
             Intent::IndexRoots { .. } => Some(Capability::Index),
+            Intent::ContinueProject { .. } => None,
             Intent::Unknown => None,
         }
     }
+}
+
+fn parse_continue_project(lower: &str, original: &str) -> Option<String> {
+    let prefixes = [
+        "continue working on ",
+        "continue on ",
+        "resume working on ",
+        "resume ",
+        "open project ",
+        "switch to project ",
+        "work on ",
+    ];
+    for prefix in prefixes {
+        if let Some(_rest) = lower.strip_prefix(prefix) {
+            if original.len() < prefix.len() {
+                continue;
+            }
+            let name = strip_quotes(&original[prefix.len()..])
+                .trim()
+                .trim_end_matches('.')
+                .to_string();
+            if !name.is_empty() {
+                return Some(name);
+            }
+        }
+    }
+    None
 }
 
 fn parse_search_request(lower: &str, original: &str) -> Option<SearchRequest> {
@@ -453,6 +490,23 @@ mod tests {
                 request: SearchRequest::free_text("x"),
             }),
             Some(Capability::Search)
+        );
+    }
+
+    #[test]
+    fn parses_continue_working_on_project() {
+        let engine = DecisionEngine;
+        assert_eq!(
+            engine.determine_intent(&UserRequest::new("Continue working on Jaymi.")),
+            Intent::ContinueProject {
+                name: "Jaymi".into()
+            }
+        );
+        assert_eq!(
+            engine.required_capability(&Intent::ContinueProject {
+                name: "Jaymi".into()
+            }),
+            None
         );
     }
 

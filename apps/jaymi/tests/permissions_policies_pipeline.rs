@@ -15,6 +15,7 @@ use jaymi_permissions::{
 use jaymi_planner::{Planner, PlannerDeps};
 use jaymi_policies::{ExecutionCandidate, PolicyEngine};
 use jaymi_providers::ProviderRegistry;
+use jaymi_memory_engine::{InMemoryMemoryStore, MemoryEngine, MemoryEngineApi};
 use jaymi_tools::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
     PrivacyMode, Reliability, ResourceCost, ResultType, Tool, ToolInput, ToolMetadata, ToolOutput,
@@ -141,6 +142,11 @@ fn planner_with_only_cloud_search() -> Planner {
         orchestrator: ToolOrchestrator::new(tools),
         policies: Arc::new(policies),
         permissions: Arc::new(permissions),
+        memory: {
+            let mut engine = MemoryEngine::with_store(Arc::new(InMemoryMemoryStore::new()));
+            engine.initialize().unwrap();
+            Arc::new(engine) as Arc<dyn MemoryEngineApi>
+        },
     });
     planner.initialize().unwrap();
     planner

@@ -23,6 +23,8 @@ fn diagnostics_dashboard_reports_honest_subsystem_states() {
         ("Policies", OperationalStatus::Operational),
         ("Providers", OperationalStatus::Operational),
         ("OCR Provider", OperationalStatus::Stub),
+        ("Embedding Provider", OperationalStatus::Operational),
+        ("Embedding Queue", OperationalStatus::Operational),
         ("Capabilities", OperationalStatus::Operational),
         ("Tools", OperationalStatus::Operational),
         ("Parser Registry", OperationalStatus::Operational),
@@ -33,7 +35,7 @@ fn diagnostics_dashboard_reports_honest_subsystem_states() {
         ("Content Intelligence", OperationalStatus::Operational),
         ("Search Engine", OperationalStatus::Operational),
         ("Watcher Status", OperationalStatus::Operational),
-        ("Memory Status", OperationalStatus::Stub),
+        ("Memory Status", OperationalStatus::Operational),
         ("Project Status", OperationalStatus::NotImplemented),
         ("Reasoning Status", OperationalStatus::NotImplemented),
     ];
@@ -50,7 +52,8 @@ fn diagnostics_dashboard_reports_honest_subsystem_states() {
     let rendered = snapshot.render_dashboard();
     assert!(rendered.contains("Jaymi Diagnostics"));
     assert!(rendered.contains("Memory Status"));
-    assert!(rendered.contains("Stub"));
+    assert!(rendered.contains("active="));
+    assert!(rendered.contains("Stub"));  // OCR Provider remains stub
     assert!(rendered.contains("Not implemented"));
     assert!(
         !rendered.contains("Healthy"),
