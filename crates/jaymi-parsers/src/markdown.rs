@@ -66,15 +66,17 @@ fn first_atx_heading(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixtures;
 
     #[test]
     fn extracts_heading_title() {
         let parser = MarkdownParser;
-        let source = b"# Architecture\n\nBody text.\n";
-        let document = parser.parse(Path::new("ARCHITECTURE.md"), source).unwrap();
+        let document = parser
+            .parse(Path::new("ARCHITECTURE.md"), fixtures::markdown())
+            .unwrap();
         assert_eq!(document.file_type, FileType::Markdown);
-        assert_eq!(document.title.as_deref(), Some("Architecture"));
-        assert!(document.text.contains("Body text."));
+        assert_eq!(document.title.as_deref(), Some("Fixture Title"));
+        assert!(document.text.contains("Body paragraph."));
         assert_eq!(document.metadata.get("title_source"), Some("atx_heading"));
     }
 

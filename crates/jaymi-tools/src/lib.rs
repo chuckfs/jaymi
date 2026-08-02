@@ -8,8 +8,10 @@
 pub mod categories;
 pub mod metadata;
 pub mod orchestrator;
+pub mod query_inventory;
 pub mod read_file;
 pub mod registry;
+pub mod scan_filesystem;
 pub mod search_files;
 pub mod tool;
 
@@ -18,8 +20,10 @@ pub use metadata::{
     PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata,
 };
 pub use orchestrator::ToolOrchestrator;
+pub use query_inventory::{QueryInventoryTool, QUERY_INVENTORY_TOOL_ID};
 pub use read_file::{ReadFileTool, READ_FILE_TOOL_ID};
 pub use registry::ToolRegistry;
+pub use scan_filesystem::{ScanFilesystemTool, SCAN_FILESYSTEM_TOOL_ID};
 pub use search_files::{SearchFilesTool, SEARCH_FILES_TOOL_ID};
 pub use tool::{Tool, ToolInput, ToolOutput};
 

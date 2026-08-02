@@ -10,6 +10,12 @@ authors.workspace = true
 [dependencies]
 jaymi-capabilities = { workspace = true }
 jaymi-core = { workspace = true }
+jaymi-discovery = { workspace = true }
+jaymi-knowledge = { workspace = true }
 jaymi-parsers = { workspace = true }
 jaymi-providers = { workspace = true }
 jaymi-logging = { workspace = true }
+jaymi-understanding = { workspace = true }
+
+[dev-dependencies]
+jaymi-database = { workspace = true }

@@ -1,5 +1,6 @@
 //! Shared helpers for format parsers.
 
+use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -31,6 +32,51 @@ pub fn title_from_path(path: &Path) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// Insert filesystem creation/modification timestamps when available.
+///
+/// Does not overwrite dates already supplied by the format (PDF Info, DOCX
+/// core properties, etc.).
+pub fn insert_filesystem_dates(metadata: &mut DocumentMetadata, path: &Path) {
+    if let Ok(meta) = fs::metadata(path) {
+        if metadata.get("modification_date").is_none() {
+            if let Ok(modified) = meta.modified() {
+                if let Some(secs) = system_time_secs(modified) {
+                    metadata.insert("modification_date", secs.to_string());
+                    metadata.insert("modification_date_source", "filesystem");
+                }
+            }
+        }
+        if metadata.get("creation_date").is_none() {
+            if let Ok(created) = meta.created() {
+                if let Some(secs) = system_time_secs(created) {
+                    metadata.insert("creation_date", secs.to_string());
+                    metadata.insert("creation_date_source", "filesystem");
+                }
+            }
+        }
+    }
+}
+
+/// Insert optional author metadata when present.
+pub fn insert_author(metadata: &mut DocumentMetadata, author: Option<&str>) {
+    if let Some(author) = author.map(str::trim).filter(|value| !value.is_empty()) {
+        metadata.insert("author", author);
+    }
+}
+
+/// Insert page count when applicable.
+pub fn insert_page_count(metadata: &mut DocumentMetadata, pages: Option<u64>) {
+    if let Some(pages) = pages {
+        metadata.insert("page_count", pages.to_string());
+    }
+}
+
+fn system_time_secs(time: SystemTime) -> Option<u64> {
+    time.duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|duration| duration.as_secs())
+}
+
 /// Assemble a [`Document`] with common fields filled in.
 pub fn build_document(
     path: &Path,
@@ -42,6 +88,7 @@ pub fn build_document(
 ) -> Document {
     metadata.insert("byte_length", text.len().to_string());
     metadata.insert("extension", extension_of(path));
+    insert_filesystem_dates(&mut metadata, path);
     Document {
         id: document_id(path, parser_id),
         path: path.to_path_buf(),

@@ -101,6 +101,11 @@ impl ParserRegistry {
             "txt" => Some(FileType::PlainText),
             "md" | "markdown" => Some(FileType::Markdown),
             "json" => Some(FileType::Json),
+            "pdf" => Some(FileType::Pdf),
+            "docx" => Some(FileType::Docx),
+            "png" | "jpg" | "jpeg" | "gif" | "webp" | "tif" | "tiff" | "bmp" => {
+                Some(FileType::Image)
+            }
             other => Some(FileType::Other(other.to_string())),
         }
     }
@@ -164,8 +169,11 @@ mod tests {
         registry.register(Arc::new(PlainTextParser)).unwrap();
         registry.register(Arc::new(MarkdownParser)).unwrap();
         registry.register(Arc::new(JsonParser)).unwrap();
+        registry.register(Arc::new(crate::PdfParser)).unwrap();
+        registry.register(Arc::new(crate::DocxParser)).unwrap();
+        registry.register(Arc::new(crate::ImageParser)).unwrap();
 
-        assert_eq!(registry.len(), 3);
+        assert_eq!(registry.len(), 6);
         assert_eq!(
             registry.resolve(&FileType::PlainText).unwrap().id(),
             "plain_text"
@@ -175,6 +183,9 @@ mod tests {
             "markdown"
         );
         assert_eq!(registry.resolve(&FileType::Json).unwrap().id(), "json");
+        assert_eq!(registry.resolve(&FileType::Pdf).unwrap().id(), "pdf");
+        assert_eq!(registry.resolve(&FileType::Docx).unwrap().id(), "docx");
+        assert_eq!(registry.resolve(&FileType::Image).unwrap().id(), "image");
     }
 
     #[test]
@@ -193,7 +204,23 @@ mod tests {
         );
         assert_eq!(
             ParserRegistry::detect_type(Path::new("doc.pdf")),
-            Some(FileType::Other("pdf".to_string()))
+            Some(FileType::Pdf)
+        );
+        assert_eq!(
+            ParserRegistry::detect_type(Path::new("memo.docx")),
+            Some(FileType::Docx)
+        );
+        assert_eq!(
+            ParserRegistry::detect_type(Path::new("photo.png")),
+            Some(FileType::Image)
+        );
+        assert_eq!(
+            ParserRegistry::detect_type(Path::new("shot.jpeg")),
+            Some(FileType::Image)
+        );
+        assert_eq!(
+            ParserRegistry::detect_type(Path::new("binary.bin")),
+            Some(FileType::Other("bin".to_string()))
         );
     }
 

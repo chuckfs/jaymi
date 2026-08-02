@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod collection_names;
 pub mod container;
 pub mod document;
 pub mod error;
@@ -17,6 +18,9 @@ pub mod request;
 pub mod result;
 pub mod state;
 
+pub use collection_names::{
+    is_known_collection_name, parse_collection_slug, COLLECTION_SLUGS,
+};
 pub use container::ServiceContainer;
 pub use document::{Document, DocumentMetadata, FileType};
 pub use error::JaymiError;
@@ -24,6 +28,6 @@ pub use file_entry::{EntryType, FileEntry};
 pub use health::HealthReport;
 pub use id::EntityId;
 pub use lifecycle::Lifecycle;
-pub use request::UserRequest;
+pub use request::{DiscoveryQueryKind, UserRequest};
 pub use result::JaymiResult;
 pub use state::AppState;

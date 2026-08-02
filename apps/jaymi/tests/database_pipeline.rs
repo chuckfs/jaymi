@@ -24,7 +24,7 @@ fn first_boot_creates_database_and_runs_migrations() {
     assert!(app.state().is_ready());
     assert!(db_path.exists());
 
-    let database = app.container().resolve::<Database>().expect("database");
+    let database = app.container().resolve::<std::sync::Arc<Database>>().expect("database");
     assert!(database.is_connected());
     assert_eq!(database.schema_version(), CURRENT_SCHEMA_VERSION);
     assert_eq!(database.migration_status(), &MigrationStatus::Applied);
@@ -65,13 +65,13 @@ fn reconnect_works_after_shutdown() {
     assert!(db_path.exists());
     let first_version = app
         .container()
-        .resolve::<Database>()
+        .resolve::<std::sync::Arc<Database>>()
         .expect("database")
         .schema_version();
     app.shutdown().expect("shutdown");
 
     let app = Application::boot_with_data_dir(&data_dir).expect("second boot");
-    let database = app.container().resolve::<Database>().expect("database");
+    let database = app.container().resolve::<std::sync::Arc<Database>>().expect("database");
     assert!(database.is_connected());
     assert_eq!(database.schema_version(), first_version);
     assert_eq!(database.schema_version(), CURRENT_SCHEMA_VERSION);

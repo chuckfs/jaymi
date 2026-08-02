@@ -20,4 +20,9 @@ pub trait FileParser: Send + Sync {
 
     /// Parse file bytes from `path` into a unified document.
     fn parse(&self, path: &Path, bytes: &[u8]) -> JaymiResult<Document>;
+
+    /// Parser package/version string stored with normalized content.
+    fn version(&self) -> &'static str {
+        env!("CARGO_PKG_VERSION")
+    }
 }

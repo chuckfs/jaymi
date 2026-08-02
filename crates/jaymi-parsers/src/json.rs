@@ -9,8 +9,8 @@ use crate::util::{build_document, decode_utf8, title_from_path};
 
 /// Parser for JSON documents.
 ///
-/// Validates UTF-8 JSON syntax at a shallow level and stores the original text.
-/// No schema inference or semantic analysis is performed.
+/// Validates JSON with `serde_json` and stores the original text. No schema
+/// inference or semantic analysis is performed.
 #[derive(Debug, Default)]
 pub struct JsonParser;
 
@@ -34,13 +34,17 @@ impl FileParser for JsonParser {
             return Err(JaymiError::new("JSON file is empty"));
         }
 
-        let kind = classify_json(trimmed)?;
-        let title = extract_json_title(trimmed).or_else(|| title_from_path(path));
+        let value: serde_json::Value = serde_json::from_str(trimmed).map_err(|error| {
+            JaymiError::new(format!("invalid JSON: {error}"))
+        })?;
+
+        let kind = json_kind(&value);
+        let title = extract_json_title(&value).or_else(|| title_from_path(path));
 
         let mut metadata = DocumentMetadata::new();
         metadata.insert("encoding", "utf-8");
         metadata.insert("json_kind", kind);
-        metadata.insert("valid_json_shape", "true");
+        metadata.insert("valid_json", "true");
 
         Ok(build_document(
             path,
@@ -53,56 +57,24 @@ impl FileParser for JsonParser {
     }
 }
 
-fn classify_json(text: &str) -> JaymiResult<&'static str> {
-    let trimmed = text.trim_start();
-    if trimmed.starts_with('{') {
-        return Ok("object");
+fn json_kind(value: &serde_json::Value) -> &'static str {
+    match value {
+        serde_json::Value::Object(_) => "object",
+        serde_json::Value::Array(_) => "array",
+        serde_json::Value::String(_) => "string",
+        serde_json::Value::Bool(_) => "boolean",
+        serde_json::Value::Number(_) => "number",
+        serde_json::Value::Null => "null",
     }
-    if trimmed.starts_with('[') {
-        return Ok("array");
-    }
-    if trimmed.starts_with('"') {
-        return Ok("string");
-    }
-    if trimmed.starts_with("true") || trimmed.starts_with("false") {
-        return Ok("boolean");
-    }
-    if trimmed.starts_with("null") {
-        return Ok("null");
-    }
-    if trimmed
-        .chars()
-        .next()
-        .is_some_and(|ch| ch.is_ascii_digit() || ch == '-')
-    {
-        return Ok("number");
-    }
-    Err(JaymiError::new(format!(
-        "file does not look like JSON (starts with '{}')",
-        trimmed.chars().next().unwrap_or('?')
-    )))
 }
 
-fn extract_json_title(text: &str) -> Option<String> {
-    // Lightweight extraction: "title": "..." or "name": "..."
-    for key in ["\"title\"", "\"name\""] {
-        if let Some(index) = text.find(key) {
-            let after = &text[index + key.len()..];
-            let after = after.trim_start().strip_prefix(':')?.trim_start();
-            if let Some(rest) = after.strip_prefix('"') {
-                let mut value = String::new();
-                let mut chars = rest.chars();
-                while let Some(ch) = chars.next() {
-                    match ch {
-                        '\\' => {
-                            if let Some(escaped) = chars.next() {
-                                value.push(escaped);
-                            }
-                        }
-                        '"' => return Some(value),
-                        other => value.push(other),
-                    }
-                }
+fn extract_json_title(value: &serde_json::Value) -> Option<String> {
+    let object = value.as_object()?;
+    for key in ["title", "name"] {
+        if let Some(serde_json::Value::String(title)) = object.get(key) {
+            let trimmed = title.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
             }
         }
     }
@@ -112,16 +84,19 @@ fn extract_json_title(text: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixtures;
 
     #[test]
     fn parses_json_object_with_title() {
         let parser = JsonParser;
-        let source = br#"{ "title": "Config", "enabled": true }"#;
-        let document = parser.parse(Path::new("config.json"), source).unwrap();
+        let document = parser
+            .parse(Path::new("config.json"), fixtures::json())
+            .unwrap();
         assert_eq!(document.file_type, FileType::Json);
-        assert_eq!(document.title.as_deref(), Some("Config"));
+        assert_eq!(document.title.as_deref(), Some("Fixture JSON"));
         assert_eq!(document.metadata.get("json_kind"), Some("object"));
-        assert!(document.text.contains("enabled"));
+        assert!(document.text.contains("tags"));
+        assert!(document.metadata.get("modification_date").is_none()); // path may not exist
     }
 
     #[test]
@@ -135,11 +110,18 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_json_prefix() {
+    fn rejects_invalid_json() {
         let parser = JsonParser;
         let error = parser
-            .parse(Path::new("bad.json"), b"not-json")
+            .parse(Path::new("bad.json"), b"{not-json")
             .unwrap_err();
-        assert!(error.message().contains("does not look like JSON"));
+        assert!(error.message().contains("invalid JSON"));
+    }
+
+    #[test]
+    fn rejects_empty_json() {
+        let parser = JsonParser;
+        let error = parser.parse(Path::new("empty.json"), b"   ").unwrap_err();
+        assert!(error.message().contains("empty"));
     }
 }

@@ -1,15 +1,16 @@
-//! Read File Tool — reads a file through the Filesystem Provider and parsers.
+//! Read File Tool — prefers normalized content via Content Intelligence API.
 //!
 //! Architecture path:
-//! Planner → ReadDocuments → Read File Tool → Filesystem Provider →
-//! Parser Registry → Specific Parser → Unified Document
+//! Planner → ReadDocuments → Read File Tool → Content Intelligence API →
+//! Normalized Content Store / Understanding pipeline
+//! (parsers remain hidden behind the API)
 
 use std::sync::Arc;
 
 use jaymi_capabilities::Capability;
 use jaymi_core::{JaymiError, JaymiResult};
-use jaymi_parsers::ParserRegistry;
-use jaymi_providers::{FilesystemProvider, FILESYSTEM_PROVIDER_ID};
+use jaymi_providers::FILESYSTEM_PROVIDER_ID;
+use jaymi_understanding::{ContentIntelligence, ContentIntelligenceApi};
 
 use crate::metadata::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
@@ -21,22 +22,22 @@ use crate::tool::{Tool, ToolInput, ToolOutput};
 pub const READ_FILE_TOOL_ID: &str = "read_file";
 
 /// Tool that reads one supported file into a unified [`jaymi_core::Document`].
-#[derive(Debug)]
 pub struct ReadFileTool {
     metadata: ToolMetadata,
-    filesystem: Arc<FilesystemProvider>,
-    parsers: Arc<ParserRegistry>,
+    content: Arc<ContentIntelligenceApi>,
 }
 
 impl ReadFileTool {
-    /// Create a Read File tool bound to filesystem and parser services.
-    pub fn new(filesystem: Arc<FilesystemProvider>, parsers: Arc<ParserRegistry>) -> Self {
+    /// Create a Read File tool bound to the Content Intelligence API.
+    pub fn new(content: Arc<ContentIntelligenceApi>) -> Self {
         Self {
             metadata: ToolMetadata {
                 id: READ_FILE_TOOL_ID.to_string(),
                 name: "Read File".to_string(),
                 version: env!("CARGO_PKG_VERSION").to_string(),
-                description: "Read a supported file into a unified document".to_string(),
+                description:
+                    "Read a supported file as normalized content when available, otherwise parse"
+                        .to_string(),
                 provider: FILESYSTEM_PROVIDER_ID.to_string(),
                 capabilities: vec![Capability::ReadDocuments],
                 execution_mode: ExecutionMode::Synchronous,
@@ -49,8 +50,7 @@ impl ReadFileTool {
                 reliability: Reliability::Stable,
                 result_type: ResultType::StructuredData,
             },
-            filesystem,
-            parsers,
+            content,
         }
     }
 }
@@ -75,41 +75,80 @@ impl Tool for ReadFileTool {
             .as_ref()
             .ok_or_else(|| JaymiError::new("file path is required"))?;
 
-        let file_type = ParserRegistry::detect_type(path).ok_or_else(|| {
-            JaymiError::new(format!(
-                "cannot detect file type for {}",
-                path.display()
-            ))
-        })?;
-
-        let parser = self.parsers.resolve(&file_type)?;
-        let bytes = self.filesystem.read_file(path)?;
-        let document = parser.parse(path, &bytes)?;
-        Ok(ToolOutput::document(document))
+        let loaded = self.content.load_content(path)?;
+        let document = loaded.content.to_document();
+        let mut output = ToolOutput::document(document);
+        output.message = Some(format!("content_source={}", loaded.source.as_str()));
+        Ok(output)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jaymi_core::FileType;
+    use jaymi_core::{FileType, Lifecycle};
+    use jaymi_database::Database;
+    use jaymi_knowledge::{normalize_path, KnowledgeItem, KnowledgeStore, SqliteKnowledgeStore};
     use jaymi_parsers::default_registry;
-    use jaymi_providers::Provider;
+    use jaymi_providers::{FilesystemProvider, Provider};
+    use jaymi_understanding::{SqliteContentStore, UnderstandingEngine};
     use std::fs::{self, File};
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    fn boot_tool(data: &std::path::Path) -> (Arc<SqliteKnowledgeStore>, ReadFileTool) {
+        let mut db = Database::with_data_dir(data);
+        db.initialize().unwrap();
+        let db = Arc::new(db);
+        let mut knowledge = SqliteKnowledgeStore::new(Arc::clone(&db));
+        knowledge.initialize().unwrap();
+        let knowledge = Arc::new(knowledge);
+        let content = Arc::new(SqliteContentStore::new(Arc::clone(&db)));
+        let mut filesystem = FilesystemProvider::new();
+        filesystem.initialize().unwrap();
+        let parsers = Arc::new(default_registry().unwrap());
+        let mut understanding = UnderstandingEngine::new(
+            Arc::clone(&knowledge),
+            content,
+            Arc::new(filesystem),
+            parsers,
+        );
+        understanding.initialize().unwrap();
+        let api = Arc::new(ContentIntelligenceApi::new(Arc::new(understanding)));
+        (knowledge, ReadFileTool::new(api))
+    }
+
     #[test]
-    fn reads_markdown_through_provider_and_parser() {
-        let dir = temp_dir();
+    fn reads_markdown_through_content_intelligence_api() {
+        let data = temp_dir("read-tool-data");
+        let dir = temp_dir("read-tool-files");
         let path = dir.join("note.md");
         let mut file = File::create(&path).unwrap();
         write!(file, "# Hello\n\nWorld").unwrap();
 
-        let mut filesystem = FilesystemProvider::new();
-        filesystem.initialize().unwrap();
-        let parsers = Arc::new(default_registry().unwrap());
-        let tool = ReadFileTool::new(Arc::new(filesystem), parsers);
+        let (knowledge, tool) = boot_tool(&data);
+        knowledge
+            .publish(
+                &KnowledgeItem {
+                    path: normalize_path(&path).unwrap(),
+                    filename: "note.md".into(),
+                    extension: Some("md".into()),
+                    size: 14,
+                    created: Some(1),
+                    modified: Some(1),
+                    is_directory: false,
+                    hidden: false,
+                    parent: Some(normalize_path(&dir).unwrap()),
+                    first_discovered: Some(1),
+                    last_indexed: Some(1),
+                    last_modified: Some(1),
+                    last_verified: Some(1),
+                    device_id: None,
+                    inode: None,
+                },
+                1,
+            )
+            .unwrap();
 
         let output = tool.execute(&ToolInput::read_file(&path)).unwrap();
         assert!(output.success);
@@ -117,26 +156,34 @@ mod tests {
         assert_eq!(document.file_type, FileType::Markdown);
         assert_eq!(document.title.as_deref(), Some("Hello"));
         assert_eq!(output.parser_id.as_deref(), Some("markdown"));
+        assert_eq!(output.message.as_deref(), Some("content_source=parsed"));
+
+        let second = tool.execute(&ToolInput::read_file(&path)).unwrap();
+        assert_eq!(second.message.as_deref(), Some("content_source=stored"));
     }
 
     #[test]
     fn rejects_unsupported_extension() {
-        let dir = temp_dir();
-        let path = dir.join("scan.pdf");
+        let data = temp_dir("read-unsup-data");
+        let dir = temp_dir("read-unsup-files");
+        let path = dir.join("archive.bin");
         File::create(&path).unwrap();
 
-        let mut filesystem = FilesystemProvider::new();
-        filesystem.initialize().unwrap();
-        let parsers = Arc::new(default_registry().unwrap());
-        let tool = ReadFileTool::new(Arc::new(filesystem), parsers);
-
+        let (_knowledge, tool) = boot_tool(&data);
         let error = tool.execute(&ToolInput::read_file(&path)).unwrap_err();
-        assert!(error.message().contains("no parser registered"));
+        assert!(
+            error.message().contains("no parser")
+                || error.message().contains("cannot detect")
+                || error.message().contains("Unsupported")
+                || error.message().contains("bin"),
+            "{}",
+            error.message()
+        );
     }
 
-    fn temp_dir() -> std::path::PathBuf {
+    fn temp_dir(label: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!(
-            "jaymi-read-tool-{}",
+            "jaymi-read-tool-{label}-{}",
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()

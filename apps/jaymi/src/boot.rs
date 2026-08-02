@@ -3,7 +3,7 @@
 //! Startup order:
 //! Configuration → Logging → Database → Policy Engine → Permission Engine →
 //! Memory Engine → Context Engine → Capability Registry → Provider Registry →
-//! Tool Registry → Planner → Desktop UI
+//! Knowledge → Understanding → Discovery → Tools → Planner → Desktop UI
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,17 +12,29 @@ use jaymi_capabilities::{Capability, CapabilityRegistry};
 use jaymi_config::Config;
 use jaymi_context::ContextEngine;
 use jaymi_core::{
-    AppState, HealthReport, JaymiError, JaymiResult, Lifecycle, ServiceContainer, UserRequest,
+    AppState, DiscoveryQueryKind, HealthReport, JaymiError, JaymiResult, Lifecycle,
+    ServiceContainer, UserRequest,
 };
 use jaymi_database::Database;
+use jaymi_discovery::{DiscoveryEngine, FilesystemWatcher};
+use jaymi_knowledge::{KnowledgeStore, SqliteKnowledgeStore};
 use jaymi_logging::Logger;
 use jaymi_memory::MemoryEngine;
 use jaymi_parsers::{default_registry, ParserRegistry};
 use jaymi_permissions::PermissionEngine;
 use jaymi_planner::{Planner, PlannerDeps, PlannerResponse};
 use jaymi_policies::PolicyEngine;
-use jaymi_providers::{FilesystemProvider, Provider, ProviderRegistry};
-use jaymi_tools::{ReadFileTool, SearchFilesTool, ToolOrchestrator, ToolRegistry};
+use jaymi_providers::{
+    FilesystemProvider, OcrProvider, PlaceholderOcrProvider, Provider, ProviderRegistry,
+};
+use jaymi_tools::{
+    QueryInventoryTool, ReadFileTool, ScanFilesystemTool, SearchFilesTool, ToolOrchestrator,
+    ToolRegistry,
+};
+use jaymi_understanding::{
+    format_parser_usage, ContentIntelligence, ContentIntelligenceApi, SqliteContentStore,
+    UnderstandingEngine,
+};
 
 use crate::diagnostics::DiagnosticsSnapshot;
 
@@ -106,6 +118,16 @@ impl Application {
             );
         }
         self.boot_service(Database::with_data_dir(&data_dir))?;
+        // Share the database handle with Layer 1 discovery without changing open/migrate.
+        let database = {
+            let database = self
+                .container
+                .take::<Database>()
+                .ok_or_else(|| JaymiError::new("database missing after boot"))?;
+            let database = Arc::new(database);
+            self.container.register(Arc::clone(&database));
+            database
+        };
 
         let mut policies = PolicyEngine::new();
         self.initialize_service(&mut policies)?;
@@ -120,15 +142,17 @@ impl Application {
         self.boot_service(MemoryEngine::new())?;
         self.boot_service(ContextEngine::new())?;
 
-        // Capability registry + Search / Read capabilities.
+        // Capability registry + Layer 0 and Layer 1 capabilities.
         let mut capabilities = CapabilityRegistry::new();
         self.initialize_service(&mut capabilities)?;
         capabilities.register(Capability::Search)?;
         capabilities.register(Capability::ReadDocuments)?;
+        capabilities.register(Capability::Discover)?;
+        capabilities.register(Capability::Index)?;
         let capabilities = Arc::new(capabilities);
         self.container.register(Arc::clone(&capabilities));
 
-        // Provider registry + Filesystem Provider.
+        // Provider registry + Filesystem Provider + Placeholder OCR Provider.
         let mut providers = ProviderRegistry::new();
         self.initialize_service(&mut providers)?;
         let mut filesystem = FilesystemProvider::new();
@@ -136,6 +160,13 @@ impl Application {
         providers.register(&filesystem)?;
         let filesystem = Arc::new(filesystem);
         self.container.register(Arc::clone(&filesystem));
+
+        let mut ocr = PlaceholderOcrProvider::new();
+        ocr.initialize()?;
+        providers.register(&ocr)?;
+        let ocr = Arc::new(ocr);
+        self.container.register(Arc::clone(&ocr));
+
         let providers = Arc::new(providers);
         self.container.register(Arc::clone(&providers));
 
@@ -143,14 +174,64 @@ impl Application {
         let parsers = Arc::new(default_registry()?);
         self.container.register(Arc::clone(&parsers));
 
-        // Tool registry + Search Files / Read File tools.
+        // Knowledge API — single interface to indexed inventory (no direct SQLite for consumers).
+        let mut knowledge = SqliteKnowledgeStore::new(Arc::clone(&database));
+        self.initialize_service(&mut knowledge)?;
+        let knowledge = Arc::new(knowledge);
+        self.container.register(Arc::clone(&knowledge));
+
+        // Content store + Understanding Engine (Layer 2).
+        let content = Arc::new(SqliteContentStore::new(Arc::clone(&database)));
+        self.container.register(Arc::clone(&content));
+        let mut understanding = UnderstandingEngine::new(
+            Arc::clone(&knowledge),
+            Arc::clone(&content),
+            Arc::clone(&filesystem),
+            Arc::clone(&parsers),
+        );
+        self.initialize_service(&mut understanding)?;
+        let understanding = Arc::new(understanding);
+        self.container.register(Arc::clone(&understanding));
+
+        // Content Intelligence API — stable consumer surface (hides parsers/SQLite).
+        let content_api = Arc::new(ContentIntelligenceApi::new(Arc::clone(&understanding)));
+        self.container.register(Arc::clone(&content_api));
+
+        // Discovery engine (Layer 1) — explicit scans only; no boot-time crawl.
+        let (discovery_roots, indexing_enabled) = {
+            let config = self.container.resolve::<Config>()?;
+            (
+                config
+                    .settings()
+                    .discovery_roots
+                    .iter()
+                    .map(PathBuf::from)
+                    .collect::<Vec<_>>(),
+                config.settings().indexing_enabled,
+            )
+        };
+        let mut discovery = DiscoveryEngine::new(
+            Arc::clone(&knowledge),
+            discovery_roots,
+            indexing_enabled,
+        );
+        self.initialize_service(&mut discovery)?;
+        let discovery = Arc::new(discovery);
+        self.container.register(Arc::clone(&discovery));
+
+        // Filesystem watcher keeps the inventory synchronized with configured roots.
+        let mut watcher = FilesystemWatcher::new(Arc::clone(&discovery));
+        self.initialize_service(&mut watcher)?;
+        let watcher = Arc::new(watcher);
+        self.container.register(Arc::clone(&watcher));
+
+        // Tool registry + Layer 0 and Layer 1 tools.
         let mut tools = ToolRegistry::new();
         self.initialize_service(&mut tools)?;
         tools.register_tool(Arc::new(SearchFilesTool::new(Arc::clone(&filesystem))))?;
-        tools.register_tool(Arc::new(ReadFileTool::new(
-            Arc::clone(&filesystem),
-            Arc::clone(&parsers),
-        )))?;
+        tools.register_tool(Arc::new(ReadFileTool::new(Arc::clone(&content_api))))?;
+        tools.register_tool(Arc::new(ScanFilesystemTool::new(Arc::clone(&discovery))))?;
+        tools.register_tool(Arc::new(QueryInventoryTool::new(Arc::clone(&knowledge))))?;
         let tools = Arc::new(tools);
         self.container.register(Arc::clone(&tools));
 
@@ -243,6 +324,29 @@ impl Application {
         planner.handle(UserRequest::read_file(path.as_ref()))
     }
 
+    /// Ask the Planner to recursively index a root into the discovery inventory.
+    pub fn index_root(&self, path: impl AsRef<Path>) -> JaymiResult<PlannerResponse> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.handle(UserRequest::index_root(path.as_ref()))
+    }
+
+    /// Ask the Planner what files exist using the knowledge database only.
+    pub fn discover_inventory(&self) -> JaymiResult<PlannerResponse> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.handle(UserRequest::discover_inventory())
+    }
+
+    /// Ask the Planner a structured discovery query against the knowledge database.
+    pub fn discover_query(&self, kind: DiscoveryQueryKind) -> JaymiResult<PlannerResponse> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.handle(UserRequest::discover_query(kind))
+    }
+
+    /// Ask the Planner to list active logical collections from the inventory.
+    pub fn list_collections(&self) -> JaymiResult<PlannerResponse> {
+        self.discover_query(DiscoveryQueryKind::Collections)
+    }
+
     /// Build the diagnostics snapshot for the temporary UI.
     pub fn diagnostics(&self) -> JaymiResult<DiagnosticsSnapshot> {
         self.diagnostics_from_response(None)
@@ -256,14 +360,20 @@ impl Application {
         use crate::diagnostics::{OperationalStatus, SubsystemStatus};
 
         let planner = self.container.resolve::<Planner>()?;
-        let database = self.container.resolve::<Database>()?;
+        let database = self.container.resolve::<Arc<Database>>()?;
         let logger = self.container.resolve::<Logger>()?;
         let config = self.container.resolve::<Config>()?;
+        let discovery = self.container.resolve::<Arc<DiscoveryEngine>>()?;
+        let knowledge = self.container.resolve::<Arc<SqliteKnowledgeStore>>()?;
+        let understanding = self.container.resolve::<Arc<UnderstandingEngine>>()?;
+        let content_api = self.container.resolve::<Arc<ContentIntelligenceApi>>()?;
+        let watcher = self.container.resolve::<Arc<FilesystemWatcher>>()?;
         let policies = self.container.resolve::<Arc<PolicyEngine>>()?;
         let permissions = self.container.resolve::<Arc<PermissionEngine>>()?;
         let memory = self.container.resolve::<MemoryEngine>()?;
         let capabilities = self.container.resolve::<Arc<CapabilityRegistry>>()?;
         let providers = self.container.resolve::<Arc<ProviderRegistry>>()?;
+        let ocr = self.container.resolve::<Arc<PlaceholderOcrProvider>>()?;
         let tools = self.container.resolve::<Arc<ToolRegistry>>()?;
         let parsers = self.container.resolve::<Arc<ParserRegistry>>()?;
 
@@ -274,6 +384,15 @@ impl Application {
         let policies_health = policies.health_check();
         let permissions_health = permissions.health_check();
         let memory_health = memory.health_check();
+        let discovery_health = discovery.health_check();
+        let knowledge_health = knowledge.health_check();
+        let understanding_health = understanding.health_check();
+        let understanding_stats = understanding.stats().ok();
+        let content_health = content_api.retrieve_health().ok();
+        let discovery_stats = knowledge.stats().ok();
+        let collection_stats = knowledge.collection_stats().ok();
+        let watcher_diagnostics = watcher.diagnostics();
+        let ocr_status = ocr.ocr_status();
 
         let capability_ids: Vec<String> = capabilities
             .list()
@@ -417,6 +536,25 @@ impl Application {
                 },
             ),
             SubsystemStatus::new(
+                "OCR Provider",
+                if !ocr_status.initialized {
+                    OperationalStatus::Unavailable
+                } else if ocr_status.placeholder {
+                    OperationalStatus::Stub
+                } else if ocr_status.available {
+                    OperationalStatus::Operational
+                } else {
+                    OperationalStatus::Degraded
+                },
+                format!(
+                    "id={} · engine={} · available={} · {}",
+                    ocr_status.provider_id,
+                    ocr_status.engine,
+                    ocr_status.available,
+                    ocr_status.detail
+                ),
+            ),
+            SubsystemStatus::new(
                 "Capabilities",
                 if capabilities.is_initialized() && !capability_ids.is_empty() {
                     OperationalStatus::Operational
@@ -458,15 +596,179 @@ impl Application {
                 if parser_ids.is_empty() {
                     "none registered".to_string()
                 } else {
-                    format!("{} · {}", parser_ids.len(), parser_ids.join(", "))
+                    let usage = understanding_stats
+                        .as_ref()
+                        .map(|stats| format_parser_usage(&stats.parser_usage))
+                        .unwrap_or_else(|| "-".to_string());
+                    format!(
+                        "registered={} · {} · usage={}",
+                        parser_ids.len(),
+                        parser_ids.join(", "),
+                        usage
+                    )
                 },
             ),
             SubsystemStatus::new(
                 "Index Status",
-                OperationalStatus::NotImplemented,
-                format!(
-                    "no indexer wired (config indexing_enabled={indexing_enabled})"
-                ),
+                if discovery_health.initialized {
+                    OperationalStatus::Operational
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                {
+                    let stats = discovery_stats.clone().unwrap_or_default();
+                    format!(
+                        "files={} folders={} last_scan={} duration_ms={} added={} updated={} removed={} unchanged={} db_bytes={} indexing_enabled={}",
+                        stats.files,
+                        stats.folders,
+                        stats
+                            .last_scan_at
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                        stats
+                            .last_scan_duration_ms
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                        stats
+                            .last_added
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                        stats
+                            .last_updated
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                        stats
+                            .last_removed
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                        stats
+                            .last_unchanged
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                        stats.database_size_bytes,
+                        indexing_enabled
+                    )
+                },
+            ),
+            SubsystemStatus::new(
+                "Discovery Queries",
+                if knowledge_health.initialized {
+                    OperationalStatus::Operational
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                {
+                    let stats = discovery_stats.clone().unwrap_or_default();
+                    format!(
+                        "query_count={} last_query={} last_rows={} last_duration_ms={}",
+                        stats.query_count,
+                        stats
+                            .last_query_label
+                            .clone()
+                            .unwrap_or_else(|| "-".to_string()),
+                        stats
+                            .last_query_rows
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                        stats
+                            .last_query_duration_ms
+                            .map(|value| value.to_string())
+                            .unwrap_or_else(|| "-".to_string()),
+                    )
+                },
+            ),
+            SubsystemStatus::new(
+                "Collections",
+                if knowledge_health.initialized {
+                    OperationalStatus::Operational
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                {
+                    let stats = collection_stats.clone().unwrap_or_default();
+                    let names = if stats.names.is_empty() {
+                        "-".to_string()
+                    } else {
+                        stats.names.join(",")
+                    };
+                    format!(
+                        "collections={} items={} names={}",
+                        stats.collection_count, stats.total_items, names
+                    )
+                },
+            ),
+            SubsystemStatus::new(
+                "Understanding",
+                if understanding_health.initialized {
+                    OperationalStatus::Operational
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                {
+                    let stats = understanding_stats.clone().unwrap_or_default();
+                    format!(
+                        "parsed_documents={} enriched_documents={} parser_usage={} failed_parses={} unsupported_formats={} cache_hits={} last_failure={} last_unsupported={}",
+                        stats.parsed_documents,
+                        stats.enriched_documents,
+                        format_parser_usage(&stats.parser_usage),
+                        stats.failed_parses,
+                        stats.unsupported_formats,
+                        stats.cache_hits,
+                        stats
+                            .last_failure
+                            .clone()
+                            .unwrap_or_else(|| "-".to_string()),
+                        stats
+                            .last_unsupported
+                            .clone()
+                            .unwrap_or_else(|| "-".to_string()),
+                    )
+                },
+            ),
+            SubsystemStatus::new(
+                "Content Intelligence",
+                match &content_health {
+                    Some(health) if health.healthy => OperationalStatus::Operational,
+                    Some(health) if health.initialized => OperationalStatus::Degraded,
+                    Some(_) => OperationalStatus::Unavailable,
+                    None => OperationalStatus::Unavailable,
+                },
+                content_health
+                    .as_ref()
+                    .map(|health| health.detail.clone())
+                    .unwrap_or_else(|| "unavailable".to_string()),
+            ),
+            SubsystemStatus::new(
+                "Watcher Status",
+                match &watcher_diagnostics.status {
+                    jaymi_discovery::WatcherStatus::Watching
+                    | jaymi_discovery::WatcherStatus::Idle
+                    | jaymi_discovery::WatcherStatus::Disabled => OperationalStatus::Operational,
+                    jaymi_discovery::WatcherStatus::Stopped => OperationalStatus::Degraded,
+                    jaymi_discovery::WatcherStatus::Error(_) => OperationalStatus::Unavailable,
+                },
+                {
+                    let watched = if watcher_diagnostics.watched_directories.is_empty() {
+                        "-".to_string()
+                    } else {
+                        watcher_diagnostics
+                            .watched_directories
+                            .iter()
+                            .map(|path| path.display().to_string())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    };
+                    format!(
+                        "status={} watched={} queued={} last_event={}",
+                        watcher_diagnostics.status.label(),
+                        watched,
+                        watcher_diagnostics.queued_updates,
+                        watcher_diagnostics
+                            .last_event
+                            .clone()
+                            .unwrap_or_else(|| "-".to_string())
+                    )
+                },
             ),
             SubsystemStatus::new(
                 "Memory Status",
@@ -608,13 +910,28 @@ impl Application {
         let _ = self.container.take::<Arc<ProviderRegistry>>();
         let _ = self.container.take::<Arc<CapabilityRegistry>>();
         let _ = self.container.take::<Arc<FilesystemProvider>>();
+        let _ = self.container.take::<Arc<PlaceholderOcrProvider>>();
         let _ = self.container.take::<Arc<ParserRegistry>>();
+        if let Some(watcher) = self.container.take::<Arc<FilesystemWatcher>>() {
+            if let Ok(mut watcher) = Arc::try_unwrap(watcher) {
+                watcher.shutdown()?;
+            }
+        }
+        let _ = self.container.take::<Arc<DiscoveryEngine>>();
+        let _ = self.container.take::<Arc<ContentIntelligenceApi>>();
+        let _ = self.container.take::<Arc<UnderstandingEngine>>();
+        let _ = self.container.take::<Arc<SqliteContentStore>>();
+        let _ = self.container.take::<Arc<SqliteKnowledgeStore>>();
 
         shutdown_owned::<ContextEngine>(&mut self.container)?;
         shutdown_owned::<MemoryEngine>(&mut self.container)?;
         let _ = self.container.take::<Arc<PermissionEngine>>();
         let _ = self.container.take::<Arc<PolicyEngine>>();
-        shutdown_owned::<Database>(&mut self.container)?;
+        if let Some(database) = self.container.take::<Arc<Database>>() {
+            if let Ok(mut database) = Arc::try_unwrap(database) {
+                database.shutdown()?;
+            }
+        }
         shutdown_owned::<Logger>(&mut self.container)?;
         shutdown_owned::<Config>(&mut self.container)?;
 
@@ -650,6 +967,7 @@ fn map_log_level(level: jaymi_config::LogLevel) -> jaymi_logging::LogLevel {
 mod tests {
     use super::*;
     use jaymi_core::{EntryType, FileType};
+    use jaymi_providers::OCR_PROVIDER_ID;
     use std::fs::{self, File};
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -663,15 +981,22 @@ mod tests {
         let diagnostics = app.diagnostics().unwrap();
         assert_eq!(diagnostics.app_state.label(), "Ready");
         assert!(diagnostics.planner_healthy);
-        assert_eq!(diagnostics.provider_count, 1);
-        assert_eq!(diagnostics.tool_count, 2);
-        assert_eq!(diagnostics.capability_count, 2);
+        assert_eq!(diagnostics.provider_count, 2);
+        assert!(diagnostics
+            .provider_ids
+            .iter()
+            .any(|id| id == OCR_PROVIDER_ID));
+        assert_eq!(diagnostics.tool_count, 4);
+        assert_eq!(diagnostics.capability_count, 4);
         assert!(diagnostics.database_connected);
         assert_eq!(
             diagnostics.database_path.as_ref().map(std::path::PathBuf::from),
             Some(data_dir.join("jaymi.db"))
         );
-        assert_eq!(diagnostics.database_schema_version, Some(1));
+        assert_eq!(
+            diagnostics.database_schema_version,
+            Some(jaymi_database::CURRENT_SCHEMA_VERSION)
+        );
         assert_eq!(
             diagnostics.database_migration_status.as_deref(),
             Some("applied")
@@ -695,6 +1020,10 @@ mod tests {
         use crate::diagnostics::OperationalStatus;
         assert_eq!(
             diagnostics.subsystem("Planner").unwrap().status,
+            OperationalStatus::Operational
+        );
+        assert_eq!(
+            diagnostics.subsystem("Index Status").unwrap().status,
             OperationalStatus::Operational
         );
         assert_eq!(

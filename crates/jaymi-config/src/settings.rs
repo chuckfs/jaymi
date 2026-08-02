@@ -103,6 +103,9 @@ pub struct Settings {
     /// Whether background indexing is enabled when the knowledge engine exists.
     #[serde(default = "default_true")]
     pub indexing_enabled: bool,
+    /// Absolute directories recursively scanned by discovery when no path is given.
+    #[serde(default)]
+    pub discovery_roots: Vec<String>,
     /// Forward-compatible extension values preserved across load/save.
     #[serde(default, flatten)]
     pub extensions: BTreeMap<String, serde_json::Value>,
@@ -117,6 +120,7 @@ impl Default for Settings {
             theme: Theme::System,
             default_provider_preferences: ProviderPreferences::default(),
             indexing_enabled: true,
+            discovery_roots: Vec::new(),
             extensions: BTreeMap::new(),
         }
     }
@@ -169,6 +173,7 @@ mod tests {
         assert_eq!(settings.log_level, LogLevel::Info);
         assert_eq!(settings.theme, Theme::System);
         assert!(settings.indexing_enabled);
+        assert!(settings.discovery_roots.is_empty());
         assert!(settings.default_provider_preferences.prefer_local);
         assert!(settings
             .default_provider_preferences

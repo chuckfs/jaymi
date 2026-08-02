@@ -6,10 +6,18 @@
 
 #![forbid(unsafe_code)]
 
+pub mod content;
 pub mod entities;
 pub mod events;
+pub mod inventory;
 pub mod migrations;
 pub mod relationships;
+
+pub use content::{ContentCounts, ContentRecord};
+pub use inventory::{
+    DiscoveredCounts, DiscoveredItemRecord, DiscoveredQuery, DiscoveryScanInput,
+    DiscoveryScanRecord, DiscoverySort,
+};
 
 use std::fmt;
 use std::fs;

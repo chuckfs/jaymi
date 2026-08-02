@@ -10,6 +10,7 @@ pub mod categories;
 pub mod filesystem;
 pub mod lifecycle;
 pub mod manager;
+pub mod ocr;
 pub mod provider;
 pub mod registry;
 
@@ -17,6 +18,10 @@ pub use categories::ProviderCategory;
 pub use filesystem::{FilesystemProvider, FILESYSTEM_PROVIDER_ID};
 pub use lifecycle::ProviderLifecycle;
 pub use manager::ProviderManager;
+pub use ocr::{
+    OcrExtraction, OcrImage, OcrProvider, OcrProviderStatus, PlaceholderOcrProvider,
+    OCR_ENGINE_NONE, OCR_PROVIDER_ID,
+};
 pub use provider::{Provider, ProviderIdentity};
 pub use registry::ProviderRegistry;
 

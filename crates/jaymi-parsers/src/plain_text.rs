@@ -44,17 +44,19 @@ impl FileParser for PlainTextParser {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixtures;
 
     #[test]
     fn parses_plain_text() {
         let parser = PlainTextParser;
         let document = parser
-            .parse(Path::new("/tmp/notes.txt"), b"hello\nworld")
+            .parse(Path::new("/tmp/notes.txt"), fixtures::plain_text())
             .unwrap();
         assert_eq!(document.file_type, FileType::PlainText);
         assert_eq!(document.title.as_deref(), Some("notes"));
-        assert_eq!(document.text, "hello\nworld");
+        assert!(document.text.contains("Hello plain text"));
         assert_eq!(document.parser_id, "plain_text");
         assert_eq!(document.metadata.get("line_count"), Some("2"));
+        assert!(document.metadata.get("extension").is_some());
     }
 }

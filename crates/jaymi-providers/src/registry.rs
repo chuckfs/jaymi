@@ -81,7 +81,18 @@ impl ProviderRegistry {
             .providers
             .read()
             .map_err(|_| JaymiError::new("provider registry lock poisoned"))?;
-        Ok(guard.values().cloned().collect())
+        let mut identities: Vec<ProviderIdentity> = guard.values().cloned().collect();
+        identities.sort_by(|left, right| left.id.cmp(&right.id));
+        Ok(identities)
+    }
+
+    /// Look up a registered provider identity by id.
+    pub fn get(&self, id: &str) -> JaymiResult<Option<ProviderIdentity>> {
+        let guard = self
+            .providers
+            .read()
+            .map_err(|_| JaymiError::new("provider registry lock poisoned"))?;
+        Ok(guard.get(id).cloned())
     }
 
     /// Returns true after successful initialization.

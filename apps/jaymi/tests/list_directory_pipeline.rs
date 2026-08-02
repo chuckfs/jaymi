@@ -57,8 +57,8 @@ fn list_directory_request_flows_through_every_layer() {
         .diagnostics_with_listing(Some(response))
         .expect("diagnostics");
     assert_eq!(snapshot.provider_count, 1);
-    assert_eq!(snapshot.tool_count, 2);
-    assert_eq!(snapshot.capability_count, 2);
+    assert_eq!(snapshot.tool_count, 4);
+    assert_eq!(snapshot.capability_count, 4);
     assert_eq!(snapshot.entries.len(), 3);
     assert!(snapshot.listing_summary.is_some());
 }

@@ -20,7 +20,13 @@ pub enum FileType {
     Markdown,
     /// JSON (`.json`).
     Json,
-    /// Extensible catch-all for future formats (PDF, DOCX, etc.).
+    /// PDF (`.pdf`).
+    Pdf,
+    /// Office Open XML Word document (`.docx`).
+    Docx,
+    /// Raster image (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.tif`, `.tiff`).
+    Image,
+    /// Extensible catch-all for future formats.
     Other(String),
 }
 
@@ -31,6 +37,9 @@ impl FileType {
             Self::PlainText => "plain_text",
             Self::Markdown => "markdown",
             Self::Json => "json",
+            Self::Pdf => "pdf",
+            Self::Docx => "docx",
+            Self::Image => "image",
             Self::Other(value) => value.as_str(),
         }
     }
@@ -41,6 +50,9 @@ impl FileType {
             Self::PlainText => "Plain Text".to_string(),
             Self::Markdown => "Markdown".to_string(),
             Self::Json => "JSON".to_string(),
+            Self::Pdf => "PDF".to_string(),
+            Self::Docx => "DOCX".to_string(),
+            Self::Image => "Image".to_string(),
             Self::Other(value) => value.clone(),
         }
     }

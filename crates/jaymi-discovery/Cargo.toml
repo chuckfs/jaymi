@@ -1,0 +1,17 @@
+[package]
+name = "jaymi-discovery"
+description = "Filesystem discovery engine for Jaymi knowledge inventory"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+jaymi-core = { workspace = true }
+jaymi-knowledge = { workspace = true }
+jaymi-logging = { workspace = true }
+notify = { workspace = true }
+
+[dev-dependencies]
+jaymi-database = { workspace = true }

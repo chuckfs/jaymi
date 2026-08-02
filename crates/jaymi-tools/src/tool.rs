@@ -1,13 +1,15 @@
 //! Tool interface and structured I/O.
 
 use crate::metadata::ToolMetadata;
-use jaymi_core::{Document, FileEntry, JaymiResult};
+use jaymi_core::{DiscoveryQueryKind, Document, FileEntry, JaymiResult};
 
 /// Structured input supplied by the Planner.
 #[derive(Debug, Default, Clone)]
 pub struct ToolInput {
-    /// Directory path for tools that list filesystem contents.
+    /// Directory or file path for filesystem tools.
     pub path: Option<std::path::PathBuf>,
+    /// Structured discovery query for inventory tools.
+    pub discovery: Option<DiscoveryQueryKind>,
 }
 
 impl ToolInput {
@@ -15,6 +17,7 @@ impl ToolInput {
     pub fn list_directory(path: impl Into<std::path::PathBuf>) -> Self {
         Self {
             path: Some(path.into()),
+            discovery: None,
         }
     }
 
@@ -22,6 +25,19 @@ impl ToolInput {
     pub fn read_file(path: impl Into<std::path::PathBuf>) -> Self {
         Self {
             path: Some(path.into()),
+            discovery: None,
+        }
+    }
+
+    /// Create input for a discovery inventory query.
+    pub fn discover(kind: DiscoveryQueryKind) -> Self {
+        let path = match &kind {
+            DiscoveryQueryKind::ByFolder { path, .. } => Some(path.clone()),
+            _ => None,
+        };
+        Self {
+            path,
+            discovery: Some(kind),
         }
     }
 }

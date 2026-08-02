@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use jaymi_capabilities::Capability;
-use jaymi_core::UserRequest;
+use jaymi_core::{DiscoveryQueryKind, UserRequest};
 
 /// Deterministic intents recognized by the Planner.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +21,16 @@ pub enum Intent {
         /// File path to read.
         path: PathBuf,
     },
+    /// Query the persistent discovery inventory.
+    DiscoverInventory {
+        /// Discovery query kind.
+        kind: DiscoveryQueryKind,
+    },
+    /// Recursively scan roots into the discovery inventory.
+    IndexRoots {
+        /// Optional explicit root; otherwise configured roots are used.
+        path: Option<PathBuf>,
+    },
     /// Request could not be mapped to a supported intent.
     Unknown,
 }
@@ -31,11 +41,25 @@ pub struct DecisionEngine;
 
 impl DecisionEngine {
     /// Determine user intent without language-model reasoning.
-    ///
-    /// Supported forms:
-    /// - structured [`UserRequest::directory`] / [`UserRequest::file`]
-    /// - content beginning with `list ` or `read ` followed by a path
     pub fn determine_intent(&self, request: &UserRequest) -> Intent {
+        if let Some(kind) = &request.discovery_kind {
+            return Intent::DiscoverInventory { kind: kind.clone() };
+        }
+
+        if request.discover {
+            return Intent::DiscoverInventory {
+                kind: DiscoveryQueryKind::All,
+            };
+        }
+
+        if let Some(path) = &request.index_root {
+            if !path.as_os_str().is_empty() {
+                return Intent::IndexRoots {
+                    path: Some(path.clone()),
+                };
+            }
+        }
+
         if let Some(path) = &request.file {
             if !path.as_os_str().is_empty() {
                 return Intent::ReadFile { path: path.clone() };
@@ -49,6 +73,25 @@ impl DecisionEngine {
         }
 
         let content = request.content.trim();
+        let lower = content.to_ascii_lowercase();
+
+        if let Some(kind) = parse_discovery_kind(&lower, content) {
+            return Intent::DiscoverInventory { kind };
+        }
+
+        if let Some(rest) = content.strip_prefix("index ") {
+            let path = strip_quotes(rest);
+            if path.is_empty() {
+                return Intent::IndexRoots { path: None };
+            }
+            return Intent::IndexRoots {
+                path: Some(PathBuf::from(path)),
+            };
+        }
+        if lower == "index" {
+            return Intent::IndexRoots { path: None };
+        }
+
         if let Some(rest) = content.strip_prefix("read ") {
             let path = strip_quotes(rest);
             if !path.is_empty() {
@@ -75,9 +118,163 @@ impl DecisionEngine {
         match intent {
             Intent::ListDirectory { .. } => Some(Capability::Search),
             Intent::ReadFile { .. } => Some(Capability::ReadDocuments),
+            Intent::DiscoverInventory { .. } => Some(Capability::Discover),
+            Intent::IndexRoots { .. } => Some(Capability::Index),
             Intent::Unknown => None,
         }
     }
+}
+
+fn parse_discovery_kind(lower: &str, original: &str) -> Option<DiscoveryQueryKind> {
+    if lower == "what files exist?"
+        || lower == "what files exist"
+        || lower == "discover"
+        || lower == "show all files"
+    {
+        return Some(DiscoveryQueryKind::All);
+    }
+    if lower == "show collections"
+        || lower == "list collections"
+        || lower == "collections"
+        || lower == "what collections do i have"
+        || lower == "what collections do i have?"
+        || lower == "what collections exist"
+        || lower == "what collections exist?"
+    {
+        return Some(DiscoveryQueryKind::Collections);
+    }
+    if lower == "what projects do i have"
+        || lower == "what projects do i have?"
+        || lower == "my projects"
+        || lower == "show projects"
+    {
+        return Some(DiscoveryQueryKind::ByCollection {
+            name: "projects".to_string(),
+            immediate: true,
+        });
+    }
+    if lower == "recently modified files"
+        || lower == "recently modified"
+        || lower == "newest modified files"
+    {
+        return Some(DiscoveryQueryKind::RecentlyModified);
+    }
+    if lower == "recently created files"
+        || lower == "recently created"
+        || lower == "newest files"
+    {
+        return Some(DiscoveryQueryKind::RecentlyCreated);
+    }
+    if lower == "largest files" || lower == "biggest files" {
+        return Some(DiscoveryQueryKind::Largest);
+    }
+    if lower == "hidden files" || lower == "show hidden files" {
+        return Some(DiscoveryQueryKind::Hidden);
+    }
+    if lower == "empty folders" || lower == "empty directories" {
+        return Some(DiscoveryQueryKind::EmptyFolders);
+    }
+
+    if let Some(name) = parse_whats_in_collection(lower) {
+        return Some(DiscoveryQueryKind::ByCollection {
+            name: name.to_string(),
+            immediate: true,
+        });
+    }
+
+    if let Some(rest) = lower.strip_prefix("files with extension ") {
+        let extension = rest.trim().trim_start_matches('.').to_string();
+        if !extension.is_empty() {
+            return Some(DiscoveryQueryKind::ByExtension { extension });
+        }
+    }
+    if let Some(rest) = lower.strip_prefix("*.") {
+        let extension = rest.trim().to_string();
+        if !extension.is_empty() && !extension.contains(' ') {
+            return Some(DiscoveryQueryKind::ByExtension { extension });
+        }
+    }
+    if lower.ends_with(" files") {
+        let stem = lower.trim_end_matches(" files").trim();
+        if let Some(slug) = jaymi_core::parse_collection_slug(stem) {
+            return Some(DiscoveryQueryKind::ByCollection {
+                name: slug.to_string(),
+                immediate: true,
+            });
+        }
+        if !stem.is_empty()
+            && !stem.contains(' ')
+            && stem != "hidden"
+            && stem != "largest"
+            && stem != "biggest"
+        {
+            return Some(DiscoveryQueryKind::ByExtension {
+                extension: stem.trim_start_matches('.').to_string(),
+            });
+        }
+    }
+
+    if let Some(rest) = lower
+        .strip_prefix("files in ")
+        .or_else(|| lower.strip_prefix("files under "))
+    {
+        let immediate = lower.starts_with("files in ");
+        let path = strip_quotes(rest);
+        if !path.is_empty() {
+            if let Some(slug) = jaymi_core::parse_collection_slug(path) {
+                return Some(DiscoveryQueryKind::ByCollection {
+                    name: slug.to_string(),
+                    immediate,
+                });
+            }
+            let original_path = original
+                .get(original.len().saturating_sub(rest.len())..)
+                .map(strip_quotes)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(path);
+            return Some(DiscoveryQueryKind::ByFolder {
+                path: PathBuf::from(original_path),
+                immediate,
+            });
+        }
+    }
+
+    if let Some(slug) = jaymi_core::parse_collection_slug(lower) {
+        return Some(DiscoveryQueryKind::ByCollection {
+            name: slug.to_string(),
+            immediate: true,
+        });
+    }
+
+    if lower.starts_with("discover ") {
+        let rest = strip_quotes(&original["discover ".len()..]);
+        if rest.is_empty() {
+            return Some(DiscoveryQueryKind::All);
+        }
+        if let Some(slug) = jaymi_core::parse_collection_slug(rest) {
+            return Some(DiscoveryQueryKind::ByCollection {
+                name: slug.to_string(),
+                immediate: false,
+            });
+        }
+        return Some(DiscoveryQueryKind::ByFolder {
+            path: PathBuf::from(rest),
+            immediate: false,
+        });
+    }
+
+    None
+}
+
+fn parse_whats_in_collection(lower: &str) -> Option<&'static str> {
+    let rest = lower
+        .strip_prefix("what's in ")
+        .or_else(|| lower.strip_prefix("whats in "))
+        .or_else(|| lower.strip_prefix("what is in "))
+        .or_else(|| lower.strip_prefix("what is inside "))
+        .or_else(|| lower.strip_prefix("show "))?;
+    let name = rest.trim().trim_end_matches('?').trim();
+    jaymi_core::parse_collection_slug(name)
 }
 
 fn strip_quotes(value: &str) -> &str {
@@ -121,19 +318,78 @@ mod tests {
     }
 
     #[test]
-    fn parses_list_and_read_prefixes() {
+    fn parses_discovery_query_kinds() {
         let engine = DecisionEngine;
         assert_eq!(
-            engine.determine_intent(&UserRequest::new("list \"./docs\"")),
-            Intent::ListDirectory {
-                path: PathBuf::from("./docs")
+            engine.determine_intent(&UserRequest::new("what files exist?")),
+            Intent::DiscoverInventory {
+                kind: DiscoveryQueryKind::All
             }
         );
         assert_eq!(
-            engine.determine_intent(&UserRequest::new("read 'notes.txt'")),
-            Intent::ReadFile {
-                path: PathBuf::from("notes.txt")
+            engine.determine_intent(&UserRequest::new("pdf files")),
+            Intent::DiscoverInventory {
+                kind: DiscoveryQueryKind::ByExtension {
+                    extension: "pdf".into()
+                }
             }
+        );
+        assert_eq!(
+            engine.determine_intent(&UserRequest::new("recently modified files")),
+            Intent::DiscoverInventory {
+                kind: DiscoveryQueryKind::RecentlyModified
+            }
+        );
+        assert_eq!(
+            engine.determine_intent(&UserRequest::new("empty folders")),
+            Intent::DiscoverInventory {
+                kind: DiscoveryQueryKind::EmptyFolders
+            }
+        );
+        assert_eq!(
+            engine.determine_intent(&UserRequest::new("what's in Downloads?")),
+            Intent::DiscoverInventory {
+                kind: DiscoveryQueryKind::ByCollection {
+                    name: "downloads".into(),
+                    immediate: true,
+                }
+            }
+        );
+        assert_eq!(
+            engine.determine_intent(&UserRequest::new("what projects do I have?")),
+            Intent::DiscoverInventory {
+                kind: DiscoveryQueryKind::ByCollection {
+                    name: "projects".into(),
+                    immediate: true,
+                }
+            }
+        );
+        assert_eq!(
+            engine.determine_intent(&UserRequest::new("show collections")),
+            Intent::DiscoverInventory {
+                kind: DiscoveryQueryKind::Collections
+            }
+        );
+        assert_eq!(
+            engine.required_capability(&Intent::DiscoverInventory {
+                kind: DiscoveryQueryKind::All
+            }),
+            Some(Capability::Discover)
+        );
+    }
+
+    #[test]
+    fn index_roots_intent() {
+        let engine = DecisionEngine;
+        assert_eq!(
+            engine.determine_intent(&UserRequest::index_root("/tmp/docs")),
+            Intent::IndexRoots {
+                path: Some(PathBuf::from("/tmp/docs"))
+            }
+        );
+        assert_eq!(
+            engine.required_capability(&Intent::IndexRoots { path: None }),
+            Some(Capability::Index)
         );
     }
 

@@ -22,10 +22,16 @@ fn diagnostics_dashboard_reports_honest_subsystem_states() {
         ("Permissions", OperationalStatus::Operational),
         ("Policies", OperationalStatus::Operational),
         ("Providers", OperationalStatus::Operational),
+        ("OCR Provider", OperationalStatus::Stub),
         ("Capabilities", OperationalStatus::Operational),
         ("Tools", OperationalStatus::Operational),
         ("Parser Registry", OperationalStatus::Operational),
-        ("Index Status", OperationalStatus::NotImplemented),
+        ("Index Status", OperationalStatus::Operational),
+        ("Discovery Queries", OperationalStatus::Operational),
+        ("Collections", OperationalStatus::Operational),
+        ("Understanding", OperationalStatus::Operational),
+        ("Content Intelligence", OperationalStatus::Operational),
+        ("Watcher Status", OperationalStatus::Operational),
         ("Memory Status", OperationalStatus::Stub),
         ("Project Status", OperationalStatus::NotImplemented),
         ("Reasoning Status", OperationalStatus::NotImplemented),
@@ -55,6 +61,31 @@ fn diagnostics_dashboard_reports_honest_subsystem_states() {
     assert!(snapshot.logging_healthy);
     assert_eq!(snapshot.parser_count, snapshot.parser_ids.len());
     assert!(!snapshot.parser_ids.is_empty());
+    assert!(snapshot.parser_ids.iter().any(|id| id == "image"));
+    assert!(snapshot.parser_ids.iter().any(|id| id == "pdf"));
+    assert!(snapshot.parser_ids.iter().any(|id| id == "docx"));
+    assert!(snapshot.parser_ids.iter().any(|id| id == "markdown"));
+    assert!(snapshot.parser_ids.iter().any(|id| id == "json"));
+    assert!(snapshot.parser_ids.iter().any(|id| id == "plain_text"));
+    assert!(snapshot
+        .subsystem("Parser Registry")
+        .unwrap()
+        .detail
+        .contains("registered="));
+    assert!(snapshot
+        .subsystem("Parser Registry")
+        .unwrap()
+        .detail
+        .contains("usage="));
+    assert!(snapshot
+        .subsystem("OCR Provider")
+        .unwrap()
+        .detail
+        .contains("engine=none"));
+    assert_eq!(
+        snapshot.subsystem("OCR Provider").unwrap().status,
+        OperationalStatus::Stub
+    );
     assert!(snapshot
         .active_policies
         .iter()
@@ -64,11 +95,21 @@ fn diagnostics_dashboard_reports_honest_subsystem_states() {
         .subsystem("Index Status")
         .unwrap()
         .detail
-        .contains("indexing_enabled=true"));
+        .contains("files="));
+    assert!(snapshot
+        .subsystem("Discovery Queries")
+        .unwrap()
+        .detail
+        .contains("query_count="));
+    assert!(snapshot
+        .subsystem("Collections")
+        .unwrap()
+        .detail
+        .contains("collections="));
 }
 
 #[test]
-fn diagnostics_reflect_config_indexing_flag_without_claiming_index_ready() {
+fn diagnostics_reflect_config_indexing_flag_without_claiming_content_understanding() {
     let data_dir = temp_dir("diagnostics-index-flag");
     let mut config = Config::with_data_dir(&data_dir);
     config.initialize().unwrap();
@@ -79,7 +120,7 @@ fn diagnostics_reflect_config_indexing_flag_without_claiming_index_ready() {
     let snapshot = app.diagnostics().expect("diagnostics");
     assert_eq!(snapshot.config_indexing_enabled, Some(false));
     let index = snapshot.subsystem("Index Status").unwrap();
-    assert_eq!(index.status, OperationalStatus::NotImplemented);
+    assert_eq!(index.status, OperationalStatus::Operational);
     assert!(index.detail.contains("indexing_enabled=false"));
 }
 

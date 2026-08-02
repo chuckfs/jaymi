@@ -33,12 +33,18 @@ pub enum Capability {
     Code,
     /// Visual understanding.
     Vision,
+    /// Optical character recognition (image → text).
+    Ocr,
     /// Image generation.
     GenerateImages,
     /// Web browsing.
     BrowseTheWeb,
     /// Document reading and parsing.
     ReadDocuments,
+    /// Query the local knowledge inventory of discovered files.
+    Discover,
+    /// Recursively scan directories into the knowledge inventory.
+    Index,
     /// File organization.
     OrganizeFiles,
     /// Terminal command execution.
@@ -61,9 +67,12 @@ impl Capability {
             Self::Search => "search",
             Self::Code => "code",
             Self::Vision => "vision",
+            Self::Ocr => "ocr",
             Self::GenerateImages => "generate_images",
             Self::BrowseTheWeb => "browse_the_web",
             Self::ReadDocuments => "read_documents",
+            Self::Discover => "discover",
+            Self::Index => "index",
             Self::OrganizeFiles => "organize_files",
             Self::ExecuteTerminalCommands => "execute_terminal_commands",
             Self::AutomateTasks => "automate_tasks",

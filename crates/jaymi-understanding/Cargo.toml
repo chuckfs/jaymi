@@ -1,0 +1,19 @@
+[package]
+name = "jaymi-understanding"
+description = "Content Intelligence pipeline for Jaymi normalized content"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+image = { workspace = true }
+jaymi-core = { workspace = true }
+jaymi-database = { workspace = true }
+jaymi-knowledge = { workspace = true }
+jaymi-logging = { workspace = true }
+jaymi-parsers = { workspace = true }
+jaymi-providers = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

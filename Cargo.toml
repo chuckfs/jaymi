@@ -7,6 +7,8 @@ members = [
     "crates/jaymi-context",
     "crates/jaymi-core",
     "crates/jaymi-database",
+    "crates/jaymi-discovery",
+    "crates/jaymi-knowledge",
     "crates/jaymi-logging",
     "crates/jaymi-memory",
     "crates/jaymi-parsers",
@@ -16,6 +18,7 @@ members = [
     "crates/jaymi-projects",
     "crates/jaymi-providers",
     "crates/jaymi-tools",
+    "crates/jaymi-understanding",
 ]
 
 [workspace.package]
@@ -31,6 +34,8 @@ jaymi-config = { path = "crates/jaymi-config" }
 jaymi-context = { path = "crates/jaymi-context" }
 jaymi-core = { path = "crates/jaymi-core" }
 jaymi-database = { path = "crates/jaymi-database" }
+jaymi-discovery = { path = "crates/jaymi-discovery" }
+jaymi-knowledge = { path = "crates/jaymi-knowledge" }
 jaymi-logging = { path = "crates/jaymi-logging" }
 jaymi-memory = { path = "crates/jaymi-memory" }
 jaymi-parsers = { path = "crates/jaymi-parsers" }
@@ -40,6 +45,14 @@ jaymi-policies = { path = "crates/jaymi-policies" }
 jaymi-projects = { path = "crates/jaymi-projects" }
 jaymi-providers = { path = "crates/jaymi-providers" }
 jaymi-tools = { path = "crates/jaymi-tools" }
+jaymi-understanding = { path = "crates/jaymi-understanding" }
+dirs = "6"
+notify = "6"
+kamadak-exif = "0.6"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+lopdf = "0.34"
+pdf-extract = "0.8"
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
