@@ -234,6 +234,32 @@ impl GitStatusState {
     }
 }
 
+/// Which bottom auxiliary panel is visible in the Coding shell (VS Code-style).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum CodingBottomTab {
+    /// Bottom panel collapsed — editor uses the full code height.
+    #[default]
+    Hidden,
+    /// Integrated terminal.
+    Terminal,
+    /// Git status / stage / commit.
+    Git,
+    /// Workspace + LSP problems (Coding Diagnostics).
+    Diagnostics,
+}
+
+impl CodingBottomTab {
+    /// Short tab label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Hidden => "",
+            Self::Terminal => "Terminal",
+            Self::Git => "Git",
+            Self::Diagnostics => "Problems",
+        }
+    }
+}
+
 /// Temporary state for the Coding workspace.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct CodingState {
@@ -259,6 +285,8 @@ pub struct CodingState {
     pub git: Option<GitStatusState>,
     /// Current diagnostics.
     pub diagnostics: Vec<DiagnosticState>,
+    /// Bottom auxiliary panel tab (Terminal / Git / Problems), or hidden.
+    pub bottom_tab: CodingBottomTab,
 }
 
 impl Eq for CodingState {}
@@ -370,16 +398,94 @@ fn count_explorer_nodes(nodes: &[ExplorerNode]) -> usize {
         .sum()
 }
 
-/// File extensions the Coding Editor opens as editable text.
+/// File extensions / names the Coding Editor opens as editable text.
 pub fn is_editable_coding_extension(path: &str) -> bool {
-    let ext = std::path::Path::new(path)
+    let path = std::path::Path::new(path);
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(
+        name.as_str(),
+        "dockerfile"
+            | "makefile"
+            | "gnumakefile"
+            | "cmakelists.txt"
+            | "license"
+            | "licence"
+            | "readme"
+            | "gemfile"
+            | "rakefile"
+            | "procfile"
+            | "cargo.lock"
+            | "gitignore"
+            | "gitattributes"
+            | "editorconfig"
+    ) {
+        return true;
+    }
+    let ext = path
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
     matches!(
         ext.as_str(),
-        "txt" | "md" | "rs" | "toml" | "json" | "yaml" | "yml"
+        "txt"
+            | "md"
+            | "markdown"
+            | "rs"
+            | "toml"
+            | "json"
+            | "jsonc"
+            | "yaml"
+            | "yml"
+            | "lock"
+            | "js"
+            | "jsx"
+            | "ts"
+            | "tsx"
+            | "mjs"
+            | "cjs"
+            | "css"
+            | "scss"
+            | "html"
+            | "htm"
+            | "xml"
+            | "svg"
+            | "py"
+            | "rb"
+            | "go"
+            | "java"
+            | "kt"
+            | "c"
+            | "h"
+            | "cc"
+            | "cpp"
+            | "hpp"
+            | "cs"
+            | "swift"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "ps1"
+            | "sql"
+            | "graphql"
+            | "proto"
+            | "env"
+            | "ini"
+            | "cfg"
+            | "conf"
+            | "properties"
+            | "gitignore"
+            | "dockerignore"
+            | "editorconfig"
+            | "csv"
+            | "log"
+            | "ron"
+            | "nix"
     )
 }
 
@@ -752,6 +858,9 @@ mod tests {
         assert!(is_editable_coding_extension("Cargo.toml"));
         assert!(is_editable_coding_extension("notes.MD"));
         assert!(is_editable_coding_extension("cfg.yaml"));
+        assert!(is_editable_coding_extension("app.ts"));
+        assert!(is_editable_coding_extension("Dockerfile"));
+        assert!(is_editable_coding_extension("Makefile"));
         assert!(!is_editable_coding_extension("photo.png"));
         assert!(!is_editable_coding_extension("bin"));
     }

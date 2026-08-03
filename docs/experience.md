@@ -24,14 +24,15 @@ Jaymi defines primary workspace kinds. **Current:** conversation shell plus expa
 
 ### Coding Workspace
 
-**Current:** shell expands from the right with five panels bound to temporary `CodingState`:
+**Current:** chat-forward side expansion (capped width beside conversation) with a VS Code-inspired shell bound to temporary `CodingState`:
 
-- Project Explorer (live project tree via Planner → `list_project_tree` → Filesystem Provider)
-- Editor (Monaco via wry WebView overlay; syntax highlighting, line numbers, optional minimap, search, multi-cursor, undo/redo; buffers in `CodingState` via Planner → `read_file` / `write_file`; Save + ⌘S)
-- Language Server (Rust Analyzer via Planner → `language_server` → LSP Provider: diagnostics, hover, autocomplete, go to definition, rename, find references)
-- Terminal (persistent PTY via Planner → `terminal` → Terminal Provider; scrolling + history)
-- Git (live status / stage / unstage / discard / commit via Planner → `git` → Git Provider)
-- Diagnostics (read-only operational panel: active project, workspace state, planner activity, tool execution, provider status, indexing, memory context, permissions, current capability, timing metrics; plus LSP problems)
+- **Editor** fills the code space (Monaco via wry WebView overlay when ready; egui buffer always available; Save + ⌘S)
+- **Explorer** interactive tree on the **right** of the editor (Planner → `list_project_tree`)
+- **Bottom tabs** toggle Terminal / Git / Problems without leaving the editor
+- Language Server (Rust Analyzer via Planner → `language_server`)
+- Terminal (PTY via Planner → `terminal`)
+- Git (Planner → `git`)
+- Diagnostics / Problems (read-only operational + LSP problems)
 
 **Activation (UI):** conversation header **⋯** menu → **Open Project…** (folder picker; creates or reuses a project for that root, then opens Coding) or **Recent Projects**, or **Start Coding Project** (opens the Coding shell for the already-active project). That reuses the existing Coding shell and `CodingState` without creating a second conversation. Closing the workspace returns to the same chat. The Project Explorer empty state also offers **Open Project…**.
 

@@ -1092,6 +1092,12 @@ impl Application {
         let nodes = build_explorer_tree(&root_display, &flat);
         self.with_coding_state(|coding| {
             coding.project_root = Some(root_display);
+            // Expand top-level folders so files under src/ etc. are one click away.
+            for node in &nodes {
+                if node.is_dir {
+                    coding.expanded_paths.insert(node.path.clone());
+                }
+            }
             coding.explorer_nodes = nodes;
             coding.explorer_status = ExplorerStatus::Ready;
         })?;
@@ -1106,10 +1112,7 @@ impl Application {
         if is_dir {
             return Ok(());
         }
-        if is_editable_coding_extension(path) {
-            self.open_coding_file(path)?;
-        }
-        Ok(())
+        self.open_coding_file(path)
     }
 
     /// Toggle folder expansion in Project Explorer.

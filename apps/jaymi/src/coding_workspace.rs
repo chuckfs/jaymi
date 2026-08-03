@@ -11,8 +11,8 @@
 
 use eframe::egui;
 use jaymi_capabilities::{
-    CodingState, ExplorerNode, ExplorerStatus, TerminalSessionState, WorkspaceExpansion,
-    WorkspacePanel,
+    CodingBottomTab, CodingState, ExplorerNode, ExplorerStatus, TerminalSessionState,
+    WorkspaceExpansion, WorkspacePanel,
 };
 
 use crate::diagnostics::DiagnosticsSnapshot;
@@ -455,6 +455,8 @@ pub enum CodingShellEvent {
     SaveTab(String),
     /// Toggle Monaco minimap.
     SetMinimap(bool),
+    /// Show / hide a bottom auxiliary panel (Terminal, Git, Problems).
+    SetBottomTab(CodingBottomTab),
     /// Update the draft input for a terminal session.
     TerminalInput { session_id: String, input: String },
     /// Run the current terminal draft (or an explicit command).
@@ -734,8 +736,13 @@ fn placeholder_for(panel: WorkspacePanel) -> &'static str {
 
 /// Render the Coding Workspace shell into the right-side expansion panel.
 ///
-/// When an editor tab is active, [`monaco_out`] receives the Monaco surface for
-/// the wry overlay (CodingState remains the buffer source of truth).
+/// Chat-forward layout (VS Code-inspired within the side expansion):
+/// - Editor fills the code space
+/// - Interactive Project Explorer sits to the **right** of the editor
+/// - Terminal / Git / Problems are bottom tabs (toggle to show)
+///
+/// Monaco may overlay the editor body when ready; egui [`TextEdit`] always
+/// shows the buffer so content is never blank.
 pub fn render_coding_shell(
     ui: &mut egui::Ui,
     expansion: &WorkspaceExpansion,
@@ -744,94 +751,142 @@ pub fn render_coding_shell(
     events: &mut Vec<CodingShellEvent>,
     minimap: bool,
     monaco_out: &mut Option<MonacoEditorSurface>,
+    open_error: Option<&str>,
 ) {
     *monaco_out = None;
-    ui.heading(expansion.kind.title());
-    ui.label(format!(
-        "Requested by capability · {}",
-        expansion.capability.id()
-    ));
-    ui.label(format!("Expands from: {}", expansion.expands_from.as_str()));
-    ui.add_space(8.0);
-    ui.separator();
+    let _ = expansion;
 
-    egui::ScrollArea::vertical()
-        .id_salt("coding_shell_scroll")
-        .show(ui, |ui| {
-            for panel in &expansion.panels {
-                render_coding_panel(
-                    ui,
-                    *panel,
-                    state,
-                    diagnostics,
-                    events,
-                    minimap,
-                    monaco_out,
-                );
-                ui.add_space(8.0);
-            }
-        });
-}
-
-fn render_coding_panel(
-    ui: &mut egui::Ui,
-    panel: WorkspacePanel,
-    state: Option<&CodingState>,
-    diagnostics: Option<&CodingDiagnosticsView>,
-    events: &mut Vec<CodingShellEvent>,
-    minimap: bool,
-    monaco_out: &mut Option<MonacoEditorSurface>,
-) {
-    ui.group(|ui| {
-        ui.strong(panel.label());
-        ui.add_space(4.0);
-        match panel {
-            WorkspacePanel::ProjectExplorer => {
-                if let Some(state) = state {
-                    render_explorer(ui, state, events);
-                } else {
-                    ui.weak(placeholder_for(panel));
-                }
-            }
-            WorkspacePanel::Editor => {
-                if let Some(state) = state {
-                    render_editor(ui, state, events, minimap, monaco_out);
-                } else {
-                    ui.weak(placeholder_for(panel));
-                }
-            }
-            WorkspacePanel::Terminal => {
-                if let Some(state) = state {
-                    render_terminal(ui, state, events);
-                } else {
-                    ui.weak(placeholder_for(panel));
-                }
-            }
-            WorkspacePanel::Git => {
-                if let Some(state) = state {
-                    render_git(ui, state, events);
-                } else {
-                    ui.weak(placeholder_for(panel));
-                }
-            }
-            WorkspacePanel::Diagnostics => {
-                render_diagnostics_panel(ui, state, diagnostics);
-            }
-            _ => {
-                for line in coding_panel_lines(panel, state, diagnostics) {
-                    if line.starts_with("No ")
-                        || line.contains("placeholder")
-                        || line.contains("(stub)")
-                        || line.contains("not connected")
-                    {
-                        ui.weak(line);
-                    } else {
-                        ui.label(line);
-                    }
-                }
-            }
+    ui.horizontal(|ui| {
+        ui.strong("Coding");
+        if let Some(root) = state.and_then(|coding| coding.project_root.as_deref()) {
+            ui.weak(truncate_path(root, 42));
         }
     });
+    if let Some(error) = open_error {
+        ui.colored_label(egui::Color32::from_rgb(200, 80, 80), error);
+    }
+    ui.add_space(4.0);
+    ui.separator();
+
+    let bottom_tab = state
+        .map(|coding| coding.bottom_tab)
+        .unwrap_or(CodingBottomTab::Hidden);
+    let bottom_open = !matches!(bottom_tab, CodingBottomTab::Hidden);
+    let tab_bar_h = 26.0_f32;
+    let bottom_h = if bottom_open { 168.0_f32 } else { 0.0 };
+    let chrome = 8.0_f32;
+    let main_h = (ui.available_height() - tab_bar_h - bottom_h - chrome).max(180.0);
+    let explorer_w = 168.0_f32;
+    let gap = 6.0_f32;
+    let editor_w = (ui.available_width() - explorer_w - gap).max(220.0);
+
+    ui.horizontal(|ui| {
+        ui.set_min_height(main_h);
+        ui.set_max_height(main_h);
+
+        // Editor column — fills the code space.
+        ui.vertical(|ui| {
+            ui.set_min_width(editor_w);
+            ui.set_max_width(editor_w);
+            ui.set_min_height(main_h);
+            ui.set_max_height(main_h);
+            if let Some(state) = state {
+                render_editor(ui, state, events, minimap, monaco_out, main_h);
+            } else {
+                ui.weak(placeholder_for(WorkspacePanel::Editor));
+            }
+        });
+
+        ui.add_space(gap);
+
+        // Explorer — interactive tree on the right of the editor.
+        ui.vertical(|ui| {
+            ui.set_min_width(explorer_w);
+            ui.set_max_width(explorer_w);
+            ui.set_min_height(main_h);
+            ui.set_max_height(main_h);
+            ui.strong("Explorer");
+            ui.add_space(2.0);
+            egui::ScrollArea::vertical()
+                .id_salt("coding_explorer_scroll")
+                .max_height((main_h - 22.0).max(80.0))
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_min_width(explorer_w - 8.0);
+                    if let Some(state) = state {
+                        render_explorer(ui, state, events);
+                    } else {
+                        ui.weak(placeholder_for(WorkspacePanel::ProjectExplorer));
+                    }
+                });
+        });
+    });
+
+    ui.add_space(4.0);
+
+    // Bottom tab strip — click active tab again to collapse.
+    ui.horizontal(|ui| {
+        ui.set_min_height(tab_bar_h);
+        for tab in [
+            CodingBottomTab::Terminal,
+            CodingBottomTab::Git,
+            CodingBottomTab::Diagnostics,
+        ] {
+            let selected = bottom_tab == tab;
+            if ui.selectable_label(selected, tab.label()).clicked() {
+                let next = if selected {
+                    CodingBottomTab::Hidden
+                } else {
+                    tab
+                };
+                events.push(CodingShellEvent::SetBottomTab(next));
+            }
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if bottom_open && ui.small_button("▾").on_hover_text("Hide panel").clicked() {
+                events.push(CodingShellEvent::SetBottomTab(CodingBottomTab::Hidden));
+            }
+        });
+    });
+
+    if bottom_open {
+        ui.separator();
+        egui::ScrollArea::vertical()
+            .id_salt("coding_bottom_scroll")
+            .max_height(bottom_h)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                match bottom_tab {
+                    CodingBottomTab::Terminal => {
+                        if let Some(state) = state {
+                            render_terminal(ui, state, events);
+                        } else {
+                            ui.weak(placeholder_for(WorkspacePanel::Terminal));
+                        }
+                    }
+                    CodingBottomTab::Git => {
+                        if let Some(state) = state {
+                            render_git(ui, state, events);
+                        } else {
+                            ui.weak(placeholder_for(WorkspacePanel::Git));
+                        }
+                    }
+                    CodingBottomTab::Diagnostics => {
+                        render_diagnostics_panel(ui, state, diagnostics);
+                    }
+                    CodingBottomTab::Hidden => {}
+                }
+            });
+    }
+}
+
+fn truncate_path(path: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = path.chars().collect();
+    if chars.len() <= max_chars {
+        return path.to_string();
+    }
+    let keep = max_chars.saturating_sub(1);
+    format!("…{}", chars[chars.len() - keep..].iter().collect::<String>())
 }
 
 /// Read-only Coding Diagnostics panel — operational status for development.
@@ -916,13 +971,12 @@ fn render_explorer_nodes(
                 if ui.small_button(toggle).clicked() {
                     events.push(CodingShellEvent::ToggleExpand(node.path.clone()));
                 }
+                // Labels default to hover-only; selectable_label is required for clicks.
                 let label = format!("📁 {}", node.name);
-                let response = if is_selected || is_active {
-                    ui.strong(label)
-                } else {
-                    ui.label(label)
-                };
-                if response.clicked() {
+                if ui
+                    .selectable_label(is_selected || is_active, label)
+                    .clicked()
+                {
                     events.push(CodingShellEvent::SelectPath {
                         path: node.path.clone(),
                         is_dir: true,
@@ -932,14 +986,11 @@ fn render_explorer_nodes(
             } else {
                 ui.add_space(18.0);
                 let label = format!("📄 {}", node.name);
-                let response = if is_active {
-                    ui.strong(label)
-                } else if is_selected {
-                    ui.label(egui::RichText::new(label).underline())
-                } else {
-                    ui.label(label)
-                };
-                if response.clicked() {
+                // Use a frame-less button so clicks register inside ScrollArea.
+                if ui
+                    .add(egui::Button::new(label).frame(is_active || is_selected))
+                    .clicked()
+                {
                     events.push(CodingShellEvent::SelectPath {
                         path: node.path.clone(),
                         is_dir: false,
@@ -962,9 +1013,14 @@ fn render_editor(
     events: &mut Vec<CodingShellEvent>,
     minimap: bool,
     monaco_out: &mut Option<MonacoEditorSurface>,
+    available_height: f32,
 ) {
     if state.open_tabs.is_empty() {
-        ui.weak("No open files — select a file in Project Explorer.");
+        ui.vertical_centered(|ui| {
+            ui.add_space((available_height * 0.28).clamp(24.0, 80.0));
+            ui.weak("No open files");
+            ui.weak("Select a file in Explorer →");
+        });
         return;
     }
 
@@ -988,26 +1044,27 @@ fn render_editor(
                 events.push(CodingShellEvent::CloseTab(tab.path.clone()));
             }
         }
-        ui.separator();
-        let can_save = state
-            .open_tabs
-            .iter()
-            .any(|tab| Some(tab.path.as_str()) == state.active_tab_path.as_deref() && tab.dirty);
-        if ui
-            .add_enabled(can_save, egui::Button::new("Save"))
-            .on_hover_text("Save active file (⌘S)")
-            .clicked()
-        {
-            events.push(CodingShellEvent::SaveActive);
-        }
-        let mut minimap_enabled = minimap;
-        if ui
-            .checkbox(&mut minimap_enabled, "Minimap")
-            .on_hover_text("Toggle Monaco minimap")
-            .changed()
-        {
-            events.push(CodingShellEvent::SetMinimap(minimap_enabled));
-        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            let mut minimap_enabled = minimap;
+            if ui
+                .checkbox(&mut minimap_enabled, "Minimap")
+                .on_hover_text("Toggle Monaco minimap")
+                .changed()
+            {
+                events.push(CodingShellEvent::SetMinimap(minimap_enabled));
+            }
+            let can_save = state
+                .open_tabs
+                .iter()
+                .any(|tab| Some(tab.path.as_str()) == state.active_tab_path.as_deref() && tab.dirty);
+            if ui
+                .add_enabled(can_save, egui::Button::new("Save"))
+                .on_hover_text("Save active file (⌘S)")
+                .clicked()
+            {
+                events.push(CodingShellEvent::SaveActive);
+            }
+        });
     });
     ui.separator();
 
@@ -1021,16 +1078,48 @@ fn render_editor(
     };
 
     let path = active.path.clone();
-    let content = active.content.clone();
+    let mut content = active.content.clone();
     let scroll_offset = active.scroll_offset;
     let language = language_for_path(&path).to_string();
 
-    // Reserve screen space for the wry Monaco overlay. CodingState owns the buffer.
-    let desired = egui::vec2(ui.available_width(), 280.0_f32.max(ui.available_height().min(420.0)));
-    let (rect, _response) = ui.allocate_exact_size(desired, egui::Sense::hover());
-    ui.painter()
-        .rect_filled(rect, 2.0, egui::Color32::from_rgb(30, 30, 30));
+    ui.weak(format!("{} · {}", active.name, language));
+    ui.add_space(2.0);
 
+    // Fill remaining code space; Monaco overlays this rect when ready.
+    let chrome = 52.0_f32;
+    let editor_height = (available_height - chrome).max(120.0);
+    let scroll = egui::ScrollArea::vertical()
+        .id_salt(("editor_scroll", &path))
+        .max_height(editor_height)
+        .auto_shrink([false, false])
+        .vertical_scroll_offset(scroll_offset)
+        .show(ui, |ui| {
+            let response = ui.add(
+                egui::TextEdit::multiline(&mut content)
+                    .id_salt(("editor_body", &path))
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(24)
+                    .code_editor()
+                    .frame(false),
+            );
+            if response.changed() {
+                events.push(CodingShellEvent::EditContent {
+                    path: path.clone(),
+                    content: content.clone(),
+                });
+            }
+            response.rect
+        });
+
+    let new_offset = scroll.state.offset.y;
+    if (new_offset - scroll_offset).abs() > f32::EPSILON {
+        events.push(CodingShellEvent::Scroll {
+            path: path.clone(),
+            offset: new_offset,
+        });
+    }
+
+    let rect = scroll.inner;
     *monaco_out = Some(MonacoEditorSurface {
         viewport: MonacoViewport { rect },
         document: MonacoDocument {
@@ -1282,6 +1371,7 @@ mod tests {
                 Some("/tmp/app/src/main.rs".into()),
                 "warning",
             )],
+            bottom_tab: CodingBottomTab::Terminal,
         };
         let summary = coding_shell_summary(&state, None);
         assert!(summary.contains("Project Explorer"));

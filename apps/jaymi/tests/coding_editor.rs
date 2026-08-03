@@ -46,6 +46,14 @@ fn selecting_file_opens_editor_tab_through_planner() {
         .explorer_nodes
         .iter()
         .any(|node| node.name == "src" && node.is_dir));
+    assert!(
+        coding
+            .explorer_nodes
+            .iter()
+            .filter(|node| node.is_dir)
+            .all(|node| coding.expanded_paths.contains(&node.path)),
+        "top-level folders should start expanded"
+    );
     assert!(coding
         .explorer_nodes
         .iter()

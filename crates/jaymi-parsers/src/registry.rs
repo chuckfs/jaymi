@@ -72,7 +72,21 @@ impl ParserRegistry {
     }
 
     /// Resolve the parser registered for a file type.
+    ///
+    /// Unknown / extension catch-all types ([`FileType::Other`]) fall back to the
+    /// plain-text parser so Coding Workspace can open source files without a
+    /// dedicated format parser.
     pub fn resolve(&self, file_type: &FileType) -> JaymiResult<Arc<dyn FileParser>> {
+        match self.resolve_exact(file_type) {
+            Ok(parser) => Ok(parser),
+            Err(error) => match file_type {
+                FileType::Other(_) => self.resolve_exact(&FileType::PlainText).map_err(|_| error),
+                _ => Err(error),
+            },
+        }
+    }
+
+    fn resolve_exact(&self, file_type: &FileType) -> JaymiResult<Arc<dyn FileParser>> {
         self.ensure_initialized()?;
         let by_type = self
             .by_type
@@ -94,11 +108,26 @@ impl ParserRegistry {
             .ok_or_else(|| JaymiError::new(format!("parser not found: {parser_id}")))
     }
 
-    /// Detect a file type from path extension.
+    /// Detect a file type from path name / extension.
+    ///
+    /// Source and config files map to [`FileType::PlainText`] so `read_file` and
+    /// the Coding Editor open them without a dedicated parser.
     pub fn detect_type(path: &Path) -> Option<FileType> {
-        let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+        let file_name = path.file_name()?.to_str()?.to_ascii_lowercase();
+        if is_plain_text_basename(&file_name) {
+            return Some(FileType::PlainText);
+        }
+
+        let Some(ext) = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+        else {
+            // Extensionless files (e.g. LICENSE) open as plain text in the editor.
+            return Some(FileType::PlainText);
+        };
+
         match ext.as_str() {
-            "txt" | "rs" | "toml" | "yaml" | "yml" => Some(FileType::PlainText),
             "md" | "markdown" => Some(FileType::Markdown),
             "json" => Some(FileType::Json),
             "pdf" => Some(FileType::Pdf),
@@ -106,6 +135,73 @@ impl ParserRegistry {
             "png" | "jpg" | "jpeg" | "gif" | "webp" | "tif" | "tiff" | "bmp" => {
                 Some(FileType::Image)
             }
+            // Source, config, and other text buffers for Coding Workspace.
+            "txt"
+            | "rs"
+            | "toml"
+            | "yaml"
+            | "yml"
+            | "jsonc"
+            | "lock"
+            | "js"
+            | "jsx"
+            | "ts"
+            | "tsx"
+            | "mjs"
+            | "cjs"
+            | "css"
+            | "scss"
+            | "less"
+            | "html"
+            | "htm"
+            | "xml"
+            | "svg"
+            | "py"
+            | "rb"
+            | "go"
+            | "java"
+            | "kt"
+            | "kts"
+            | "c"
+            | "h"
+            | "cc"
+            | "cpp"
+            | "cxx"
+            | "hpp"
+            | "hxx"
+            | "cs"
+            | "swift"
+            | "sh"
+            | "bash"
+            | "zsh"
+            | "fish"
+            | "ps1"
+            | "sql"
+            | "graphql"
+            | "gql"
+            | "proto"
+            | "env"
+            | "ini"
+            | "cfg"
+            | "conf"
+            | "properties"
+            | "gitignore"
+            | "dockerignore"
+            | "editorconfig"
+            | "csv"
+            | "tsv"
+            | "log"
+            | "ron"
+            | "nix"
+            | "gradle"
+            | "cmake"
+            | "mk"
+            | "r"
+            | "php"
+            | "lua"
+            | "vue"
+            | "svelte"
+            | "astro" => Some(FileType::PlainText),
             other => Some(FileType::Other(other.to_string())),
         }
     }
@@ -153,6 +249,26 @@ impl ParserRegistry {
             Err(JaymiError::new("parser registry is not initialized"))
         }
     }
+}
+
+fn is_plain_text_basename(name: &str) -> bool {
+    matches!(
+        name,
+        "dockerfile"
+            | "makefile"
+            | "gnumakefile"
+            | "cmakelists.txt"
+            | "license"
+            | "licence"
+            | "readme"
+            | "gemfile"
+            | "rakefile"
+            | "procfile"
+            | "cargo.lock"
+            | "vagrantfile"
+            | "jenkinsfile"
+            | "brewfile"
+    )
 }
 
 #[cfg(test)]
@@ -237,6 +353,32 @@ mod tests {
         assert_eq!(
             ParserRegistry::detect_type(Path::new("binary.bin")),
             Some(FileType::Other("bin".to_string()))
+        );
+        assert_eq!(
+            ParserRegistry::detect_type(Path::new("app.ts")),
+            Some(FileType::PlainText)
+        );
+        assert_eq!(
+            ParserRegistry::detect_type(Path::new("Dockerfile")),
+            Some(FileType::PlainText)
+        );
+        assert_eq!(
+            ParserRegistry::detect_type(Path::new("LICENSE")),
+            Some(FileType::PlainText)
+        );
+    }
+
+    #[test]
+    fn other_types_fall_back_to_plain_text_parser() {
+        let mut registry = ParserRegistry::new();
+        registry.initialize().unwrap();
+        registry.register(Arc::new(PlainTextParser)).unwrap();
+        assert_eq!(
+            registry
+                .resolve(&FileType::Other("bin".into()))
+                .unwrap()
+                .id(),
+            "plain_text"
         );
     }
 

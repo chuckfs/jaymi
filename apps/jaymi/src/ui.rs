@@ -102,12 +102,15 @@ impl eframe::App for JaymiApp {
         });
 
         if self.experience.workspace_expanded() {
-            let width = match self.experience.active_workspace_kind() {
-                Some(WorkspaceKind::Coding) => 560.0,
-                _ => 420.0,
+            // Chat-forward: Coding expands beside conversation, never full-window.
+            let (default_w, min_w, max_w) = match self.experience.active_workspace_kind() {
+                Some(WorkspaceKind::Coding) => (640.0, 420.0, 760.0),
+                _ => (420.0, 320.0, 560.0),
             };
             egui::SidePanel::right("jaymi_workspace")
-                .default_width(width)
+                .default_width(default_w)
+                .min_width(min_w)
+                .max_width(max_w)
                 .resizable(true)
                 .show(ctx, |ui| {
                     monaco_surface = self.render_workspace(ui);
@@ -393,7 +396,13 @@ impl JaymiApp {
                 }
                 CodingShellEvent::ToggleExpand(path) => self.app.toggle_coding_expand(&path),
                 CodingShellEvent::SelectPath { path, is_dir } => {
-                    self.app.select_coding_path(&path, is_dir)
+                    match self.app.select_coding_path(&path, is_dir) {
+                        Ok(()) => {
+                            self.error = None;
+                            Ok(())
+                        }
+                        Err(error) => Err(error),
+                    }
                 }
                 CodingShellEvent::ActivateTab(path) => self.app.activate_coding_tab(&path),
                 CodingShellEvent::CloseTab(path) => self.app.close_coding_tab(&path),
@@ -412,6 +421,9 @@ impl JaymiApp {
                     }
                     Ok(())
                 }
+                CodingShellEvent::SetBottomTab(tab) => self.app.with_coding_state(|coding| {
+                    coding.bottom_tab = tab;
+                }),
                 CodingShellEvent::TerminalInput { session_id, input } => {
                     self.app.set_coding_terminal_input(&session_id, input)
                 }
@@ -484,6 +496,7 @@ impl JaymiApp {
             let diagnostics = self.app.coding_diagnostics_view().ok();
             let mut events = Vec::new();
             let mut monaco_surface = None;
+            let open_error = self.error.clone();
             render_coding_shell(
                 ui,
                 &workspace,
@@ -492,16 +505,31 @@ impl JaymiApp {
                 &mut events,
                 self.monaco_minimap,
                 &mut monaco_surface,
+                open_error.as_deref(),
             );
+            let had_surface = monaco_surface.is_some();
             self.handle_coding_events(events);
+            // Selecting a file updates CodingState after the shell paints; repaint
+            // so tabs and Monaco mount against the newly opened file next frame.
+            if !had_surface
+                && self
+                    .experience
+                    .capability_state()
+                    .and_then(|state| state.coding())
+                    .is_some_and(|coding| !coding.open_tabs.is_empty())
+            {
+                ui.ctx().request_repaint();
+            }
             if let Some(error) = &self.monaco_last_error {
                 ui.colored_label(egui::Color32::from_rgb(200, 80, 80), error);
             }
-            ui.add_space(12.0);
-            if ui.button("Close workspace").clicked() {
-                self.close_workspace();
-            }
-            ui.weak("Closing returns to conversation without losing chat history.");
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Close workspace").clicked() {
+                    self.close_workspace();
+                }
+                ui.weak("Chat stays open");
+            });
             return monaco_surface;
         }
 

@@ -44,9 +44,9 @@ pub use plan::{
 pub use registry::CapabilityRegistry;
 pub use state::{
     build_explorer_tree, is_editable_coding_extension, CanvasHistoryState, CapabilityState,
-    CodingState, CreationState, DiagnosticState, EditorTab, ExplorerNode, ExplorerStatus,
-    GeneratedAssetState, GitFileEntry, GitStatusState, OpenFileState, ResearchNoteState,
-    ResearchSourceState, ResearchState, TerminalSessionState,
+    CodingBottomTab, CodingState, CreationState, DiagnosticState, EditorTab, ExplorerNode,
+    ExplorerStatus, GeneratedAssetState, GitFileEntry, GitStatusState, OpenFileState,
+    ResearchNoteState, ResearchSourceState, ResearchState, TerminalSessionState,
 };
 pub use workspace::{
     capability_workspace, workspace_expansion_for, workspace_panels, WorkspaceEdge,

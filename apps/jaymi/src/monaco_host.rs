@@ -153,11 +153,15 @@ impl MonacoHost {
     }
 
     /// Show or hide the overlay and update its bounds to match the egui rect.
+    ///
+    /// `viewport.rect` and `screen_height` are egui **points**. wry Logical
+    /// coordinates are also points — do not multiply by `pixels_per_point` or
+    /// Retina displays place the WebView off-screen (double-scaled).
     pub fn set_viewport(
         &self,
         viewport: Option<MonacoViewport>,
         screen_height: f32,
-        zoom: f32,
+        _zoom: f32,
     ) -> Result<(), String> {
         match viewport {
             None => self
@@ -165,13 +169,20 @@ impl MonacoHost {
                 .set_visible(false)
                 .map_err(|error| format!("hide monaco: {error}")),
             Some(viewport) => {
-                let rect = viewport.rect * zoom;
-                let height = screen_height * zoom;
+                // Keep the child WebView hidden until Monaco finishes loading so
+                // a blank overlay cannot steal clicks from Project Explorer.
+                if !self.ready {
+                    return self
+                        .webview
+                        .set_visible(false)
+                        .map_err(|error| format!("hide monaco: {error}"));
+                }
+                let rect = viewport.rect;
                 self.webview
                     .set_bounds(Rect {
                         position: Position::Logical(LogicalPosition::new(
                             f64::from(rect.min.x),
-                            f64::from(height - rect.max.y),
+                            f64::from(screen_height - rect.max.y),
                         )),
                         size: Size::Logical(LogicalSize::new(
                             f64::from(rect.width().max(1.0)),
@@ -184,6 +195,11 @@ impl MonacoHost {
                     .map_err(|error| format!("show monaco: {error}"))
             }
         }
+    }
+
+    /// Whether Monaco finished loading and can accept documents.
+    pub fn is_ready(&self) -> bool {
+        self.ready
     }
 
     /// Push CodingState buffer into Monaco when the document identity/content changes.
