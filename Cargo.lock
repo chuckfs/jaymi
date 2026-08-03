@@ -1353,6 +1353,7 @@ dependencies = [
  "jaymi-permissions",
  "jaymi-planner",
  "jaymi-policies",
+ "jaymi-project-engine",
  "jaymi-providers",
  "jaymi-search",
  "jaymi-tools",
@@ -1363,7 +1364,15 @@ dependencies = [
 name = "jaymi-capabilities"
 version = "0.1.0"
 dependencies = [
+ "jaymi-capability-engine",
+]
+
+[[package]]
+name = "jaymi-capability-engine"
+version = "0.1.0"
+dependencies = [
  "jaymi-core",
+ "jaymi-logging",
 ]
 
 [[package]]
@@ -1437,6 +1446,7 @@ dependencies = [
  "jaymi-core",
  "jaymi-database",
  "jaymi-logging",
+ "serde",
  "serde_json",
 ]
 
@@ -1473,6 +1483,7 @@ dependencies = [
  "jaymi-parsers",
  "jaymi-permissions",
  "jaymi-policies",
+ "jaymi-project-engine",
  "jaymi-providers",
  "jaymi-search",
  "jaymi-tools",
@@ -1484,6 +1495,20 @@ name = "jaymi-policies"
 version = "0.1.0"
 dependencies = [
  "jaymi-core",
+]
+
+[[package]]
+name = "jaymi-project-engine"
+version = "0.1.0"
+dependencies = [
+ "jaymi-core",
+ "jaymi-database",
+ "jaymi-knowledge",
+ "jaymi-logging",
+ "jaymi-memory-engine",
+ "jaymi-projects",
+ "jaymi-search",
+ "jaymi-understanding",
 ]
 
 [[package]]

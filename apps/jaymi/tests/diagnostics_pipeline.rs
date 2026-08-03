@@ -36,7 +36,7 @@ fn diagnostics_dashboard_reports_honest_subsystem_states() {
         ("Search Engine", OperationalStatus::Operational),
         ("Watcher Status", OperationalStatus::Operational),
         ("Memory Status", OperationalStatus::Operational),
-        ("Project Status", OperationalStatus::NotImplemented),
+        ("Project Status", OperationalStatus::Operational),
         ("Reasoning Status", OperationalStatus::NotImplemented),
     ];
 

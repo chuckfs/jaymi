@@ -6,7 +6,8 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jaymi::Application;
-use jaymi_capabilities::{Capability, CapabilityRegistry};
+use jaymi_capabilities::{Capability, CapabilityEngine, CapabilityEngineApi};
+
 use jaymi_core::{JaymiResult, Lifecycle, UserRequest};
 use jaymi_permissions::{
     PermissionAction, PermissionCategory, PermissionDecision, PermissionEngine, PermissionRequest,
@@ -116,7 +117,7 @@ fn offline_first_policy_participates_in_evaluation() {
 }
 
 fn planner_with_only_cloud_search() -> Planner {
-    let mut capabilities = CapabilityRegistry::new();
+    let mut capabilities = CapabilityEngine::new();
     capabilities.initialize().unwrap();
     capabilities.register(Capability::Search).unwrap();
 
@@ -136,7 +137,7 @@ fn planner_with_only_cloud_search() -> Planner {
     permissions.initialize().unwrap();
 
     let mut planner = Planner::new(PlannerDeps {
-        capabilities: Arc::new(capabilities),
+        capabilities: Arc::new(capabilities) as Arc<dyn CapabilityEngineApi>,
         providers: Arc::new(providers),
         tools: Arc::clone(&tools),
         orchestrator: ToolOrchestrator::new(tools),
@@ -146,6 +147,13 @@ fn planner_with_only_cloud_search() -> Planner {
             let mut engine = MemoryEngine::with_store(Arc::new(InMemoryMemoryStore::new()));
             engine.initialize().unwrap();
             Arc::new(engine) as Arc<dyn MemoryEngineApi>
+        },
+        projects: {
+            let mut engine = jaymi_project_engine::ProjectEngine::with_store(Arc::new(
+                jaymi_project_engine::InMemoryProjectStore::new(),
+            ));
+            engine.initialize().unwrap();
+            Arc::new(engine) as Arc<dyn jaymi_project_engine::ProjectEngineApi>
         },
     });
     planner.initialize().unwrap();

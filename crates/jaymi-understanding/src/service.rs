@@ -99,7 +99,18 @@ impl ContentIntelligence for ContentIntelligenceApi {
     }
 
     fn search_full_text(&self, query: &str, limit: usize) -> JaymiResult<Vec<ContentTextHit>> {
-        self.engine.content_store().search_full_text(query, limit)
+        self.search_full_text_in_prefix(query, None, limit)
+    }
+
+    fn search_full_text_in_prefix(
+        &self,
+        query: &str,
+        path_prefix: Option<&str>,
+        limit: usize,
+    ) -> JaymiResult<Vec<ContentTextHit>> {
+        self.engine
+            .content_store()
+            .search_full_text_in_prefix(query, path_prefix, limit)
     }
 
     fn search_metadata(

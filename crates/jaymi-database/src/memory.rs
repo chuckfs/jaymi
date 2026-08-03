@@ -31,6 +31,8 @@ pub struct MemoryRecord {
     pub source: Option<String>,
     /// Optional structured kind (project memory categories, etc.).
     pub kind: Option<String>,
+    /// Free-form JSON metadata (decision reasoning / relations, etc.).
+    pub metadata_json: String,
     /// Status label (`active` / `archived` / `forgotten`).
     pub status: String,
     /// Unix seconds created.
@@ -85,8 +87,8 @@ impl Database {
                 "INSERT INTO memories (
                     memory_id, scope, summary, content, conversation_id, project_id,
                     importance, confidence, tags_json, source, kind, status,
-                    created_at, updated_at, archived_at
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                    created_at, updated_at, archived_at, metadata_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
                  ON CONFLICT(memory_id) DO UPDATE SET
                     scope = excluded.scope,
                     summary = excluded.summary,
@@ -100,7 +102,8 @@ impl Database {
                     kind = excluded.kind,
                     status = excluded.status,
                     updated_at = excluded.updated_at,
-                    archived_at = excluded.archived_at",
+                    archived_at = excluded.archived_at,
+                    metadata_json = excluded.metadata_json",
                 params![
                     record.memory_id,
                     record.scope,
@@ -117,6 +120,7 @@ impl Database {
                     record.created_at,
                     record.updated_at,
                     record.archived_at,
+                    record.metadata_json,
                 ],
             )
             .map_err(db_error)?;
@@ -130,7 +134,7 @@ impl Database {
             conn.query_row(
                 "SELECT memory_id, scope, summary, content, conversation_id, project_id,
                         importance, confidence, tags_json, source, kind, status,
-                        created_at, updated_at, archived_at
+                        created_at, updated_at, archived_at, metadata_json
                  FROM memories WHERE memory_id = ?1",
                 params![memory_id],
                 map_memory_row,
@@ -146,7 +150,7 @@ impl Database {
             let mut sql = String::from(
                 "SELECT memory_id, scope, summary, content, conversation_id, project_id,
                         importance, confidence, tags_json, source, kind, status,
-                        created_at, updated_at, archived_at
+                        created_at, updated_at, archived_at, metadata_json
                  FROM memories WHERE status != 'forgotten'",
             );
             let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -185,9 +189,10 @@ impl Database {
                 .filter(|value| !value.is_empty())
             {
                 sql.push_str(
-                    " AND (lower(summary) LIKE ? OR lower(content) LIKE ? OR lower(tags_json) LIKE ?)",
+                    " AND (lower(summary) LIKE ? OR lower(content) LIKE ? OR lower(tags_json) LIKE ? OR lower(metadata_json) LIKE ?)",
                 );
                 let pattern = format!("%{text}%");
+                params_vec.push(Box::new(pattern.clone()));
                 params_vec.push(Box::new(pattern.clone()));
                 params_vec.push(Box::new(pattern.clone()));
                 params_vec.push(Box::new(pattern));
@@ -305,6 +310,7 @@ fn map_memory_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRecord> {
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
         archived_at: row.get(14)?,
+        metadata_json: row.get(15)?,
     })
 }
 

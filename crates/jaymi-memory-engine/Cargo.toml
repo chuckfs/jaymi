@@ -11,4 +11,5 @@ authors.workspace = true
 jaymi-core = { workspace = true }
 jaymi-database = { workspace = true }
 jaymi-logging = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

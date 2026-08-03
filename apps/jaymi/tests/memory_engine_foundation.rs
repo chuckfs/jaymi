@@ -28,7 +28,8 @@ fn memory_engine_stores_and_retrieves_through_planner() {
             tags: vec!["preference".into()],
             source: Some("test".into()),
                     kind: None,
-        })
+                metadata_json: None,
+            })
         .expect("store");
     assert_eq!(stored.scope, MemoryScope::Personal);
     assert_eq!(stored.summary, "Prefers concise answers");
@@ -45,7 +46,8 @@ fn memory_engine_stores_and_retrieves_through_planner() {
             tags: vec![],
             source: None,
                     kind: None,
-        })
+                metadata_json: None,
+            })
         .expect("store working");
     assert_eq!(working.scope, MemoryScope::Working);
 
@@ -61,7 +63,8 @@ fn memory_engine_stores_and_retrieves_through_planner() {
             tags: vec!["architecture".into()],
             source: Some("decision".into()),
                     kind: None,
-        })
+                metadata_json: None,
+            })
         .expect("store project");
 
     let hits = app

@@ -40,7 +40,7 @@ const DEPENDENCIES: &[&str] = &[
     "permission_engine",
     "memory_engine",
     "context_engine",
-    "capability_registry",
+    "capability_engine",
     "provider_registry",
 ];
 

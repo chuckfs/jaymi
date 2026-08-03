@@ -3,12 +3,18 @@
 //! Startup order:
 //! Configuration → Logging → Database → Policy Engine → Permission Engine →
 //! Memory Engine → Context Engine → Capability Registry → Provider Registry →
-//! Knowledge → Understanding → Search → Discovery → Tools → Planner → Desktop UI
+//! Knowledge → Understanding → Search → Project Engine → Discovery → Tools →
+//! Planner → Desktop UI
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use jaymi_capabilities::{Capability, CapabilityRegistry};
+use jaymi_capabilities::{
+    Capability, CapabilityDiscoveryReport, CapabilityEngine, CapabilityEngineApi,
+    CapabilityInspectorReport, CapabilityState, CodingState, CreationState, ResearchState,
+    WorkspaceKind,
+};
+
 use jaymi_config::Config;
 use jaymi_context::ContextEngine;
 use jaymi_core::{
@@ -22,15 +28,20 @@ use jaymi_logging::Logger;
 use jaymi_memory::{
     AppendMessageRequest, ArchiveConversationRequest, AssembleContextRequest, AssembledMemoryContext,
     Conversation, ConversationMessage, ConversationMeta, CreateConversationRequest,
-    CreatePersonalMemoryRequest, MemoryEngine, MemoryEngineApi, MemoryQuery, MemoryRecord,
-    PersonalContext, ProjectContext, ProjectMeta, PromoteMemoryRequest, PromotionAskDecision,
-    PromotionSuggestQuery, PromotionSuggestion, RegisterProjectRequest, SqliteMemoryStore,
-    StoreMemoryRequest, StoreProjectMemoryRequest, UpdatePersonalMemoryRequest,
+    CreatePersonalMemoryRequest, ListProjectDecisionsQuery, MemoryEngine, MemoryEngineApi,
+    MemoryQuery, MemoryRecord, PersonalContext, ProjectDecision, ProjectMeta, PromoteMemoryRequest,
+    PromotionAskDecision, PromotionSuggestQuery, PromotionSuggestion, RegisterProjectRequest,
+    SqliteMemoryStore, StoreMemoryRequest, StoreProjectDecisionRequest, StoreProjectMemoryRequest,
+    UpdatePersonalMemoryRequest,
 };
 use jaymi_parsers::{default_registry, ParserRegistry};
 use jaymi_permissions::PermissionEngine;
 use jaymi_planner::{Planner, PlannerDeps, PlannerResponse};
 use jaymi_policies::PolicyEngine;
+use jaymi_project_engine::{
+    CreateProjectRequest, Project, ProjectContext, ProjectEngine, ProjectEngineApi, ProjectHealth,
+    SqliteProjectStore,
+};
 use jaymi_providers::{
     EmbeddingProvider, FilesystemProvider, LocalEmbeddingProvider, OcrProvider,
     PlaceholderOcrProvider, Provider, ProviderRegistry,
@@ -46,12 +57,15 @@ use jaymi_understanding::{
 };
 
 use crate::diagnostics::DiagnosticsSnapshot;
+use crate::experience::ExperienceSession;
 
 /// Owns the process service container and application state.
 pub struct Application {
     state: AppState,
     container: ServiceContainer,
     health_reports: Vec<HealthReport>,
+    /// Conversation-first experience (workspaces expand without destroying chat).
+    experience: Mutex<ExperienceSession>,
 }
 
 impl Application {
@@ -61,6 +75,7 @@ impl Application {
             state: AppState::Starting,
             container: ServiceContainer::new(),
             health_reports: Vec::new(),
+            experience: Mutex::new(ExperienceSession::new()),
         }
     }
 
@@ -156,13 +171,14 @@ impl Application {
 
         self.boot_service(ContextEngine::new())?;
 
-        // Capability registry + Layer 0 and Layer 1 capabilities.
-        let mut capabilities = CapabilityRegistry::new();
+        // Capability Engine + Layer 0 and Layer 1 capabilities.
+        let mut capabilities = CapabilityEngine::new();
         self.initialize_service(&mut capabilities)?;
         capabilities.register(Capability::Search)?;
         capabilities.register(Capability::ReadDocuments)?;
         capabilities.register(Capability::Discover)?;
         capabilities.register(Capability::Index)?;
+        capabilities.register(Capability::Code)?;
         let capabilities = Arc::new(capabilities);
         self.container.register(Arc::clone(&capabilities));
 
@@ -239,6 +255,24 @@ impl Application {
         let search = Arc::new(search);
         self.container.register(Arc::clone(&search));
 
+        // Project Engine — first-class persistent projects (after Search so context sources exist).
+        let mut projects =
+            ProjectEngine::new(Arc::new(SqliteProjectStore::new(Arc::clone(&database))));
+        self.initialize_service(&mut projects)?;
+        let projects = Arc::new(projects);
+        self.container.register(Arc::clone(&projects));
+
+        // Bind Memory / Knowledge / Search / Content so Project Engine can assemble knowledge.
+        projects
+            .bind_sources(jaymi_project_engine::ProjectContextSources {
+                memory: Arc::clone(&memory) as Arc<dyn jaymi_memory::MemoryEngineApi>,
+                knowledge: Arc::clone(&knowledge) as Arc<dyn jaymi_knowledge::KnowledgeStore>,
+                search: Arc::clone(&search) as Arc<dyn jaymi_search::SearchEngineApi>,
+                content: Some(
+                    Arc::clone(&content_api) as Arc<dyn jaymi_understanding::ContentIntelligence>
+                ),
+            })?;
+
         // Discovery engine (Layer 1) — explicit scans only; no boot-time crawl.
         let (discovery_roots, indexing_enabled) = {
             let config = self.container.resolve::<Config>()?;
@@ -280,13 +314,14 @@ impl Application {
 
         let orchestrator = ToolOrchestrator::new(Arc::clone(&tools));
         let mut planner = Planner::new(PlannerDeps {
-            capabilities,
+            capabilities: Arc::clone(&capabilities) as Arc<dyn CapabilityEngineApi>,
             providers,
             tools,
             orchestrator,
             policies,
             permissions,
             memory: Arc::clone(&memory) as Arc<dyn MemoryEngineApi>,
+            projects: Arc::clone(&projects) as Arc<dyn ProjectEngineApi>,
         });
         self.initialize_service(&mut planner)?;
         self.container.register(planner);
@@ -482,13 +517,152 @@ impl Application {
         planner.load_conversation(conversation_id)
     }
 
+    /// List conversations attached to a project.
+    pub fn list_project_conversations(
+        &self,
+        project_id: &str,
+    ) -> JaymiResult<Vec<ConversationMeta>> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.list_project_conversations(project_id)
+    }
+
+    /// Attach a conversation to exactly one project, or detach it (`None` = global).
+    pub fn attach_conversation_to_project(
+        &self,
+        conversation_id: &str,
+        project_id: Option<&str>,
+    ) -> JaymiResult<ConversationMeta> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.attach_conversation_to_project(conversation_id, project_id)
+    }
+
+    /// Create a first-class project through the Project Engine.
+    pub fn create_project(
+        &self,
+        request: &CreateProjectRequest,
+    ) -> JaymiResult<Project> {
+        let planner = self.container.resolve::<Planner>()?;
+        let project = planner.create_project(request)?;
+        // Keep Memory Engine project registry in sync for scoped memory.
+        let _ = planner.register_project(&RegisterProjectRequest {
+            project_id: Some(project.id.as_str().to_string()),
+            name: project.name.clone(),
+            root_path: project
+                .root_directory
+                .as_ref()
+                .map(|path| path.display().to_string()),
+        })?;
+        Ok(project)
+    }
+
+    /// Open a project through the Project Engine (assembles one ProjectContext).
+    /// Switches the active workspace; conversation stays active.
+    pub fn open_project(&self, project_id: &str) -> JaymiResult<ProjectContext> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.open_project(project_id)
+    }
+
+    /// Switch the active workspace to another project by id.
+    pub fn switch_project(&self, project_id: &str) -> JaymiResult<ProjectContext> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.switch_project(project_id)
+    }
+
+    /// Close the session-open project.
+    /// Does not clear the active conversation.
+    pub fn close_project(&self) -> JaymiResult<Option<Project>> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.close_project()
+    }
+
+    /// Current active workspace project id, when any.
+    pub fn active_project_id(&self) -> Option<String> {
+        self.container
+            .resolve::<Planner>()
+            .ok()
+            .and_then(|planner| planner.active_project_id())
+    }
+
+    /// Current active conversation id (persists across project switch).
+    pub fn active_conversation_id(&self) -> Option<String> {
+        self.container
+            .resolve::<Planner>()
+            .ok()
+            .and_then(|planner| planner.active_conversation_id())
+    }
+
+    /// Delete a project through the Project Engine.
+    pub fn delete_project(&self, project_id: &str) -> JaymiResult<()> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.delete_project(project_id)
+    }
+
+    /// List active projects through the Project Engine.
+    pub fn list_projects(&self) -> JaymiResult<Vec<Project>> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.list_projects()
+    }
+
+    /// Request one assembled ProjectContext from the Project Engine.
+    pub fn project_context(
+        &self,
+        project_id: Option<&str>,
+    ) -> JaymiResult<Option<ProjectContext>> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.project_context(project_id)
+    }
+
+    /// Assemble project context for a known project id.
+    pub fn assemble_project_context(&self, project_id: &str) -> JaymiResult<ProjectContext> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.assemble_project_context(project_id)
+    }
+
+    /// Search knowledge belonging to a project (isolated).
+    pub fn search_project_knowledge(
+        &self,
+        project_id: &str,
+        text: &str,
+        limit: Option<usize>,
+    ) -> JaymiResult<Vec<jaymi_project_engine::ProjectKnowledgeHit>> {
+        let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
+        projects.search_knowledge(&jaymi_project_engine::ProjectKnowledgeQuery {
+            project_id: project_id.to_string(),
+            text: text.to_string(),
+            limit,
+        })
+    }
+
     /// Register a project so memory can be attached to it.
+    ///
+    /// Ensures a first-class Project Engine entry exists, then registers memory.
     pub fn register_project(
         &self,
         request: &RegisterProjectRequest,
     ) -> JaymiResult<ProjectMeta> {
         let planner = self.container.resolve::<Planner>()?;
-        planner.register_project(request)
+        let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
+        let known = match &request.project_id {
+            Some(id) if !id.trim().is_empty() => projects.get(id.as_str())?,
+            _ => None,
+        };
+        let project_id = if let Some(existing) = known {
+            existing.id.as_str().to_string()
+        } else {
+            let created = planner.create_project(&CreateProjectRequest {
+                project_id: request.project_id.clone(),
+                name: request.name.clone(),
+                description: None,
+                root_directory: request.root_path.as_ref().map(std::path::PathBuf::from),
+                project_type: None,
+            })?;
+            created.id.as_str().to_string()
+        };
+        planner.register_project(&RegisterProjectRequest {
+            project_id: Some(project_id),
+            name: request.name.clone(),
+            root_path: request.root_path.clone(),
+        })
     }
 
     /// Activate a project for automatic memory retrieval.
@@ -515,6 +689,30 @@ impl Application {
         planner.store_project_memory(request)
     }
 
+    /// Persist an architectural decision through the Planner.
+    pub fn store_project_decision(
+        &self,
+        request: &StoreProjectDecisionRequest,
+    ) -> JaymiResult<ProjectDecision> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.store_project_decision(request)
+    }
+
+    /// List a project's decision log through the Planner.
+    pub fn list_project_decisions(
+        &self,
+        query: &ListProjectDecisionsQuery,
+    ) -> JaymiResult<Vec<ProjectDecision>> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.list_project_decisions(query)
+    }
+
+    /// Fetch one project decision by memory id through the Planner.
+    pub fn get_project_decision(&self, memory_id: &str) -> JaymiResult<Option<ProjectDecision>> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.get_project_decision(memory_id)
+    }
+
     /// Restore project context through the Planner.
     pub fn restore_project_context(&self, project_id: &str) -> JaymiResult<ProjectContext> {
         let planner = self.container.resolve::<Planner>()?;
@@ -525,6 +723,221 @@ impl Application {
     pub fn continue_project(&self, name: &str) -> JaymiResult<PlannerResponse> {
         let planner = self.container.resolve::<Planner>()?;
         planner.handle(UserRequest::new(format!("Continue working on {name}.")))
+    }
+
+    /// Discover registered capabilities through the Planner / Capability Engine.
+    pub fn discover_capabilities(&self) -> JaymiResult<Vec<Capability>> {
+        let planner = self.container.resolve::<Planner>()?;
+        Ok(planner.discover_capabilities())
+    }
+
+    /// Discover available vs unavailable capabilities (with tool/provider requirements).
+    pub fn discover_capability_status(&self) -> JaymiResult<CapabilityDiscoveryReport> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.discover_capability_status()
+    }
+
+    /// Inspect the capability system for developers.
+    ///
+    /// Includes registered capabilities, active (runtime-available) capabilities,
+    /// workspace associations, and required tools/providers. Optionally attaches
+    /// the session's expanded workspace.
+    pub fn inspect_capabilities(&self) -> JaymiResult<CapabilityInspectorReport> {
+        let planner = self.container.resolve::<Planner>()?;
+        let report = planner.inspect_capabilities()?;
+        Ok(report.with_active_workspace(self.active_ui_workspace()?))
+    }
+
+    /// Describe a capability through the Capability Engine (catalog metadata).
+    pub fn describe_capability(
+        &self,
+        capability: Capability,
+    ) -> JaymiResult<jaymi_capabilities::CapabilityDescriptor> {
+        let planner = self.container.resolve::<Planner>()?;
+        Ok(planner.describe_capability(capability))
+    }
+
+    /// Resolve a registered capability by id through the Capability Engine.
+    pub fn resolve_capability(
+        &self,
+        id: &str,
+    ) -> JaymiResult<Option<jaymi_capabilities::CapabilityDescriptor>> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.resolve_capability(id)
+    }
+
+    /// Build a capability execution plan through the Planner (does not execute work).
+    pub fn build_capability_plan(
+        &self,
+        capabilities: &[Capability],
+    ) -> JaymiResult<jaymi_capabilities::ExecutionPlan> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.build_capability_plan(capabilities)
+    }
+
+    /// Plan work for one capability and optional goal (does not execute tools).
+    pub fn plan_capability(
+        &self,
+        capability: Capability,
+        goal: Option<&str>,
+    ) -> JaymiResult<jaymi_capabilities::ExecutionPlan> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.plan_capability(capability, goal)
+    }
+
+    /// Compose independent capabilities into one execution plan (no execution).
+    pub fn plan_capabilities(
+        &self,
+        capabilities: &[Capability],
+        goal: Option<&str>,
+    ) -> JaymiResult<jaymi_capabilities::ExecutionPlan> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.plan_capabilities(capabilities, goal)
+    }
+
+    /// Compose from a [`jaymi_capabilities::CapabilityComposition`] value.
+    pub fn compose_capability_plan(
+        &self,
+        composition: &jaymi_capabilities::CapabilityComposition,
+    ) -> JaymiResult<jaymi_capabilities::ExecutionPlan> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.compose_capability_plan(composition)
+    }
+
+    /// Snapshot of the conversation-first experience session.
+    pub fn experience(&self) -> JaymiResult<ExperienceSession> {
+        self.experience
+            .lock()
+            .map(|guard| guard.clone())
+            .map_err(|_| JaymiError::new("experience session lock poisoned"))
+    }
+
+    /// Active UI workspace kind, when expanded beside the conversation.
+    pub fn active_ui_workspace(&self) -> JaymiResult<Option<WorkspaceKind>> {
+        Ok(self.experience()?.active_workspace_kind())
+    }
+
+    /// Expand a workspace from a Planner response without clearing conversation.
+    pub fn apply_workspace_response(&self, response: &PlannerResponse) -> JaymiResult<()> {
+        let mut experience = self
+            .experience
+            .lock()
+            .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+        experience.apply_planner_response(response);
+        Ok(())
+    }
+
+    /// Expand a capability workspace beside the conversation.
+    ///
+    /// Switching workspace kinds replaces temporary capability state so kinds
+    /// stay isolated. Conversation turns are never cleared.
+    pub fn expand_ui_workspace(
+        &self,
+        expansion: jaymi_capabilities::WorkspaceExpansion,
+    ) -> JaymiResult<()> {
+        let mut experience = self
+            .experience
+            .lock()
+            .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+        experience.expand_workspace(expansion)
+    }
+
+    /// Close the expanded workspace; conversation turns remain intact.
+    ///
+    /// Capability runtime state is discarded with the workspace.
+    pub fn close_ui_workspace(&self) -> JaymiResult<Option<jaymi_capabilities::WorkspaceExpansion>> {
+        let mut experience = self
+            .experience
+            .lock()
+            .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+        let turns_before = experience.turn_count();
+        let closed = experience.close_workspace();
+        if experience.capability_state().is_some() {
+            return Err(JaymiError::new(
+                "closing a workspace must discard capability state",
+            ));
+        }
+        if experience.turn_count() != turns_before {
+            return Err(JaymiError::new(
+                "closing a workspace must not destroy the conversation",
+            ));
+        }
+        Ok(closed)
+    }
+
+    /// Temporary capability state for the active workspace, when any.
+    pub fn capability_state(&self) -> JaymiResult<Option<CapabilityState>> {
+        Ok(self.experience()?.capability_state().cloned())
+    }
+
+    /// Mutate coding workspace state (fails when Coding is not active).
+    pub fn with_coding_state<R>(
+        &self,
+        update: impl FnOnce(&mut CodingState) -> R,
+    ) -> JaymiResult<R> {
+        let mut experience = self
+            .experience
+            .lock()
+            .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+        experience.with_coding_state(update)
+    }
+
+    /// Mutate creation workspace state (fails when Creation is not active).
+    pub fn with_creation_state<R>(
+        &self,
+        update: impl FnOnce(&mut CreationState) -> R,
+    ) -> JaymiResult<R> {
+        let mut experience = self
+            .experience
+            .lock()
+            .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+        experience.with_creation_state(update)
+    }
+
+    /// Mutate research workspace state (fails when Research is not active).
+    pub fn with_research_state<R>(
+        &self,
+        update: impl FnOnce(&mut ResearchState) -> R,
+    ) -> JaymiResult<R> {
+        let mut experience = self
+            .experience
+            .lock()
+            .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+        experience.with_research_state(update)
+    }
+
+    /// Promote a capability-state entry into the durable conversation.
+    ///
+    /// The temporary workspace entry is summarized into conversation; the
+    /// summary survives workspace close even though runtime state does not.
+    pub fn promote_capability_entry(&self, entry_id: &str) -> JaymiResult<String> {
+        let mut experience = self
+            .experience
+            .lock()
+            .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+        experience.promote_capability_entry(entry_id)
+    }
+
+    /// Record a user message in the durable conversation transcript.
+    pub fn record_user_message(&self, content: impl Into<String>) -> JaymiResult<()> {
+        let mut experience = self
+            .experience
+            .lock()
+            .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+        experience.record_user_message(content);
+        Ok(())
+    }
+
+    /// Handle a user request and apply any capability workspace expansion.
+    pub fn handle_with_workspace(&self, request: UserRequest) -> JaymiResult<PlannerResponse> {
+        let content = request.content.clone();
+        if !content.trim().is_empty() {
+            self.record_user_message(content)?;
+        }
+        let planner = self.container.resolve::<Planner>()?;
+        let response = planner.handle(request)?;
+        self.apply_workspace_response(&response)?;
+        Ok(response)
     }
 
     /// Create an intentional personal preference through the Planner.
@@ -587,7 +1000,8 @@ impl Application {
         let policies = self.container.resolve::<Arc<PolicyEngine>>()?;
         let permissions = self.container.resolve::<Arc<PermissionEngine>>()?;
         let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
-        let capabilities = self.container.resolve::<Arc<CapabilityRegistry>>()?;
+        let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
+        let capabilities = self.container.resolve::<Arc<CapabilityEngine>>()?;
         let providers = self.container.resolve::<Arc<ProviderRegistry>>()?;
         let ocr = self.container.resolve::<Arc<PlaceholderOcrProvider>>()?;
         let embedding = self.container.resolve::<Arc<LocalEmbeddingProvider>>()?;
@@ -609,6 +1023,14 @@ impl Application {
             detail: "memory engine health unavailable".into(),
             statistics: jaymi_memory::MemoryStats::default(),
         });
+        let project_report = projects.health_check();
+        let project_status = projects.health().unwrap_or_else(|_| ProjectHealth {
+            initialized: project_report.initialized,
+            healthy: false,
+            version: project_report.version.clone(),
+            detail: "project engine health unavailable".into(),
+            statistics: Default::default(),
+        });
         let discovery_health = discovery.health_check();
         let knowledge_health = knowledge.health_check();
         let understanding_health = understanding.health_check();
@@ -627,6 +1049,32 @@ impl Application {
             .into_iter()
             .map(|capability| capability.id().to_string())
             .collect();
+        let discovery = planner
+            .discover_capability_status()
+            .unwrap_or_default();
+        let available_capability_ids: Vec<String> = discovery
+            .available
+            .iter()
+            .map(|status| status.descriptor.id.to_string())
+            .collect();
+        let unavailable_capability_ids: Vec<String> = discovery
+            .unavailable
+            .iter()
+            .map(|status| status.descriptor.id.to_string())
+            .collect();
+        let capability_status_details: Vec<String> = discovery
+            .all()
+            .into_iter()
+            .map(|status| status.detail())
+            .collect();
+        let capability_inspector = planner
+            .inspect_capabilities()
+            .ok()
+            .map(|report| {
+                report.with_active_workspace(
+                    self.active_ui_workspace().ok().flatten(),
+                )
+            });
         let provider_ids: Vec<String> = providers
             .list()
             .unwrap_or_default()
@@ -822,8 +1270,10 @@ impl Application {
             ),
             SubsystemStatus::new(
                 "Capabilities",
-                if capabilities.is_initialized() && !capability_ids.is_empty() {
+                if capabilities.is_initialized() && !available_capability_ids.is_empty() {
                     OperationalStatus::Operational
+                } else if capabilities.is_initialized() && !capability_ids.is_empty() {
+                    OperationalStatus::Degraded
                 } else if capabilities.is_initialized() {
                     OperationalStatus::Degraded
                 } else {
@@ -831,8 +1281,16 @@ impl Application {
                 },
                 if capability_ids.is_empty() {
                     "none registered".to_string()
+                } else if let Some(inspector) = &capability_inspector {
+                    inspector.summary()
                 } else {
-                    format!("{} · {}", capability_ids.len(), capability_ids.join(", "))
+                    format!(
+                        "{} · available={} [{}] · unavailable={}",
+                        discovery.summary(),
+                        available_capability_ids.len(),
+                        available_capability_ids.join(", "),
+                        unavailable_capability_ids.len()
+                    )
                 },
             ),
             SubsystemStatus::new(
@@ -1062,8 +1520,14 @@ impl Application {
             ),
             SubsystemStatus::new(
                 "Project Status",
-                OperationalStatus::NotImplemented,
-                "jaymi-projects not wired into boot".to_string(),
+                if project_status.healthy {
+                    OperationalStatus::Operational
+                } else if project_status.initialized {
+                    OperationalStatus::Degraded
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                project_status.detail.clone(),
             ),
             SubsystemStatus::new(
                 "Reasoning Status",
@@ -1087,6 +1551,10 @@ impl Application {
             tool_ids,
             capability_count: capabilities.len(),
             capability_ids,
+            available_capability_ids,
+            unavailable_capability_ids,
+            capability_status_details,
+            capability_inspector,
             parser_count: parsers.len(),
             parser_ids,
             database_connected: database.is_connected(),
@@ -1184,7 +1652,7 @@ impl Application {
 
         let _ = self.container.take::<Arc<ToolRegistry>>();
         let _ = self.container.take::<Arc<ProviderRegistry>>();
-        let _ = self.container.take::<Arc<CapabilityRegistry>>();
+        let _ = self.container.take::<Arc<CapabilityEngine>>();
         let _ = self.container.take::<Arc<FilesystemProvider>>();
         let _ = self.container.take::<Arc<PlaceholderOcrProvider>>();
         let _ = self.container.take::<Arc<ParserRegistry>>();
@@ -1195,9 +1663,15 @@ impl Application {
         }
         let _ = self.container.take::<Arc<DiscoveryEngine>>();
         let _ = self.container.take::<Arc<ContentIntelligenceApi>>();
+        if let Some(projects) = self.container.take::<Arc<ProjectEngine>>() {
+            if let Ok(mut projects) = Arc::try_unwrap(projects) {
+                projects.shutdown()?;
+            }
+        }
         let _ = self.container.take::<Arc<SearchEngine>>();
         let _ = self.container.take::<Arc<UnderstandingEngine>>();
         let _ = self.container.take::<Arc<SqliteContentStore>>();
+        let _ = self.container.take::<Arc<EmbeddingQueue>>();
         let _ = self.container.take::<Arc<SqliteKnowledgeStore>>();
 
         shutdown_owned::<ContextEngine>(&mut self.container)?;
@@ -1268,7 +1742,7 @@ mod tests {
             .iter()
             .any(|id| id == OCR_PROVIDER_ID));
         assert_eq!(diagnostics.tool_count, 5);
-        assert_eq!(diagnostics.capability_count, 4);
+        assert_eq!(diagnostics.capability_count, 5);
         assert!(diagnostics.database_connected);
         assert_eq!(
             diagnostics.database_path.as_ref().map(std::path::PathBuf::from),

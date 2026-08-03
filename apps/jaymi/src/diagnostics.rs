@@ -5,6 +5,7 @@
 
 use std::path::PathBuf;
 
+use jaymi_capabilities::CapabilityInspectorReport;
 use jaymi_core::{AppState, FileEntry};
 
 /// Operational readiness of a subsystem, distinct from lifecycle initialization.
@@ -87,6 +88,14 @@ pub struct DiagnosticsSnapshot {
     pub capability_count: usize,
     /// Registered capability ids.
     pub capability_ids: Vec<String>,
+    /// Capabilities currently available (registered + requirements met).
+    pub available_capability_ids: Vec<String>,
+    /// Capabilities currently unavailable.
+    pub unavailable_capability_ids: Vec<String>,
+    /// Per-capability status detail lines for the dashboard.
+    pub capability_status_details: Vec<String>,
+    /// Developer-facing capability inspector (registered / active / requirements).
+    pub capability_inspector: Option<CapabilityInspectorReport>,
     /// Number of registered parsers.
     pub parser_count: usize,
     /// Registered parser ids.
@@ -274,6 +283,13 @@ impl DiagnosticsSnapshot {
         }
     }
 
+    /// Render the capability inspector section, when present.
+    pub fn render_capability_inspector(&self) -> Option<String> {
+        self.capability_inspector
+            .as_ref()
+            .map(CapabilityInspectorReport::render)
+    }
+
     /// Format read success for display.
     pub fn read_success_label(&self) -> &'static str {
         if self.read_success {
@@ -301,6 +317,10 @@ impl DiagnosticsSnapshot {
                 row.status.label(),
                 row.detail
             ));
+        }
+        if let Some(inspector) = self.render_capability_inspector() {
+            lines.push(String::new());
+            lines.push(inspector);
         }
         lines.join("\n")
     }
@@ -341,6 +361,10 @@ mod tests {
             tool_ids: vec![],
             capability_count: 0,
             capability_ids: vec![],
+            available_capability_ids: vec![],
+            unavailable_capability_ids: vec![],
+            capability_status_details: vec![],
+            capability_inspector: None,
             parser_count: 0,
             parser_ids: vec![],
             database_connected: false,

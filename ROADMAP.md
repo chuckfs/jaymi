@@ -181,11 +181,11 @@ Continue working on Jaymi.
 
 ⸻
 
-Layer 6 — Capability Engine
+Layer 6 — Workspace & Capability Engine
 
 Objective
 
-Give Jaymi useful abilities.
+Give Jaymi useful abilities that reshape the experience — not just backend concepts.
 
 Capabilities include:
 
@@ -204,6 +204,54 @@ Capabilities are abstract.
 They describe what Jaymi can do.
 
 Not how it does it.
+
+Capabilities also change the user experience.
+
+Conversation stays permanent. Workspaces expand beside it.
+
+Examples
+
+Conversation
+
+↓
+
+chat-only interface
+
+⸻
+
+Coding
+
+↓
+
+conversation stays on the left
+
+↓
+
+IDE slides in from the right
+
+⸻
+
+Creation
+
+↓
+
+conversation stays
+
+↓
+
+canvas appears
+
+⸻
+
+Research
+
+↓
+
+conversation stays
+
+↓
+
+sources and notes appear
 
 ⸻
 

@@ -129,7 +129,8 @@ fn conversations_reopen_exactly_as_stored_and_stay_isolated() {
         tags: vec![],
         source: None,
                 kind: None,
-        })
+                metadata_json: None,
+            })
     .expect("store conversation memory");
 
     let other = app

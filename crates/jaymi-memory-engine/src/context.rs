@@ -154,6 +154,7 @@ pub fn score_candidate(
 
     let overlap = token_overlap(tokens, &record.summary)
         + token_overlap(tokens, &record.content)
+        + token_overlap(tokens, &record.metadata_json)
         + record
             .tags
             .iter()
@@ -162,6 +163,14 @@ pub fn score_candidate(
     if overlap > 0 {
         reasons.push(MemoryRelevanceKind::RequestMatch);
         score = score.saturating_add((overlap as u32).saturating_mul(12).min(40));
+    }
+
+    if record.kind.as_deref() == Some("architecture_decision") {
+        // Prefer recalling why decisions were made when assembling context.
+        score = score.saturating_add(12);
+        if overlap > 0 {
+            score = score.saturating_add(8);
+        }
     }
 
     if record.scope == MemoryScope::Personal {
@@ -255,6 +264,7 @@ mod tests {
             created_at: 100,
             updated_at: 100,
             archived_at: None,
+            metadata_json: "{}".into(),
         }
     }
 

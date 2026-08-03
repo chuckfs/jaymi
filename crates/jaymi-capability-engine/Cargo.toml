@@ -1,0 +1,12 @@
+[package]
+name = "jaymi-capability-engine"
+description = "Capability Engine — abstract abilities independent from tools and providers"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+jaymi-core = { workspace = true }
+jaymi-logging = { workspace = true }

@@ -202,6 +202,14 @@ pub trait ContentIntelligence: Send + Sync {
     /// Full-text search over normalized document contents.
     fn search_full_text(&self, query: &str, limit: usize) -> JaymiResult<Vec<ContentTextHit>>;
 
+    /// Full-text search constrained to a filesystem path prefix (project isolation).
+    fn search_full_text_in_prefix(
+        &self,
+        query: &str,
+        path_prefix: Option<&str>,
+        limit: usize,
+    ) -> JaymiResult<Vec<ContentTextHit>>;
+
     /// Structured metadata search (SQL filters — never FTS).
     fn search_metadata(
         &self,

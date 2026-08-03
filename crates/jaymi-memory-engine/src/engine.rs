@@ -21,8 +21,9 @@ use crate::personal::{
     CreatePersonalMemoryRequest, PersonalContext, PersonalMemoryKind, UpdatePersonalMemoryRequest,
 };
 use crate::project::{
-    slugify_project_name, ProjectContext, ProjectMemoryKind, ProjectMeta, RegisterProjectRequest,
-    StoreProjectMemoryRequest,
+    encode_decision_metadata, project_decision_from_record, slugify_project_name,
+    ListProjectDecisionsQuery, ProjectContext, ProjectDecision, ProjectMemoryKind, ProjectMeta,
+    RegisterProjectRequest, StoreProjectDecisionRequest, StoreProjectMemoryRequest,
 };
 use crate::promotion::{
     is_upward_promotion, next_scope, score_promotion_candidate, suggestion_reason,
@@ -98,6 +99,19 @@ pub trait MemoryEngineApi: Send + Sync {
     /// Load an entire conversation exactly as stored.
     fn load_conversation(&self, conversation_id: &str) -> JaymiResult<Option<Conversation>>;
 
+    /// List conversation metadata attached to a project (most recently updated first).
+    fn list_conversations_for_project(
+        &self,
+        project_id: &str,
+    ) -> JaymiResult<Vec<ConversationMeta>>;
+
+    /// Attach a conversation to exactly one project, or detach it (`None`).
+    fn attach_conversation_to_project(
+        &self,
+        conversation_id: &str,
+        project_id: Option<&str>,
+    ) -> JaymiResult<ConversationMeta>;
+
     /// Register a project so memory can be attached to it.
     fn register_project(&self, request: &RegisterProjectRequest) -> JaymiResult<ProjectMeta>;
 
@@ -118,6 +132,21 @@ pub trait MemoryEngineApi: Send + Sync {
         &self,
         request: &StoreProjectMemoryRequest,
     ) -> JaymiResult<MemoryRecord>;
+
+    /// Persist a structured architectural decision in the project decision log.
+    fn store_project_decision(
+        &self,
+        request: &StoreProjectDecisionRequest,
+    ) -> JaymiResult<ProjectDecision>;
+
+    /// List decisions for a project (most recent first).
+    fn list_project_decisions(
+        &self,
+        query: &ListProjectDecisionsQuery,
+    ) -> JaymiResult<Vec<ProjectDecision>>;
+
+    /// Load one project decision by memory id.
+    fn get_project_decision(&self, memory_id: &str) -> JaymiResult<Option<ProjectDecision>>;
 
     /// Restore full project context (all maintained categories).
     fn restore_project_context(&self, project_id: &str) -> JaymiResult<ProjectContext>;
@@ -584,7 +613,8 @@ impl MemoryEngineApi for MemoryEngine {
                 tags: vec!["archived_conversation".into()],
                 source: Some("conversation_archive".into()),
                         kind: None,
-        })?;
+                metadata_json: None,
+            })?;
             promoted_memory_id = Some(stored.id.as_str().to_string());
         }
 
@@ -622,10 +652,16 @@ impl MemoryEngineApi for MemoryEngine {
                 "conversation already exists: {id}"
             )));
         }
+        let project_id = request.project_id.clone().or_else(|| self.active_project_id());
+        if let Some(project_id) = &project_id {
+            if self.store.get_project(project_id)?.is_none() {
+                return Err(JaymiError::new(format!("project not found: {project_id}")));
+            }
+        }
         let meta = ConversationMeta {
             id: jaymi_core::EntityId::new(id),
             title: request.title.clone(),
-            project_id: request.project_id.clone(),
+            project_id,
             created_at: now,
             updated_at: now,
             status: ConversationStatus::Active,
@@ -728,6 +764,67 @@ impl MemoryEngineApi for MemoryEngine {
             ));
         }
         self.store.load_conversation(conversation_id)
+    }
+
+    fn list_conversations_for_project(
+        &self,
+        project_id: &str,
+    ) -> JaymiResult<Vec<ConversationMeta>> {
+        self.ensure_ready()?;
+        let project_id = project_id.trim();
+        if project_id.is_empty() {
+            return Err(JaymiError::new(
+                "list_conversations_for_project requires project_id",
+            ));
+        }
+        let ids = self.store.list_conversation_ids_for_project(project_id)?;
+        let mut metas = Vec::with_capacity(ids.len());
+        for id in ids {
+            if let Some(meta) = self.store.get_conversation_meta(&id)? {
+                metas.push(meta);
+            }
+        }
+        Ok(metas)
+    }
+
+    fn attach_conversation_to_project(
+        &self,
+        conversation_id: &str,
+        project_id: Option<&str>,
+    ) -> JaymiResult<ConversationMeta> {
+        self.ensure_ready()?;
+        let conversation_id = conversation_id.trim();
+        if conversation_id.is_empty() {
+            return Err(JaymiError::new(
+                "attach_conversation_to_project requires conversation_id",
+            ));
+        }
+        let Some(mut meta) = self.store.get_conversation_meta(conversation_id)? else {
+            return Err(JaymiError::new(format!(
+                "conversation not found: {conversation_id}"
+            )));
+        };
+        let project_id = project_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        if let Some(project_id) = &project_id {
+            if self.store.get_project(project_id)?.is_none() {
+                return Err(JaymiError::new(format!("project not found: {project_id}")));
+            }
+        }
+        meta.project_id = project_id;
+        meta.updated_at = Self::now();
+        self.store.upsert_conversation_meta(&meta)?;
+        jaymi_logging::info(
+            "memory",
+            format!(
+                "attached conversation id={} project={:?}",
+                meta.id.as_str(),
+                meta.project_id
+            ),
+        );
+        Ok(meta)
     }
 
     fn register_project(&self, request: &RegisterProjectRequest) -> JaymiResult<ProjectMeta> {
@@ -859,7 +956,104 @@ impl MemoryEngineApi for MemoryEngine {
             tags,
             source: request.source.clone(),
             kind: Some(request.kind.as_str().to_string()),
+            metadata_json: None,
         })
+    }
+
+    fn store_project_decision(
+        &self,
+        request: &StoreProjectDecisionRequest,
+    ) -> JaymiResult<ProjectDecision> {
+        self.ensure_ready()?;
+        if request.project_id.trim().is_empty() {
+            return Err(JaymiError::new(
+                "store_project_decision requires project_id",
+            ));
+        }
+        if request.title.trim().is_empty() {
+            return Err(JaymiError::new("store_project_decision requires a title"));
+        }
+        if self.store.get_project(&request.project_id)?.is_none() {
+            return Err(JaymiError::new(format!(
+                "project not found: {}",
+                request.project_id
+            )));
+        }
+        let mut related_conversations = request.related_conversations.clone();
+        if let Some(conversation_id) = &request.conversation_id {
+            if !related_conversations.iter().any(|id| id == conversation_id) {
+                related_conversations.insert(0, conversation_id.clone());
+            }
+        }
+        let metadata_json = encode_decision_metadata(
+            &request.reasoning,
+            &request.related_files,
+            &related_conversations,
+        );
+        let mut tags = vec!["decision-log".into()];
+        let kind_tag = format!("kind:{}", ProjectMemoryKind::ArchitectureDecision.as_str());
+        tags.push(kind_tag);
+        let record = self.store(&StoreMemoryRequest {
+            scope: MemoryScope::Project,
+            summary: request.title.clone(),
+            content: request.description.clone(),
+            conversation_id: request.conversation_id.clone(),
+            project_id: Some(request.project_id.clone()),
+            importance: request.importance.or(Some(90)),
+            confidence: request.confidence.or(Some(90)),
+            tags,
+            source: request.source.clone(),
+            kind: Some(ProjectMemoryKind::ArchitectureDecision.as_str().to_string()),
+            metadata_json: Some(metadata_json),
+        })?;
+        project_decision_from_record(&record)
+            .ok_or_else(|| JaymiError::new("failed to decode stored project decision"))
+    }
+
+    fn list_project_decisions(
+        &self,
+        query: &ListProjectDecisionsQuery,
+    ) -> JaymiResult<Vec<ProjectDecision>> {
+        self.ensure_ready()?;
+        let project_id = query.project_id.trim();
+        if project_id.is_empty() {
+            return Err(JaymiError::new(
+                "list_project_decisions requires project_id",
+            ));
+        }
+        let records = self.store.search(&MemoryQuery {
+            scope: Some(MemoryScope::Project),
+            project_id: Some(project_id.to_string()),
+            kind: Some(ProjectMemoryKind::ArchitectureDecision.as_str().to_string()),
+            text: query.text.clone(),
+            limit: query.limit.or(Some(50)),
+            ..MemoryQuery::default()
+        })?;
+        let mut decisions: Vec<_> = records
+            .iter()
+            .filter_map(project_decision_from_record)
+            .collect();
+        decisions.sort_by(|left, right| {
+            right
+                .timestamp
+                .cmp(&left.timestamp)
+                .then(left.memory_id.cmp(&right.memory_id))
+        });
+        Ok(decisions)
+    }
+
+    fn get_project_decision(&self, memory_id: &str) -> JaymiResult<Option<ProjectDecision>> {
+        self.ensure_ready()?;
+        let id = memory_id.trim();
+        if id.is_empty() {
+            return Err(JaymiError::new(
+                "get_project_decision requires memory_id",
+            ));
+        }
+        let Some(record) = self.store.get(id)? else {
+            return Ok(None);
+        };
+        Ok(project_decision_from_record(&record))
     }
 
     fn restore_project_context(&self, project_id: &str) -> JaymiResult<ProjectContext> {
@@ -948,7 +1142,8 @@ impl MemoryEngineApi for MemoryEngine {
                 .clone()
                 .or_else(|| Some("intentional_personal".into())),
             kind: Some(request.kind.as_str().to_string()),
-        })?;
+                metadata_json: None,
+            })?;
         jaymi_logging::info(
             "memory",
             format!(
@@ -1176,6 +1371,7 @@ mod tests {
                 tags: vec!["temp".into()],
                 source: None,
                 kind: None,
+                metadata_json: None,
             })
             .unwrap();
 
@@ -1232,6 +1428,7 @@ mod tests {
                 tags: vec!["preference".into()],
                 source: None,
                 kind: Some("coding_preference".into()),
+                metadata_json: None,
             })
             .unwrap();
 
@@ -1339,7 +1536,8 @@ mod tests {
                 tags: vec![],
                 source: None,
                         kind: None,
-        })
+                metadata_json: None,
+            })
             .unwrap();
         let leaked = engine
             .retrieve(&MemoryQuery {
@@ -1448,6 +1646,7 @@ mod tests {
                 tags: vec![],
                 source: None,
                 kind: Some("architecture_decision".into()),
+                metadata_json: None,
             })
             .unwrap();
         engine
@@ -1462,6 +1661,7 @@ mod tests {
                 tags: vec![],
                 source: None,
                 kind: None,
+                metadata_json: None,
             })
             .unwrap();
 
@@ -1478,6 +1678,7 @@ mod tests {
                     tags: vec![],
                     source: None,
                     kind: None,
+                    metadata_json: None,
                 })
                 .unwrap();
         }

@@ -49,7 +49,8 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
             tags: vec!["architecture".into()],
             source: Some("test".into()),
             kind: Some("architecture_decision".into()),
-        })
+                metadata_json: None,
+            })
         .expect("jaymi project memory");
 
     let foreign = app
@@ -64,7 +65,8 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
             tags: vec![],
             source: None,
             kind: Some("task".into()),
-        })
+                metadata_json: None,
+            })
         .expect("foreign project memory");
 
     let conversation = app
@@ -79,7 +81,8 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
             tags: vec![],
             source: None,
             kind: None,
-        })
+                metadata_json: None,
+            })
         .expect("conversation memory");
 
     let other_conversation = app
@@ -94,7 +97,8 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
             tags: vec![],
             source: None,
             kind: None,
-        })
+                metadata_json: None,
+            })
         .expect("other conversation memory");
 
     let working = app
@@ -109,7 +113,8 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
             tags: vec![],
             source: None,
             kind: None,
-        })
+                metadata_json: None,
+            })
         .expect("working memory");
 
     let unrelated = app
@@ -124,7 +129,8 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
             tags: vec![],
             source: None,
             kind: None,
-        })
+                metadata_json: None,
+            })
         .expect("unrelated working");
 
     // Flood the store with low-relevance noise; assembly must still honor limits.
@@ -140,6 +146,7 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
             tags: vec![],
             source: None,
             kind: None,
+            metadata_json: None,
         })
         .expect("noise");
     }

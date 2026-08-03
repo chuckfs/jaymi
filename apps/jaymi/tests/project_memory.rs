@@ -124,14 +124,15 @@ fn continue_working_on_jaymi_restores_project_context_with_isolation() {
         restored.content
     );
     let context = restored.project_context.expect("project context");
-    assert_eq!(context.project_id, jaymi.id.as_str());
-    assert_eq!(context.architecture_decisions.len(), 1);
-    assert_eq!(context.tasks.len(), 1);
-    assert_eq!(context.coding_preferences.len(), 1);
-    assert_eq!(context.important_files.len(), 1);
-    assert_eq!(context.milestones.len(), 1);
-    assert_eq!(context.conversations.len(), 1);
-    assert_eq!(context.entry_count(), 6);
+    assert_eq!(context.project.id, jaymi.id);
+    assert_eq!(context.memories.architecture_decisions.len(), 1);
+    assert_eq!(context.memories.tasks.len(), 1);
+    assert_eq!(context.memories.coding_preferences.len(), 1);
+    assert_eq!(context.memories.important_files.len(), 1);
+    assert_eq!(context.memories.milestones.len(), 1);
+    assert_eq!(context.memories.conversations.len(), 1);
+    assert_eq!(context.memories.entry_count(), 6);
+    assert!(context.is_open);
 
     // Active project memory is retrieved automatically on later requests.
     let planner = app.container().resolve::<Planner>().expect("planner");

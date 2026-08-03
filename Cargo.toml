@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "apps/jaymi",
     "crates/jaymi-capabilities",
+    "crates/jaymi-capability-engine",
     "crates/jaymi-config",
     "crates/jaymi-context",
     "crates/jaymi-core",
@@ -16,6 +17,7 @@ members = [
     "crates/jaymi-permissions",
     "crates/jaymi-planner",
     "crates/jaymi-policies",
+    "crates/jaymi-project-engine",
     "crates/jaymi-projects",
     "crates/jaymi-providers",
     "crates/jaymi-search",
@@ -32,6 +34,7 @@ authors = ["Jaymi Contributors"]
 
 [workspace.dependencies]
 jaymi-capabilities = { path = "crates/jaymi-capabilities" }
+jaymi-capability-engine = { path = "crates/jaymi-capability-engine" }
 jaymi-config = { path = "crates/jaymi-config" }
 jaymi-context = { path = "crates/jaymi-context" }
 jaymi-core = { path = "crates/jaymi-core" }
@@ -45,6 +48,7 @@ jaymi-parsers = { path = "crates/jaymi-parsers" }
 jaymi-permissions = { path = "crates/jaymi-permissions" }
 jaymi-planner = { path = "crates/jaymi-planner" }
 jaymi-policies = { path = "crates/jaymi-policies" }
+jaymi-project-engine = { path = "crates/jaymi-project-engine" }
 jaymi-projects = { path = "crates/jaymi-projects" }
 jaymi-providers = { path = "crates/jaymi-providers" }
 jaymi-search = { path = "crates/jaymi-search" }

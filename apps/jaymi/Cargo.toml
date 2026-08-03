@@ -31,6 +31,7 @@ jaymi-parsers = { workspace = true }
 jaymi-permissions = { workspace = true }
 jaymi-planner = { workspace = true }
 jaymi-policies = { workspace = true }
+jaymi-project-engine = { workspace = true }
 jaymi-providers = { workspace = true }
 jaymi-search = { workspace = true }
 jaymi-tools = { workspace = true }
@@ -50,6 +51,7 @@ jaymi-parsers = { workspace = true }
 jaymi-permissions = { workspace = true }
 jaymi-planner = { workspace = true }
 jaymi-policies = { workspace = true }
+jaymi-project-engine = { workspace = true }
 jaymi-providers = { workspace = true }
 jaymi-search = { workspace = true }
 jaymi-tools = { workspace = true }

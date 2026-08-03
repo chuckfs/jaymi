@@ -119,6 +119,69 @@ pub struct StoreProjectMemoryRequest {
     pub source: Option<String>,
 }
 
+/// Structured architectural decision in a project's decision log.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectDecision {
+    /// Underlying memory id.
+    pub memory_id: String,
+    /// Owning project.
+    pub project_id: String,
+    /// When the decision was recorded (unix seconds).
+    pub timestamp: i64,
+    /// Decision title.
+    pub title: String,
+    /// What was decided.
+    pub description: String,
+    /// Why the decision was made.
+    pub reasoning: String,
+    /// Related filesystem paths.
+    pub related_files: Vec<String>,
+    /// Related conversation ids.
+    pub related_conversations: Vec<String>,
+    /// Importance `0..=100`.
+    pub importance: u32,
+    /// Confidence `0..=100`.
+    pub confidence: u32,
+    /// Provenance label.
+    pub source: Option<String>,
+}
+
+/// Request to persist a project decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreProjectDecisionRequest {
+    /// Owning project.
+    pub project_id: String,
+    /// Decision title.
+    pub title: String,
+    /// What was decided.
+    pub description: String,
+    /// Why the decision was made.
+    pub reasoning: String,
+    /// Related filesystem paths.
+    pub related_files: Vec<String>,
+    /// Related conversation ids.
+    pub related_conversations: Vec<String>,
+    /// Optional primary conversation provenance.
+    pub conversation_id: Option<String>,
+    /// Importance `0..=100`.
+    pub importance: Option<u32>,
+    /// Confidence `0..=100`.
+    pub confidence: Option<u32>,
+    /// Provenance.
+    pub source: Option<String>,
+}
+
+/// Query for listing project decisions.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ListProjectDecisionsQuery {
+    /// Owning project.
+    pub project_id: String,
+    /// Optional free-text filter (title/description/reasoning).
+    pub text: Option<String>,
+    /// Maximum rows.
+    pub limit: Option<usize>,
+}
+
 /// Restored project context for "continue working on …".
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ProjectContext {
@@ -187,4 +250,57 @@ pub fn slugify_project_name(name: &str) -> String {
     } else {
         slug
     }
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+struct DecisionMetadata {
+    #[serde(default)]
+    reasoning: String,
+    #[serde(default)]
+    related_files: Vec<String>,
+    #[serde(default)]
+    related_conversations: Vec<String>,
+}
+
+/// Encode decision-specific fields into memory metadata JSON.
+pub fn encode_decision_metadata(
+    reasoning: &str,
+    related_files: &[String],
+    related_conversations: &[String],
+) -> String {
+    let payload = DecisionMetadata {
+        reasoning: reasoning.trim().to_string(),
+        related_files: related_files.to_vec(),
+        related_conversations: related_conversations.to_vec(),
+    };
+    serde_json::to_string(&payload).unwrap_or_else(|_| "{}".into())
+}
+
+/// Parse a project decision from a memory record.
+pub fn project_decision_from_record(record: &MemoryRecord) -> Option<ProjectDecision> {
+    if record.kind.as_deref() != Some(ProjectMemoryKind::ArchitectureDecision.as_str()) {
+        return None;
+    }
+    let project_id = record.project_id.clone()?;
+    let meta: DecisionMetadata =
+        serde_json::from_str(&record.metadata_json).unwrap_or_default();
+    let mut related_conversations = meta.related_conversations;
+    if let Some(conversation_id) = &record.conversation_id {
+        if !related_conversations.iter().any(|id| id == conversation_id) {
+            related_conversations.insert(0, conversation_id.clone());
+        }
+    }
+    Some(ProjectDecision {
+        memory_id: record.id.as_str().to_string(),
+        project_id,
+        timestamp: record.created_at,
+        title: record.summary.clone(),
+        description: record.content.clone(),
+        reasoning: meta.reasoning,
+        related_files: meta.related_files,
+        related_conversations,
+        importance: record.importance,
+        confidence: record.confidence,
+        source: record.source.clone(),
+    })
 }

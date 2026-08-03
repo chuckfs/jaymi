@@ -39,7 +39,8 @@ fn promotion_ladder_suggestions_and_intentional_apply() {
             tags: vec![],
             source: Some("test".into()),
             kind: None,
-        })
+                metadata_json: None,
+            })
         .expect("store working");
 
     // Suggestions are produced without applying.
@@ -133,7 +134,8 @@ fn promotion_ladder_suggestions_and_intentional_apply() {
             tags: vec![],
             source: None,
             kind: None,
-        })
+                metadata_json: None,
+            })
         .expect("store candidate");
 
     let planner = app.container().resolve::<Planner>().expect("planner");

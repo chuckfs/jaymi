@@ -600,6 +600,28 @@ impl SearchEngine {
                 if !passes_metadata(item, &request.metadata) {
                     continue;
                 }
+                if let Some(folder) = &request.folder {
+                    let normalized = normalize_path(folder)?;
+                    let folder_key = normalized.to_string_lossy().into_owned();
+                    let item_key = item.path.to_string_lossy();
+                    let in_folder = if request.folder_immediate {
+                        item.parent
+                            .as_ref()
+                            .map(|parent| parent.to_string_lossy() == folder_key)
+                            .unwrap_or(false)
+                    } else {
+                        item_key == folder_key
+                            || item_key.starts_with(
+                                &(folder_key.clone() + std::path::MAIN_SEPARATOR_STR),
+                            )
+                    };
+                    if !in_folder {
+                        continue;
+                    }
+                }
+            } else if request.folder.is_some() || request.metadata.is_active() {
+                // Folder / metadata filters require an inventory row.
+                continue;
             }
 
             let mut signals = RankSignals {
@@ -673,8 +695,15 @@ impl SearchEngine {
         let now = ranking_now_unix();
 
         // Content full-text hits (words / phrases / exact matches).
+        // When a folder is set, constrain FTS at the database layer for project isolation.
         if let Some(api) = &self.content {
-            let fts_hits = api.search_full_text(query, fetch_limit)?;
+            let path_prefix = match &request.folder {
+                Some(folder) if !request.folder_immediate => {
+                    Some(normalize_path(folder)?.to_string_lossy().into_owned())
+                }
+                _ => None,
+            };
+            let fts_hits = api.search_full_text_in_prefix(query, path_prefix.as_deref(), fetch_limit)?;
             for content_hit in fts_hits {
                 let Some(ranked) = crate::content_rank::rank_content_match(
                     query,

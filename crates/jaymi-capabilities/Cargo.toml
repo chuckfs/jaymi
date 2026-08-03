@@ -8,4 +8,4 @@ repository.workspace = true
 authors.workspace = true
 
 [dependencies]
-jaymi-core = { workspace = true }
+jaymi-capability-engine = { workspace = true }

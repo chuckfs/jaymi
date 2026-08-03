@@ -10,26 +10,34 @@ pub mod decision;
 pub mod request_lifecycle;
 pub mod reasoning;
 
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use decision::{DecisionEngine, Intent};
-use jaymi_capabilities::{Capability, CapabilityRegistry};
+use jaymi_capabilities::{
+    compose_capabilities, is_multi_capability, workspace_expansion_for, Capability,
+    CapabilityComposition, CapabilityDescriptor, CapabilityDiscoveryReport, CapabilityEngineApi,
+    CapabilityInspectorReport, CapabilityInventory, DiscoveredProvider, DiscoveredTool,
+    ExecutionPlan, WorkspaceExpansion,
+};
 use jaymi_core::{
     Citation, Document, FileEntry, HealthReport, JaymiError, JaymiResult, Lifecycle, UserRequest,
 };
 use jaymi_memory_engine::{
     AppendMessageRequest, ArchiveConversationRequest, AssembleContextRequest, AssembledMemoryContext,
     Conversation, ConversationArchive, ConversationMessage, ConversationMeta,
-    CreateConversationRequest, CreatePersonalMemoryRequest, MemoryEngineApi, MemoryQuery,
-    MemoryRecord, PersonalContext, ProjectContext, ProjectMeta, PromoteMemoryRequest,
-    PromotionAskDecision, PromotionSuggestQuery, PromotionSuggestion, RegisterProjectRequest,
-    StoreMemoryRequest, StoreProjectMemoryRequest, UpdatePersonalMemoryRequest,
+    CreateConversationRequest, CreatePersonalMemoryRequest, ListProjectDecisionsQuery,
+    MemoryEngineApi, MemoryQuery, MemoryRecord, PersonalContext, ProjectDecision, ProjectMeta,
+    PromoteMemoryRequest, PromotionAskDecision, PromotionSuggestQuery, PromotionSuggestion,
+    RegisterProjectRequest, StoreMemoryRequest, StoreProjectDecisionRequest,
+    StoreProjectMemoryRequest, UpdatePersonalMemoryRequest,
 };
 use jaymi_permissions::{
     PermissionAction, PermissionCategory, PermissionCheckResult, PermissionEngine,
     PermissionRequest, PermissionScope,
 };
 use jaymi_policies::{ExecutionCandidate, PolicyEngine, PolicyEvaluation};
+use jaymi_project_engine::{CreateProjectRequest, Project, ProjectContext, ProjectEngineApi};
 use jaymi_providers::ProviderRegistry;
 use jaymi_tools::{
     InternetRequirement, PrivacyMode, ToolInput, ToolOrchestrator, ToolRegistry,
@@ -47,9 +55,10 @@ const DEPENDENCIES: &[&str] = &[
     "permission_engine",
     "memory_engine",
     "context_engine",
-    "capability_registry",
+    "capability_engine",
     "provider_registry",
     "tool_registry",
+    "project_engine",
 ];
 
 /// Final response produced after the request lifecycle completes.
@@ -77,8 +86,12 @@ pub struct PlannerResponse {
     pub permission_result: Option<PermissionCheckResult>,
     /// True when policy or permission blocked tool execution.
     pub blocked: bool,
-    /// Restored project context, when a project was activated or is active.
+    /// Assembled project context, when a project is the active workspace.
     pub project_context: Option<ProjectContext>,
+    /// Capability execution plan selected for the request (never executed here).
+    pub execution_plan: Option<ExecutionPlan>,
+    /// Workspace expansion requested by the selected capability (conversation stays).
+    pub workspace: Option<WorkspaceExpansion>,
     /// Promotion suggestions from the Memory Engine (never auto-applied).
     pub promotion_suggestions: Vec<PromotionSuggestion>,
     /// Whether the Planner should ask the user about promotions.
@@ -90,8 +103,8 @@ pub struct PlannerResponse {
 /// Dependencies required to construct the Planner from registries.
 #[derive(Clone)]
 pub struct PlannerDeps {
-    /// Capability registry used for discovery.
-    pub capabilities: Arc<CapabilityRegistry>,
+    /// Capability Engine used for discovery, validation, and planning.
+    pub capabilities: Arc<dyn CapabilityEngineApi>,
     /// Provider registry used for discovery.
     pub providers: Arc<ProviderRegistry>,
     /// Tool registry used for discovery.
@@ -104,6 +117,8 @@ pub struct PlannerDeps {
     pub permissions: Arc<PermissionEngine>,
     /// Memory Engine — Planner never accesses memory storage directly.
     pub memory: Arc<dyn MemoryEngineApi>,
+    /// Project Engine — Planner requests one assembled project context.
+    pub projects: Arc<dyn ProjectEngineApi>,
 }
 
 /// Planner kernel.
@@ -114,13 +129,14 @@ pub struct Planner {
     initialized: bool,
     decision: DecisionEngine,
     reasoning: ReasoningEngine,
-    capabilities: Arc<CapabilityRegistry>,
+    capabilities: Arc<dyn CapabilityEngineApi>,
     providers: Arc<ProviderRegistry>,
     tools: Arc<ToolRegistry>,
     orchestrator: ToolOrchestrator,
     policies: Arc<PolicyEngine>,
     permissions: Arc<PermissionEngine>,
     memory: Arc<dyn MemoryEngineApi>,
+    projects: Arc<dyn ProjectEngineApi>,
 }
 
 impl Planner {
@@ -137,12 +153,79 @@ impl Planner {
             policies: deps.policies,
             permissions: deps.permissions,
             memory: deps.memory,
+            projects: deps.projects,
         }
     }
 
-    /// Discover registered capabilities through the capability registry.
+    /// Discover registered capabilities through the Capability Engine.
     pub fn discover_capabilities(&self) -> Vec<Capability> {
         self.capabilities.list()
+    }
+
+    /// Describe a capability's catalog metadata (registration optional).
+    pub fn describe_capability(&self, capability: Capability) -> CapabilityDescriptor {
+        self.capabilities.describe(capability)
+    }
+
+    /// Resolve a registered capability by stable id.
+    pub fn resolve_capability(&self, id: &str) -> JaymiResult<Option<CapabilityDescriptor>> {
+        self.capabilities.resolve(id)
+    }
+
+    /// Discover what Jaymi can currently do given live tools and providers.
+    pub fn discover_capability_status(&self) -> JaymiResult<CapabilityDiscoveryReport> {
+        let inventory = self.capability_inventory()?;
+        self.capabilities.discover(&inventory)
+    }
+
+    /// Inspect the capability system for developers (registered, active, requirements).
+    pub fn inspect_capabilities(&self) -> JaymiResult<CapabilityInspectorReport> {
+        let inventory = self.capability_inventory()?;
+        self.capabilities.inspect(&inventory)
+    }
+
+    /// Build a capability execution plan from declared requirements.
+    ///
+    /// Describes what each capability needs; nothing is executed.
+    pub fn build_capability_plan(
+        &self,
+        capabilities: &[Capability],
+    ) -> JaymiResult<ExecutionPlan> {
+        self.capabilities.build_execution_plan(capabilities)
+    }
+
+    /// Plan work for one capability and optional goal.
+    ///
+    /// Resolves required tools, providers, and permissions against the live
+    /// inventory. Tools are never executed by planning.
+    pub fn plan_capability(
+        &self,
+        capability: Capability,
+        goal: Option<&str>,
+    ) -> JaymiResult<ExecutionPlan> {
+        self.plan_capabilities(&[capability], goal)
+    }
+
+    /// Compose independent capabilities into one execution plan.
+    ///
+    /// Capabilities remain separate plan steps — they are never merged.
+    /// Tools are never executed by planning.
+    pub fn plan_capabilities(
+        &self,
+        capabilities: &[Capability],
+        goal: Option<&str>,
+    ) -> JaymiResult<ExecutionPlan> {
+        let inventory = self.capability_inventory()?;
+        self.capabilities.compose(capabilities, &inventory, goal)
+    }
+
+    /// Compose from a [`CapabilityComposition`] value.
+    pub fn compose_capability_plan(
+        &self,
+        composition: &CapabilityComposition,
+    ) -> JaymiResult<ExecutionPlan> {
+        let inventory = self.capability_inventory()?;
+        self.capabilities.compose_plan(composition, &inventory)
     }
 
     /// Number of registered providers visible to the Planner.
@@ -261,6 +344,26 @@ impl Planner {
         self.memory.load_conversation(conversation_id)
     }
 
+    /// List conversations attached to a project.
+    pub fn list_project_conversations(
+        &self,
+        project_id: &str,
+    ) -> JaymiResult<Vec<ConversationMeta>> {
+        self.ensure_ready()?;
+        self.memory.list_conversations_for_project(project_id)
+    }
+
+    /// Attach a conversation to exactly one project, or detach it (`None`).
+    pub fn attach_conversation_to_project(
+        &self,
+        conversation_id: &str,
+        project_id: Option<&str>,
+    ) -> JaymiResult<ConversationMeta> {
+        self.ensure_ready()?;
+        self.memory
+            .attach_conversation_to_project(conversation_id, project_id)
+    }
+
     /// Register a project for memory attachment.
     pub fn register_project(
         &self,
@@ -285,6 +388,16 @@ impl Planner {
         self.memory.set_active_conversation(conversation_id)
     }
 
+    /// Current active conversation id (persists across project switches).
+    pub fn active_conversation_id(&self) -> Option<String> {
+        self.memory.active_conversation_id()
+    }
+
+    /// Current active workspace project id, when any.
+    pub fn active_project_id(&self) -> Option<String> {
+        self.projects.active_project_id()
+    }
+
     /// Store categorized project memory.
     pub fn store_project_memory(
         &self,
@@ -294,10 +407,100 @@ impl Planner {
         self.memory.store_project_memory(request)
     }
 
-    /// Restore project context through the Memory Engine.
-    pub fn restore_project_context(&self, project_id: &str) -> JaymiResult<ProjectContext> {
+    /// Persist an architectural decision in the project decision log.
+    pub fn store_project_decision(
+        &self,
+        request: &StoreProjectDecisionRequest,
+    ) -> JaymiResult<ProjectDecision> {
         self.ensure_ready()?;
-        self.memory.restore_project_context(project_id)
+        self.memory.store_project_decision(request)
+    }
+
+    /// List a project's decision log.
+    pub fn list_project_decisions(
+        &self,
+        query: &ListProjectDecisionsQuery,
+    ) -> JaymiResult<Vec<ProjectDecision>> {
+        self.ensure_ready()?;
+        self.memory.list_project_decisions(query)
+    }
+
+    /// Fetch one project decision by memory id.
+    pub fn get_project_decision(&self, memory_id: &str) -> JaymiResult<Option<ProjectDecision>> {
+        self.ensure_ready()?;
+        self.memory.get_project_decision(memory_id)
+    }
+
+    /// Create a first-class project through the Project Engine.
+    pub fn create_project(&self, request: &CreateProjectRequest) -> JaymiResult<Project> {
+        self.ensure_ready()?;
+        self.projects.create(request)
+    }
+
+    /// Open a project as the active workspace and assemble its context.
+    ///
+    /// The active conversation is preserved; when none is active the project's
+    /// most recent conversation is resumed.
+    pub fn open_project(&self, project_id: &str) -> JaymiResult<ProjectContext> {
+        self.ensure_ready()?;
+        self.bind_memory_project(project_id)?;
+        let context = self.projects.open(project_id)?;
+        self.resume_project_conversation(project_id)?;
+        jaymi_logging::info(
+            "planner",
+            format!(
+                "opened project id={} name={} entries={}",
+                context.project.id.as_str(),
+                context.project.name,
+                context.entry_count()
+            ),
+        );
+        Ok(context)
+    }
+
+    /// Switch the active workspace to another project.
+    pub fn switch_project(&self, project_id: &str) -> JaymiResult<ProjectContext> {
+        self.open_project(project_id)
+    }
+
+    /// Close the session-open project. The active conversation is untouched.
+    pub fn close_project(&self) -> JaymiResult<Option<Project>> {
+        self.ensure_ready()?;
+        let closed = self.projects.close()?;
+        let _ = self.memory.set_active_project(None);
+        Ok(closed)
+    }
+
+    /// Soft-delete a project through the Project Engine.
+    pub fn delete_project(&self, project_id: &str) -> JaymiResult<()> {
+        self.ensure_ready()?;
+        self.projects.delete(project_id)
+    }
+
+    /// List active projects through the Project Engine.
+    pub fn list_projects(&self) -> JaymiResult<Vec<Project>> {
+        self.ensure_ready()?;
+        self.projects.list()
+    }
+
+    /// Request one assembled project context (defaults to the open project).
+    pub fn project_context(
+        &self,
+        project_id: Option<&str>,
+    ) -> JaymiResult<Option<ProjectContext>> {
+        self.ensure_ready()?;
+        self.projects.project_context(project_id)
+    }
+
+    /// Assemble project context for a known project id.
+    pub fn assemble_project_context(&self, project_id: &str) -> JaymiResult<ProjectContext> {
+        self.ensure_ready()?;
+        self.projects.assemble_context(project_id)
+    }
+
+    /// Restore project context through the Project Engine.
+    pub fn restore_project_context(&self, project_id: &str) -> JaymiResult<ProjectContext> {
+        self.assemble_project_context(project_id)
     }
 
     /// Create an intentional personal preference through the Memory Engine.
@@ -338,27 +541,120 @@ impl Planner {
         }
     }
 
+    /// Snapshot live tools and providers for capability discovery and planning.
+    ///
+    /// Sorted by id so plans and discovery reports stay deterministic.
+    fn capability_inventory(&self) -> JaymiResult<CapabilityInventory> {
+        let mut tools: Vec<DiscoveredTool> = self
+            .tools
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|metadata| DiscoveredTool {
+                id: metadata.id,
+                capabilities: metadata.capabilities,
+            })
+            .collect();
+        tools.sort_by(|left, right| left.id.cmp(&right.id));
+
+        let mut providers: Vec<DiscoveredProvider> = self
+            .providers
+            .list()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|identity| DiscoveredProvider {
+                id: identity.id,
+                capabilities: identity.capabilities,
+            })
+            .collect();
+        providers.sort_by(|left, right| left.id.cmp(&right.id));
+
+        Ok(CapabilityInventory { tools, providers })
+    }
+
+    /// Keep the Memory Engine project registry aligned with the workspace.
+    fn bind_memory_project(&self, project_id: &str) -> JaymiResult<()> {
+        if self.memory.set_active_project(Some(project_id)).is_ok() {
+            return Ok(());
+        }
+        let Some(project) = self.projects.get(project_id)? else {
+            return Err(JaymiError::new(format!("project not found: {project_id}")));
+        };
+        let _ = self.memory.register_project(&RegisterProjectRequest {
+            project_id: Some(project.id.as_str().to_string()),
+            name: project.name.clone(),
+            root_path: project
+                .root_directory
+                .as_ref()
+                .map(|path| path.display().to_string()),
+        })?;
+        if self.memory.set_active_project(Some(project_id)).is_err() {
+            jaymi_logging::warn(
+                "planner",
+                format!("memory engine has no project registered for {project_id}"),
+            );
+        }
+        Ok(())
+    }
+
+    /// Resume the project's latest conversation when none is active.
+    fn resume_project_conversation(&self, project_id: &str) -> JaymiResult<()> {
+        if self.memory.active_conversation_id().is_some() {
+            return Ok(());
+        }
+        let conversations = self.memory.list_conversations_for_project(project_id)?;
+        let Some(latest) = conversations.first() else {
+            return Ok(());
+        };
+        self.memory
+            .set_active_conversation(Some(latest.id.as_str()))?;
+        jaymi_logging::info(
+            "planner",
+            format!(
+                "resumed conversation id={} for project={}",
+                latest.id.as_str(),
+                project_id
+            ),
+        );
+        Ok(())
+    }
+
+    /// Root directory of the active workspace project, when any.
+    fn active_project_root(&self) -> Option<PathBuf> {
+        let project_id = self.projects.active_project_id()?;
+        self.projects
+            .get(&project_id)
+            .ok()
+            .flatten()
+            .and_then(|project| project.root_directory)
+    }
+
+    /// Resolve relative request paths against the active project root.
+    fn resolve_workspace_path(&self, path: PathBuf) -> PathBuf {
+        if path.is_absolute() {
+            return path;
+        }
+        let Some(root) = self.active_project_root() else {
+            return path;
+        };
+        let raw = path.to_string_lossy();
+        if raw.is_empty() || raw == "." || raw == "./" {
+            root
+        } else {
+            root.join(path)
+        }
+    }
+
     fn handle_continue_project(&self, name: &str) -> JaymiResult<PlannerResponse> {
-        let Some(project) = self.memory.find_project_by_name(name)? else {
+        let Some(project) = self.projects.find_by_name(name)? else {
             return Ok(PlannerResponse {
                 content: format!(
-                    "No project named \"{name}\" is registered. Register the project before continuing."
+                    "No project named \"{name}\" is registered. Create the project before continuing."
                 ),
                 ..PlannerResponse::default()
             });
         };
-        self.memory
-            .set_active_project(Some(project.id.as_str()))?;
-        let context = self.memory.restore_project_context(project.id.as_str())?;
-        jaymi_logging::info(
-            "planner",
-            format!(
-                "restored project context id={} name={} entries={}",
-                context.project_id,
-                context.name,
-                context.entry_count()
-            ),
-        );
+        let context = self.open_project(project.id.as_str())?;
         let content = format_project_context_summary(&context);
         Ok(PlannerResponse {
             content,
@@ -367,10 +663,80 @@ impl Planner {
         })
     }
 
+    fn handle_close_project(&self) -> JaymiResult<PlannerResponse> {
+        let closed = self.close_project()?;
+        let content = match &closed {
+            Some(project) => format!(
+                "Closed project \"{}\". The active conversation stays open.",
+                project.name
+            ),
+            None => "No project is currently open.".to_string(),
+        };
+        jaymi_logging::info("planner", &content);
+        Ok(PlannerResponse {
+            content,
+            ..PlannerResponse::default()
+        })
+    }
+
+    /// Produce an execution plan for a goal without executing any tool.
+    ///
+    /// One or more independent capabilities may be composed into a single
+    /// plan. Planning never requires every capability to be currently
+    /// fulfillable — an incomplete plan honestly reports what is still missing.
+    fn handle_plan_work(
+        &self,
+        capabilities: &[Capability],
+        goal: &str,
+    ) -> JaymiResult<PlannerResponse> {
+        let ordered = compose_capabilities(capabilities)?;
+        let plan = self.plan_capabilities(&ordered, Some(goal))?;
+        let primary = ordered[0];
+        let composition_note = if is_multi_capability(&ordered) {
+            format!(
+                "Composed {} independent capabilities ({}). ",
+                ordered.len(),
+                ordered
+                    .iter()
+                    .map(Capability::id)
+                    .collect::<Vec<_>>()
+                    .join(" → ")
+            )
+        } else {
+            String::new()
+        };
+        jaymi_logging::info(
+            "planner",
+            format!(
+                "planned work capabilities=[{}] {}",
+                ordered
+                    .iter()
+                    .map(Capability::id)
+                    .collect::<Vec<_>>()
+                    .join(","),
+                plan.summary()
+            ),
+        );
+        let content = format!(
+            "Execution plan (planning only — no tools were executed):\n{composition_note}{}",
+            plan.render()
+        );
+        Ok(PlannerResponse {
+            content,
+            capability: Some(primary),
+            execution_plan: Some(plan),
+            workspace: workspace_expansion_for(
+                primary,
+                format!("capability {} requested workspace expansion", primary.id()),
+            ),
+            ..PlannerResponse::default()
+        })
+    }
+
     /// Process a user request through the architectural pipeline.
     ///
     /// Flow for tool-backed intents:
-    /// Planner → Policy Engine → Permission Engine → Tool
+    /// Planner → Capability Engine → Policy Engine → Permission Engine → Tool
     pub fn handle(&self, request: UserRequest) -> JaymiResult<PlannerResponse> {
         if !self.initialized {
             jaymi_logging::error("planner", "request rejected: planner is not initialized");
@@ -433,12 +799,27 @@ impl Planner {
 
         let intent = self.decision.determine_intent(&request);
 
-        if let Intent::ContinueProject { name } = &intent {
-            let mut response = self.handle_continue_project(name)?;
-            response.promotion_suggestions = promotion_suggestions;
-            response.promotion_ask = promotion_ask;
-            response.memory_context = Some(memory_context);
-            return Ok(response);
+        // Workspace intents are answered by the Project Engine, not by tools.
+        match &intent {
+            Intent::ContinueProject { name } => {
+                let response = self.handle_continue_project(name)?;
+                return Ok(finalize(
+                    response,
+                    memory_context,
+                    promotion_suggestions,
+                    promotion_ask,
+                ));
+            }
+            Intent::CloseProject => {
+                let response = self.handle_close_project()?;
+                return Ok(finalize(
+                    response,
+                    memory_context,
+                    promotion_suggestions,
+                    promotion_ask,
+                ));
+            }
+            _ => {}
         }
 
         let Some(capability) = self.decision.required_capability(&intent) else {
@@ -460,6 +841,23 @@ impl Planner {
             format!("intent resolved capability={}", capability.id()),
         );
 
+        // Planning answers "what would this take" without needing the
+        // capability to be fulfillable today.
+        if let Intent::PlanWork {
+            capabilities,
+            goal,
+        } = &intent
+        {
+            let mut response = self.handle_plan_work(capabilities, goal)?;
+            response.project_context = self.open_project_context();
+            return Ok(finalize(
+                response,
+                memory_context,
+                promotion_suggestions,
+                promotion_ask,
+            ));
+        }
+
         if !self.capabilities.contains(capability) {
             let message = format!("capability {} is not registered", capability.id());
             jaymi_logging::error("planner", &message);
@@ -470,16 +868,24 @@ impl Planner {
         let _ = &self.reasoning;
 
         let result = match intent {
-            Intent::ListDirectory { path } => self.handle_list_directory(capability, path),
-            Intent::ReadFile { path } => self.handle_read_file(capability, path),
+            Intent::ListDirectory { path } => {
+                self.handle_list_directory(capability, self.resolve_workspace_path(path))
+            }
+            Intent::ReadFile { path } => {
+                self.handle_read_file(capability, self.resolve_workspace_path(path))
+            }
             Intent::DiscoverInventory { kind } => {
                 self.handle_discover_inventory(capability, kind)
             }
             Intent::SearchKnowledge { request } => {
-                self.handle_search_knowledge(capability, request)
+                self.handle_search_knowledge(capability, self.scope_search_request(request))
             }
             Intent::IndexRoots { path } => self.handle_index_roots(capability, path),
-            Intent::ContinueProject { .. } => unreachable!("continue project handled earlier"),
+            Intent::ContinueProject { .. }
+            | Intent::CloseProject
+            | Intent::PlanWork { .. } => {
+                unreachable!("workspace and planning intents handled earlier")
+            }
             Intent::Unknown => {
                 jaymi_logging::warn("planner", "unknown intent after capability mapping");
                 Ok(PlannerResponse {
@@ -491,10 +897,24 @@ impl Planner {
 
         let result = match result {
             Ok(mut response) => {
-                response.promotion_suggestions = promotion_suggestions;
-                response.promotion_ask = promotion_ask;
-                response.memory_context = Some(memory_context);
-                Ok(response)
+                if response.execution_plan.is_none() {
+                    response.execution_plan = self.plan_capability(capability, None).ok();
+                }
+                if response.workspace.is_none() {
+                    response.workspace = workspace_expansion_for(
+                        capability,
+                        format!("capability {} selected for request", capability.id()),
+                    );
+                }
+                if response.project_context.is_none() {
+                    response.project_context = self.open_project_context();
+                }
+                Ok(finalize(
+                    response,
+                    memory_context,
+                    promotion_suggestions,
+                    promotion_ask,
+                ))
             }
             Err(error) => Err(error),
         };
@@ -520,6 +940,34 @@ impl Planner {
         }
 
         result
+    }
+
+    /// Assembled context for the open project, when one is active.
+    fn open_project_context(&self) -> Option<ProjectContext> {
+        match self.projects.project_context(None) {
+            Ok(context) => context,
+            Err(error) => {
+                jaymi_logging::warn(
+                    "planner",
+                    format!("project context unavailable: {}", error.message()),
+                );
+                None
+            }
+        }
+    }
+
+    /// Constrain search to the active workspace so projects stay isolated.
+    fn scope_search_request(
+        &self,
+        mut request: jaymi_core::SearchRequest,
+    ) -> jaymi_core::SearchRequest {
+        if request.folder.is_none() {
+            if let Some(root) = self.active_project_root() {
+                request.folder = Some(root);
+                request.folder_immediate = false;
+            }
+        }
+        request
     }
 
     fn handle_list_directory(
@@ -561,14 +1009,9 @@ impl Planner {
             listed_path: Some(path),
             entries: output.entries,
             citations: output.citations,
-            document: None,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
-            blocked: false,
-            project_context: None,
-            promotion_suggestions: Vec::new(),
-            promotion_ask: PromotionAskDecision::Defer,
-            memory_context: None,
+            ..PlannerResponse::default()
         })
     }
 
@@ -612,17 +1055,10 @@ impl Planner {
             capability: Some(capability),
             tool_id: Some(tool_id),
             provider_id,
-            listed_path: None,
-            entries: Vec::new(),
-            citations: Vec::new(),
             document: Some(document),
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
-            blocked: false,
-            project_context: None,
-            promotion_suggestions: Vec::new(),
-            promotion_ask: PromotionAskDecision::Defer,
-            memory_context: None,
+            ..PlannerResponse::default()
         })
     }
 
@@ -672,14 +1108,9 @@ impl Planner {
             listed_path,
             entries: output.entries,
             citations: output.citations,
-            document: None,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
-            blocked: false,
-            project_context: None,
-            promotion_suggestions: Vec::new(),
-            promotion_ask: PromotionAskDecision::Defer,
-            memory_context: None,
+            ..PlannerResponse::default()
         })
     }
 
@@ -726,14 +1157,9 @@ impl Planner {
             listed_path: Some(resource_path),
             entries: output.entries,
             citations: output.citations,
-            document: None,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
-            blocked: false,
-            project_context: None,
-            promotion_suggestions: Vec::new(),
-            promotion_ask: PromotionAskDecision::Defer,
-            memory_context: None,
+            ..PlannerResponse::default()
         })
     }
 
@@ -776,16 +1202,9 @@ impl Planner {
             tool_id: Some(tool_id),
             provider_id,
             listed_path: path,
-            entries: Vec::new(),
-            citations: Vec::new(),
-            document: None,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
-            blocked: false,
-            project_context: None,
-            promotion_suggestions: Vec::new(),
-            promotion_ask: PromotionAskDecision::Defer,
-            memory_context: None,
+            ..PlannerResponse::default()
         })
     }
 
@@ -795,7 +1214,7 @@ impl Planner {
         capability: Capability,
         preferred_tool_id: Option<&str>,
         _input: &ToolInput,
-        path: &std::path::Path,
+        path: &Path,
         action_label: &str,
     ) -> JaymiResult<PreparedExecution> {
         let tool_id = if let Some(preferred) = preferred_tool_id {
@@ -951,17 +1370,37 @@ struct PreparedExecution {
     blocked_response: Option<PlannerResponse>,
 }
 
+fn finalize(
+    mut response: PlannerResponse,
+    memory_context: AssembledMemoryContext,
+    promotion_suggestions: Vec<PromotionSuggestion>,
+    promotion_ask: PromotionAskDecision,
+) -> PlannerResponse {
+    response.promotion_suggestions = promotion_suggestions;
+    response.promotion_ask = promotion_ask;
+    response.memory_context = Some(memory_context);
+    response
+}
+
 fn format_project_context_summary(context: &ProjectContext) -> String {
+    let conversation_messages: usize = context
+        .conversations
+        .iter()
+        .map(|conversation| conversation.message_count)
+        .sum();
     format!(
-        "Restored project \"{}\". conversations={} architecture_decisions={} tasks={} coding_preferences={} important_files={} milestones={} linked_conversations={}",
-        context.name,
+        "Restored project \"{}\". indexed_files={} conversations={} conversation_messages={} memories={} tasks={} decisions={} architecture={} documents={} parsed_content={} recent_work={}",
+        context.project.name,
+        context.indexed_files.len(),
         context.conversations.len(),
-        context.architecture_decisions.len(),
+        conversation_messages,
+        context.memories.entry_count(),
         context.tasks.len(),
-        context.coding_preferences.len(),
-        context.important_files.len(),
-        context.milestones.len(),
-        context.conversation_ids.len()
+        context.decisions.len(),
+        context.architecture_documents.len(),
+        context.important_documents.len(),
+        context.parsed_content.len(),
+        context.recent_work.len()
     )
 }
 
@@ -992,7 +1431,7 @@ impl Lifecycle for Planner {
     fn initialize(&mut self) -> JaymiResult<()> {
         if !self.capabilities.is_initialized() {
             return Err(JaymiError::new(
-                "planner cannot initialize: capability registry is not ready",
+                "planner cannot initialize: capability engine is not ready",
             ));
         }
         if !self.providers.is_initialized() {
@@ -1046,12 +1485,14 @@ impl Lifecycle for Planner {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jaymi_capabilities::CapabilityEngine;
     use jaymi_core::{EntryType, FileType, Lifecycle};
     use jaymi_database::Database;
     use jaymi_knowledge::SqliteKnowledgeStore;
     use jaymi_memory_engine::{InMemoryMemoryStore, MemoryEngine};
     use jaymi_parsers::default_registry;
     use jaymi_permissions::PermissionDecision;
+    use jaymi_project_engine::{InMemoryProjectStore, ProjectEngine};
     use jaymi_providers::{FilesystemProvider, Provider, FILESYSTEM_PROVIDER_ID};
     use jaymi_tools::{
         EstimatedRuntime, ExecutionMode, GpuRequirements, MemoryUsage, Reliability, ResourceCost,
@@ -1065,6 +1506,12 @@ mod tests {
 
     fn test_memory_engine() -> Arc<dyn MemoryEngineApi> {
         let mut engine = MemoryEngine::with_store(Arc::new(InMemoryMemoryStore::new()));
+        engine.initialize().unwrap();
+        Arc::new(engine)
+    }
+
+    fn test_project_engine() -> Arc<dyn ProjectEngineApi> {
+        let mut engine = ProjectEngine::with_store(Arc::new(InMemoryProjectStore::new()));
         engine.initialize().unwrap();
         Arc::new(engine)
     }
@@ -1088,10 +1535,11 @@ mod tests {
             Arc<ContentIntelligenceApi>,
         ),
     {
-        let mut capabilities = CapabilityRegistry::new();
+        let mut capabilities = CapabilityEngine::new();
         capabilities.initialize().unwrap();
         capabilities.register(Capability::Search).unwrap();
         capabilities.register(Capability::ReadDocuments).unwrap();
+        capabilities.register(Capability::Code).unwrap();
 
         let mut providers = ProviderRegistry::new();
         providers.initialize().unwrap();
@@ -1136,13 +1584,14 @@ mod tests {
         permissions.initialize().unwrap();
 
         let mut planner = Planner::new(PlannerDeps {
-            capabilities: Arc::new(capabilities),
+            capabilities: Arc::new(capabilities) as Arc<dyn CapabilityEngineApi>,
             providers: Arc::new(providers),
             tools,
             orchestrator,
             policies: Arc::new(policies),
             permissions: Arc::new(permissions),
             memory: test_memory_engine(),
+            projects: test_project_engine(),
         });
         planner.initialize().unwrap();
         planner
@@ -1242,6 +1691,8 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.name == "readme.md" && entry.entry_type == EntryType::File));
+        let plan = response.execution_plan.expect("execution plan");
+        assert_eq!(plan.capabilities(), vec![Capability::Search]);
     }
 
     #[test]
@@ -1290,5 +1741,70 @@ mod tests {
         assert_eq!(response.tool_id.as_deref(), Some("cloud_search"));
         assert!(!response.policy_evaluation.as_ref().unwrap().allowed);
         assert!(response.permission_result.is_none());
+    }
+
+    #[test]
+    fn coding_goal_produces_a_plan_without_executing_tools() {
+        let planner = planner_with_search_and_read();
+        let response = planner
+            .handle(UserRequest::new("Help me build an app."))
+            .unwrap();
+
+        assert_eq!(response.capability, Some(Capability::Code));
+        assert!(response.tool_id.is_none());
+        assert!(!response.blocked);
+        assert!(response.content.contains("Execution plan"));
+
+        let plan = response.execution_plan.expect("execution plan");
+        assert_eq!(plan.goal.as_deref(), Some("Help me build an app."));
+        assert_eq!(plan.steps.len(), 1);
+        assert!(!plan.is_executable());
+        assert!(plan
+            .required_permissions()
+            .iter()
+            .any(|permission| permission.label() == "terminal:execute"));
+    }
+
+    #[test]
+    fn composed_goal_plans_multiple_independent_capabilities() {
+        let planner = planner_with_search_and_read();
+        let response = planner
+            .handle(UserRequest::new("research then code then create"))
+            .unwrap();
+
+        assert_eq!(response.capability, Some(Capability::Search));
+        assert!(response.tool_id.is_none());
+        let plan = response.execution_plan.expect("composed plan");
+        assert_eq!(plan.steps.len(), 3);
+        assert_eq!(
+            plan.capabilities(),
+            vec![
+                Capability::Search,
+                Capability::Code,
+                Capability::GenerateImages
+            ]
+        );
+        assert!(response
+            .content
+            .contains("Composed 3 independent capabilities"));
+    }
+
+    #[test]
+    fn planning_does_not_require_a_fulfillable_capability() {
+        let planner = planner_with_search_and_read();
+        let plan = planner
+            .plan_capability(Capability::Code, Some("ship a feature"))
+            .unwrap();
+        assert_eq!(plan.steps[0].capability, Capability::Code);
+        assert!(!plan.steps[0].tools_resolved);
+        assert_eq!(
+            plan.steps[0].required_tools,
+            vec![
+                "editor".to_string(),
+                "language_server".to_string(),
+                "terminal".to_string(),
+                "git".to_string()
+            ]
+        );
     }
 }

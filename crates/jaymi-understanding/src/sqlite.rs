@@ -77,7 +77,19 @@ impl SqliteContentStore {
         query: &str,
         limit: usize,
     ) -> JaymiResult<Vec<crate::api::ContentTextHit>> {
-        let rows = self.database.search_content_fts(query, limit)?;
+        self.search_full_text_in_prefix(query, None, limit)
+    }
+
+    /// Full-text search constrained to a source path prefix.
+    pub fn search_full_text_in_prefix(
+        &self,
+        query: &str,
+        path_prefix: Option<&str>,
+        limit: usize,
+    ) -> JaymiResult<Vec<crate::api::ContentTextHit>> {
+        let rows = self
+            .database
+            .search_content_fts_in_prefix(query, path_prefix, limit)?;
         let mut hits = Vec::with_capacity(rows.len());
         for row in rows {
             let sections: Vec<Section> = serde_json::from_str(&row.sections_json).unwrap_or_default();

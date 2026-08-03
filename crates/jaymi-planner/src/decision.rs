@@ -36,10 +36,22 @@ pub enum Intent {
         /// Optional explicit root; otherwise configured roots are used.
         path: Option<PathBuf>,
     },
-    /// Resume work on a named project and restore its memory context.
+    /// Open or switch to a named project and restore its workspace context.
     ContinueProject {
         /// Project display name (e.g. "Jaymi").
         name: String,
+    },
+    /// Close the currently active project workspace.
+    CloseProject,
+    /// Produce a capability execution plan without executing tools.
+    ///
+    /// One or more independent capabilities may be composed into a single
+    /// plan. Capabilities are never merged — each becomes its own step.
+    PlanWork {
+        /// Capabilities to plan, in cooperation order.
+        capabilities: Vec<Capability>,
+        /// Original user goal text.
+        goal: String,
     },
     /// Request could not be mapped to a supported intent.
     Unknown,
@@ -91,8 +103,21 @@ impl DecisionEngine {
         let content = request.content.trim();
         let lower = content.to_ascii_lowercase();
 
+        if parse_close_project(&lower) {
+            return Intent::CloseProject;
+        }
+
         if let Some(name) = parse_continue_project(&lower, content) {
             return Intent::ContinueProject { name };
+        }
+
+        // Multi-capability composition before single-capability search/discovery
+        // so "search then code then create" is not stolen as a search query.
+        if let Some(capabilities) = parse_composed_capabilities(&lower) {
+            return Intent::PlanWork {
+                capabilities,
+                goal: content.to_string(),
+            };
         }
 
         if let Some(kind) = parse_discovery_kind(&lower, content) {
@@ -134,10 +159,17 @@ impl DecisionEngine {
             }
         }
 
+        if let Some(capabilities) = parse_single_plan_work_capabilities(&lower) {
+            return Intent::PlanWork {
+                capabilities,
+                goal: content.to_string(),
+            };
+        }
+
         Intent::Unknown
     }
 
-    /// Map an intent to the capability required to fulfill it.
+    /// Map an intent to the primary capability required to fulfill it.
     pub fn required_capability(&self, intent: &Intent) -> Option<Capability> {
         match intent {
             Intent::ListDirectory { .. } => Some(Capability::Search),
@@ -145,10 +177,37 @@ impl DecisionEngine {
             Intent::ReadFile { .. } => Some(Capability::ReadDocuments),
             Intent::DiscoverInventory { .. } => Some(Capability::Discover),
             Intent::IndexRoots { .. } => Some(Capability::Index),
+            Intent::PlanWork { capabilities, .. } => capabilities.first().copied(),
             Intent::ContinueProject { .. } => None,
+            Intent::CloseProject => None,
             Intent::Unknown => None,
         }
     }
+
+    /// Map an intent to all capabilities that should cooperate for the request.
+    ///
+    /// Single-capability intents return a one-element list. Composed PlanWork
+    /// intents return every independent capability in order.
+    pub fn required_capabilities(&self, intent: &Intent) -> Vec<Capability> {
+        match intent {
+            Intent::PlanWork { capabilities, .. } => capabilities.clone(),
+            other => self
+                .required_capability(other)
+                .into_iter()
+                .collect(),
+        }
+    }
+}
+
+fn parse_close_project(lower: &str) -> bool {
+    matches!(
+        lower.trim_end_matches('.'),
+        "close project"
+            | "close the project"
+            | "close active project"
+            | "leave project"
+            | "leave the project"
+    )
 }
 
 fn parse_continue_project(lower: &str, original: &str) -> Option<String> {
@@ -159,6 +218,7 @@ fn parse_continue_project(lower: &str, original: &str) -> Option<String> {
         "resume ",
         "open project ",
         "switch to project ",
+        "switch project ",
         "work on ",
     ];
     for prefix in prefixes {
@@ -354,6 +414,133 @@ fn parse_whats_in_collection(lower: &str) -> Option<&'static str> {
     jaymi_core::parse_collection_slug(name)
 }
 
+fn parse_single_plan_work_capabilities(lower: &str) -> Option<Vec<Capability>> {
+    let normalized = lower.trim().trim_end_matches('.').trim();
+    let coding_phrases = [
+        "help me build an app",
+        "help me build a app",
+        "help me build an application",
+        "help me build a application",
+        "build an app",
+        "build a app",
+        "build an application",
+        "help me write code",
+        "help me code",
+        "i want to build an app",
+        "i want to code",
+        "plan coding",
+        "plan code",
+    ];
+    if coding_phrases
+        .iter()
+        .any(|phrase| normalized == *phrase || normalized.starts_with(&format!("{phrase} ")))
+    {
+        return Some(vec![Capability::Code]);
+    }
+    if normalized.contains("build an app")
+        || normalized.contains("build a app")
+        || (normalized.contains("help me build") && normalized.contains("app"))
+    {
+        return Some(vec![Capability::Code]);
+    }
+    None
+}
+
+/// Parse multi-capability cooperation phrases (Research → Coding → Creation).
+fn parse_composed_capabilities(lower: &str) -> Option<Vec<Capability>> {
+    let normalized = lower.trim().trim_end_matches('.').trim();
+    let composition_phrases = [
+        "research then code then create",
+        "research then coding then creation",
+        "research then code then creation",
+        "research, code, and create",
+        "research, coding, and creation",
+        "research → coding → creation",
+        "research -> coding -> creation",
+        "research → code → create",
+        "research -> code -> create",
+        "compose research coding creation",
+        "compose research code create",
+        "plan research then code then create",
+        "plan research coding creation",
+        "search then code then create",
+        "search then code then generate_images",
+    ];
+    if composition_phrases
+        .iter()
+        .any(|phrase| normalized == *phrase)
+    {
+        return Some(jaymi_capabilities::research_coding_creation());
+    }
+
+    // Generic "compose a, b, and c" / "a then b then c" with known capability tokens.
+    if let Some(rest) = normalized
+        .strip_prefix("compose ")
+        .or_else(|| normalized.strip_prefix("plan composition "))
+        .or_else(|| normalized.strip_prefix("plan composed "))
+    {
+        if let Some(caps) = parse_capability_token_sequence(rest) {
+            if caps.len() > 1 {
+                return Some(caps);
+            }
+        }
+    }
+
+    if normalized.contains(" then ")
+        || normalized.contains(" → ")
+        || normalized.contains(" -> ")
+    {
+        let unified = normalized.replace(" → ", " then ").replace(" -> ", " then ");
+        if let Some(caps) = parse_capability_token_sequence(&unified) {
+            if caps.len() > 1 {
+                return Some(caps);
+            }
+        }
+    }
+
+    None
+}
+
+fn parse_capability_token_sequence(text: &str) -> Option<Vec<Capability>> {
+    let cleaned = text
+        .replace(',', " ")
+        .replace(" and ", " ")
+        .replace(" → ", " ")
+        .replace(" -> ", " ")
+        .replace(" then ", " ");
+    let mut capabilities = Vec::new();
+    for token in cleaned.split_whitespace() {
+        let token = token.trim().trim_matches('.').trim_matches(',');
+        if token.is_empty() || token == "&" {
+            continue;
+        }
+        if let Some(capability) = parse_capability_token(token) {
+            if !capabilities.contains(&capability) {
+                capabilities.push(capability);
+            }
+        }
+    }
+    if capabilities.len() < 2 {
+        None
+    } else {
+        Some(capabilities)
+    }
+}
+
+fn parse_capability_token(token: &str) -> Option<Capability> {
+    match token {
+        "research" | "search" => Some(Capability::Search),
+        "code" | "coding" => Some(Capability::Code),
+        "create" | "creation" | "generate" | "images" | "generate_images" => {
+            Some(Capability::GenerateImages)
+        }
+        "read" | "documents" | "read_documents" => Some(Capability::ReadDocuments),
+        "discover" | "discovery" => Some(Capability::Discover),
+        "index" | "indexing" => Some(Capability::Index),
+        _ => Capability::from_id(token),
+    }
+}
+
 fn strip_quotes(value: &str) -> &str {
     value.trim().trim_matches('"').trim_matches('\'')
 }
@@ -503,11 +690,77 @@ mod tests {
             }
         );
         assert_eq!(
+            engine.determine_intent(&UserRequest::new("switch to project OtherApp")),
+            Intent::ContinueProject {
+                name: "OtherApp".into()
+            }
+        );
+        assert_eq!(
             engine.required_capability(&Intent::ContinueProject {
                 name: "Jaymi".into()
             }),
             None
         );
+    }
+
+    #[test]
+    fn recognizes_close_project() {
+        let engine = DecisionEngine;
+        assert_eq!(
+            engine.determine_intent(&UserRequest::new("close project")),
+            Intent::CloseProject
+        );
+        assert_eq!(
+            engine.determine_intent(&UserRequest::new("Leave the project.")),
+            Intent::CloseProject
+        );
+        assert_eq!(engine.required_capability(&Intent::CloseProject), None);
+    }
+
+    #[test]
+    fn parses_coding_plan_work_requests() {
+        let engine = DecisionEngine;
+        assert_eq!(
+            engine.determine_intent(&UserRequest::new("Help me build an app.")),
+            Intent::PlanWork {
+                capabilities: vec![Capability::Code],
+                goal: "Help me build an app.".into(),
+            }
+        );
+        assert_eq!(
+            engine.required_capability(&engine.determine_intent(&UserRequest::new(
+                "Help me build an app."
+            ))),
+            Some(Capability::Code)
+        );
+    }
+
+    #[test]
+    fn parses_research_coding_creation_composition() {
+        let engine = DecisionEngine;
+        let intent = engine.determine_intent(&UserRequest::new(
+            "research then code then create",
+        ));
+        assert_eq!(
+            intent,
+            Intent::PlanWork {
+                capabilities: vec![
+                    Capability::Search,
+                    Capability::Code,
+                    Capability::GenerateImages,
+                ],
+                goal: "research then code then create".into(),
+            }
+        );
+        assert_eq!(
+            engine.required_capabilities(&intent),
+            vec![
+                Capability::Search,
+                Capability::Code,
+                Capability::GenerateImages,
+            ]
+        );
+        assert_eq!(engine.required_capability(&intent), Some(Capability::Search));
     }
 
     #[test]

@@ -44,7 +44,7 @@ System Overview
      │               │                │
      └───────────────┼────────────────┘
                      │
-             Capability Engine
+             Workspace & Capability Engine
                      │
              Tool Orchestrator
                      │
@@ -165,7 +165,7 @@ The user owns every memory.
 
 ⸻
 
-Capability Engine
+Workspace & Capability Engine
 
 Capabilities define what Jaymi knows how to do.
 
@@ -185,6 +185,15 @@ Examples include:
 Capabilities describe behavior.
 
 They do not describe implementation.
+
+Capabilities also change the user experience.
+
+Conversation remains permanent. Workspaces expand beside it:
+
+* Conversation → chat-only interface
+* Coding → conversation stays on the left, IDE slides in from the right
+* Creation → conversation stays, canvas appears
+* Research → conversation stays, sources and notes appear
 
 ⸻
 

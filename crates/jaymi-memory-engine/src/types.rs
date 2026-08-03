@@ -103,6 +103,8 @@ pub struct MemoryRecord {
     pub source: Option<String>,
     /// Structured kind (project memory categories, etc.).
     pub kind: Option<String>,
+    /// Free-form JSON metadata (decision reasoning / relations, etc.).
+    pub metadata_json: String,
     /// Lifecycle status.
     pub status: MemoryStatus,
     /// Unix seconds created.
@@ -136,6 +138,8 @@ pub struct StoreMemoryRequest {
     pub source: Option<String>,
     /// Structured kind (optional; project memories set this).
     pub kind: Option<String>,
+    /// Optional JSON metadata blob.
+    pub metadata_json: Option<String>,
 }
 
 /// Query for retrieving memories. The Memory Engine decides relevance.

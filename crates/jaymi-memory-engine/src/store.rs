@@ -178,6 +178,7 @@ impl MemoryStore for InMemoryMemoryStore {
                 };
                 record.summary.to_ascii_lowercase().contains(text)
                     || record.content.to_ascii_lowercase().contains(text)
+                    || record.metadata_json.to_ascii_lowercase().contains(text)
                     || record
                         .tags
                         .iter()
@@ -340,14 +341,22 @@ impl MemoryStore for InMemoryMemoryStore {
 
     fn list_conversation_ids_for_project(&self, project_id: &str) -> JaymiResult<Vec<String>> {
         let state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
-        let mut ids: Vec<_> = state
+        let mut metas: Vec<_> = state
             .conversations
             .values()
             .filter(|meta| meta.project_id.as_deref() == Some(project_id))
-            .map(|meta| meta.id.as_str().to_string())
+            .cloned()
             .collect();
-        ids.sort();
-        Ok(ids)
+        metas.sort_by(|left, right| {
+            right
+                .updated_at
+                .cmp(&left.updated_at)
+                .then(left.id.as_str().cmp(right.id.as_str()))
+        });
+        Ok(metas
+            .into_iter()
+            .map(|meta| meta.id.as_str().to_string())
+            .collect())
     }
 
     fn project_count(&self) -> JaymiResult<u64> {
@@ -489,19 +498,36 @@ impl MemoryStore for SqliteMemoryStore {
     }
 
     fn upsert_project(&self, project: &ProjectMeta) -> JaymiResult<()> {
+        let existing = self.database.get_project(project.id.as_str())?;
         self.database.upsert_project(&ProjectRecord {
             project_id: project.id.as_str().to_string(),
             name: project.name.clone(),
             slug: project.slug.clone(),
             root_path: project.root_path.clone(),
-            created_at: project.created_at,
+            description: existing
+                .as_ref()
+                .map(|record| record.description.clone())
+                .unwrap_or_default(),
+            project_type: existing
+                .as_ref()
+                .map(|record| record.project_type.clone())
+                .unwrap_or_else(|| "general".into()),
+            created_at: existing
+                .as_ref()
+                .map(|record| record.created_at)
+                .unwrap_or(project.created_at),
             updated_at: project.updated_at,
+            last_opened_at: existing.and_then(|record| record.last_opened_at),
             status: "active".into(),
         })
     }
 
     fn get_project(&self, project_id: &str) -> JaymiResult<Option<ProjectMeta>> {
-        Ok(self.database.get_project(project_id)?.map(project_from_db))
+        Ok(self
+            .database
+            .get_project(project_id)?
+            .filter(|record| record.status == "active")
+            .map(project_from_db))
     }
 
     fn find_project_by_name(&self, name: &str) -> JaymiResult<Option<ProjectMeta>> {
@@ -602,6 +628,11 @@ fn to_db(record: &MemoryRecord) -> DbMemoryRecord {
         created_at: record.created_at,
         updated_at: record.updated_at,
         archived_at: record.archived_at,
+        metadata_json: if record.metadata_json.trim().is_empty() {
+            "{}".into()
+        } else {
+            record.metadata_json.clone()
+        },
     }
 }
 
@@ -623,6 +654,11 @@ fn from_db(record: DbMemoryRecord) -> MemoryRecord {
         created_at: record.created_at,
         updated_at: record.updated_at,
         archived_at: record.archived_at,
+        metadata_json: if record.metadata_json.trim().is_empty() {
+            "{}".into()
+        } else {
+            record.metadata_json
+        },
     }
 }
 
@@ -664,6 +700,10 @@ pub fn record_from_store(request: &StoreMemoryRequest, now: i64) -> JaymiResult<
         created_at: now,
         updated_at: now,
         archived_at: None,
+        metadata_json: request
+            .metadata_json
+            .clone()
+            .unwrap_or_else(|| "{}".into()),
     })
 }
 

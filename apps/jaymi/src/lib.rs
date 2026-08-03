@@ -7,7 +7,9 @@
 
 pub mod boot;
 pub mod diagnostics;
+pub mod experience;
 pub mod ui;
 
 pub use boot::Application;
 pub use diagnostics::{DiagnosticsSnapshot, OperationalStatus, SubsystemStatus};
+pub use experience::{ConversationTurn, ExperienceSession};

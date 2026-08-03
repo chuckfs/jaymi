@@ -41,7 +41,7 @@ const DEPENDENCIES: &[&str] = &[
     "permission_engine",
     "memory_engine",
     "context_engine",
-    "capability_registry",
+    "capability_engine",
 ];
 
 impl Lifecycle for ProviderRegistry {

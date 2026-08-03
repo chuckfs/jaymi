@@ -5,7 +5,7 @@ use rusqlite::{params, Connection};
 use jaymi_core::{JaymiError, JaymiResult};
 
 /// Latest schema version applied by this build.
-pub const CURRENT_SCHEMA_VERSION: u32 = 12;
+pub const CURRENT_SCHEMA_VERSION: u32 = 14;
 
 struct Migration {
     version: u32,
@@ -292,6 +292,23 @@ const MIGRATIONS: &[Migration] = &[
 
         ALTER TABLE conversations ADD COLUMN project_id TEXT;
         CREATE INDEX idx_conversations_project ON conversations(project_id);
+    "#,
+    },
+    Migration {
+        version: 13,
+        sql: r#"
+        ALTER TABLE projects ADD COLUMN description TEXT NOT NULL DEFAULT '';
+        ALTER TABLE projects ADD COLUMN last_opened_at INTEGER;
+        ALTER TABLE projects ADD COLUMN project_type TEXT NOT NULL DEFAULT 'general';
+        CREATE INDEX idx_projects_last_opened ON projects(last_opened_at);
+        CREATE INDEX idx_projects_status ON projects(status);
+        CREATE INDEX idx_projects_type ON projects(project_type);
+    "#,
+    },
+    Migration {
+        version: 14,
+        sql: r#"
+        ALTER TABLE memories ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}';
     "#,
     },
 ];

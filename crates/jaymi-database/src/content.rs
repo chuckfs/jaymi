@@ -243,20 +243,45 @@ impl Database {
         query: &str,
         limit: usize,
     ) -> JaymiResult<Vec<ContentFtsHit>> {
+        self.search_content_fts_in_prefix(query, None, limit)
+    }
+
+    /// Full-text search optionally constrained to a source path prefix.
+    ///
+    /// When `path_prefix` is set, only content whose `source_id` equals the
+    /// prefix or lives under it is returned (project knowledge isolation).
+    pub fn search_content_fts_in_prefix(
+        &self,
+        query: &str,
+        path_prefix: Option<&str>,
+        limit: usize,
+    ) -> JaymiResult<Vec<ContentFtsHit>> {
         let Some(match_query) = build_fts_match_query(query) else {
             return Ok(Vec::new());
         };
         let limit = limit.max(1).min(10_000);
-        let mut hits = self.query_content_fts(&match_query, limit)?;
+        let mut hits = self.query_content_fts(&match_query, path_prefix, limit)?;
         if hits.is_empty() {
             if let Some(and_query) = build_fts_and_query(query) {
-                hits = self.query_content_fts(&and_query, limit)?;
+                hits = self.query_content_fts(&and_query, path_prefix, limit)?;
             }
         }
         Ok(hits)
     }
 
-    fn query_content_fts(&self, match_query: &str, limit: usize) -> JaymiResult<Vec<ContentFtsHit>> {
+    fn query_content_fts(
+        &self,
+        match_query: &str,
+        path_prefix: Option<&str>,
+        limit: usize,
+    ) -> JaymiResult<Vec<ContentFtsHit>> {
+        let prefix = path_prefix
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(|value| value.trim_end_matches('/').to_string());
+        let like_prefix = prefix
+            .as_ref()
+            .map(|value| format!("{value}/%"));
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -265,20 +290,31 @@ impl Database {
                      FROM content_fts
                      JOIN content c ON c.source_id = content_fts.source_id
                      WHERE content_fts MATCH ?1
+                       AND (?3 IS NULL
+                            OR c.source_id = ?3
+                            OR c.source_id LIKE ?4)
                      ORDER BY rank
                      LIMIT ?2",
                 )
                 .map_err(db_error)?;
             let rows = stmt
-                .query_map(params![match_query, limit as i64], |row| {
-                    Ok(ContentFtsHit {
-                        source_id: row.get(0)?,
-                        title: row.get(1)?,
-                        plain_text: row.get(2)?,
-                        sections_json: row.get(3)?,
-                        bm25: row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
-                    })
-                })
+                .query_map(
+                    params![
+                        match_query,
+                        limit as i64,
+                        prefix.as_deref(),
+                        like_prefix.as_deref()
+                    ],
+                    |row| {
+                        Ok(ContentFtsHit {
+                            source_id: row.get(0)?,
+                            title: row.get(1)?,
+                            plain_text: row.get(2)?,
+                            sections_json: row.get(3)?,
+                            bm25: row.get::<_, Option<f64>>(4)?.unwrap_or(0.0),
+                        })
+                    },
+                )
                 .map_err(db_error)?;
             let mut hits = Vec::new();
             for row in rows {

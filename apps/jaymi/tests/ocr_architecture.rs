@@ -41,7 +41,7 @@ fn ocr_provider_registers_without_planner_or_engine() {
     assert!(row.detail.contains("available=false"));
 
     // Capability registry (Planner surface) is unchanged — OCR is provider-side only.
-    assert_eq!(snapshot.capability_count, 4);
+    assert_eq!(snapshot.capability_count, 5);
     assert!(!snapshot.capability_ids.iter().any(|id| id == "ocr"));
 }
 

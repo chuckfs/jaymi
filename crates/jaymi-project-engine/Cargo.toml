@@ -1,0 +1,18 @@
+[package]
+name = "jaymi-project-engine"
+description = "Project Engine — first-class persistent projects for Jaymi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+jaymi-core = { workspace = true }
+jaymi-database = { workspace = true }
+jaymi-knowledge = { workspace = true }
+jaymi-logging = { workspace = true }
+jaymi-memory-engine = { workspace = true }
+jaymi-projects = { workspace = true }
+jaymi-search = { workspace = true }
+jaymi-understanding = { workspace = true }

@@ -31,8 +31,9 @@ pub use personal::{
     CreatePersonalMemoryRequest, PersonalContext, PersonalMemoryKind, UpdatePersonalMemoryRequest,
 };
 pub use project::{
-    slugify_project_name, ProjectContext, ProjectMemoryKind, ProjectMeta, RegisterProjectRequest,
-    StoreProjectMemoryRequest,
+    encode_decision_metadata, project_decision_from_record, slugify_project_name,
+    ListProjectDecisionsQuery, ProjectContext, ProjectDecision, ProjectMemoryKind, ProjectMeta,
+    RegisterProjectRequest, StoreProjectDecisionRequest, StoreProjectMemoryRequest,
 };
 pub use promotion::{
     is_upward_promotion, next_scope, scope_rank, PromoteMemoryRequest, PromotionAskDecision,
