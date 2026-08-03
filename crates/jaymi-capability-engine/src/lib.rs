@@ -44,8 +44,8 @@ pub use plan::{
 pub use registry::CapabilityRegistry;
 pub use state::{
     CanvasHistoryState, CapabilityState, CodingState, CreationState, DiagnosticState,
-    GeneratedAssetState, OpenFileState, ResearchNoteState, ResearchSourceState, ResearchState,
-    TerminalSessionState,
+    GeneratedAssetState, GitStatusState, OpenFileState, ResearchNoteState, ResearchSourceState,
+    ResearchState, TerminalSessionState,
 };
 pub use workspace::{
     capability_workspace, workspace_expansion_for, workspace_panels, WorkspaceEdge,

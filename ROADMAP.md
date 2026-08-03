@@ -26,7 +26,7 @@ Progress
 | 3 | Search Engine | **Current** |
 | 4 | Memory Engine | **Current** (core; graph/export/aging Target) |
 | 5 | Project Engine | **Current** (core; Git/artifacts Target) |
-| 6 | Workspace & Capability Engine | **Current** (engine + thin UX; rich IDE/canvas Target) |
+| 6 | Workspace & Capability Engine | **Current** (engine + Coding shell + thin UX; rich IDE/canvas Target) |
 | 7 | Tool Engine | **Partial** (framework + 6 tools; most catalog Target) |
 | 8 | Provider Ecosystem | **Partial** (Registry + 3 local providers; plugins Target) |
 | 9 | Daily Driver | **Target** |
@@ -236,13 +236,13 @@ Capabilities also change the user experience.
 
 Conversation stays permanent. Workspaces expand beside it.
 
-**Current:** conversation shell + workspace expansion model + capability state / inspector.
+**Current:** conversation shell + Coding Workspace shell (five panels + `CodingState`) + workspace expansion model + capability state / inspector.
 
 **Target UX:**
 
 Conversation → chat-only interface
 
-Coding → conversation stays; full IDE slides in
+Coding → conversation stays; full IDE (live editor / terminal / git) on top of the shell
 
 Creation → conversation stays; canvas appears
 

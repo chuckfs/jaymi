@@ -37,21 +37,41 @@ pub struct DiagnosticState {
     pub severity: String,
 }
 
+/// Stub Git status for the coding workspace shell (not a live Git integration).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GitStatusState {
+    /// Current branch name, when known.
+    pub branch: Option<String>,
+    /// Short status summary (e.g. "clean", "2 modified").
+    pub summary: String,
+}
+
 /// Temporary state for the Coding workspace.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CodingState {
+    /// Selected path in the project explorer, when any.
+    pub selected_path: Option<String>,
+    /// Explorer entries (stub paths — not a live filesystem walk).
+    pub explorer_entries: Vec<String>,
     /// Open editor files.
     pub open_files: Vec<OpenFileState>,
     /// Active terminal sessions.
     pub terminal_sessions: Vec<TerminalSessionState>,
+    /// Stub Git status for the shell, when set.
+    pub git: Option<GitStatusState>,
     /// Current diagnostics.
     pub diagnostics: Vec<DiagnosticState>,
 }
 
 impl CodingState {
-    /// Number of tracked entries across open files, terminals, and diagnostics.
+    /// Number of tracked entries across explorer, files, terminals, git, and diagnostics.
     pub fn entry_count(&self) -> usize {
-        self.open_files.len() + self.terminal_sessions.len() + self.diagnostics.len()
+        self.explorer_entries.len()
+            + self.open_files.len()
+            + self.terminal_sessions.len()
+            + self.diagnostics.len()
+            + usize::from(self.git.is_some())
+            + usize::from(self.selected_path.is_some())
     }
 }
 

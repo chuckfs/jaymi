@@ -10,9 +10,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use jaymi_capabilities::{
-    Capability, CapabilityDiscoveryReport, CapabilityEngine, CapabilityEngineApi,
-    CapabilityInspectorReport, CapabilityState, CodingState, CreationState, ResearchState,
-    WorkspaceKind,
+    workspace_expansion_for, Capability, CapabilityDiscoveryReport, CapabilityEngine,
+    CapabilityEngineApi, CapabilityInspectorReport, CapabilityState, CodingState, CreationState,
+    ResearchState, WorkspaceKind,
 };
 
 use jaymi_config::Config;
@@ -840,7 +840,45 @@ impl Application {
             .experience
             .lock()
             .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
-        experience.expand_workspace(expansion)
+        experience.expand_workspace(expansion)?;
+        drop(experience);
+        self.prepare_context_session()?;
+        Ok(())
+    }
+
+    /// Open the Coding Workspace from the conversation action menu.
+    ///
+    /// Reuses the existing Coding shell and empty [`CodingState`]. Does not
+    /// create a new conversation or clear turns.
+    pub fn start_coding_project(&self) -> JaymiResult<()> {
+        let expansion = workspace_expansion_for(
+            Capability::Code,
+            "Started Coding Project from conversation menu",
+        )
+        .ok_or_else(|| JaymiError::new("code capability has no coding workspace mapping"))?;
+        self.expand_ui_workspace(expansion)
+    }
+
+    /// Open the Research Workspace from the conversation action menu.
+    pub fn start_research_workspace(&self) -> JaymiResult<()> {
+        let expansion = workspace_expansion_for(
+            Capability::Search,
+            "Started Research from conversation menu",
+        )
+        .ok_or_else(|| JaymiError::new("search capability has no research workspace mapping"))?;
+        self.expand_ui_workspace(expansion)
+    }
+
+    /// Open the Creation Workspace from the conversation action menu.
+    pub fn start_creation_workspace(&self) -> JaymiResult<()> {
+        let expansion = workspace_expansion_for(
+            Capability::GenerateImages,
+            "Started Creation from conversation menu",
+        )
+        .ok_or_else(|| {
+            JaymiError::new("generate_images capability has no creation workspace mapping")
+        })?;
+        self.expand_ui_workspace(expansion)
     }
 
     /// Close the expanded workspace; conversation turns remain intact.
@@ -863,6 +901,8 @@ impl Application {
                 "closing a workspace must not destroy the conversation",
             ));
         }
+        drop(experience);
+        self.prepare_context_session()?;
         Ok(closed)
     }
 

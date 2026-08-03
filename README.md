@@ -73,7 +73,7 @@ Jaymi’s architectural kernel is shipped through Layers 0–6, with foundation 
 | Search (FTS, metadata, hybrid, citations) | Current |
 | Memory (conversation / project / personal) | Current |
 | Project Engine (identity + workspace context) | Current |
-| Capability planning + availability + workspace expansion | Current |
+| Capability planning + availability + Coding Workspace shell | Current |
 | Tools (search files/knowledge/project knowledge, read, inventory, scan) | Current (small set) |
 | Providers (filesystem, local embedding, OCR placeholder) | Current / Partial |
 | Reasoning (language-model backends) | Stub |

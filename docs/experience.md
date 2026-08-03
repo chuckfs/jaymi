@@ -1,6 +1,6 @@
 # Experience
 
-**Status: Current Implementation** (conversation shell + workspace expansion model) · **Target:** full IDE / canvas / research surfaces
+**Status: Current Implementation** (conversation shell + Coding Workspace shell + expansion model) · **Target:** full IDE / canvas / research surfaces
 
 ## Conversation First
 
@@ -24,19 +24,17 @@ Jaymi defines primary workspace kinds. **Current:** conversation shell plus expa
 
 ### Coding Workspace
 
-**Target UX depth** (model exists; panels are stubs today):
+**Current:** shell expands from the right with five panels bound to temporary `CodingState`:
 
-The Coding Workspace grows from the right side of the conversation.
+- Project Explorer (stub tree / selection)
+- Editor (open-file list)
+- Terminal (session placeholders)
+- Git (status placeholder)
+- Diagnostics (workspace diagnostic list)
 
-The conversation remains visible and persistent.
+**Activation (UI):** conversation header **⋯** menu → **Start Coding Project**. That reuses the existing Coding shell and `CodingState` without creating a second conversation. Closing the workspace returns to the same chat.
 
-The coding workspace aims to add:
-
-- Project Explorer
-- Editor
-- Terminal
-- Git
-- Diagnostics
+The conversation remains visible and persistent. Real editor / LSP / PTY / Git tools are **Target** (Layer 7); Code capability stays Unavailable until those tools exist.
 
 The conversation becomes project-aware but never resets.
 

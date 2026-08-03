@@ -187,7 +187,7 @@ Request-time retrieval for Planner responses goes through the Context Engine →
 
 Workspace & Capability Engine
 
-Status: **Current** (engine + thin UX)
+Status: **Current** (engine + Coding Workspace shell + thin UX)
 
 Capabilities define what Jaymi knows how to do.
 
@@ -195,14 +195,14 @@ Capabilities define what Jaymi knows how to do.
 
 Boot registers the **full capability catalog**. Availability (Ready / Experimental / Planned / Unavailable) distinguishes conceptual support from what is currently executable. Planned capabilities stay registered.
 
-Conversation remains permanent. Workspace kinds can expand beside it (conversation shell + expansion chrome + capability state / inspector).
+Conversation remains permanent. Workspace kinds can expand beside it (conversation shell + **Coding Workspace shell** with five panels + expansion chrome + capability state / inspector).
 
 See [docs/capabilities.md](docs/capabilities.md).
 
 ### Target capability catalog & UX
 
 * Promote Planned capabilities as tools/providers land
-* Coding → full IDE slides in
+* Coding → live editor / terminal / git on top of the existing shell
 * Creation → canvas appears
 * Research → sources and notes appear
 

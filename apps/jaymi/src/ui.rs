@@ -6,6 +6,7 @@
 use eframe::egui;
 
 use crate::boot::Application;
+use crate::coding_workspace::render_coding_shell;
 use crate::diagnostics::{DiagnosticsSnapshot, OperationalStatus};
 use crate::experience::ExperienceSession;
 use jaymi_capabilities::{WorkspaceKind, WorkspacePanel};
@@ -74,8 +75,6 @@ impl eframe::App for JaymiApp {
         egui::TopBottomPanel::top("jaymi_top").show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Jaymi");
-                ui.separator();
-                ui.label("Conversation is permanent · workspaces expand from the right");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.checkbox(&mut self.show_diagnostics, "Diagnostics");
                     if self.experience.workspace_expanded() {
@@ -88,16 +87,32 @@ impl eframe::App for JaymiApp {
         });
 
         if self.experience.workspace_expanded() {
+            let width = match self.experience.active_workspace_kind() {
+                Some(WorkspaceKind::Coding) => 480.0,
+                _ => 420.0,
+            };
             egui::SidePanel::right("jaymi_workspace")
-                .default_width(420.0)
+                .default_width(width)
                 .resizable(true)
                 .show(ctx, |ui| {
                     self.render_workspace(ui);
                 });
         }
 
+        // Composer stays pinned to the bottom of the conversation column.
+        egui::TopBottomPanel::bottom("chat_composer")
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(16, 12))
+                    .fill(ctx.style().visuals.panel_fill),
+            )
+            .show(ctx, |ui| {
+                self.render_chat_composer(ui);
+            });
+
         egui::CentralPanel::default().show(ctx, |ui| {
-            self.render_conversation(ui);
+            self.render_chat(ui);
             if self.show_diagnostics {
                 ui.add_space(12.0);
                 ui.separator();
@@ -108,59 +123,218 @@ impl eframe::App for JaymiApp {
 }
 
 impl JaymiApp {
-    fn render_conversation(&mut self, ui: &mut egui::Ui) {
-        ui.heading("Conversation");
-        ui.label("Capabilities may expand a workspace; closing it keeps this chat.");
-        ui.add_space(8.0);
+    fn render_chat(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            ui.heading("Conversation");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                self.render_conversation_actions(ui);
+            });
+        });
+        ui.add_space(4.0);
 
+        let available = ui.available_height();
         egui::ScrollArea::vertical()
             .id_salt("conversation_scroll")
-            .max_height(420.0)
+            .auto_shrink([false, false])
             .stick_to_bottom(true)
+            .max_height(available)
             .show(ui, |ui| {
+                ui.set_min_height(available.max(240.0));
                 if self.experience.conversation().is_empty() {
-                    ui.weak("Say something — for example: Help me build an app.");
-                }
-                for turn in self.experience.conversation() {
-                    let label = match turn.role {
-                        MessageRole::User => "You",
-                        MessageRole::Assistant => "Jaymi",
-                        MessageRole::System => "System",
-                    };
-                    ui.group(|ui| {
-                        ui.strong(label);
-                        ui.label(&turn.content);
-                    });
-                    ui.add_space(6.0);
+                    self.render_welcome(ui);
+                } else {
+                    ui.add_space(8.0);
+                    for turn in self.experience.conversation() {
+                        self.render_chat_bubble(ui, turn.role, &turn.content);
+                        ui.add_space(10.0);
+                    }
                 }
             });
+    }
 
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            ui.add(
-                egui::TextEdit::singleline(&mut self.prompt)
-                    .desired_width(520.0)
-                    .hint_text("Ask Jaymi…"),
+    fn render_welcome(&self, ui: &mut egui::Ui) {
+        ui.vertical_centered(|ui| {
+            let height = ui.available_height().max(200.0);
+            ui.add_space((height * 0.32).clamp(48.0, 180.0));
+            ui.label(
+                egui::RichText::new("Hi! Its Jaymi")
+                    .size(42.0)
+                    .strong()
+                    .color(ui.visuals().strong_text_color()),
             );
-            if ui.button("Send").clicked() {
-                self.send_prompt();
-            }
+            ui.add_space(10.0);
+            ui.label(
+                egui::RichText::new("Ask anything, or open ⋯ → Start Coding Project.")
+                    .size(15.0)
+                    .color(ui.visuals().weak_text_color()),
+            );
         });
+    }
 
+    fn render_chat_bubble(&self, ui: &mut egui::Ui, role: MessageRole, content: &str) {
+        let is_user = matches!(role, MessageRole::User);
+        let (label, fill, text_color, meta_color) = match role {
+            MessageRole::User => (
+                "You",
+                egui::Color32::from_rgb(36, 99, 235),
+                egui::Color32::WHITE,
+                egui::Color32::from_rgb(200, 220, 255),
+            ),
+            MessageRole::Assistant => (
+                "Jaymi",
+                ui.visuals().faint_bg_color,
+                ui.visuals().text_color(),
+                ui.visuals().weak_text_color(),
+            ),
+            MessageRole::System => (
+                "System",
+                ui.visuals().faint_bg_color,
+                ui.visuals().text_color(),
+                ui.visuals().weak_text_color(),
+            ),
+        };
+
+        let max_bubble = ui.available_width() * 0.78;
+        ui.horizontal(|ui| {
+            if is_user {
+                ui.add_space((ui.available_width() - max_bubble).max(0.0));
+            }
+            egui::Frame::new()
+                .corner_radius(14.0)
+                .inner_margin(egui::Margin::symmetric(14, 10))
+                .fill(fill)
+                .show(ui, |ui| {
+                    ui.set_max_width(max_bubble);
+                    ui.label(egui::RichText::new(label).small().strong().color(meta_color));
+                    ui.label(egui::RichText::new(content).color(text_color));
+                });
+        });
+    }
+
+    fn render_chat_composer(&mut self, ui: &mut egui::Ui) {
         if let Some(error) = &self.error {
             ui.colored_label(egui::Color32::from_rgb(200, 80, 80), error);
+            ui.add_space(6.0);
         }
 
-        if let Some(workspace) = self.experience.active_workspace() {
-            ui.add_space(8.0);
-            ui.label(format!(
-                "Expanded workspace: {} ({})",
-                workspace.title(),
-                workspace.summary()
-            ));
-        } else {
-            ui.add_space(8.0);
-            ui.weak("No workspace expanded — conversation only.");
+        let send_clicked = egui::Frame::new()
+            .corner_radius(24.0)
+            .inner_margin(egui::Margin::symmetric(14, 8))
+            .stroke(ui.visuals().widgets.noninteractive.bg_stroke)
+            .fill(ui.visuals().extreme_bg_color)
+            .show(ui, |ui| {
+                ui.horizontal_centered(|ui| {
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut self.prompt)
+                            .desired_width(ui.available_width() - 48.0)
+                            .hint_text("Message Jaymi…")
+                            .frame(false),
+                    );
+                    let enter_send = response.lost_focus()
+                        && ui.input(|input| input.key_pressed(egui::Key::Enter));
+
+                    let send = ui
+                        .add_sized(
+                            [36.0, 36.0],
+                            egui::Button::new(egui::RichText::new("↑").size(20.0).strong())
+                                .corner_radius(18.0)
+                                .fill(egui::Color32::from_rgb(36, 99, 235)),
+                        )
+                        .on_hover_text("Send");
+
+                    if enter_send {
+                        response.request_focus();
+                    }
+                    send.clicked() || enter_send
+                })
+                .inner
+            })
+            .inner;
+
+        if send_clicked {
+            self.send_prompt();
+        }
+    }
+
+    /// Three-dot action menu in the conversation header (discoverable activation).
+    fn render_conversation_actions(&mut self, ui: &mut egui::Ui) {
+        #[derive(Clone, Copy)]
+        enum ConversationAction {
+            StartCoding,
+            StartResearch,
+            StartCreation,
+            Settings,
+        }
+
+        let mut action = None;
+        ui.menu_button("⋯", |ui| {
+            ui.set_min_width(180.0);
+            if ui.button("Start Coding Project").clicked() {
+                action = Some(ConversationAction::StartCoding);
+                ui.close_menu();
+            }
+            if ui.button("Start Research").clicked() {
+                action = Some(ConversationAction::StartResearch);
+                ui.close_menu();
+            }
+            if ui.button("Start Creation").clicked() {
+                action = Some(ConversationAction::StartCreation);
+                ui.close_menu();
+            }
+            ui.separator();
+            if ui.button("Settings").clicked() {
+                action = Some(ConversationAction::Settings);
+                ui.close_menu();
+            }
+        })
+        .response
+        .on_hover_text("Conversation actions");
+
+        match action {
+            Some(ConversationAction::StartCoding) => self.start_coding_project(),
+            Some(ConversationAction::StartResearch) => self.start_research_workspace(),
+            Some(ConversationAction::StartCreation) => self.start_creation_workspace(),
+            Some(ConversationAction::Settings) => {
+                self.show_diagnostics = true;
+                self.error = None;
+            }
+            None => {}
+        }
+    }
+
+    fn start_coding_project(&mut self) {
+        match self.app.start_coding_project() {
+            Ok(()) => {
+                self.error = None;
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
+                }
+            }
+            Err(error) => self.error = Some(error.message().to_string()),
+        }
+    }
+
+    fn start_research_workspace(&mut self) {
+        match self.app.start_research_workspace() {
+            Ok(()) => {
+                self.error = None;
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
+                }
+            }
+            Err(error) => self.error = Some(error.message().to_string()),
+        }
+    }
+
+    fn start_creation_workspace(&mut self) {
+        match self.app.start_creation_workspace() {
+            Ok(()) => {
+                self.error = None;
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
+                }
+            }
+            Err(error) => self.error = Some(error.message().to_string()),
         }
     }
 
@@ -168,6 +342,22 @@ impl JaymiApp {
         let Some(workspace) = self.experience.active_workspace().cloned() else {
             return;
         };
+
+        if workspace.kind == WorkspaceKind::Coding {
+            let coding = self
+                .experience
+                .capability_state()
+                .and_then(|state| state.coding())
+                .cloned();
+            render_coding_shell(ui, &workspace, coding.as_ref());
+            ui.add_space(12.0);
+            if ui.button("Close workspace").clicked() {
+                self.close_workspace();
+            }
+            ui.weak("Closing returns to conversation without losing chat history.");
+            return;
+        }
+
         ui.heading(workspace.title());
         ui.label(format!(
             "Requested by capability · {}",
@@ -182,11 +372,6 @@ impl JaymiApp {
                 ui.label("•");
                 ui.label(panel.label());
                 match workspace.kind {
-                    WorkspaceKind::Coding => match panel {
-                        WorkspacePanel::Editor => ui.weak("source editing surface"),
-                        WorkspacePanel::Terminal => ui.weak("command surface"),
-                        _ => ui.weak(panel.id()),
-                    },
                     WorkspaceKind::Creation => match panel {
                         WorkspacePanel::Canvas => ui.weak("visual canvas"),
                         _ => ui.weak(panel.id()),
@@ -195,7 +380,7 @@ impl JaymiApp {
                         WorkspacePanel::Citations => ui.weak("source-backed notes"),
                         _ => ui.weak(panel.id()),
                     },
-                    WorkspaceKind::Conversation => ui.weak(""),
+                    WorkspaceKind::Conversation | WorkspaceKind::Coding => ui.weak(""),
                 };
             });
         }
