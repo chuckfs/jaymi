@@ -7,8 +7,7 @@ use std::path::PathBuf;
 
 use jaymi_knowledge::KnowledgeItem;
 use jaymi_memory_engine::{
-    Conversation, ConversationMessage, ConversationMeta, MemoryRecord,
-    ProjectContext as ProjectMemoryContext,
+    Conversation, ConversationMessage, ConversationMeta, MemoryRecord, ProjectMemoryBundle,
 };
 
 use crate::types::Project;
@@ -202,7 +201,7 @@ pub struct ProjectContext {
     /// Conversations owned by the project.
     pub conversations: Vec<ProjectConversationEntry>,
     /// Categorized project memories (from Memory Engine).
-    pub memories: ProjectMemoryContext,
+    pub memories: ProjectMemoryBundle,
     /// Search index summary for the project.
     pub search_index: ProjectSearchIndex,
     /// Important documents (memory refs + notable inventory docs).

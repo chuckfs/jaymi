@@ -1,5 +1,7 @@
 Projects
 
+**Status: Current Implementation** (core) · **Target:** Git, artifacts, import/convert, recommendations
+
 Projects are the primary workspace in Jaymi.
 
 A project is more than a folder containing files.
@@ -32,17 +34,20 @@ A project is a collection of related resources.
 
 A project may contain:
 
-* Source code
-* Documents
-* Images
-* Notes
+### Current
+
+* Source code / documents under a root
 * Conversations
 * Memories
-* Tasks
-* Architecture
-* Configuration
-* Git repository
-* Generated artifacts
+* Tasks (as project memory kinds)
+* Architecture / decision log entries
+* Configuration under `.jaymi/`
+
+### Target
+
+* Images / Notes as first-class project resources
+* Git repository integration
+* Generated artifacts pipelines
 
 Every project has its own identity.
 
@@ -104,6 +109,22 @@ The global index allows:
 The global index never replaces project ownership.
 
 It simply points to project resources.
+
+⸻
+
+Project Identity Ownership
+
+The Project Engine is the only owner of project identity.
+
+Create, delete, register, list, and lookup by id or name exist only inside the Project Engine.
+
+Other subsystems reference projects exclusively by `project_id`:
+
+* Memory Engine — stores and restores memories keyed by `project_id` (no project registry)
+* Search Engine — scopes search to a project root / path; never owns project records
+* Knowledge Store — inventory is filtered through Project Engine by `project_id`
+
+There is a single `ProjectContext` type, owned by the Project Engine. Memory returns a `ProjectMemoryBundle` of categorized memories for a given `project_id`.
 
 ⸻
 
@@ -209,6 +230,8 @@ Tasks remain attached to the project.
 
 Git Integration
 
+**Status: Target**
+
 Git is optional.
 
 Projects may exist with or without version control.
@@ -228,6 +251,8 @@ Git does not define the project.
 ⸻
 
 Artifacts
+
+**Status: Target**
 
 Projects should retain generated outputs.
 

@@ -275,7 +275,7 @@ pub(crate) fn assemble_parsed_content(
 
 /// Surface project tasks from categorized project memory.
 pub(crate) fn tasks_from_memories(
-    memories: &jaymi_memory_engine::ProjectContext,
+    memories: &jaymi_memory_engine::ProjectMemoryBundle,
 ) -> Vec<ProjectTaskEntry> {
     memories
         .tasks
@@ -291,7 +291,7 @@ pub(crate) fn tasks_from_memories(
 
 /// Surface the structured decision log from architecture decision memories.
 pub(crate) fn decisions_from_memories(
-    memories: &jaymi_memory_engine::ProjectContext,
+    memories: &jaymi_memory_engine::ProjectMemoryBundle,
 ) -> Vec<ProjectDecisionEntry> {
     memories
         .architecture_decisions

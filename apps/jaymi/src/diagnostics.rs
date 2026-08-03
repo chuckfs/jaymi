@@ -84,17 +84,17 @@ pub struct DiagnosticsSnapshot {
     pub tool_count: usize,
     /// Registered tool ids.
     pub tool_ids: Vec<String>,
-    /// Number of registered capabilities.
+    /// Number of registered capabilities (full conceptual catalog).
     pub capability_count: usize,
     /// Registered capability ids.
     pub capability_ids: Vec<String>,
-    /// Capabilities currently available (registered + requirements met).
+    /// Capabilities currently executable (Ready / Experimental with inventory).
     pub available_capability_ids: Vec<String>,
-    /// Capabilities currently unavailable.
+    /// Capabilities not currently executable (Planned / Unavailable).
     pub unavailable_capability_ids: Vec<String>,
-    /// Per-capability status detail lines for the dashboard.
+    /// Per-capability status detail lines (includes availability) for the dashboard.
     pub capability_status_details: Vec<String>,
-    /// Developer-facing capability inspector (registered / active / requirements).
+    /// Developer-facing capability inspector (availability / active / requirements).
     pub capability_inspector: Option<CapabilityInspectorReport>,
     /// Number of registered parsers.
     pub parser_count: usize,

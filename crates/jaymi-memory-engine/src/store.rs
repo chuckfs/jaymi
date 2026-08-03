@@ -9,14 +9,13 @@ use jaymi_core::{EntityId, JaymiError, JaymiResult};
 use jaymi_database::{
     ConversationArchiveRecord, ConversationAttachmentRecord, ConversationMessageRecord,
     ConversationRecord, ConversationReferenceRecord, Database, MemoryRecord as DbMemoryRecord,
-    MemorySearchQuery, ProjectRecord,
+    MemorySearchQuery,
 };
 
 use crate::conversation::{
     Conversation, ConversationAttachment, ConversationMeta, ConversationMessage,
     ConversationReference, ConversationStatus, MessageRole,
 };
-use crate::project::ProjectMeta;
 use crate::types::{
     ArchiveConversationRequest, ConversationArchive, MemoryQuery, MemoryRecord, MemoryScope,
     MemoryStatus, StoreMemoryRequest,
@@ -66,20 +65,11 @@ pub trait MemoryStore: Send + Sync {
     /// Count persisted conversations.
     fn conversation_count(&self) -> JaymiResult<u64>;
 
-    /// Insert or update a project.
-    fn upsert_project(&self, project: &ProjectMeta) -> JaymiResult<()>;
-
-    /// Load a project by id.
-    fn get_project(&self, project_id: &str) -> JaymiResult<Option<ProjectMeta>>;
-
-    /// Find a project by name or slug.
-    fn find_project_by_name(&self, name: &str) -> JaymiResult<Option<ProjectMeta>>;
-
     /// Conversation ids attached to a project.
     fn list_conversation_ids_for_project(&self, project_id: &str) -> JaymiResult<Vec<String>>;
 
-    /// Count registered projects.
-    fn project_count(&self) -> JaymiResult<u64>;
+    /// Distinct `project_id` values referenced by active memories (not a project registry).
+    fn referenced_project_count(&self) -> JaymiResult<u64>;
 }
 
 /// SQLite memory store — separate from providers and normalized content.
@@ -107,7 +97,6 @@ struct InMemoryState {
     conversations: HashMap<String, ConversationMeta>,
     /// Messages keyed by conversation id, kept in sequence order.
     messages: HashMap<String, Vec<ConversationMessage>>,
-    projects: HashMap<String, ProjectMeta>,
 }
 
 impl InMemoryMemoryStore {
@@ -305,40 +294,6 @@ impl MemoryStore for InMemoryMemoryStore {
         Ok(state.conversations.len() as u64)
     }
 
-    fn upsert_project(&self, project: &ProjectMeta) -> JaymiResult<()> {
-        let mut state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
-        state
-            .projects
-            .insert(project.id.as_str().to_string(), project.clone());
-        Ok(())
-    }
-
-    fn get_project(&self, project_id: &str) -> JaymiResult<Option<ProjectMeta>> {
-        let state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
-        Ok(state.projects.get(project_id).cloned())
-    }
-
-    fn find_project_by_name(&self, name: &str) -> JaymiResult<Option<ProjectMeta>> {
-        let needle = name.trim().to_ascii_lowercase();
-        let state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
-        let mut matches: Vec<_> = state
-            .projects
-            .values()
-            .filter(|project| {
-                project.name.to_ascii_lowercase() == needle
-                    || project.slug.to_ascii_lowercase() == needle
-            })
-            .cloned()
-            .collect();
-        matches.sort_by(|left, right| {
-            right
-                .updated_at
-                .cmp(&left.updated_at)
-                .then(left.id.as_str().cmp(right.id.as_str()))
-        });
-        Ok(matches.into_iter().next())
-    }
-
     fn list_conversation_ids_for_project(&self, project_id: &str) -> JaymiResult<Vec<String>> {
         let state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
         let mut metas: Vec<_> = state
@@ -359,9 +314,19 @@ impl MemoryStore for InMemoryMemoryStore {
             .collect())
     }
 
-    fn project_count(&self) -> JaymiResult<u64> {
+    fn referenced_project_count(&self) -> JaymiResult<u64> {
         let state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
-        Ok(state.projects.len() as u64)
+        let mut ids = std::collections::BTreeSet::new();
+        for record in state.memories.values() {
+            if record.status == MemoryStatus::Active {
+                if let Some(project_id) = &record.project_id {
+                    if !project_id.is_empty() {
+                        ids.insert(project_id.clone());
+                    }
+                }
+            }
+        }
+        Ok(ids.len() as u64)
     }
 }
 
@@ -497,63 +462,12 @@ impl MemoryStore for SqliteMemoryStore {
         self.database.conversation_count()
     }
 
-    fn upsert_project(&self, project: &ProjectMeta) -> JaymiResult<()> {
-        let existing = self.database.get_project(project.id.as_str())?;
-        self.database.upsert_project(&ProjectRecord {
-            project_id: project.id.as_str().to_string(),
-            name: project.name.clone(),
-            slug: project.slug.clone(),
-            root_path: project.root_path.clone(),
-            description: existing
-                .as_ref()
-                .map(|record| record.description.clone())
-                .unwrap_or_default(),
-            project_type: existing
-                .as_ref()
-                .map(|record| record.project_type.clone())
-                .unwrap_or_else(|| "general".into()),
-            created_at: existing
-                .as_ref()
-                .map(|record| record.created_at)
-                .unwrap_or(project.created_at),
-            updated_at: project.updated_at,
-            last_opened_at: existing.and_then(|record| record.last_opened_at),
-            status: "active".into(),
-        })
-    }
-
-    fn get_project(&self, project_id: &str) -> JaymiResult<Option<ProjectMeta>> {
-        Ok(self
-            .database
-            .get_project(project_id)?
-            .filter(|record| record.status == "active")
-            .map(project_from_db))
-    }
-
-    fn find_project_by_name(&self, name: &str) -> JaymiResult<Option<ProjectMeta>> {
-        Ok(self
-            .database
-            .find_project_by_name(name)?
-            .map(project_from_db))
-    }
-
     fn list_conversation_ids_for_project(&self, project_id: &str) -> JaymiResult<Vec<String>> {
         self.database.list_conversation_ids_for_project(project_id)
     }
 
-    fn project_count(&self) -> JaymiResult<u64> {
-        self.database.project_count()
-    }
-}
-
-fn project_from_db(record: ProjectRecord) -> ProjectMeta {
-    ProjectMeta {
-        id: EntityId::new(record.project_id),
-        name: record.name,
-        slug: record.slug,
-        root_path: record.root_path,
-        created_at: record.created_at,
-        updated_at: record.updated_at,
+    fn referenced_project_count(&self) -> JaymiResult<u64> {
+        self.database.referenced_project_memory_count()
     }
 }
 

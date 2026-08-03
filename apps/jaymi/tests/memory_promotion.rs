@@ -8,9 +8,10 @@ use jaymi::Application;
 use jaymi_core::UserRequest;
 use jaymi_memory::{
     MemoryQuery, MemoryScope, PromoteMemoryRequest, PromotionAskDecision, PromotionSuggestQuery,
-    RegisterProjectRequest, StoreMemoryRequest,
+    StoreMemoryRequest,
 };
 use jaymi_planner::Planner;
+use jaymi_project_engine::CreateProjectRequest;
 
 #[test]
 fn promotion_ladder_suggestions_and_intentional_apply() {
@@ -18,12 +19,14 @@ fn promotion_ladder_suggestions_and_intentional_apply() {
     let app = Application::boot_with_data_dir(&data_dir).expect("boot");
 
     let project = app
-        .register_project(&RegisterProjectRequest {
+        .create_project(&CreateProjectRequest {
             project_id: Some("project:jaymi".into()),
             name: "Jaymi".into(),
-            root_path: None,
+            description: None,
+            root_directory: None,
+            project_type: None,
         })
-        .expect("register project");
+        .expect("create project");
     app.set_active_project(Some(project.id.as_str()))
         .expect("activate");
 

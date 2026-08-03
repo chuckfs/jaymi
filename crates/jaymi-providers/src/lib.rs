@@ -1,16 +1,21 @@
 //! Provider framework for Jaymi.
 //!
 //! Providers connect Jaymi to resources. They expose consistent interfaces and
-//! never make decisions. The Planner never communicates with external systems
-//! directly — every interaction flows through providers via tools.
+//! never make decisions.
+//!
+//! Active architecture:
+//! - [`ProviderRegistry`] — discovery / diagnostics (identity metadata only)
+//! - Concrete provider instances (`Arc`s) — bound into tools at boot
+//! - Tools / Capability Engine — select and execute; there is no ProviderManager
+//!
+//! The Planner never communicates with external systems directly — every
+//! interaction flows through tools that hold bound providers.
 
 #![forbid(unsafe_code)]
 
 pub mod categories;
 pub mod embedding;
 pub mod filesystem;
-pub mod lifecycle;
-pub mod manager;
 pub mod ocr;
 pub mod provider;
 pub mod registry;
@@ -21,8 +26,6 @@ pub use embedding::{
     LocalEmbeddingProvider, EMBEDDING_PROVIDER_ID, LOCAL_EMBEDDING_DIMS, LOCAL_EMBEDDING_MODEL,
 };
 pub use filesystem::{FilesystemProvider, FILESYSTEM_PROVIDER_ID};
-pub use lifecycle::ProviderLifecycle;
-pub use manager::ProviderManager;
 pub use ocr::{
     OcrExtraction, OcrImage, OcrProvider, OcrProviderStatus, PlaceholderOcrProvider,
     OCR_ENGINE_NONE, OCR_PROVIDER_ID,

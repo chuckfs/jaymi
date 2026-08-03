@@ -8,6 +8,18 @@ Instead of navigating applications, folders, and search boxes, you simply descri
 
 ⸻
 
+Documentation map
+
+How to read the docs:
+
+* **Current Implementation** — exists in the codebase, wired at boot, covered by tests
+* **Partial / Stub** — architecture or API present; behavior incomplete
+* **Target Architecture** — intentional future vision (kept, not deleted)
+
+See `ARCHITECTURE.md` for the kernel, `ROADMAP.md` for layer progress, and `docs/` for subsystem detail.
+
+⸻
+
 Why Jaymi Exists
 
 Modern computers are powerful, but they still expect people to think like computers.
@@ -48,11 +60,39 @@ Jaymi is built on a few simple principles:
 
 ⸻
 
-What Jaymi Does
+Current Implementation
+
+Jaymi’s architectural kernel is shipped through Layers 0–6, with foundation work on Layers 7–8.
+
+| Area | Status |
+|------|--------|
+| Planner (orchestration kernel) | Current — every user request enters `handle` |
+| Context Engine (`assemble`) | Current — sole request-context path |
+| Discovery / Knowledge inventory | Current |
+| Understanding / parsers (txt, md, json, pdf, docx, images) | Current |
+| Search (FTS, metadata, hybrid, citations) | Current |
+| Memory (conversation / project / personal) | Current |
+| Project Engine (identity + workspace context) | Current |
+| Capability planning + availability + workspace expansion | Current |
+| Tools (search files/knowledge, read, inventory, scan) | Current (small set) |
+| Providers (filesystem, local embedding, OCR placeholder) | Current / Partial |
+| Reasoning (language-model backends) | Stub — not implemented |
+| OCR engine | Stub — architecture only |
+| Git / Terminal / Messages / Mail / Image generation | Target |
+| Installable provider plugins | Target |
+| Daily-driver product UX (Layer 9) | Target |
+
+The Context Engine assembles request context for every Planner request.
+
+Administrative Memory and Project CRUD resolve owning engines directly; user retrieval (search, list, read, discover, continue, project knowledge) always goes through the Planner.
+
+⸻
+
+Target Architecture
 
 Jaymi is designed to become the primary interface to your computer.
 
-It aims to combine:
+Long-term it aims to combine:
 
 * Conversational AI
 * Project-aware coding
@@ -63,9 +103,11 @@ It aims to combine:
 * File management
 * Terminal automation
 * Intelligent project context
-* Personal knowledge retrieval
+* Personal knowledge retrieval (documents, messages, email, archives, …)
 
-Everything is accessible through a single conversational interface.
+Everything accessible through a single conversational interface.
+
+Cloud services remain optional and are only used when the user explicitly chooses them.
 
 ⸻
 
@@ -75,37 +117,9 @@ Offline-first is not a feature.
 
 It is the foundation of the project.
 
-Jaymi is designed to perform as much work locally as possible, including:
+**Current:** local SQLite knowledge store, filesystem discovery, local document parsing, local lexical embeddings, offline-first and privacy policies enforced on tool candidates.
 
-* Searching files
-* Reading documents
-* Understanding projects
-* Managing memory
-* Running local AI models
-* Indexing personal knowledge
-
-Cloud services remain optional and are only used when the user explicitly chooses to use them.
-
-⸻
-
-Personal Knowledge
-
-Jaymi is designed to understand your digital life.
-
-It can build knowledge from sources such as:
-
-* Documents
-* PDFs
-* Images
-* Notes
-* Downloads
-* Projects
-* Source code
-* Messages
-* Emails
-* AI conversation archives
-
-Rather than searching by filenames, Jaymi searches by meaning.
+**Target:** full local AI models for reasoning, vision, OCR, and generation — cloud only when chosen.
 
 ⸻
 
@@ -113,42 +127,17 @@ Projects
 
 A project is more than a folder.
 
-A project contains:
+**Current:** first-class Project Engine identity; `.jaymi/` layout; conversations, memories, decisions, tasks (as memory kinds), and assembled `ProjectContext`; “Continue working on …” restores workspace context.
 
-* Source code
-* Documents
-* Conversations
-* Decisions
-* Architecture
-* Tasks
-* History
-* Context
-
-Jaymi maintains awareness of projects over time, allowing conversations and work to continue naturally across sessions.
+**Target:** live Git status, full IDE/editor workspace, artifact pipelines, repository import flows.
 
 ⸻
 
 Extensible Architecture
 
-Jaymi is built around a modular provider architecture.
+**Current:** ProviderRegistry for discovery; concrete providers bound into tools at boot; Capability Engine soft-matching for plans. There is no ProviderManager.
 
-Capabilities can be extended through installable providers that connect new tools, services, or local resources without changing the core application.
-
-This allows Jaymi to grow while remaining flexible and user-controlled.
-
-⸻
-
-Current Status
-
-Jaymi is in the earliest stage of development.
-
-The current focus is building a strong architectural foundation before implementing advanced AI features.
-
-The first milestone is simple:
-
-Build a private, offline-first AI environment that feels natural to use every day.
-
-Everything else grows from that foundation.
+**Target:** installable providers that connect new tools, services, or local resources without changing the core application.
 
 ⸻
 
@@ -163,6 +152,8 @@ Jaymi aims to become the intelligent layer between people and their computers—
 The computer should no longer feel like a collection of disconnected applications.
 
 It should feel like something you can simply talk to.
+
+See `VISION.md` for the full target narrative.
 
 ⸻
 

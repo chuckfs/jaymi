@@ -58,7 +58,10 @@ fn list_directory_request_flows_through_every_layer() {
         .expect("diagnostics");
     assert_eq!(snapshot.provider_count, 3);
     assert_eq!(snapshot.tool_count, 5);
-    assert_eq!(snapshot.capability_count, 5);
+    assert_eq!(
+        snapshot.capability_count,
+        jaymi_capabilities::Capability::all().len()
+    );
     assert_eq!(snapshot.entries.len(), 3);
     assert!(snapshot.listing_summary.is_some());
 }

@@ -1,5 +1,7 @@
 Policies
 
+**Status: Partial** — Offline First and Privacy Maximum enforced · other builtins declared
+
 Policies define how Jaymi behaves.
 
 The Planner uses policies to make consistent decisions without hardcoding behavior.
@@ -17,6 +19,15 @@ Policies answer:
 “How should this action happen?”
 
 This separation allows Jaymi to remain predictable while adapting to different users and situations.
+
+### Current enforcement
+
+* Offline First — constrains cloud-only candidates
+* Privacy Maximum — constrains privacy-sensitive candidates
+
+### Declared / Target enforcement
+
+Highest Quality, Fastest, Battery Saver, Developer / Creative / Research modes, rich multi-scope resolution, user-custom policies.
 
 ⸻
 

@@ -2,7 +2,10 @@
 //!
 //! Projects are first-class persistent workspaces.
 //! Architecture: Planner → Project Engine → Project Store.
-//! The Planner requests one assembled [`ProjectContext`].
+//!
+//! The Project Engine is the sole owner of project identity (create, delete,
+//! list, lookup). Memory, Search, and Knowledge reference projects only by
+//! `project_id`. The Planner requests one assembled [`ProjectContext`].
 
 #![forbid(unsafe_code)]
 

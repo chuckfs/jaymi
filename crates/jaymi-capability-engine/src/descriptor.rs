@@ -36,33 +36,68 @@ impl CapabilityCategory {
     }
 }
 
-/// Availability of a registered (or requested) capability.
+/// How far along a capability is — conceptual catalog vs executable now.
+///
+/// Capabilities always remain in the catalog. Availability says whether Jaymi
+/// can currently fulfill them (Ready / Experimental), intends them for later
+/// (Planned), or cannot fulfill them right now (Unavailable).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CapabilityAvailability {
-    /// Capability is registered and ready for planning.
-    Available,
-    /// Capability exists in the catalog but is not registered.
-    Unregistered,
-    /// Capability Engine is not ready.
-    EngineNotReady,
+    /// Conceptual + currently executable (stable fulfillment).
+    Ready,
+    /// Conceptual + currently executable (partial / stub fulfillment).
+    Experimental,
+    /// Conceptual catalog support; intentionally not executable yet.
+    Planned,
+    /// Known, but blocked right now (engine down, missing tools/providers).
+    Unavailable,
     /// Capability id is unknown to Jaymi.
     Unknown,
 }
 
 impl CapabilityAvailability {
-    /// True when the Planner may include this capability in a plan.
-    pub fn is_available(self) -> bool {
-        matches!(self, Self::Available)
+    /// True when the Planner may execute tools for this capability.
+    pub fn is_executable_tier(self) -> bool {
+        matches!(self, Self::Ready | Self::Experimental)
     }
 
-    /// Stable label.
+    /// Alias used by plans: executable-tier capabilities are "available".
+    pub fn is_available(self) -> bool {
+        self.is_executable_tier()
+    }
+
+    /// Stable label for diagnostics and UI.
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Available => "available",
-            Self::Unregistered => "unregistered",
-            Self::EngineNotReady => "engine_not_ready",
+            Self::Ready => "ready",
+            Self::Experimental => "experimental",
+            Self::Planned => "planned",
+            Self::Unavailable => "unavailable",
             Self::Unknown => "unknown",
         }
+    }
+}
+
+/// Catalog maturity default for a capability (ignores live inventory).
+pub fn catalog_availability(capability: Capability) -> CapabilityAvailability {
+    match capability {
+        Capability::Search
+        | Capability::ReadDocuments
+        | Capability::Discover
+        | Capability::Index => CapabilityAvailability::Ready,
+        Capability::Code
+        | Capability::Ocr
+        | Capability::Embeddings
+        | Capability::Vision => CapabilityAvailability::Experimental,
+        Capability::Chat
+        | Capability::GenerateImages
+        | Capability::BrowseTheWeb
+        | Capability::OrganizeFiles
+        | Capability::ExecuteTerminalCommands
+        | Capability::AutomateTasks
+        | Capability::FileManagement
+        | Capability::Internet
+        | Capability::Automation => CapabilityAvailability::Planned,
     }
 }
 
@@ -81,167 +116,200 @@ pub struct CapabilityDescriptor {
     pub description: &'static str,
     /// Catalog category.
     pub category: CapabilityCategory,
+    /// Catalog maturity / availability default.
+    pub availability: CapabilityAvailability,
     /// True when fulfilling this capability typically needs the network.
     pub requires_internet: bool,
     /// True when useful work can happen offline.
     pub offline_capable: bool,
 }
 
+fn descriptor(
+    capability: Capability,
+    name: &'static str,
+    description: &'static str,
+    category: CapabilityCategory,
+    requires_internet: bool,
+    offline_capable: bool,
+) -> CapabilityDescriptor {
+    CapabilityDescriptor {
+        id: capability.id(),
+        capability,
+        name,
+        description,
+        category,
+        availability: catalog_availability(capability),
+        requires_internet,
+        offline_capable,
+    }
+}
+
 /// Built-in metadata for a capability.
 pub fn capability_descriptor(capability: Capability) -> CapabilityDescriptor {
     match capability {
-        Capability::Chat => CapabilityDescriptor {
-            id: capability.id(),
+        Capability::Chat => descriptor(
             capability,
-            name: "Chat",
-            description: "Hold a conversational exchange with the user.",
-            category: CapabilityCategory::Conversation,
-            requires_internet: false,
-            offline_capable: true,
-        },
-        Capability::Search => CapabilityDescriptor {
-            id: capability.id(),
+            "Chat",
+            "Hold a conversational exchange with the user.",
+            CapabilityCategory::Conversation,
+            false,
+            true,
+        ),
+        Capability::Search => descriptor(
             capability,
-            name: "Search",
-            description: "Find information across local knowledge by meaning or keywords.",
-            category: CapabilityCategory::Knowledge,
-            requires_internet: false,
-            offline_capable: true,
-        },
-        Capability::Code => CapabilityDescriptor {
-            id: capability.id(),
+            "Search",
+            "Find information across local knowledge by meaning or keywords.",
+            CapabilityCategory::Knowledge,
+            false,
+            true,
+        ),
+        Capability::Code => descriptor(
             capability,
-            name: "Code",
-            description: "Assist with software development inside a project.",
-            category: CapabilityCategory::Development,
-            requires_internet: false,
-            offline_capable: true,
-        },
-        Capability::Vision => CapabilityDescriptor {
-            id: capability.id(),
+            "Code",
+            "Assist with software development inside a project.",
+            CapabilityCategory::Development,
+            false,
+            true,
+        ),
+        Capability::Vision => descriptor(
             capability,
-            name: "Vision",
-            description: "Understand visual content such as images and screenshots.",
-            category: CapabilityCategory::Media,
-            requires_internet: false,
-            offline_capable: true,
-        },
-        Capability::Ocr => CapabilityDescriptor {
-            id: capability.id(),
+            "Vision",
+            "Understand visual content such as images and screenshots.",
+            CapabilityCategory::Media,
+            false,
+            true,
+        ),
+        Capability::Ocr => descriptor(
             capability,
-            name: "OCR",
-            description: "Extract text from images through optical character recognition.",
-            category: CapabilityCategory::Media,
-            requires_internet: false,
-            offline_capable: true,
-        },
-        Capability::Embeddings => CapabilityDescriptor {
-            id: capability.id(),
+            "OCR",
+            "Extract text from images through optical character recognition.",
+            CapabilityCategory::Media,
+            false,
+            true,
+        ),
+        Capability::Embeddings => descriptor(
             capability,
-            name: "Embeddings",
-            description: "Generate and compare semantic embeddings for knowledge retrieval.",
-            category: CapabilityCategory::Knowledge,
-            requires_internet: false,
-            offline_capable: true,
-        },
-        Capability::GenerateImages => CapabilityDescriptor {
-            id: capability.id(),
+            "Embeddings",
+            "Generate and compare semantic embeddings for knowledge retrieval.",
+            CapabilityCategory::Knowledge,
+            false,
+            true,
+        ),
+        Capability::GenerateImages => descriptor(
             capability,
-            name: "Generate Images",
-            description: "Create images from descriptions.",
-            category: CapabilityCategory::Media,
-            requires_internet: false,
-            offline_capable: true,
-        },
-        Capability::BrowseTheWeb => CapabilityDescriptor {
-            id: capability.id(),
+            "Generate Images",
+            "Create images from descriptions.",
+            CapabilityCategory::Media,
+            false,
+            true,
+        ),
+        Capability::BrowseTheWeb => descriptor(
             capability,
-            name: "Browse the Web",
-            description: "Browse and retrieve information from the web.",
-            category: CapabilityCategory::Network,
-            requires_internet: true,
-            offline_capable: false,
-        },
-        Capability::ReadDocuments => CapabilityDescriptor {
-            id: capability.id(),
+            "Browse the Web",
+            "Browse and retrieve information from the web.",
+            CapabilityCategory::Network,
+            true,
+            false,
+        ),
+        Capability::ReadDocuments => descriptor(
             capability,
-            name: "Read Documents",
-            description: "Read and understand local documents and files.",
-            category: CapabilityCategory::Knowledge,
-            requires_internet: false,
-            offline_capable: true,
-        },
-        Capability::Discover => CapabilityDescriptor {
-            id: capability.id(),
+            "Read Documents",
+            "Read and understand local documents and files.",
+            CapabilityCategory::Knowledge,
+            false,
+            true,
+        ),
+        Capability::Discover => descriptor(
             capability,
-            name: "Discover",
-            description: "Query what exists in the local knowledge inventory.",
-            category: CapabilityCategory::Knowledge,
-            requires_internet: false,
-            offline_capable: true,
-        },
-        Capability::Index => CapabilityDescriptor {
-            id: capability.id(),
+            "Discover",
+            "Query what exists in the local knowledge inventory.",
+            CapabilityCategory::Knowledge,
+            false,
+            true,
+        ),
+        Capability::Index => descriptor(
             capability,
-            name: "Index",
-            description: "Index directories into Jaymi's local knowledge inventory.",
-            category: CapabilityCategory::Filesystem,
-            requires_internet: false,
-            offline_capable: true,
-        },
-        Capability::OrganizeFiles => CapabilityDescriptor {
-            id: capability.id(),
+            "Index",
+            "Index directories into Jaymi's local knowledge inventory.",
+            CapabilityCategory::Filesystem,
+            false,
+            true,
+        ),
+        Capability::OrganizeFiles => descriptor(
             capability,
-            name: "Organize Files",
-            description: "Organize files and folders on the local filesystem.",
-            category: CapabilityCategory::Filesystem,
-            requires_internet: false,
-            offline_capable: true,
-        },
-        Capability::ExecuteTerminalCommands => CapabilityDescriptor {
-            id: capability.id(),
+            "Organize Files",
+            "Organize files and folders on the local filesystem.",
+            CapabilityCategory::Filesystem,
+            false,
+            true,
+        ),
+        Capability::ExecuteTerminalCommands => descriptor(
             capability,
-            name: "Execute Terminal Commands",
-            description: "Run terminal commands on behalf of the user.",
-            category: CapabilityCategory::Automation,
-            requires_internet: false,
-            offline_capable: true,
-        },
-        Capability::AutomateTasks => CapabilityDescriptor {
-            id: capability.id(),
+            "Execute Terminal Commands",
+            "Run terminal commands on behalf of the user.",
+            CapabilityCategory::Automation,
+            false,
+            true,
+        ),
+        Capability::AutomateTasks => descriptor(
             capability,
-            name: "Automate Tasks",
-            description: "Automate multi-step tasks under user control.",
-            category: CapabilityCategory::Automation,
-            requires_internet: false,
-            offline_capable: true,
-        },
-        Capability::FileManagement => CapabilityDescriptor {
-            id: capability.id(),
+            "Automate Tasks",
+            "Automate multi-step tasks under user control.",
+            CapabilityCategory::Automation,
+            false,
+            true,
+        ),
+        Capability::FileManagement => descriptor(
             capability,
-            name: "File Management",
-            description: "Manage local files as a general filesystem capability.",
-            category: CapabilityCategory::Filesystem,
-            requires_internet: false,
-            offline_capable: true,
-        },
-        Capability::Internet => CapabilityDescriptor {
-            id: capability.id(),
+            "File Management",
+            "Manage local files as a general filesystem capability.",
+            CapabilityCategory::Filesystem,
+            false,
+            true,
+        ),
+        Capability::Internet => descriptor(
             capability,
-            name: "Internet",
-            description: "Access the internet when explicitly allowed.",
-            category: CapabilityCategory::Network,
-            requires_internet: true,
-            offline_capable: false,
-        },
-        Capability::Automation => CapabilityDescriptor {
-            id: capability.id(),
+            "Internet",
+            "Access the internet when explicitly allowed.",
+            CapabilityCategory::Network,
+            true,
+            false,
+        ),
+        Capability::Automation => descriptor(
             capability,
-            name: "Automation",
-            description: "Coordinate automated work without performing it directly.",
-            category: CapabilityCategory::Automation,
-            requires_internet: false,
-            offline_capable: true,
-        },
+            "Automation",
+            "Coordinate automated work without performing it directly.",
+            CapabilityCategory::Automation,
+            false,
+            true,
+        ),
+    }
+}
+
+/// Compute effective availability from catalog default + runtime state.
+pub fn effective_availability(
+    catalog: CapabilityAvailability,
+    engine_ready: bool,
+    registered: bool,
+    tools_ok: bool,
+    providers_ok: bool,
+) -> CapabilityAvailability {
+    if !engine_ready {
+        return CapabilityAvailability::Unavailable;
+    }
+    if matches!(catalog, CapabilityAvailability::Unknown) {
+        return CapabilityAvailability::Unknown;
+    }
+    if !registered {
+        return CapabilityAvailability::Unavailable;
+    }
+    if catalog == CapabilityAvailability::Planned {
+        return CapabilityAvailability::Planned;
+    }
+    // Ready or Experimental catalog defaults — inventory must satisfy requirements.
+    if tools_ok && providers_ok {
+        catalog
+    } else {
+        CapabilityAvailability::Unavailable
     }
 }

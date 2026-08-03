@@ -1,5 +1,7 @@
 Tools
 
+**Status: Partial** — framework + five tools · **Target:** broad catalog
+
 Tools are the executable building blocks of Jaymi.
 
 A tool performs one specific operation on behalf of the Planner.
@@ -18,6 +20,16 @@ The Tool performs it.
 
 ⸻
 
+Current tools
+
+* `search_files`
+* `search_knowledge`
+* `read_file`
+* `query_inventory`
+* `scan_filesystem`
+
+⸻
+
 Philosophy
 
 Tools answer one question:
@@ -26,15 +38,19 @@ Tools answer one question:
 
 Every tool performs exactly one well-defined job.
 
-Examples include:
+### Current examples
 
 * Search files
 * Read a document
+* Index a folder / query inventory
+
+### Target examples
+
 * Execute a terminal command
 * Generate an image
 * Create a Git commit
-* Parse a PDF
-* Index a folder
+* Search messages
+* Parse a PDF (understanding pipeline exists; dedicated tool catalog expands)
 
 Tools should remain focused, deterministic, and reusable.
 
@@ -255,6 +271,9 @@ Examples:
 Provider Relationship
 
 Tools execute work through Providers.
+
+Providers are bound into tools at boot (concrete `Arc` instances). There is no
+runtime ProviderManager that selects a provider for each request.
 
 Example:
 

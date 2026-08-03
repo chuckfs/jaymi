@@ -271,24 +271,18 @@ impl JaymiApp {
                 .min_col_width(80.0)
                 .show(ui, |ui| {
                     ui.strong("Capability");
-                    ui.strong("Status");
+                    ui.strong("Availability");
                     ui.strong("Workspace");
                     ui.strong("Required tools");
                     ui.strong("Required providers");
                     ui.end_row();
                     for entry in &inspector.entries {
-                        if !entry.registered && !entry.active {
+                        // Show the full registered catalog, including Planned.
+                        if !entry.registered {
                             continue;
                         }
-                        let status = if entry.active {
-                            "active"
-                        } else if entry.registered {
-                            "registered"
-                        } else {
-                            "inactive"
-                        };
                         ui.label(&entry.id);
-                        ui.label(status);
+                        ui.label(entry.availability.as_str());
                         ui.label(
                             entry
                                 .workspace

@@ -71,6 +71,21 @@ impl DiscoveryQueryKind {
     }
 }
 
+/// Structured request to search knowledge belonging to one project.
+///
+/// Distinct from inventory [`SearchRequest`]: this retrieves project-scoped
+/// files, memories, tasks, decisions, and conversations through the Project
+/// Engine (mediated by the Planner).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectKnowledgeRequest {
+    /// Project that owns the knowledge boundary.
+    pub project_id: String,
+    /// Free-text query.
+    pub text: String,
+    /// Optional result limit.
+    pub limit: Option<usize>,
+}
+
 /// A request originating from the conversation interface.
 ///
 /// Every interaction begins with understanding intent. The Planner receives
@@ -94,11 +109,12 @@ pub struct UserRequest {
     pub index_root: Option<PathBuf>,
     /// Optional structured Search Engine request.
     pub search: Option<SearchRequest>,
+    /// Optional structured project-knowledge search (Planner-mediated).
+    pub project_knowledge: Option<ProjectKnowledgeRequest>,
 }
 
 impl UserRequest {
-    /// Create a new user request from free-form content.
-    pub fn new(content: impl Into<String>) -> Self {
+    fn bare(content: impl Into<String>) -> Self {
         Self {
             content: content.into(),
             directory: None,
@@ -107,7 +123,13 @@ impl UserRequest {
             discovery_kind: None,
             index_root: None,
             search: None,
+            project_knowledge: None,
         }
+    }
+
+    /// Create a new user request from free-form content.
+    pub fn new(content: impl Into<String>) -> Self {
+        Self::bare(content)
     }
 
     /// Create a structured request to list a single directory.
@@ -116,11 +138,7 @@ impl UserRequest {
         Self {
             content: format!("list {}", path.display()),
             directory: Some(path),
-            file: None,
-            discover: false,
-            discovery_kind: None,
-            index_root: None,
-            search: None,
+            ..Self::bare("")
         }
     }
 
@@ -129,12 +147,8 @@ impl UserRequest {
         let path = path.into();
         Self {
             content: format!("read {}", path.display()),
-            directory: None,
             file: Some(path),
-            discover: false,
-            discovery_kind: None,
-            index_root: None,
-            search: None,
+            ..Self::bare("")
         }
     }
 
@@ -153,12 +167,30 @@ impl UserRequest {
             .unwrap_or_else(|| "search".to_string());
         Self {
             content,
-            directory: None,
-            file: None,
-            discover: false,
-            discovery_kind: None,
-            index_root: None,
             search: Some(request),
+            ..Self::bare("")
+        }
+    }
+
+    /// Create a structured project-knowledge search request.
+    ///
+    /// This always enters the Planner (`handle`); Application must not call
+    /// the Project Engine for this retrieval directly.
+    pub fn search_project_knowledge(
+        project_id: impl Into<String>,
+        text: impl Into<String>,
+        limit: Option<usize>,
+    ) -> Self {
+        let project_id = project_id.into();
+        let text = text.into();
+        Self {
+            content: format!("search project knowledge in {project_id}: {text}"),
+            project_knowledge: Some(ProjectKnowledgeRequest {
+                project_id,
+                text,
+                limit,
+            }),
+            ..Self::bare("")
         }
     }
 
@@ -166,12 +198,9 @@ impl UserRequest {
     pub fn discover_inventory() -> Self {
         Self {
             content: "what files exist?".to_string(),
-            directory: None,
-            file: None,
             discover: true,
             discovery_kind: Some(DiscoveryQueryKind::All),
-            index_root: None,
-            search: None,
+            ..Self::bare("")
         }
     }
 
@@ -205,12 +234,9 @@ impl UserRequest {
         };
         Self {
             content,
-            directory: None,
-            file: None,
             discover: true,
             discovery_kind: Some(kind),
-            index_root: None,
-            search: None,
+            ..Self::bare("")
         }
     }
 
@@ -219,12 +245,8 @@ impl UserRequest {
         let path = path.into();
         Self {
             content: format!("index {}", path.display()),
-            directory: None,
-            file: None,
-            discover: false,
-            discovery_kind: None,
             index_root: Some(path),
-            search: None,
+            ..Self::bare("")
         }
     }
 }

@@ -5,6 +5,9 @@
 //!
 //! The Planner never accesses memory storage directly.
 //! Conversation transcripts are persisted separately and remain isolated.
+//!
+//! Project identity is owned exclusively by the Project Engine. Memory
+//! references projects only by `project_id` (see [`ProjectMemoryBundle`]).
 
 #![forbid(unsafe_code)]
 
@@ -32,8 +35,8 @@ pub use personal::{
 };
 pub use project::{
     encode_decision_metadata, project_decision_from_record, slugify_project_name,
-    ListProjectDecisionsQuery, ProjectContext, ProjectDecision, ProjectMemoryKind, ProjectMeta,
-    RegisterProjectRequest, StoreProjectDecisionRequest, StoreProjectMemoryRequest,
+    ListProjectDecisionsQuery, ProjectDecision, ProjectMemoryBundle, ProjectMemoryKind,
+    StoreProjectDecisionRequest, StoreProjectMemoryRequest,
 };
 pub use promotion::{
     is_upward_promotion, next_scope, scope_rank, PromoteMemoryRequest, PromotionAskDecision,

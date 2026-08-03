@@ -26,7 +26,8 @@ pub use composition::{
     compose_capabilities, is_multi_capability, research_coding_creation, CapabilityComposition,
 };
 pub use descriptor::{
-    capability_descriptor, CapabilityAvailability, CapabilityCategory, CapabilityDescriptor,
+    capability_descriptor, catalog_availability, effective_availability, CapabilityAvailability,
+    CapabilityCategory, CapabilityDescriptor,
 };
 pub use discovery::{
     capability_requirements, CapabilityBlocker, CapabilityDiscoveryReport, CapabilityInventory,

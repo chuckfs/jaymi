@@ -10,6 +10,14 @@ Jaymi decides everything else.
 
 This document defines the architectural principles that guide the project.
 
+How to read this document:
+
+* **Current Implementation** — shipped in crates, wired at boot, covered by tests
+* **Partial / Stub** — present but incomplete
+* **Target Architecture** — intentional future; kept for direction
+
+Layer progress is tracked in `ROADMAP.md`.
+
 ⸻
 
 The Core Philosophy
@@ -30,43 +38,55 @@ The architecture is designed so that any individual component can be replaced wi
 
 System Overview
 
+### Current Implementation (kernel)
+
+```text
                    User
                      │
                      ▼
-              Conversation UI
+         Conversation + Diagnostics UI
                      │
                      ▼
              Planner (Kernel)
                      │
+                     ▼
+              Context Engine
+           (sole assemble path)
+                     │
      ┌───────────────┼────────────────┐
      │               │                │
- Context Engine  Memory Engine  Permission Engine
+ Memory Engine  Project Engine  Search Engine
      │               │                │
      └───────────────┼────────────────┘
                      │
-             Workspace & Capability Engine
+      Capability / Policy / Permission
                      │
              Tool Orchestrator
                      │
-        ┌────────────┼────────────┐
-        │            │            │
-    Providers     Local AI     External AI
-        │
-        ▼
- Files • Messages • Git • Terminal • Photos •
- Documents • Browser • Calendar • Notes • etc.
+   ProviderRegistry + tool-bound providers
+                     │
+        Filesystem • Local embeddings • …
+```
 
-Every request follows this architecture.
+Every **user request** follows this architecture through `Planner::handle`.
 
-There are no shortcuts.
+There are no shortcuts for request handling.
+
+Administrative Memory/Project CRUD may resolve owning engines directly (see Planner section).
+
+### Target Architecture (periphery)
+
+The same kernel grows to coordinate Messages, Git, Terminal, Photos, Browser, Calendar, Notes, cloud AI, and richer workspace UIs — without changing how users talk to Jaymi.
 
 ⸻
 
 Planner
 
+Status: **Current** (orchestration kernel)
+
 The Planner is the heart of Jaymi.
 
-Every request passes through it.
+Every user request passes through it.
 
 The planner does not generate code.
 
@@ -74,7 +94,15 @@ It does not search files.
 
 It does not execute terminal commands.
 
-Instead, it decides:
+It does not own long-lived Memory or Project CRUD APIs.
+
+Those belong to the Memory Engine and Project Engine. Application calls those engines directly for administrative work.
+
+Instead, the Planner orchestrates:
+
+Request → Context → Capability → Policy → Permission → Execution Plan → Tool Engine → Response
+
+It decides:
 
 * What is the user trying to accomplish?
 * What information is required?
@@ -84,30 +112,46 @@ Instead, it decides:
 * Does this require user approval?
 * What should happen next?
 
-The planner coordinates the system.
+Nothing bypasses it for request handling.
 
-Nothing bypasses it.
+Project knowledge search is a Planner-mediated request (`UserRequest::search_project_knowledge` → `handle`).
+
+**Partial / Stub:** Reasoning Engine (language-model backends) is not implemented (`is_implemented() == false`).
 
 ⸻
 
 Context Engine
 
+Status: **Current**
+
 The Context Engine determines what Jaymi should know before responding.
 
 Rather than loading everything into a model, it builds only the context required for the current request.
 
-Possible context includes:
+The Planner calls exactly one method: `ContextEngine::assemble`.
 
-* Active project
-* Previous conversation
-* Files
-* Search results
-* Git status
+The Context Engine coordinates:
+
+* Memory Engine (relevant memories and promotion suggestions)
+* Project Engine (open project workspace)
+* Search Engine (coordination hints when appropriate — tools still execute search)
+* Active workspace / session state
+
+It returns a unified `ContextBundle`. The Planner does not assemble these pieces itself.
+
+### Current ContextBundle sources
+
+* Active / open project workspace
+* Retrieved memories + promotion suggestions
+* Active conversation scoping (via Memory)
+* Active UX workspace / session state
+* Lightweight search coordination hints
+
+### Target context sources (not yet assembled)
+
+* Live Git status
 * Terminal output
-* Notes
-* Messages
-* Browser history
-* Retrieved memories
+* Notes / Messages / Browser history as first-class context feeds
 
 Context is assembled dynamically.
 
@@ -117,164 +161,94 @@ Context is never assumed.
 
 Memory Engine
 
+Status: **Current** (core)
+
 Memory allows Jaymi to improve over time while remaining transparent and user-controlled.
 
 Jaymi maintains three independent memory systems.
 
-Conversation Memory
+Conversation Memory — temporary; exists within the current conversation; discarded unless promoted.
 
-Temporary.
+Project Memory — attached by `project_id`. The Project Engine owns project identity. Memory, Search, and Knowledge reference projects only by that id.
 
-Exists only within the current conversation.
+Personal Memory — long-term preferences and important facts; always editable.
 
-Destroyed when the conversation ends unless promoted.
+Request-time retrieval for Planner responses goes through the Context Engine → Memory Engine.
 
-⸻
+### Target
 
-Project Memory
-
-Attached to individual projects.
-
-Includes:
-
-* architecture decisions
-* conversations
-* documentation
-* coding decisions
-* TODOs
-* important project history
-
-Project memory travels with the project.
-
-⸻
-
-Personal Memory
-
-Long-term information intentionally remembered.
-
-Examples:
-
-* preferences
-* workflows
-* writing style
-* favorite tools
-
-Personal memory is always editable.
-
-The user owns every memory.
+* Full relationship graph
+* Merge / split / export
+* Automatic aging policies
 
 ⸻
 
 Workspace & Capability Engine
 
+Status: **Current** (engine + thin UX)
+
 Capabilities define what Jaymi knows how to do.
 
-Examples include:
+### Current
 
-* Chat
-* Search
-* Code
-* Vision
-* Generate Images
-* Browse the Web
-* Read Documents
-* Organize Files
-* Execute Terminal Commands
-* Automate Tasks
+Boot registers the **full capability catalog**. Availability (Ready / Experimental / Planned / Unavailable) distinguishes conceptual support from what is currently executable. Planned capabilities stay registered.
+
+Conversation remains permanent. Workspace kinds can expand beside it (conversation shell + expansion chrome + capability state / inspector).
+
+See [docs/capabilities.md](docs/capabilities.md).
+
+### Target capability catalog & UX
+
+* Promote Planned capabilities as tools/providers land
+* Coding → full IDE slides in
+* Creation → canvas appears
+* Research → sources and notes appear
 
 Capabilities describe behavior.
 
 They do not describe implementation.
 
-Capabilities also change the user experience.
-
-Conversation remains permanent. Workspaces expand beside it:
-
-* Conversation → chat-only interface
-* Coding → conversation stays on the left, IDE slides in from the right
-* Creation → conversation stays, canvas appears
-* Research → conversation stays, sources and notes appear
-
 ⸻
 
 Tool Orchestrator
 
+Status: **Partial**
+
 Tools are concrete implementations of capabilities.
 
-A capability may require one tool or many.
+### Current tools
 
-For example:
+* `search_files`
+* `search_knowledge`
+* `read_file`
+* `query_inventory`
+* `scan_filesystem`
 
-Search
+The planner selects tools automatically for supported intents.
 
-↓
+### Target tools
 
-Filesystem
-
-↓
-
-Messages
-
-↓
-
-Documents
-
-↓
-
-Photos
-
-Coding
-
-↓
-
-Editor
-
-↓
-
-Git
-
-↓
-
-Language Server
-
-↓
-
-Terminal
-
-Image Generation
-
-↓
-
-Image Model
-
-↓
-
-Vision Model
-
-The planner selects tools automatically.
-
-Users think in goals.
-
-Jaymi thinks in tools.
+Messages, Photos, Editor, LSP, Git, Terminal, Image Model, Vision Model, and many more — interchangeable under stable capabilities.
 
 ⸻
 
 Provider System
 
+Status: **Partial**
+
 Providers connect Jaymi to resources.
 
-Examples include:
+### Current
 
-* Filesystem
-* Git
-* Messages
-* Mail
-* Calendar
-* Browser
-* Photos
-* Notes
-* AI Models
-* Future integrations
+* ProviderRegistry — discovery and diagnostics (identity metadata)
+* Concrete provider instances bound into tools at boot: Filesystem, Local Embedding, OCR Placeholder
+* Capability Engine soft-matching for plans (`providers_for`)
+
+There is no ProviderManager. Execution goes through tools.
+
+### Target
+
+Git, Messages, Mail, Calendar, Browser, Photos, Notes, local/cloud AI models, installable provider plugins.
 
 Providers expose consistent interfaces.
 
@@ -286,54 +260,58 @@ Providers can be added, removed, or replaced without affecting the planner.
 
 Permission Engine
 
+Status: **Current** (rule engine)
+
 Jaymi should never surprise the user.
 
-Potentially destructive actions require review.
+### Current
 
-Examples include:
+Permission categories and scopes; default rules (e.g. filesystem read allowed; many write/network/terminal actions denied or require approval); consulted before tool execution.
 
-* Editing files
-* Running terminal commands
-* Renaming folders
-* Sending messages
-* Deleting documents
-* Modifying repositories
+### Target
 
-Every important action should include:
-
-* What will happen
-* Why it will happen
-* What will change
+Conversational approval UX, plain-language previews, permission history, revocation UI, reversible defaults (Trash vs delete).
 
 The user remains in control.
 
 ⸻
 
+Policy Engine
+
+Status: **Partial**
+
+Policies constrain tool candidates before permissions.
+
+### Current enforced
+
+* Offline First
+* Privacy Maximum
+
+### Declared / Target enforcement
+
+Highest Quality, Fastest, Battery Saver, Developer / Creative / Research modes, rich multi-scope resolution, user-custom policies.
+
+⸻
+
 Knowledge Pipeline
+
+Status: **Current** through Store/Retrieve; Reason is stub
 
 Every piece of information follows the same lifecycle.
 
-Discover
-↓
-Read
-↓
-Understand
-↓
-Index
-↓
-Store
-↓
-Retrieve
-↓
-Reason
-↓
-Respond
+Discover → Read → Understand → Index → Store → Retrieve → Reason → Respond
 
-Jaymi reasons over understanding—not raw files.
+**Current:** Discover through Retrieve are implemented locally.
+
+**Stub / Target:** Reason (language-model backends).
+
+Jaymi reasons over understanding—not raw files — once Reasoning is wired.
 
 ⸻
 
 Projects
+
+Status: **Current** (core)
 
 Projects are first-class citizens.
 
@@ -341,18 +319,20 @@ A project is more than a folder.
 
 A project is a living workspace.
 
-A project includes:
+### Current
 
-* Source code
-* Documents
-* Conversations
-* Architecture
-* Decisions
-* Tasks
-* Git history
-* Project memory
+* Source code / documents under a root (via Knowledge)
+* Conversations, architecture/decision entries, tasks (memory kinds), project memory
+* Assembled `ProjectContext`
+* “Continue working on …” restores workspace context
 
-When a project is opened, Jaymi restores its context automatically.
+### Target
+
+* Git history / live Git status
+* Artifact pipelines
+* Full IDE working-file state
+
+When a project is opened, Jaymi restores its engine-backed context automatically.
 
 The user continues working rather than starting over.
 
@@ -360,28 +340,31 @@ The user continues working rather than starting over.
 
 Offline-First
 
+Status: **Current** foundation
+
 Jaymi performs as much work locally as possible.
 
-Examples include:
+### Current
 
-* Search
-* Memory
-* OCR
-* Document parsing
-* Embeddings
-* Indexing
-* Context construction
-* Project awareness
+* Search, Memory, Document parsing, Indexing, Context construction, Project awareness
+* Local lexical embeddings
+* Offline-first / privacy policies on tool candidates
+
+### Partial / Target
+
+* OCR (architecture stub)
+* Local neural models for reasoning / generation
+* Optional cloud AI providers
 
 Internet access is treated as another capability.
 
-Cloud AI providers are optional.
-
-The system functions without them.
+The system functions without cloud services.
 
 ⸻
 
 AI Models
+
+Status: **Target** (interchangeability designed; Reasoning stub)
 
 Models are interchangeable.
 
@@ -397,9 +380,17 @@ As models improve, Jaymi improves without architectural changes.
 
 Extensibility
 
+Status: **Current** modular kernel; **Target** plugin ecosystem
+
 Every major subsystem is replaceable.
 
-Developers should be able to extend Jaymi by adding:
+### Current
+
+New tools and providers can be registered in-process at boot; Capability Engine discovers them for plans.
+
+### Target
+
+Developers extend Jaymi by adding installable:
 
 * Providers
 * Tools

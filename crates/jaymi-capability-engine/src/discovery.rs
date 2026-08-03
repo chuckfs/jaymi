@@ -3,7 +3,9 @@
 //! Discovery combines the capability catalog with a runtime inventory of tools
 //! and providers. It never executes work.
 
-use crate::descriptor::{capability_descriptor, CapabilityDescriptor};
+use crate::descriptor::{
+    capability_descriptor, effective_availability, CapabilityAvailability, CapabilityDescriptor,
+};
 use crate::Capability;
 
 /// A tool observed during discovery (metadata only).
@@ -245,6 +247,8 @@ impl CapabilityBlocker {
 pub struct CapabilityStatus {
     /// Catalog metadata.
     pub descriptor: CapabilityDescriptor,
+    /// Effective availability (catalog maturity + live inventory).
+    pub availability: CapabilityAvailability,
     /// Declared tool/provider requirements.
     pub requirements: CapabilityRequirements,
     /// True when registered in the Capability Engine.
@@ -253,32 +257,29 @@ pub struct CapabilityStatus {
     pub fulfilling_tools: Vec<String>,
     /// Provider ids that currently advertise this capability.
     pub fulfilling_providers: Vec<String>,
-    /// Blockers that prevent current use (empty ⇒ available).
+    /// Blockers that prevent current execution (empty for Planned / Ready / Experimental).
     pub blockers: Vec<CapabilityBlocker>,
 }
 
 impl CapabilityStatus {
-    /// True when Jaymi can currently use this capability.
+    /// True when Jaymi can currently execute this capability.
     pub fn is_available(&self) -> bool {
-        self.blockers.is_empty()
+        self.availability.is_executable_tier()
     }
 
-    /// Short status label.
+    /// Short status label (availability).
     pub fn status_label(&self) -> &'static str {
-        if self.is_available() {
-            "available"
-        } else {
-            "unavailable"
-        }
+        self.availability.as_str()
     }
 
     /// Human-readable detail for diagnostics.
     pub fn detail(&self) -> String {
         let req = self.requirements.summary();
-        if self.is_available() {
+        if self.blockers.is_empty() {
             format!(
-                "{} · {} · tools=[{}] · providers=[{}]",
+                "{} · {} · {} · tools=[{}] · providers=[{}]",
                 self.descriptor.id,
+                self.availability.as_str(),
                 req,
                 self.fulfilling_tools.join(","),
                 self.fulfilling_providers.join(",")
@@ -286,8 +287,9 @@ impl CapabilityStatus {
         } else {
             let blockers: Vec<_> = self.blockers.iter().map(|b| b.as_str()).collect();
             format!(
-                "{} · {} · blocked=[{}] · tools=[{}] · providers=[{}]",
+                "{} · {} · {} · blocked=[{}] · tools=[{}] · providers=[{}]",
                 self.descriptor.id,
+                self.availability.as_str(),
                 req,
                 blockers.join(","),
                 self.fulfilling_tools.join(","),
@@ -297,12 +299,12 @@ impl CapabilityStatus {
     }
 }
 
-/// Full discovery report: what Jaymi can and cannot currently do.
+/// Full discovery report: what Jaymi can and cannot currently execute.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct CapabilityDiscoveryReport {
-    /// Capabilities that are registered and fulfillable right now.
+    /// Capabilities in an executable tier (Ready / Experimental) with inventory.
     pub available: Vec<CapabilityStatus>,
-    /// Capabilities that are known but not currently usable.
+    /// Planned, Unavailable, or otherwise not currently executable.
     pub unavailable: Vec<CapabilityStatus>,
 }
 
@@ -315,14 +317,22 @@ impl CapabilityDiscoveryReport {
             .collect()
     }
 
-    /// Number of available capabilities.
+    /// Number of currently executable capabilities.
     pub fn available_count(&self) -> usize {
         self.available.len()
     }
 
-    /// Number of unavailable capabilities.
+    /// Number of non-executable capabilities (planned + unavailable).
     pub fn unavailable_count(&self) -> usize {
         self.unavailable.len()
+    }
+
+    /// Capabilities marked Planned (conceptual catalog, not executable yet).
+    pub fn planned_count(&self) -> usize {
+        self.unavailable
+            .iter()
+            .filter(|status| status.availability == CapabilityAvailability::Planned)
+            .count()
     }
 
     /// Find status for a capability id.
@@ -337,19 +347,32 @@ impl CapabilityDiscoveryReport {
         let available_ids: Vec<_> = self
             .available
             .iter()
-            .map(|status| status.descriptor.id)
+            .map(|status| {
+                format!(
+                    "{}:{}",
+                    status.descriptor.id,
+                    status.availability.as_str()
+                )
+            })
             .collect();
         let unavailable_ids: Vec<_> = self
             .unavailable
             .iter()
-            .map(|status| status.descriptor.id)
+            .map(|status| {
+                format!(
+                    "{}:{}",
+                    status.descriptor.id,
+                    status.availability.as_str()
+                )
+            })
             .collect();
         format!(
-            "available={} [{}] · unavailable={} [{}]",
+            "executable={} [{}] · not_executable={} [{}] · planned={}",
             self.available_count(),
             available_ids.join(","),
             self.unavailable_count(),
-            unavailable_ids.join(",")
+            unavailable_ids.join(","),
+            self.planned_count()
         )
     }
 }
@@ -362,6 +385,7 @@ pub(crate) fn assess_capability(
     inventory: &CapabilityInventory,
 ) -> CapabilityStatus {
     let descriptor = capability_descriptor(capability);
+    let catalog = descriptor.availability;
     let requirements = capability_requirements(capability);
     let fulfilling_tools: Vec<String> = inventory
         .tools_for(capability)
@@ -374,12 +398,17 @@ pub(crate) fn assess_capability(
         .map(|provider| provider.id.clone())
         .collect();
 
+    let tools_ok = !requirements.requires_tool || !fulfilling_tools.is_empty();
+    let providers_ok = !requirements.requires_provider || !fulfilling_providers.is_empty();
+
     let mut blockers = Vec::new();
     if !engine_ready {
         blockers.push(CapabilityBlocker::EngineNotReady);
     } else if !registered {
         blockers.push(CapabilityBlocker::NotRegistered);
-    } else {
+    } else if catalog != CapabilityAvailability::Planned {
+        // Planned capabilities stay conceptual — do not treat missing tools as
+        // blockers (they are intentionally not executable yet).
         if requirements.requires_tool && fulfilling_tools.is_empty() {
             blockers.push(CapabilityBlocker::MissingTool);
         }
@@ -388,8 +417,17 @@ pub(crate) fn assess_capability(
         }
     }
 
+    let availability = effective_availability(
+        catalog,
+        engine_ready,
+        registered,
+        tools_ok,
+        providers_ok,
+    );
+
     CapabilityStatus {
         descriptor,
+        availability,
         requirements,
         registered,
         fulfilling_tools,

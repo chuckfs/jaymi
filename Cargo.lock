@@ -1389,6 +1389,12 @@ name = "jaymi-context"
 version = "0.1.0"
 dependencies = [
  "jaymi-core",
+ "jaymi-database",
+ "jaymi-knowledge",
+ "jaymi-logging",
+ "jaymi-memory-engine",
+ "jaymi-project-engine",
+ "jaymi-search",
 ]
 
 [[package]]
@@ -1475,6 +1481,7 @@ name = "jaymi-planner"
 version = "0.1.0"
 dependencies = [
  "jaymi-capabilities",
+ "jaymi-context",
  "jaymi-core",
  "jaymi-database",
  "jaymi-knowledge",

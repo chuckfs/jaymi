@@ -8,9 +8,36 @@ The objective is not to ship features as quickly as possible.
 
 The objective is to build a personal AI environment that can grow for years without requiring major architectural rewrites.
 
+How to read this document:
+
+* **Current** — implemented, wired at boot, covered by tests
+* **Partial** — foundation present; incomplete relative to the layer objective
+* **Target** — planned; keep the objective, do not treat as shipped
+
+⸻
+
+Progress
+
+| Layer | Name | Status |
+|-------|------|--------|
+| 0 | Foundation | **Current** |
+| 1 | Knowledge Engine | **Current** |
+| 2 | Understanding Engine | **Current** (OCR stub; lexical embeddings) |
+| 3 | Search Engine | **Current** |
+| 4 | Memory Engine | **Current** (core; graph/export/aging Target) |
+| 5 | Project Engine | **Current** (core; Git/artifacts Target) |
+| 6 | Workspace & Capability Engine | **Current** (engine + thin UX; rich IDE/canvas Target) |
+| 7 | Tool Engine | **Partial** (framework + 5 tools; most catalog Target) |
+| 8 | Provider Ecosystem | **Partial** (Registry + 3 local providers; plugins Target) |
+| 9 | Daily Driver | **Target** |
+
+Architectural Integrity (orthogonal to layers): Context sole assemble path, Project ownership, Planner responsibilities, Planner integrity (requests via `handle`), Provider simplification (no ProviderManager), Documentation alignment, Capability availability (Ready / Experimental / Planned / Unavailable) — **Current**.
+
 ⸻
 
 Layer 0 — Foundation
+
+Status: **Current**
 
 Objective
 
@@ -18,12 +45,13 @@ Build the foundation that every other component depends on.
 
 Includes
 
-* Desktop application
+* Desktop application (egui shell + diagnostics)
 * Core architecture
 * Planner
-* Provider framework
+* Provider framework (Registry + bound instances)
 * Tool framework
 * Permission system
+* Policy system
 * Configuration
 * Logging
 * SQLite database
@@ -32,9 +60,13 @@ Exit Criteria
 
 Jaymi launches and can execute a simple tool through the planner.
 
+Shipped when: boot sequence completes; list/read/search pipelines pass through Planner → Policy → Permission → Tool.
+
 ⸻
 
 Layer 1 — Knowledge Engine
+
+Status: **Current**
 
 Objective
 
@@ -44,11 +76,11 @@ Responsibilities
 
 * File discovery
 * Metadata indexing
-* Background indexing
+* Background indexing / watcher
 * Incremental updates
-* Local database
+* Local database inventory
 
-Supported Sources
+Supported Sources (Current)
 
 * Files
 * Folders
@@ -67,20 +99,19 @@ without opening Finder.
 
 Layer 2 — Understanding Engine
 
+Status: **Current** (with stubs)
+
 Objective
 
 Teach Jaymi to understand content rather than filenames.
 
 Responsibilities
 
-* PDF parsing
-* DOCX parsing
-* Markdown parsing
-* OCR
-* Image understanding
-* Metadata extraction
-* Summaries
-* Embeddings
+* PDF / DOCX / Markdown / text / JSON parsing — **Current**
+* Image content pipeline — **Current** (OCR engine **Stub**)
+* Metadata extraction — **Current**
+* Embeddings — **Current** (local lexical hashed embeddings, not a neural model)
+* Summaries / deep image understanding — **Target**
 
 Exit Criteria
 
@@ -96,27 +127,19 @@ instead of only
 
 Layer 3 — Search Engine
 
+Status: **Current**
+
 Objective
 
 Build semantic retrieval across every knowledge source.
 
 Features
 
-* Semantic search
-* Hybrid search
-* Ranking
-* Citations
-* Preview
-
-Example
-
-Instead of
-
-biology_final_v7.pdf
-
-Users ask
-
-Find my biology paper about fungi.
+* Full-text search — **Current**
+* Metadata search — **Current**
+* Semantic / hybrid ranking — **Current** (over local embeddings)
+* Citations — **Current**
+* Preview — **Partial**
 
 Exit Criteria
 
@@ -126,27 +149,26 @@ Search is based on meaning rather than filenames.
 
 Layer 4 — Memory Engine
 
+Status: **Current** (core)
+
 Objective
 
 Allow Jaymi to remember over time.
 
 Memory Types
 
-Conversation Memory
+Conversation Memory — temporary for one conversation — **Current**
 
-Temporary memory for one conversation.
+Project Memory — long-term memory attached by `project_id` — **Current**
 
-⸻
+Personal Memory — persistent preferences and important facts — **Current**
 
-Project Memory
+Target (not yet productized)
 
-Long-term memory attached to a project.
-
-⸻
-
-Personal Memory
-
-Persistent user preferences and important facts.
+* Full relationship graph
+* Merge / split memories
+* Automatic aging
+* Export of all memories
 
 Exit Criteria
 
@@ -156,22 +178,29 @@ Jaymi remembers intentionally instead of accidentally.
 
 Layer 5 — Project Engine
 
+Status: **Current** (core)
+
 Objective
 
 Teach Jaymi that work happens inside projects.
 
 A project is not just a folder.
 
-A project includes:
+A project includes (Current):
 
-* Files
-* Source code
+* Files under a root (via Knowledge / Search)
 * Conversations
-* Documentation
-* Architecture
+* Documentation / architecture entries in context
 * Decisions
-* Tasks
-* History
+* Tasks (as project memory kinds)
+* History via memory and conversations
+
+Target:
+
+* Git integration
+* Artifact pipelines
+* Repository import / conversation convert flows
+* Live working-tree / IDE file state
 
 Exit Criteria
 
@@ -183,21 +212,17 @@ Continue working on Jaymi.
 
 Layer 6 — Workspace & Capability Engine
 
+Status: **Current** (engine + thin UX)
+
 Objective
 
 Give Jaymi useful abilities that reshape the experience — not just backend concepts.
 
-Capabilities include:
+Capabilities include (catalog):
 
-* Chat
-* Coding
-* Image generation
-* Search
-* Vision
-* Internet
-* Automation
-* File management
-* Terminal
+* Chat, Coding, Image generation, Search, Vision, Internet, Automation, File management, Terminal
+
+**Current registration at boot:** Search, ReadDocuments, Discover, Index, Code (planning / workspace mapping).
 
 Capabilities are abstract.
 
@@ -209,109 +234,43 @@ Capabilities also change the user experience.
 
 Conversation stays permanent. Workspaces expand beside it.
 
-Examples
+**Current:** conversation shell + workspace expansion model + capability state / inspector.
 
-Conversation
+**Target UX:**
 
-↓
+Conversation → chat-only interface
 
-chat-only interface
+Coding → conversation stays; full IDE slides in
 
-⸻
+Creation → conversation stays; canvas appears
 
-Coding
-
-↓
-
-conversation stays on the left
-
-↓
-
-IDE slides in from the right
-
-⸻
-
-Creation
-
-↓
-
-conversation stays
-
-↓
-
-canvas appears
-
-⸻
-
-Research
-
-↓
-
-conversation stays
-
-↓
-
-sources and notes appear
+Research → conversation stays; sources and notes appear
 
 ⸻
 
 Layer 7 — Tool Engine
 
+Status: **Partial**
+
 Objective
 
 Implement capabilities using interchangeable tools.
 
-Examples
+Current tools
 
-Coding
+* `search_files`
+* `search_knowledge`
+* `read_file`
+* `query_inventory`
+* `scan_filesystem`
 
-↓
+Target tools (examples)
 
-Local editor
+Coding → Local editor, Language server, Terminal, Git
 
-↓
+Images → Local image model, Vision model
 
-Language server
-
-↓
-
-Terminal
-
-↓
-
-Git
-
-⸻
-
-Images
-
-↓
-
-Local image model
-
-↓
-
-Vision model
-
-⸻
-
-Search
-
-↓
-
-Filesystem
-
-↓
-
-Messages
-
-↓
-
-Documents
-
-↓
-
-Photos
+Search → Messages, Photos, and other sources
 
 Tools are replaceable.
 
@@ -321,28 +280,33 @@ Capabilities remain constant.
 
 Layer 8 — Provider Ecosystem
 
+Status: **Partial**
+
 Objective
 
 Allow Jaymi to connect to external systems.
 
-Examples
+Current providers
 
-* Local models
-* AI providers
-* Git
-* Messages
-* Calendar
-* Email
-* Notes
-* Browser
-* Terminal
-* Future providers
+* Filesystem
+* Local embedding
+* OCR placeholder (architecture only)
+
+Target examples
+
+* Local models / AI providers
+* Git, Messages, Calendar, Email, Notes, Browser, Terminal
+* Installable / enableable provider plugins
 
 Every provider follows the same interface.
+
+There is no ProviderManager — discovery uses ProviderRegistry; execution uses tool-bound instances.
 
 ⸻
 
 Layer 9 — Daily Driver
+
+Status: **Target**
 
 Objective
 

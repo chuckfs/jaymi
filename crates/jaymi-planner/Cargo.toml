@@ -9,6 +9,7 @@ authors.workspace = true
 
 [dependencies]
 jaymi-capabilities = { workspace = true }
+jaymi-context = { workspace = true }
 jaymi-core = { workspace = true }
 jaymi-memory-engine = { workspace = true }
 jaymi-project-engine = { workspace = true }

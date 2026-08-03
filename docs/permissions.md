@@ -1,5 +1,7 @@
 Permissions
 
+**Status: Current Implementation** (rule engine) · **Target:** conversational approval UX, history, revoke
+
 Permissions define what Jaymi is allowed to do on behalf of the user.
 
 Permissions exist to protect the user.
@@ -180,6 +182,8 @@ Jaymi would like to rename 12 files in your Downloads folder to make them easier
 
 Approval Workflow
 
+**Status: Partial** — engine returns Allow / Deny / RequiresApproval · **Target:** full conversational approval UX
+
 Every protected action follows the same process.
 
 Planner
@@ -244,6 +248,8 @@ The user should understand exactly what will happen before approving.
 ⸻
 
 Permission History
+
+**Status: Target**
 
 Jaymi should maintain a local history of permission decisions.
 

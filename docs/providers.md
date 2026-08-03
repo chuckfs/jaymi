@@ -1,12 +1,29 @@
 Providers
 
+**Status: Partial** — Registry + bound local providers · **Target:** installable ecosystem
+
 Providers are Jaymi’s connection to the outside world.
 
-Providers expose resources, services, and functionality to the Planner through a standardized interface.
+Providers expose resources, services, and functionality through a standardized interface.
 
 The Planner never communicates directly with external systems.
 
-Instead, every interaction flows through one or more providers.
+Instead, every interaction flows through tools that hold bound providers.
+
+### Current architecture
+
+* ProviderRegistry — discovery and diagnostics (identity metadata)
+* Concrete provider instances — constructed at boot and bound into tools
+* Capability Engine — soft provider matching for plans (`providers_for`)
+* Tool Orchestrator — selects tools; tools call their bound providers
+
+### Current providers
+
+* Filesystem
+* Local embedding
+* OCR placeholder (architecture only)
+
+There is no separate ProviderManager. Capability-based selection for planning lives in the Capability Engine; execution lives in tools.
 
 This abstraction allows Jaymi to remain modular, extensible, and independent of any specific technology or vendor.
 
@@ -59,7 +76,7 @@ Those responsibilities belong elsewhere.
 
 Provider Lifecycle
 
-Every provider follows the same lifecycle.
+Installable providers conceptually follow the same lifecycle stages:
 
 Discover
 ↓
@@ -75,11 +92,13 @@ Execute Requests
 ↓
 Shutdown
 
-The Planner only interacts with providers that are healthy and registered.
+Today, boot registers provider identities in the ProviderRegistry and binds live instances into tools. Only healthy, registered providers appear in discovery and diagnostics.
 
 ⸻
 
 Provider Categories
+
+**Status: Target catalog** (Current: Filesystem, Local Embedding, OCR placeholder)
 
 Jaymi groups providers into logical categories.
 
@@ -198,11 +217,18 @@ The Planner never asks:
 
 Instead it asks:
 
-“I need a provider capable of searching files.”
+“I need a capability that can search files.”
 
-The Provider Manager resolves the best match.
+Then:
 
-This allows providers to be replaced without changing Planner logic.
+1. Context Engine assembles request context
+2. Capability Engine / Decision Engine select the capability
+3. Tool Orchestrator selects a tool that declares that capability
+4. The tool executes using the provider instance bound to it at boot
+
+For planning (no execution), the Capability Engine lists providers whose advertised capabilities match (`providers_for`). The ProviderRegistry supplies that identity metadata; it does not resolve or invoke providers.
+
+Providers can be replaced by registering a different identity and binding a different instance into the tool — without changing Planner request logic.
 
 ⸻
 

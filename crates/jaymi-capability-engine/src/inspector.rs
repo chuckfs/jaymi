@@ -1,8 +1,10 @@
 //! Capability Inspector — developer-facing runtime capability view.
 //!
-//! Surfaces registered vs active capabilities, workspace associations, and
-//! required tools/providers so diagnostics reflect real runtime state.
+//! Surfaces registered vs active capabilities, availability, workspace
+//! associations, and required tools/providers so diagnostics reflect real
+//! runtime state.
 
+use crate::descriptor::CapabilityAvailability;
 use crate::discovery::{
     capability_requirements, CapabilityBlocker, CapabilityDiscoveryReport, CapabilityStatus,
 };
@@ -16,9 +18,11 @@ pub struct InspectedCapability {
     pub id: String,
     /// Capability enum value.
     pub capability: Capability,
+    /// Effective availability (Ready / Experimental / Planned / Unavailable).
+    pub availability: CapabilityAvailability,
     /// True when registered in the Capability Engine.
     pub registered: bool,
-    /// True when currently usable (registered + requirements met).
+    /// True when currently executable (Ready / Experimental with inventory).
     pub active: bool,
     /// Workspace this capability expands, when any.
     pub workspace: Option<WorkspaceKind>,
@@ -30,7 +34,7 @@ pub struct InspectedCapability {
     pub fulfilling_tools: Vec<String>,
     /// Providers currently advertising this capability.
     pub fulfilling_providers: Vec<String>,
-    /// Blockers preventing activation (empty when active).
+    /// Blockers preventing activation (empty when active or Planned).
     pub blockers: Vec<CapabilityBlocker>,
 }
 
@@ -41,6 +45,7 @@ impl InspectedCapability {
         Self {
             id: status.descriptor.id.to_string(),
             capability: requirements.capability,
+            availability: status.availability,
             registered: status.registered,
             active: status.is_available(),
             workspace: capability_workspace(requirements.capability),
@@ -66,17 +71,10 @@ impl InspectedCapability {
             .workspace
             .map(|kind| kind.id())
             .unwrap_or("conversation");
-        let status = if self.active {
-            "active"
-        } else if self.registered {
-            "registered"
-        } else {
-            "inactive"
-        };
         format!(
             "{} · {} · workspace={} · tools=[{}] · providers=[{}]",
             self.id,
-            status,
+            self.availability.as_str(),
             workspace,
             self.required_tools.join(","),
             self.required_providers.join(",")
@@ -89,8 +87,10 @@ impl InspectedCapability {
 pub struct CapabilityInspectorReport {
     /// Capability ids registered with the engine (registration order).
     pub registered: Vec<String>,
-    /// Capability ids currently active (available at runtime).
+    /// Capability ids currently active (executable at runtime).
     pub active: Vec<String>,
+    /// Capability ids marked Planned (conceptual, not executable yet).
+    pub planned: Vec<String>,
     /// Per-capability inspector rows (catalog order via discovery).
     pub entries: Vec<InspectedCapability>,
     /// Session workspace kind currently expanded, when known.
@@ -109,6 +109,12 @@ impl CapabilityInspectorReport {
             .iter()
             .map(|status| status.descriptor.id.to_string())
             .collect();
+        let planned: Vec<String> = discovery
+            .unavailable
+            .iter()
+            .filter(|status| status.availability == CapabilityAvailability::Planned)
+            .map(|status| status.descriptor.id.to_string())
+            .collect();
         let entries: Vec<InspectedCapability> = discovery
             .all()
             .into_iter()
@@ -117,6 +123,7 @@ impl CapabilityInspectorReport {
         Self {
             registered: registered_ids,
             active,
+            planned,
             entries,
             active_workspace: None,
         }
@@ -141,9 +148,17 @@ impl CapabilityInspectorReport {
             .collect()
     }
 
-    /// Active (currently usable) inspector rows only.
+    /// Active (currently executable) inspector rows only.
     pub fn active_entries(&self) -> Vec<&InspectedCapability> {
         self.entries.iter().filter(|entry| entry.active).collect()
+    }
+
+    /// Planned (conceptual) inspector rows only.
+    pub fn planned_entries(&self) -> Vec<&InspectedCapability> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.availability == CapabilityAvailability::Planned)
+            .collect()
     }
 
     /// Compact summary for logs / diagnostics subsystem detail.
@@ -153,11 +168,11 @@ impl CapabilityInspectorReport {
             .map(|kind| kind.id())
             .unwrap_or("none");
         format!(
-            "registered={} [{}] · active={} [{}] · workspace={}",
+            "registered={} · active={} [{}] · planned={} · workspace={}",
             self.registered.len(),
-            self.registered.join(", "),
             self.active.len(),
             self.active.join(", "),
+            self.planned.len(),
             workspace
         )
     }
@@ -169,8 +184,8 @@ impl CapabilityInspectorReport {
         lines.push(self.summary());
         lines.push(String::new());
         lines.push(format!(
-            "{:<18} {:<10} {:<12} {:<18} {}",
-            "Capability", "Status", "Workspace", "Required tools", "Required providers"
+            "{:<18} {:<14} {:<12} {:<18} {}",
+            "Capability", "Availability", "Workspace", "Required tools", "Required providers"
         ));
         lines.push("-".repeat(88));
 
@@ -188,13 +203,6 @@ impl CapabilityInspectorReport {
         }
 
         for entry in ordered {
-            let status = if entry.active {
-                "active"
-            } else if entry.registered {
-                "registered"
-            } else {
-                "inactive"
-            };
             let workspace = entry
                 .workspace
                 .map(|kind| kind.id())
@@ -210,8 +218,12 @@ impl CapabilityInspectorReport {
                 entry.required_providers.join(",")
             };
             lines.push(format!(
-                "{:<18} {:<10} {:<12} {:<18} {}",
-                entry.id, status, workspace, tools, providers
+                "{:<18} {:<14} {:<12} {:<18} {}",
+                entry.id,
+                entry.availability.as_str(),
+                workspace,
+                tools,
+                providers
             ));
         }
         lines.join("\n")
@@ -267,25 +279,27 @@ mod tests {
     }
 
     #[test]
-    fn inspector_separates_registered_active_and_workspace() {
+    fn inspector_separates_registered_active_planned_and_workspace() {
         let inventory = inventory_with_search();
         let search = assess_capability(Capability::Search, true, true, &inventory);
         let code = assess_capability(Capability::Code, true, true, &inventory);
-        let chat = assess_capability(Capability::Chat, false, true, &inventory);
+        let chat = assess_capability(Capability::Chat, true, true, &inventory);
         let discovery = CapabilityDiscoveryReport {
             available: vec![search],
             unavailable: vec![code, chat],
         };
         let report = CapabilityInspectorReport::from_discovery(
-            &[Capability::Search, Capability::Code],
+            &[Capability::Search, Capability::Code, Capability::Chat],
             &discovery,
         );
 
-        assert_eq!(report.registered, vec!["search", "code"]);
+        assert_eq!(report.registered, vec!["search", "code", "chat"]);
         assert_eq!(report.active, vec!["search"]);
+        assert_eq!(report.planned, vec!["chat"]);
         let search_row = report.get("search").expect("search");
         assert!(search_row.registered);
         assert!(search_row.active);
+        assert_eq!(search_row.availability, CapabilityAvailability::Ready);
         assert_eq!(search_row.workspace, Some(WorkspaceKind::Research));
         assert!(search_row.required_tools.contains(&"search_files".into()));
         assert!(search_row
@@ -296,12 +310,19 @@ mod tests {
         let code_row = report.get("code").expect("code");
         assert!(code_row.registered);
         assert!(!code_row.active);
+        assert_eq!(code_row.availability, CapabilityAvailability::Unavailable);
         assert_eq!(code_row.workspace, Some(WorkspaceKind::Coding));
         assert!(code_row.required_tools.contains(&"editor".into()));
 
+        let chat_row = report.get("chat").expect("chat");
+        assert_eq!(chat_row.availability, CapabilityAvailability::Planned);
+        assert!(!chat_row.active);
+
         let rendered = report.render();
         assert!(rendered.contains("Capability Inspector"));
-        assert!(rendered.contains("search"));
+        assert!(rendered.contains("Availability"));
+        assert!(rendered.contains("ready"));
+        assert!(rendered.contains("planned"));
         assert!(rendered.contains("research"));
         assert!(rendered.contains("coding"));
     }

@@ -127,7 +127,7 @@ pub struct CapabilityPlanStep {
     pub capability: Capability,
     /// Metadata describing the capability.
     pub descriptor: CapabilityDescriptor,
-    /// Whether the capability is registered for planning.
+    /// Effective availability (Ready / Experimental / Planned / Unavailable).
     pub availability: CapabilityAvailability,
     /// Declared tool/provider requirement flags.
     pub requirements: CapabilityRequirements,
@@ -144,9 +144,11 @@ pub struct CapabilityPlanStep {
 }
 
 impl CapabilityPlanStep {
-    /// True when registration and live tool/provider requirements are met.
+    /// True when the step is in an executable tier and inventory requirements are met.
     pub fn is_executable(&self) -> bool {
-        self.availability.is_available() && self.tools_resolved && self.providers_resolved
+        self.availability.is_executable_tier()
+            && self.tools_resolved
+            && self.providers_resolved
     }
 
     /// Short detail line for logs and responses.
@@ -180,16 +182,19 @@ pub struct ExecutionPlan {
 }
 
 impl ExecutionPlan {
-    /// True when every step is registered.
+    /// True when every step is currently in an executable availability tier.
+    ///
+    /// Planned steps keep the plan honest but incomplete — they are included
+    /// without making the plan "ready" for tool execution.
     pub fn is_ready(&self) -> bool {
         !self.steps.is_empty()
             && self
                 .steps
                 .iter()
-                .all(|step| step.availability.is_available())
+                .all(|step| step.availability.is_executable_tier())
     }
 
-    /// True when every step is registered and has required tools/providers.
+    /// True when every step can run (executable tier + inventory satisfied).
     pub fn is_executable(&self) -> bool {
         !self.steps.is_empty() && self.steps.iter().all(CapabilityPlanStep::is_executable)
     }
@@ -233,11 +238,11 @@ impl ExecutionPlan {
         out
     }
 
-    /// Steps that are not registered.
+    /// Steps that are not currently executable (Planned / Unavailable / …).
     pub fn unavailable(&self) -> Vec<&CapabilityPlanStep> {
         self.steps
             .iter()
-            .filter(|step| !step.availability.is_available())
+            .filter(|step| !step.availability.is_executable_tier())
             .collect()
     }
 

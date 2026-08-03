@@ -7,10 +7,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use jaymi::Application;
 use jaymi_core::UserRequest;
 use jaymi_memory::{
-    AssembleContextRequest, MemoryRelevanceKind, MemoryScope, RegisterProjectRequest,
-    StoreMemoryRequest,
+    AssembleContextRequest, MemoryRelevanceKind, MemoryScope, StoreMemoryRequest,
 };
 use jaymi_planner::Planner;
+use jaymi_project_engine::CreateProjectRequest;
 
 #[test]
 fn assemble_context_returns_only_relevant_memories_with_limits() {
@@ -18,19 +18,23 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
     let app = Application::boot_with_data_dir(&data_dir).expect("boot");
 
     let jaymi = app
-        .register_project(&RegisterProjectRequest {
+        .create_project(&CreateProjectRequest {
             project_id: Some("project:jaymi".into()),
             name: "Jaymi".into(),
-            root_path: None,
+            description: None,
+            root_directory: None,
+            project_type: None,
         })
-        .expect("register jaymi");
+        .expect("create jaymi");
     let other = app
-        .register_project(&RegisterProjectRequest {
+        .create_project(&CreateProjectRequest {
             project_id: Some("project:other".into()),
             name: "OtherApp".into(),
-            root_path: None,
+            description: None,
+            root_directory: None,
+            project_type: None,
         })
-        .expect("register other");
+        .expect("create other");
 
     app.set_active_project(Some(jaymi.id.as_str()))
         .expect("activate jaymi");

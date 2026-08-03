@@ -12,6 +12,8 @@ These are not permanent decisions.
 
 They are priorities.
 
+Current focus (see `ROADMAP.md`): deepen Layers 7–8 (tools and real providers), wire Reasoning when ready, and grow workspace UX toward Layer 9 — without expanding the non-goals below.
+
 ⸻
 
 Jaymi Is Not Building a Language Model

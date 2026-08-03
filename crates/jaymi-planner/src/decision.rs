@@ -43,6 +43,15 @@ pub enum Intent {
     },
     /// Close the currently active project workspace.
     CloseProject,
+    /// Search knowledge belonging to one project (Project Engine, via Planner).
+    SearchProjectKnowledge {
+        /// Owning project id.
+        project_id: String,
+        /// Free-text query.
+        text: String,
+        /// Optional result limit.
+        limit: Option<usize>,
+    },
     /// Produce a capability execution plan without executing tools.
     ///
     /// One or more independent capabilities may be composed into a single
@@ -64,6 +73,14 @@ pub struct DecisionEngine;
 impl DecisionEngine {
     /// Determine user intent without language-model reasoning.
     pub fn determine_intent(&self, request: &UserRequest) -> Intent {
+        if let Some(query) = &request.project_knowledge {
+            return Intent::SearchProjectKnowledge {
+                project_id: query.project_id.clone(),
+                text: query.text.clone(),
+                limit: query.limit,
+            };
+        }
+
         if let Some(search) = &request.search {
             return Intent::SearchKnowledge {
                 request: search.clone(),
@@ -180,6 +197,7 @@ impl DecisionEngine {
             Intent::PlanWork { capabilities, .. } => capabilities.first().copied(),
             Intent::ContinueProject { .. } => None,
             Intent::CloseProject => None,
+            Intent::SearchProjectKnowledge { .. } => None,
             Intent::Unknown => None,
         }
     }
@@ -678,6 +696,25 @@ mod tests {
             }),
             Some(Capability::Search)
         );
+    }
+
+    #[test]
+    fn structured_project_knowledge_search_is_planner_intent() {
+        let engine = DecisionEngine;
+        let intent = engine.determine_intent(&UserRequest::search_project_knowledge(
+            "project:jaymi",
+            "architecture",
+            Some(10),
+        ));
+        assert_eq!(
+            intent,
+            Intent::SearchProjectKnowledge {
+                project_id: "project:jaymi".into(),
+                text: "architecture".into(),
+                limit: Some(10),
+            }
+        );
+        assert_eq!(engine.required_capability(&intent), None);
     }
 
     #[test]

@@ -6,9 +6,11 @@ use std::sync::RwLock;
 use crate::provider::{Provider, ProviderIdentity};
 use jaymi_core::{JaymiError, JaymiResult};
 
-/// Registry of installed providers.
+/// Registry of installed provider identities.
 ///
-/// Registration only — providers are not executed in this milestone.
+/// Discovery and diagnostics only. Runnable provider instances are held as
+/// `Arc`s elsewhere (tools, engines) and bound at boot — the registry does not
+/// execute providers or select them for requests.
 #[derive(Debug, Default)]
 pub struct ProviderRegistry {
     initialized: bool,
@@ -24,10 +26,11 @@ impl ProviderRegistry {
         }
     }
 
-    /// Register provider identity metadata.
+    /// Register provider identity metadata for discovery and diagnostics.
     ///
-    /// Accepts a [`Provider`] so future milestones can store the instance.
-    /// This milestone records identity only.
+    /// Accepts a [`Provider`] so callers can register from a live instance.
+    /// Only the identity is stored here; the instance remains owned by the
+    /// caller (typically bound into tools).
     pub fn register(&self, provider: &dyn Provider) -> JaymiResult<()> {
         self.ensure_initialized()?;
         let identity = provider.identity().clone();

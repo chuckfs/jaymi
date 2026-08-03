@@ -238,6 +238,24 @@ impl Database {
         })
     }
 
+    /// Count distinct project_id values on active memories (not the projects registry).
+    pub fn referenced_project_memory_count(&self) -> JaymiResult<u64> {
+        self.with_connection(|conn| {
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(DISTINCT project_id)
+                     FROM memories
+                     WHERE status = 'active'
+                       AND project_id IS NOT NULL
+                       AND TRIM(project_id) != ''",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(db_error)?;
+            Ok(count as u64)
+        })
+    }
+
     /// Insert or replace a conversation archive.
     pub fn upsert_conversation_archive(
         &self,

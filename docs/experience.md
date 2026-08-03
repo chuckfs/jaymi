@@ -1,5 +1,7 @@
 # Experience
 
+**Status: Current Implementation** (conversation shell + workspace expansion model) · **Target:** full IDE / canvas / research surfaces
+
 ## Conversation First
 
 Jaymi is conversation-first.
@@ -14,21 +16,21 @@ Instead, the conversation expands into specialized workspaces as tasks become mo
 
 ## Workspaces
 
-Jaymi currently has three primary workspaces.
+Jaymi defines primary workspace kinds. **Current:** conversation shell plus expansion chrome and capability/workspace state. **Target:** rich panels described below.
 
 ### Conversation
 
-Default experience.
-
-General conversation, planning, brainstorming, memory, and daily assistance.
+**Current:** default experience — general conversation, planning, memory, diagnostics.
 
 ### Coding Workspace
+
+**Target UX depth** (model exists; panels are stubs today):
 
 The Coding Workspace grows from the right side of the conversation.
 
 The conversation remains visible and persistent.
 
-The coding workspace adds:
+The coding workspace aims to add:
 
 - Project Explorer
 - Editor
@@ -38,58 +40,28 @@ The coding workspace adds:
 
 The conversation becomes project-aware but never resets.
 
-Closing the workspace returns to the standard conversation view without losing context.
-
 ### Creation Workspace
 
-The Creation Workspace expands from the conversation.
-
-It provides:
-
-- Image generation
-- Image editing
-- Canvas
-- Prompt history
-- Assets
-
-The conversation remains visible.
+**Target:** conversation stays; canvas / image / asset tools appear.
 
 ### Research Workspace
 
-The Research Workspace expands from the conversation.
-
-It provides:
-
-- Sources
-- Documents
-- Notes
-- Citations
-- Search
-
-Again, the conversation remains persistent.
+**Target:** conversation stays; sources and notes appear.
 
 ---
 
-## Transition
+## Closing a Workspace
 
-Workspaces should feel like an expansion of the conversation rather than launching another application.
+**Current:** closing an expanded workspace keeps the conversation and session state consistent with capability/workspace rules.
 
-The user should feel that Jaymi is adapting to the task rather than forcing the user into a different mode.
+The conversation is permanent.
 
----
-
-## Conversation Persistence
-
-The conversation is never destroyed.
-
-The workspace is temporary.
-
-Closing the workspace returns to the conversation exactly where it was.
+Workspaces expand and collapse around it.
 
 ---
 
-## Philosophy
+## Relationship to Capabilities
 
-Conversation is permanent.
+**Current:** Capability Engine plans and inspects capabilities with **availability** (Ready / Experimental / Planned / Unavailable). Workspace kinds map to capability expansions; Inspector shows availability and active workspace. See [capabilities.md](capabilities.md).
 
-Workspaces are temporary.
+**Target:** selecting Coding / Creation / Research fully materializes the specialized surfaces described above.

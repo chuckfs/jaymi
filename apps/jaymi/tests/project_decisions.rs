@@ -193,7 +193,7 @@ fn project_decisions_persist_and_planner_retrieves_them() {
         "Alpha memory context must not include Beta decisions"
     );
 
-    // Knowledge search matches reasoning-only tokens inside the active project.
+    // Knowledge search matches reasoning-only tokens (Planner-mediated).
     let hits = app
         .search_project_knowledge(project_a.id.as_str(), "whydidwechooseplanner99", Some(20))
         .expect("search reasoning");

@@ -31,7 +31,7 @@ pub use file_entry::{EntryType, FileEntry};
 pub use health::HealthReport;
 pub use id::EntityId;
 pub use lifecycle::Lifecycle;
-pub use request::{DiscoveryQueryKind, UserRequest};
+pub use request::{DiscoveryQueryKind, ProjectKnowledgeRequest, UserRequest};
 pub use result::JaymiResult;
 pub use search::{MetadataFilters, SearchRequest};
 pub use state::AppState;

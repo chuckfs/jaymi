@@ -40,9 +40,12 @@ fn ocr_provider_registers_without_planner_or_engine() {
     assert!(row.detail.contains("engine=none"));
     assert!(row.detail.contains("available=false"));
 
-    // Capability registry (Planner surface) is unchanged — OCR is provider-side only.
-    assert_eq!(snapshot.capability_count, 5);
-    assert!(!snapshot.capability_ids.iter().any(|id| id == "ocr"));
+    // OCR capability is catalogued (Experimental); the provider remains a stub.
+    assert_eq!(
+        snapshot.capability_count,
+        jaymi_capabilities::Capability::all().len()
+    );
+    assert!(snapshot.capability_ids.iter().any(|id| id == "ocr"));
 }
 
 fn temp_dir(label: &str) -> PathBuf {

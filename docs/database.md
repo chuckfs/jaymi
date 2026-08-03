@@ -1,5 +1,7 @@
 Database
 
+**Status: Current Implementation** (SQLite schema) · **Target:** full knowledge graph productization
+
 The database is Jaymi’s persistent knowledge store.
 
 Its purpose is not simply to store data.
@@ -7,6 +9,22 @@ Its purpose is not simply to store data.
 Its purpose is to organize relationships between conversations, memories, projects, files, providers, and user knowledge in a way that allows Jaymi to retrieve meaningful context quickly and accurately.
 
 The database should represent knowledge—not just records.
+
+### Current schema (shipped tables / stores)
+
+* system events / settings
+* discovered inventory items
+* normalized content
+* embeddings queue / vectors
+* memories
+* conversations (messages, attachments, references)
+* projects
+
+### Target / scaffolding
+
+* Rich entity / relationship knowledge graph APIs
+* First-class artifact / tool / provider tables beyond identity metadata
+* Full export of all entity types
 
 ⸻
 

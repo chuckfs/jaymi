@@ -136,6 +136,43 @@ fn planner_with_only_cloud_search() -> Planner {
     let mut permissions = PermissionEngine::new();
     permissions.initialize().unwrap();
 
+    let memory = {
+        let mut engine = MemoryEngine::with_store(Arc::new(InMemoryMemoryStore::new()));
+        engine.initialize().unwrap();
+        Arc::new(engine) as Arc<dyn MemoryEngineApi>
+    };
+    let projects = {
+        let mut engine = jaymi_project_engine::ProjectEngine::with_store(Arc::new(
+            jaymi_project_engine::InMemoryProjectStore::new(),
+        ));
+        engine.initialize().unwrap();
+        Arc::new(engine) as Arc<dyn jaymi_project_engine::ProjectEngineApi>
+    };
+    let mut context = jaymi_context::ContextEngine::new();
+    context.initialize().unwrap();
+    let data = std::env::temp_dir().join(format!(
+        "jaymi-policy-context-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&data).unwrap();
+    let mut db = jaymi_database::Database::with_data_dir(&data);
+    db.initialize().unwrap();
+    let db = Arc::new(db);
+    let mut knowledge = jaymi_knowledge::SqliteKnowledgeStore::new(Arc::clone(&db));
+    knowledge.initialize().unwrap();
+    let mut search = jaymi_search::SearchEngine::new(Arc::new(knowledge), None);
+    search.initialize().unwrap();
+    context
+        .bind_sources(jaymi_context::ContextSources {
+            memory: Arc::clone(&memory),
+            projects: Arc::clone(&projects),
+            search: Arc::new(search),
+        })
+        .unwrap();
+
     let mut planner = Planner::new(PlannerDeps {
         capabilities: Arc::new(capabilities) as Arc<dyn CapabilityEngineApi>,
         providers: Arc::new(providers),
@@ -143,18 +180,9 @@ fn planner_with_only_cloud_search() -> Planner {
         orchestrator: ToolOrchestrator::new(tools),
         policies: Arc::new(policies),
         permissions: Arc::new(permissions),
-        memory: {
-            let mut engine = MemoryEngine::with_store(Arc::new(InMemoryMemoryStore::new()));
-            engine.initialize().unwrap();
-            Arc::new(engine) as Arc<dyn MemoryEngineApi>
-        },
-        projects: {
-            let mut engine = jaymi_project_engine::ProjectEngine::with_store(Arc::new(
-                jaymi_project_engine::InMemoryProjectStore::new(),
-            ));
-            engine.initialize().unwrap();
-            Arc::new(engine) as Arc<dyn jaymi_project_engine::ProjectEngineApi>
-        },
+        memory,
+        projects,
+        context: Arc::new(context),
     });
     planner.initialize().unwrap();
     planner

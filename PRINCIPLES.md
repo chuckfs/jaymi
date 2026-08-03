@@ -10,6 +10,8 @@ Frameworks come and go.
 
 These principles should remain constant.
 
+Implementation status for features implied by a principle (export, conversational approval UX, universal citations) may still be Target — see `ARCHITECTURE.md` and `ROADMAP.md`. The principles themselves do not wait for those features.
+
 ⸻
 
 1. Offline First

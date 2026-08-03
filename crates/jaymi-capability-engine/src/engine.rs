@@ -6,7 +6,7 @@ use jaymi_core::{HealthReport, JaymiError, JaymiResult, Lifecycle};
 
 use crate::composition::{compose_capabilities, CapabilityComposition};
 use crate::descriptor::{
-    capability_descriptor, CapabilityAvailability, CapabilityDescriptor,
+    capability_descriptor, catalog_availability, CapabilityAvailability, CapabilityDescriptor,
 };
 use crate::discovery::{
     assess_capability, CapabilityDiscoveryReport, CapabilityInventory, CapabilityStatus,
@@ -66,7 +66,12 @@ pub trait CapabilityEngineApi: Send + Sync {
     /// Describe a capability's metadata (catalog description; registration optional).
     fn describe(&self, capability: Capability) -> CapabilityDescriptor;
 
-    /// Validate whether a capability is available for planning.
+    /// Validate catalog availability for planning (without live inventory).
+    ///
+    /// Returns Ready / Experimental / Planned when registered, Unavailable when
+    /// the engine is down or the capability is not registered, and Unknown for
+    /// unrecognized ids. Prefer [`Self::assess`] / [`Self::plan`] when inventory
+    /// is known — those apply effective availability.
     fn validate(&self, capability: Capability) -> CapabilityAvailability;
 
     /// Validate a stable id (unknown ids → [`CapabilityAvailability::Unknown`]).
@@ -138,10 +143,11 @@ pub trait CapabilityEngineApi: Send + Sync {
         Ok(build_inspector_report(&registered, &discovery))
     }
 
-    /// Discover what Jaymi can currently do given tools and providers.
+    /// Discover what Jaymi can currently execute given tools and providers.
     ///
-    /// Assesses the full catalog: registered capabilities with fulfilled
-    /// requirements become available; everything else is unavailable.
+    /// Assesses the full catalog. Ready / Experimental capabilities with
+    /// fulfilled requirements become executable; Planned capabilities stay
+    /// visible but not executable; blocked ones are Unavailable.
     fn discover(&self, inventory: &CapabilityInventory) -> JaymiResult<CapabilityDiscoveryReport>;
 
     /// Assess one capability against registration and a runtime inventory.
@@ -257,35 +263,24 @@ impl CapabilityEngineApi for CapabilityEngine {
     fn validate(&self, capability: Capability) -> CapabilityAvailability {
         match self.with_registry(|registry| {
             if !registry.is_initialized() {
-                CapabilityAvailability::EngineNotReady
+                CapabilityAvailability::Unavailable
             } else if registry.contains(capability) {
-                CapabilityAvailability::Available
+                catalog_availability(capability)
             } else {
-                CapabilityAvailability::Unregistered
+                CapabilityAvailability::Unavailable
             }
         }) {
             Ok(availability) => availability,
-            Err(_) => CapabilityAvailability::EngineNotReady,
+            Err(_) => CapabilityAvailability::Unavailable,
         }
     }
 
     fn validate_id(&self, id: &str) -> CapabilityAvailability {
         let trimmed = id.trim();
-        if Capability::from_id(trimmed).is_none() {
+        let Some(capability) = Capability::from_id(trimmed) else {
             return CapabilityAvailability::Unknown;
-        }
-        match self.with_registry(|registry| {
-            if !registry.is_initialized() {
-                CapabilityAvailability::EngineNotReady
-            } else if registry.contains_id(trimmed) {
-                CapabilityAvailability::Available
-            } else {
-                CapabilityAvailability::Unregistered
-            }
-        }) {
-            Ok(availability) => availability,
-            Err(_) => CapabilityAvailability::EngineNotReady,
-        }
+        };
+        self.validate(capability)
     }
 
     fn contains(&self, capability: Capability) -> bool {
@@ -319,10 +314,21 @@ impl CapabilityEngineApi for CapabilityEngine {
                 "plan requires at least one capability",
             ));
         }
+        let registered = self.list();
+        let engine_ready = true;
         let mut steps = Vec::with_capacity(capabilities.len());
         for capability in capabilities {
-            let availability = self.validate(*capability);
-            steps.push(build_plan_step(*capability, availability, inventory));
+            let status = assess_capability(
+                *capability,
+                registered.contains(capability),
+                engine_ready,
+                inventory,
+            );
+            steps.push(build_plan_step(
+                *capability,
+                status.availability,
+                inventory,
+            ));
         }
         let plan = ExecutionPlan {
             goal: goal.map(str::to_string),
@@ -455,7 +461,7 @@ mod tests {
         let mut engine = CapabilityEngine::new();
         assert_eq!(
             engine.validate(Capability::Search),
-            CapabilityAvailability::EngineNotReady
+            CapabilityAvailability::Unavailable
         );
         engine.initialize().unwrap();
 
@@ -473,31 +479,43 @@ mod tests {
         assert!(search.description.contains("knowledge"));
         assert!(!search.requires_internet);
         assert!(search.offline_capable);
+        assert_eq!(search.availability, CapabilityAvailability::Ready);
 
         assert_eq!(
             engine.validate(Capability::Search),
-            CapabilityAvailability::Available
+            CapabilityAvailability::Ready
         );
         assert_eq!(
             engine.validate(Capability::Index),
-            CapabilityAvailability::Unregistered
+            CapabilityAvailability::Unavailable
         );
-        assert_eq!(engine.validate_id("not-a-capability"), CapabilityAvailability::Unknown);
+        assert_eq!(
+            engine.validate(Capability::Chat),
+            CapabilityAvailability::Unavailable
+        );
+        assert_eq!(
+            engine.validate_id("not-a-capability"),
+            CapabilityAvailability::Unknown
+        );
 
         let catalog = engine.describe(Capability::Internet);
         assert_eq!(catalog.id, "internet");
         assert!(catalog.requires_internet);
+        assert_eq!(catalog.availability, CapabilityAvailability::Planned);
 
         let plan = engine
             .build_execution_plan(&[Capability::Search, Capability::Index])
             .unwrap();
         assert_eq!(plan.steps.len(), 2);
         assert!(!plan.is_ready());
-        assert_eq!(plan.unavailable().len(), 1);
-        assert_eq!(plan.steps[0].availability, CapabilityAvailability::Available);
+        assert_eq!(plan.unavailable().len(), 2); // Search missing inventory → Unavailable; Index unregistered
+        assert_eq!(
+            plan.steps[0].availability,
+            CapabilityAvailability::Unavailable
+        );
         assert_eq!(
             plan.steps[1].availability,
-            CapabilityAvailability::Unregistered
+            CapabilityAvailability::Unavailable
         );
         assert_eq!(
             plan.steps[0].required_tools,
@@ -512,11 +530,33 @@ mod tests {
             .any(|permission| permission.category == "filesystem"
                 && permission.action == "read"));
 
+        let inventory = CapabilityInventory {
+            tools: vec![
+                DiscoveredTool {
+                    id: "search_files".into(),
+                    capabilities: vec![Capability::Search],
+                },
+                DiscoveredTool {
+                    id: "read_file".into(),
+                    capabilities: vec![Capability::ReadDocuments],
+                },
+            ],
+            providers: vec![DiscoveredProvider {
+                id: "filesystem".into(),
+                capabilities: vec![Capability::Search, Capability::ReadDocuments],
+            }],
+        };
         let ready = engine
-            .build_execution_plan(&[Capability::Search, Capability::ReadDocuments])
+            .plan(
+                &[Capability::Search, Capability::ReadDocuments],
+                &inventory,
+                None,
+            )
             .unwrap();
         assert!(ready.is_ready());
-        assert!(ready.summary().contains("ready"));
+        assert!(ready.is_executable());
+        assert!(ready.summary().contains("executable"));
+        assert_eq!(ready.steps[0].availability, CapabilityAvailability::Ready);
     }
 
     #[test]
@@ -553,6 +593,10 @@ mod tests {
         let step = &first.steps[0];
         assert_eq!(step.capability, Capability::Code);
         assert_eq!(
+            step.availability,
+            CapabilityAvailability::Unavailable
+        );
+        assert_eq!(
             step.required_tools,
             vec![
                 "editor".to_string(),
@@ -572,16 +616,17 @@ mod tests {
             .iter()
             .any(|permission| permission.label() == "terminal:execute"));
         assert!(!first.is_executable());
+        assert!(!first.is_ready());
         assert!(first.render().contains("Goal: Help me build an app."));
     }
 
     #[test]
-    fn discover_separates_available_and_unavailable() {
+    fn discover_separates_executable_planned_and_unavailable() {
         let mut engine = CapabilityEngine::new();
         engine.initialize().unwrap();
-        engine.register(Capability::Search).unwrap();
-        engine.register(Capability::ReadDocuments).unwrap();
-        engine.register(Capability::Ocr).unwrap();
+        for capability in Capability::all() {
+            engine.register(*capability).unwrap();
+        }
 
         let inventory = CapabilityInventory {
             tools: vec![
@@ -618,11 +663,13 @@ mod tests {
         assert!(report
             .available
             .iter()
-            .any(|status| status.descriptor.id == "ocr"));
+            .any(|status| status.descriptor.id == "ocr"
+                && status.availability == CapabilityAvailability::Experimental));
 
         let vision = report.get("vision").expect("vision status");
         assert!(!vision.is_available());
-        assert!(vision.blockers.contains(&CapabilityBlocker::NotRegistered));
+        assert_eq!(vision.availability, CapabilityAvailability::Unavailable);
+        assert!(vision.blockers.contains(&CapabilityBlocker::MissingTool));
         assert!(vision.requirements.requires_tool);
         assert!(vision.fulfilling_tools.is_empty());
         assert!(vision
@@ -632,16 +679,44 @@ mod tests {
 
         let search = report.get("search").expect("search");
         assert!(search.is_available());
+        assert_eq!(search.availability, CapabilityAvailability::Ready);
         assert_eq!(search.fulfilling_tools, vec!["search_files".to_string()]);
         assert!(search
             .fulfilling_providers
             .iter()
             .any(|id| id == "filesystem"));
-        assert!(search.requirements.requires_tool);
-        assert!(search.requirements.requires_provider);
+
+        let chat = report.get("chat").expect("chat");
+        assert!(!chat.is_available());
+        assert_eq!(chat.availability, CapabilityAvailability::Planned);
+        assert!(chat.blockers.is_empty());
+        assert!(chat.registered);
 
         let code = report.get("code").expect("code");
         assert!(!code.is_available());
-        assert!(code.blockers.contains(&CapabilityBlocker::NotRegistered));
+        assert_eq!(code.availability, CapabilityAvailability::Unavailable);
+        assert!(code.blockers.contains(&CapabilityBlocker::MissingTool));
+        assert!(report.planned_count() > 0);
+    }
+
+    #[test]
+    fn planned_capabilities_remain_registered_and_plannable() {
+        let mut engine = CapabilityEngine::new();
+        engine.initialize().unwrap();
+        engine.register(Capability::Internet).unwrap();
+        engine.register(Capability::GenerateImages).unwrap();
+
+        assert_eq!(
+            engine.validate(Capability::Internet),
+            CapabilityAvailability::Planned
+        );
+        let plan = engine
+            .build_execution_plan(&[Capability::Internet, Capability::GenerateImages])
+            .unwrap();
+        assert_eq!(plan.steps.len(), 2);
+        assert_eq!(plan.steps[0].availability, CapabilityAvailability::Planned);
+        assert_eq!(plan.steps[1].availability, CapabilityAvailability::Planned);
+        assert!(!plan.is_ready());
+        assert!(!plan.is_executable());
     }
 }

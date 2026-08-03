@@ -1,6 +1,4 @@
-//! Project-scoped memory kinds and restored project context.
-
-use jaymi_core::EntityId;
+//! Project-scoped memory kinds and restored project memory bundles.
 
 use crate::types::MemoryRecord;
 
@@ -66,34 +64,6 @@ impl std::fmt::Display for ProjectMemoryKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.as_str())
     }
-}
-
-/// Registered project identity for memory attachment.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ProjectMeta {
-    /// Stable project identity.
-    pub id: EntityId,
-    /// Display name (e.g. "Jaymi").
-    pub name: String,
-    /// Normalized slug.
-    pub slug: String,
-    /// Optional workspace root.
-    pub root_path: Option<String>,
-    /// Unix seconds created.
-    pub created_at: i64,
-    /// Unix seconds updated.
-    pub updated_at: i64,
-}
-
-/// Request to register a project for memory attachment.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RegisterProjectRequest {
-    /// Optional explicit identity.
-    pub project_id: Option<String>,
-    /// Display name (required).
-    pub name: String,
-    /// Optional workspace root.
-    pub root_path: Option<String>,
 }
 
 /// Request to store a categorized project memory.
@@ -182,12 +152,16 @@ pub struct ListProjectDecisionsQuery {
     pub limit: Option<usize>,
 }
 
-/// Restored project context for "continue working on …".
+/// Categorized project memories restored by `project_id` only.
+///
+/// Project identity (name, root, lifecycle) lives in the Project Engine.
+/// Memory never owns a project registry — it only stores and restores
+/// memories keyed by `project_id`.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ProjectContext {
-    /// Project identity.
+pub struct ProjectMemoryBundle {
+    /// Project id this bundle belongs to (reference only).
     pub project_id: String,
-    /// Display name.
+    /// Display name hint (usually mirrored from Project Engine).
     pub name: String,
     /// Conversation-linked memories / notes.
     pub conversations: Vec<MemoryRecord>,
@@ -205,7 +179,7 @@ pub struct ProjectContext {
     pub conversation_ids: Vec<String>,
 }
 
-impl ProjectContext {
+impl ProjectMemoryBundle {
     /// Total restored memory entries across categories.
     pub fn entry_count(&self) -> usize {
         self.conversations.len()
@@ -229,7 +203,7 @@ impl ProjectContext {
     }
 }
 
-/// Build a URL-safe slug from a project name.
+/// Build a URL-safe slug from a project name (shared helper; registry lives in Project Engine).
 pub fn slugify_project_name(name: &str) -> String {
     let mut slug = String::new();
     let mut last_dash = false;

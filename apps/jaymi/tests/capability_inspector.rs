@@ -1,29 +1,28 @@
-//! Integration tests for Layer 6 Slice 7 — Capability Inspector.
+//! Integration tests for Capability Inspector + availability diagnostics.
 
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jaymi::Application;
-use jaymi_capabilities::{Capability, WorkspaceKind};
+use jaymi_capabilities::{Capability, CapabilityAvailability, WorkspaceKind};
 use jaymi_core::UserRequest;
 
 #[test]
-fn capability_inspector_reflects_registered_active_and_requirements() {
+fn capability_inspector_reflects_registered_active_planned_and_requirements() {
     let data_dir = temp_dir("inspector");
     let app = Application::boot_with_data_dir(&data_dir).expect("boot");
 
     let report = app.inspect_capabilities().expect("inspect");
 
-    // Registered capabilities match boot registration.
+    // Full conceptual catalog stays registered.
+    assert_eq!(report.registered.len(), Capability::all().len());
     assert!(report.registered.contains(&"search".to_string()));
     assert!(report.registered.contains(&"code".to_string()));
-    assert!(report.registered.contains(&"read_documents".to_string()));
-    assert!(report.registered.contains(&"discover".to_string()));
-    assert!(report.registered.contains(&"index".to_string()));
-    assert_eq!(report.registered.len(), 5);
+    assert!(report.registered.contains(&"chat".to_string()));
+    assert!(report.registered.contains(&"internet".to_string()));
 
-    // Active capabilities are a subset of registered (runtime-available).
+    // Active capabilities are a subset of registered (runtime-executable).
     assert!(!report.active.is_empty());
     for id in &report.active {
         assert!(
@@ -33,10 +32,19 @@ fn capability_inspector_reflects_registered_active_and_requirements() {
         let entry = report.get(id).expect("active entry");
         assert!(entry.active);
         assert!(entry.registered);
+        assert!(entry.availability.is_executable_tier());
         assert!(entry.blockers.is_empty());
     }
 
+    // Planned capabilities remain visible and registered.
+    assert!(!report.planned.is_empty());
+    assert!(report.planned.contains(&"chat".to_string()));
+    let chat = report.get("chat").expect("chat");
+    assert_eq!(chat.availability, CapabilityAvailability::Planned);
+    assert!(!chat.active);
+
     let search = report.get("search").expect("search row");
+    assert_eq!(search.availability, CapabilityAvailability::Ready);
     assert_eq!(search.workspace, Some(WorkspaceKind::Research));
     assert!(
         search.required_tools.iter().any(|id| id == "search_files")
@@ -58,16 +66,20 @@ fn capability_inspector_reflects_registered_active_and_requirements() {
         .required_providers
         .iter()
         .any(|id| id == "filesystem"));
+    // Code is Experimental in catalog but blocked without coding tools.
+    assert_eq!(code.availability, CapabilityAvailability::Unavailable);
 
     let rendered = report.render();
     assert!(rendered.contains("Capability Inspector"));
+    assert!(rendered.contains("Availability"));
+    assert!(rendered.contains("ready") || rendered.contains("planned"));
     assert!(rendered.contains("search"));
     assert!(rendered.contains("research"));
     assert!(rendered.contains("coding"));
 }
 
 #[test]
-fn diagnostics_include_capability_inspector() {
+fn diagnostics_include_capability_inspector_and_availability() {
     let data_dir = temp_dir("inspector-diagnostics");
     let app = Application::boot_with_data_dir(&data_dir).expect("boot");
 
@@ -82,14 +94,21 @@ fn diagnostics_include_capability_inspector() {
         snapshot.available_capability_ids.len()
     );
     assert_eq!(inspector.active, snapshot.available_capability_ids);
+    assert!(!inspector.planned.is_empty());
+
+    assert!(snapshot
+        .capability_status_details
+        .iter()
+        .any(|line| line.contains("ready") || line.contains("planned")));
 
     let dashboard = snapshot.render_dashboard();
     assert!(dashboard.contains("Capability Inspector"));
-    assert!(dashboard.contains("Required tools") || dashboard.contains("search"));
+    assert!(dashboard.contains("Availability") || dashboard.contains("search"));
 
     let caps = snapshot.subsystem("Capabilities").expect("capabilities row");
     assert!(caps.detail.contains("registered="));
     assert!(caps.detail.contains("active="));
+    assert!(caps.detail.contains("planned="));
 }
 
 #[test]

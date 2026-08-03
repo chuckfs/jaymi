@@ -29,9 +29,9 @@ use jaymi_memory::{
     AppendMessageRequest, ArchiveConversationRequest, AssembleContextRequest, AssembledMemoryContext,
     Conversation, ConversationMessage, ConversationMeta, CreateConversationRequest,
     CreatePersonalMemoryRequest, ListProjectDecisionsQuery, MemoryEngine, MemoryEngineApi,
-    MemoryQuery, MemoryRecord, PersonalContext, ProjectDecision, ProjectMeta, PromoteMemoryRequest,
-    PromotionAskDecision, PromotionSuggestQuery, PromotionSuggestion, RegisterProjectRequest,
-    SqliteMemoryStore, StoreMemoryRequest, StoreProjectDecisionRequest, StoreProjectMemoryRequest,
+    MemoryQuery, MemoryRecord, PersonalContext, ProjectDecision, PromoteMemoryRequest,
+    PromotionAskDecision, PromotionSuggestQuery, PromotionSuggestion, SqliteMemoryStore,
+    StoreMemoryRequest, StoreProjectDecisionRequest, StoreProjectMemoryRequest,
     UpdatePersonalMemoryRequest,
 };
 use jaymi_parsers::{default_registry, ParserRegistry};
@@ -169,16 +169,19 @@ impl Application {
         let memory = Arc::new(memory);
         self.container.register(Arc::clone(&memory));
 
-        self.boot_service(ContextEngine::new())?;
+        // Context Engine — lifecycle first; sources bound after Project + Search.
+        let mut context = ContextEngine::new();
+        self.initialize_service(&mut context)?;
+        let context = Arc::new(context);
+        self.container.register(Arc::clone(&context));
 
-        // Capability Engine + Layer 0 and Layer 1 capabilities.
+        // Capability Engine — full catalog stays registered; availability
+        // (Ready / Experimental / Planned / Unavailable) decides executability.
         let mut capabilities = CapabilityEngine::new();
         self.initialize_service(&mut capabilities)?;
-        capabilities.register(Capability::Search)?;
-        capabilities.register(Capability::ReadDocuments)?;
-        capabilities.register(Capability::Discover)?;
-        capabilities.register(Capability::Index)?;
-        capabilities.register(Capability::Code)?;
+        for capability in Capability::all() {
+            capabilities.register(*capability)?;
+        }
         let capabilities = Arc::new(capabilities);
         self.container.register(Arc::clone(&capabilities));
 
@@ -273,6 +276,13 @@ impl Application {
                 ),
             })?;
 
+        // Context Engine coordinates Memory + Project + Search for every request.
+        context.bind_sources(jaymi_context::ContextSources {
+            memory: Arc::clone(&memory) as Arc<dyn jaymi_memory::MemoryEngineApi>,
+            projects: Arc::clone(&projects) as Arc<dyn ProjectEngineApi>,
+            search: Arc::clone(&search) as Arc<dyn jaymi_search::SearchEngineApi>,
+        })?;
+
         // Discovery engine (Layer 1) — explicit scans only; no boot-time crawl.
         let (discovery_roots, indexing_enabled) = {
             let config = self.container.resolve::<Config>()?;
@@ -322,6 +332,7 @@ impl Application {
             permissions,
             memory: Arc::clone(&memory) as Arc<dyn MemoryEngineApi>,
             projects: Arc::clone(&projects) as Arc<dyn ProjectEngineApi>,
+            context: Arc::clone(&context),
         });
         self.initialize_service(&mut planner)?;
         self.container.register(planner);
@@ -391,85 +402,98 @@ impl Application {
         Ok(())
     }
 
+    /// Sync experience session workspace into the Context Engine before handle.
+    fn prepare_context_session(&self) -> JaymiResult<()> {
+        let context = self.container.resolve::<Arc<ContextEngine>>()?;
+        let workspace = self
+            .experience()
+            .ok()
+            .and_then(|session| session.active_workspace_kind())
+            .map(|kind| kind.id().to_string());
+        context.set_session_workspace(workspace);
+        Ok(())
+    }
+
+    /// Route a user request through the Planner (Context Engine assembles first).
+    pub fn handle(&self, request: UserRequest) -> JaymiResult<PlannerResponse> {
+        self.prepare_context_session()?;
+        let planner = self.container.resolve::<Planner>()?;
+        planner.handle(request)
+    }
+
     /// Ask the Planner to list a single directory through the full architecture.
     pub fn list_directory(&self, path: impl AsRef<Path>) -> JaymiResult<PlannerResponse> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.handle(UserRequest::list_directory(path.as_ref()))
+        self.handle(UserRequest::list_directory(path.as_ref()))
     }
 
     /// Ask the Planner to read a supported file into a unified document.
     pub fn read_file(&self, path: impl AsRef<Path>) -> JaymiResult<PlannerResponse> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.handle(UserRequest::read_file(path.as_ref()))
+        self.handle(UserRequest::read_file(path.as_ref()))
     }
 
     /// Ask the Planner to recursively index a root into the discovery inventory.
     pub fn index_root(&self, path: impl AsRef<Path>) -> JaymiResult<PlannerResponse> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.handle(UserRequest::index_root(path.as_ref()))
+        self.handle(UserRequest::index_root(path.as_ref()))
     }
 
     /// Ask the Planner what files exist using the Search Engine (inventory).
     pub fn discover_inventory(&self) -> JaymiResult<PlannerResponse> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.handle(UserRequest::discover_inventory())
+        self.handle(UserRequest::discover_inventory())
     }
 
     /// Ask the Planner a structured discovery query against the knowledge database.
     pub fn discover_query(&self, kind: DiscoveryQueryKind) -> JaymiResult<PlannerResponse> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.handle(UserRequest::discover_query(kind))
+        self.handle(UserRequest::discover_query(kind))
     }
 
     /// Ask the Planner a structured Search Engine request.
     pub fn search(&self, request: SearchRequest) -> JaymiResult<PlannerResponse> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.handle(UserRequest::search(request))
+        self.handle(UserRequest::search(request))
     }
 
-    /// Ask the Planner to retrieve memories through the Memory Engine.
+    /// Retrieve memories through the Memory Engine.
     pub fn retrieve_memory(&self, query: &MemoryQuery) -> JaymiResult<Vec<MemoryRecord>> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.retrieve_memory(query)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.retrieve(query)
     }
 
-    /// Ask the Memory Engine (via Planner) to assemble relevant context.
+    /// Assemble relevant memory context through the Memory Engine.
     pub fn assemble_memory_context(
         &self,
         request: &AssembleContextRequest,
     ) -> JaymiResult<AssembledMemoryContext> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.assemble_memory_context(request)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.assemble_context(request)
     }
 
-    /// Ask the Planner to store an intentional memory.
+    /// Store an intentional memory through the Memory Engine.
     pub fn store_memory(&self, request: &StoreMemoryRequest) -> JaymiResult<MemoryRecord> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.store_memory(request)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.store(request)
     }
 
-    /// Ask the Planner to forget a memory.
+    /// Forget a memory through the Memory Engine.
     pub fn forget_memory(&self, memory_id: &str) -> JaymiResult<()> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.forget_memory(memory_id)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.forget(memory_id)
     }
 
-    /// Ask the Planner to promote a memory up the durability ladder.
+    /// Promote a memory up the durability ladder through the Memory Engine.
     pub fn promote_memory(
         &self,
         request: &PromoteMemoryRequest,
     ) -> JaymiResult<MemoryRecord> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.promote_memory(request)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.promote(request)
     }
 
-    /// Ask the Memory Engine (via Planner) for promotion suggestions.
+    /// Ask the Memory Engine for promotion suggestions (never applies them).
     pub fn suggest_memory_promotions(
         &self,
         query: &PromotionSuggestQuery,
     ) -> JaymiResult<Vec<PromotionSuggestion>> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.suggest_memory_promotions(query)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.suggest_promotions(query)
     }
 
     /// Decide whether to ask the user about promotion suggestions.
@@ -477,53 +501,52 @@ impl Application {
         &self,
         suggestions: &[PromotionSuggestion],
     ) -> JaymiResult<PromotionAskDecision> {
-        let planner = self.container.resolve::<Planner>()?;
-        Ok(planner.decide_promotion_ask(suggestions))
+        Ok(PromotionAskDecision::from_suggestions(suggestions))
     }
 
-    /// Ask the Planner to archive a conversation.
+    /// Archive a conversation through the Memory Engine.
     pub fn archive_conversation(
         &self,
         request: &ArchiveConversationRequest,
     ) -> JaymiResult<jaymi_memory::ConversationArchive> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.archive_conversation(request)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.archive_conversation(request)
     }
 
-    /// Ask the Planner to create a persisted conversation.
+    /// Create a persisted conversation through the Memory Engine.
     pub fn create_conversation(
         &self,
         request: &CreateConversationRequest,
     ) -> JaymiResult<ConversationMeta> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.create_conversation(request)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.create_conversation(request)
     }
 
-    /// Ask the Planner to append a message to a conversation.
+    /// Append a message to a conversation through the Memory Engine.
     pub fn append_message(
         &self,
         request: &AppendMessageRequest,
     ) -> JaymiResult<ConversationMessage> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.append_message(request)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.append_message(request)
     }
 
-    /// Ask the Planner to load an entire conversation exactly as stored.
+    /// Load an entire conversation through the Memory Engine.
     pub fn load_conversation(
         &self,
         conversation_id: &str,
     ) -> JaymiResult<Option<Conversation>> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.load_conversation(conversation_id)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.load_conversation(conversation_id)
     }
 
-    /// List conversations attached to a project.
+    /// List conversations attached to a project through the Memory Engine.
     pub fn list_project_conversations(
         &self,
         project_id: &str,
     ) -> JaymiResult<Vec<ConversationMeta>> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.list_project_conversations(project_id)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.list_conversations_for_project(project_id)
     }
 
     /// Attach a conversation to exactly one project, or detach it (`None` = global).
@@ -532,8 +555,8 @@ impl Application {
         conversation_id: &str,
         project_id: Option<&str>,
     ) -> JaymiResult<ConversationMeta> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.attach_conversation_to_project(conversation_id, project_id)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.attach_conversation_to_project(conversation_id, project_id)
     }
 
     /// Create a first-class project through the Project Engine.
@@ -541,66 +564,69 @@ impl Application {
         &self,
         request: &CreateProjectRequest,
     ) -> JaymiResult<Project> {
-        let planner = self.container.resolve::<Planner>()?;
-        let project = planner.create_project(request)?;
-        // Keep Memory Engine project registry in sync for scoped memory.
-        let _ = planner.register_project(&RegisterProjectRequest {
-            project_id: Some(project.id.as_str().to_string()),
-            name: project.name.clone(),
-            root_path: project
-                .root_directory
-                .as_ref()
-                .map(|path| path.display().to_string()),
-        })?;
-        Ok(project)
+        let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
+        projects.create(request)
     }
 
-    /// Open a project through the Project Engine (assembles one ProjectContext).
-    /// Switches the active workspace; conversation stays active.
+    /// Open a project: bind Memory session hints, open via Project Engine, resume conversation.
     pub fn open_project(&self, project_id: &str) -> JaymiResult<ProjectContext> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.open_project(project_id)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
+        memory.set_active_project(Some(project_id))?;
+        let context = projects.open(project_id)?;
+        if memory.active_conversation_id().is_none() {
+            if let Some(latest) = memory
+                .list_conversations_for_project(project_id)?
+                .into_iter()
+                .next()
+            {
+                memory.set_active_conversation(Some(latest.id.as_str()))?;
+            }
+        }
+        Ok(context)
     }
 
     /// Switch the active workspace to another project by id.
     pub fn switch_project(&self, project_id: &str) -> JaymiResult<ProjectContext> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.switch_project(project_id)
+        self.open_project(project_id)
     }
 
     /// Close the session-open project.
     /// Does not clear the active conversation.
     pub fn close_project(&self) -> JaymiResult<Option<Project>> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.close_project()
+        let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        let closed = projects.close()?;
+        let _ = memory.set_active_project(None);
+        Ok(closed)
     }
 
     /// Current active workspace project id, when any.
     pub fn active_project_id(&self) -> Option<String> {
         self.container
-            .resolve::<Planner>()
+            .resolve::<Arc<ProjectEngine>>()
             .ok()
-            .and_then(|planner| planner.active_project_id())
+            .and_then(|projects| projects.active_project_id())
     }
 
     /// Current active conversation id (persists across project switch).
     pub fn active_conversation_id(&self) -> Option<String> {
         self.container
-            .resolve::<Planner>()
+            .resolve::<Arc<MemoryEngine>>()
             .ok()
-            .and_then(|planner| planner.active_conversation_id())
+            .and_then(|memory| memory.active_conversation_id())
     }
 
     /// Delete a project through the Project Engine.
     pub fn delete_project(&self, project_id: &str) -> JaymiResult<()> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.delete_project(project_id)
+        let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
+        projects.delete(project_id)
     }
 
     /// List active projects through the Project Engine.
     pub fn list_projects(&self) -> JaymiResult<Vec<Project>> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.list_projects()
+        let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
+        projects.list()
     }
 
     /// Request one assembled ProjectContext from the Project Engine.
@@ -608,121 +634,85 @@ impl Application {
         &self,
         project_id: Option<&str>,
     ) -> JaymiResult<Option<ProjectContext>> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.project_context(project_id)
+        let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
+        projects.project_context(project_id)
     }
 
     /// Assemble project context for a known project id.
     pub fn assemble_project_context(&self, project_id: &str) -> JaymiResult<ProjectContext> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.assemble_project_context(project_id)
+        let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
+        projects.assemble_context(project_id)
     }
 
-    /// Search knowledge belonging to a project (isolated).
+    /// Search knowledge belonging to a project (Planner-mediated).
+    ///
+    /// Always enters [`Planner::handle`]; never calls the Project Engine
+    /// directly from Application.
     pub fn search_project_knowledge(
         &self,
         project_id: &str,
         text: &str,
         limit: Option<usize>,
     ) -> JaymiResult<Vec<jaymi_project_engine::ProjectKnowledgeHit>> {
-        let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
-        projects.search_knowledge(&jaymi_project_engine::ProjectKnowledgeQuery {
-            project_id: project_id.to_string(),
-            text: text.to_string(),
-            limit,
-        })
+        let response = self.handle(UserRequest::search_project_knowledge(
+            project_id, text, limit,
+        ))?;
+        Ok(response.project_knowledge)
     }
 
-    /// Register a project so memory can be attached to it.
-    ///
-    /// Ensures a first-class Project Engine entry exists, then registers memory.
-    pub fn register_project(
-        &self,
-        request: &RegisterProjectRequest,
-    ) -> JaymiResult<ProjectMeta> {
-        let planner = self.container.resolve::<Planner>()?;
-        let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
-        let known = match &request.project_id {
-            Some(id) if !id.trim().is_empty() => projects.get(id.as_str())?,
-            _ => None,
-        };
-        let project_id = if let Some(existing) = known {
-            existing.id.as_str().to_string()
-        } else {
-            let created = planner.create_project(&CreateProjectRequest {
-                project_id: request.project_id.clone(),
-                name: request.name.clone(),
-                description: None,
-                root_directory: request.root_path.as_ref().map(std::path::PathBuf::from),
-                project_type: None,
-            })?;
-            created.id.as_str().to_string()
-        };
-        planner.register_project(&RegisterProjectRequest {
-            project_id: Some(project_id),
-            name: request.name.clone(),
-            root_path: request.root_path.clone(),
-        })
-    }
-
-    /// Activate a project for automatic memory retrieval.
-    pub fn set_active_project(
-        &self,
-        project_id: Option<&str>,
-    ) -> JaymiResult<Option<ProjectMeta>> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.set_active_project(project_id)
+    /// Point Memory at a project id for context assembly (Project Engine owns identity).
+    pub fn set_active_project(&self, project_id: Option<&str>) -> JaymiResult<()> {
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.set_active_project(project_id)
     }
 
     /// Activate a conversation for memory context assembly.
     pub fn set_active_conversation(&self, conversation_id: Option<&str>) -> JaymiResult<()> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.set_active_conversation(conversation_id)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.set_active_conversation(conversation_id)
     }
 
-    /// Store categorized project memory through the Planner.
+    /// Store categorized project memory through the Memory Engine.
     pub fn store_project_memory(
         &self,
         request: &StoreProjectMemoryRequest,
     ) -> JaymiResult<MemoryRecord> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.store_project_memory(request)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.store_project_memory(request)
     }
 
-    /// Persist an architectural decision through the Planner.
+    /// Persist an architectural decision through the Memory Engine.
     pub fn store_project_decision(
         &self,
         request: &StoreProjectDecisionRequest,
     ) -> JaymiResult<ProjectDecision> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.store_project_decision(request)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.store_project_decision(request)
     }
 
-    /// List a project's decision log through the Planner.
+    /// List a project's decision log through the Memory Engine.
     pub fn list_project_decisions(
         &self,
         query: &ListProjectDecisionsQuery,
     ) -> JaymiResult<Vec<ProjectDecision>> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.list_project_decisions(query)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.list_project_decisions(query)
     }
 
-    /// Fetch one project decision by memory id through the Planner.
+    /// Fetch one project decision by memory id through the Memory Engine.
     pub fn get_project_decision(&self, memory_id: &str) -> JaymiResult<Option<ProjectDecision>> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.get_project_decision(memory_id)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.get_project_decision(memory_id)
     }
 
-    /// Restore project context through the Planner.
+    /// Restore / assemble project context through the Project Engine.
     pub fn restore_project_context(&self, project_id: &str) -> JaymiResult<ProjectContext> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.restore_project_context(project_id)
+        self.assemble_project_context(project_id)
     }
 
     /// Continue working on a named project (restores project memory automatically).
     pub fn continue_project(&self, name: &str) -> JaymiResult<PlannerResponse> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.handle(UserRequest::new(format!("Continue working on {name}.")))
+        self.handle(UserRequest::new(format!("Continue working on {name}.")))
     }
 
     /// Discover registered capabilities through the Planner / Capability Engine.
@@ -934,40 +924,39 @@ impl Application {
         if !content.trim().is_empty() {
             self.record_user_message(content)?;
         }
-        let planner = self.container.resolve::<Planner>()?;
-        let response = planner.handle(request)?;
+        let response = self.handle(request)?;
         self.apply_workspace_response(&response)?;
         Ok(response)
     }
 
-    /// Create an intentional personal preference through the Planner.
+    /// Create an intentional personal preference through the Memory Engine.
     pub fn create_personal_memory(
         &self,
         request: &CreatePersonalMemoryRequest,
     ) -> JaymiResult<MemoryRecord> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.create_personal_memory(request)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.create_personal_memory(request)
     }
 
-    /// Update a personal preference through the Planner.
+    /// Update a personal preference through the Memory Engine.
     pub fn update_personal_memory(
         &self,
         request: &UpdatePersonalMemoryRequest,
     ) -> JaymiResult<MemoryRecord> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.update_personal_memory(request)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.update_personal_memory(request)
     }
 
-    /// Delete a personal preference through the Planner.
+    /// Delete a personal preference through the Memory Engine.
     pub fn delete_personal_memory(&self, memory_id: &str) -> JaymiResult<()> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.delete_personal_memory(memory_id)
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.delete_personal_memory(memory_id)
     }
 
-    /// Load active personal preferences through the Planner.
+    /// Load active personal preferences through the Memory Engine.
     pub fn personal_context(&self) -> JaymiResult<PersonalContext> {
-        let planner = self.container.resolve::<Planner>()?;
-        planner.personal_context()
+        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        memory.personal_context()
     }
 
     /// Ask the Planner to list active logical collections from the inventory.
@@ -1000,6 +989,7 @@ impl Application {
         let policies = self.container.resolve::<Arc<PolicyEngine>>()?;
         let permissions = self.container.resolve::<Arc<PermissionEngine>>()?;
         let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
+        let context_engine = self.container.resolve::<Arc<ContextEngine>>()?;
         let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
         let capabilities = self.container.resolve::<Arc<CapabilityEngine>>()?;
         let providers = self.container.resolve::<Arc<ProviderRegistry>>()?;
@@ -1023,6 +1013,7 @@ impl Application {
             detail: "memory engine health unavailable".into(),
             statistics: jaymi_memory::MemoryStats::default(),
         });
+        let context_health = context_engine.health_check();
         let project_report = projects.health_check();
         let project_status = projects.health().unwrap_or_else(|_| ProjectHealth {
             initialized: project_report.initialized,
@@ -1519,6 +1510,21 @@ impl Application {
                 memory_status.detail.clone(),
             ),
             SubsystemStatus::new(
+                "Context Engine",
+                if context_health.healthy {
+                    OperationalStatus::Operational
+                } else if context_health.initialized {
+                    OperationalStatus::Degraded
+                } else {
+                    OperationalStatus::Unavailable
+                },
+                format!(
+                    "sources_bound={} · assembles={}",
+                    context_engine.sources_bound(),
+                    context_engine.assemble_count()
+                ),
+            ),
+            SubsystemStatus::new(
                 "Project Status",
                 if project_status.healthy {
                     OperationalStatus::Operational
@@ -1674,7 +1680,11 @@ impl Application {
         let _ = self.container.take::<Arc<EmbeddingQueue>>();
         let _ = self.container.take::<Arc<SqliteKnowledgeStore>>();
 
-        shutdown_owned::<ContextEngine>(&mut self.container)?;
+        if let Some(context) = self.container.take::<Arc<ContextEngine>>() {
+            if let Ok(mut context) = Arc::try_unwrap(context) {
+                context.shutdown()?;
+            }
+        }
         if let Some(memory) = self.container.take::<Arc<MemoryEngine>>() {
             if let Ok(mut memory) = Arc::try_unwrap(memory) {
                 memory.shutdown()?;
@@ -1742,7 +1752,10 @@ mod tests {
             .iter()
             .any(|id| id == OCR_PROVIDER_ID));
         assert_eq!(diagnostics.tool_count, 5);
-        assert_eq!(diagnostics.capability_count, 5);
+        assert_eq!(
+            diagnostics.capability_count,
+            jaymi_capabilities::Capability::all().len()
+        );
         assert!(diagnostics.database_connected);
         assert_eq!(
             diagnostics.database_path.as_ref().map(std::path::PathBuf::from),

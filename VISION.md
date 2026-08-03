@@ -2,6 +2,10 @@ Vision
 
 Build the computer we’ve always wanted.
 
+This document is **Target Architecture** — the long-term product vision.
+
+Kernel progress (Current Implementation) is tracked in `ROADMAP.md` and `ARCHITECTURE.md`. Layers 0–6 of the architectural kernel are shipped; Layers 7–9 and most of the experience described below remain Target.
+
 Computers have become incredibly powerful, yet they still expect people to think like machines.
 
 We organize folders.

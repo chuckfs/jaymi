@@ -21,9 +21,9 @@ use crate::personal::{
     CreatePersonalMemoryRequest, PersonalContext, PersonalMemoryKind, UpdatePersonalMemoryRequest,
 };
 use crate::project::{
-    encode_decision_metadata, project_decision_from_record, slugify_project_name,
-    ListProjectDecisionsQuery, ProjectContext, ProjectDecision, ProjectMemoryKind, ProjectMeta,
-    RegisterProjectRequest, StoreProjectDecisionRequest, StoreProjectMemoryRequest,
+    encode_decision_metadata, project_decision_from_record, ListProjectDecisionsQuery,
+    ProjectDecision, ProjectMemoryBundle, ProjectMemoryKind, StoreProjectDecisionRequest,
+    StoreProjectMemoryRequest,
 };
 use crate::promotion::{
     is_upward_promotion, next_scope, score_promotion_candidate, suggestion_reason,
@@ -106,17 +106,19 @@ pub trait MemoryEngineApi: Send + Sync {
     ) -> JaymiResult<Vec<ConversationMeta>>;
 
     /// Attach a conversation to exactly one project, or detach it (`None`).
+    ///
+    /// `project_id` is a reference owned by the Project Engine — Memory does
+    /// not validate project identity.
     fn attach_conversation_to_project(
         &self,
         conversation_id: &str,
         project_id: Option<&str>,
     ) -> JaymiResult<ConversationMeta>;
 
-    /// Register a project so memory can be attached to it.
-    fn register_project(&self, request: &RegisterProjectRequest) -> JaymiResult<ProjectMeta>;
-
-    /// Activate a project for automatic Planner retrieval.
-    fn set_active_project(&self, project_id: Option<&str>) -> JaymiResult<Option<ProjectMeta>>;
+    /// Set the active project id used when assembling memory context.
+    ///
+    /// This is a session hint only. Project identity lives in the Project Engine.
+    fn set_active_project(&self, project_id: Option<&str>) -> JaymiResult<()>;
 
     /// Current active project id, when any.
     fn active_project_id(&self) -> Option<String>;
@@ -148,11 +150,8 @@ pub trait MemoryEngineApi: Send + Sync {
     /// Load one project decision by memory id.
     fn get_project_decision(&self, memory_id: &str) -> JaymiResult<Option<ProjectDecision>>;
 
-    /// Restore full project context (all maintained categories).
-    fn restore_project_context(&self, project_id: &str) -> JaymiResult<ProjectContext>;
-
-    /// Find a project by display name or slug.
-    fn find_project_by_name(&self, name: &str) -> JaymiResult<Option<ProjectMeta>>;
+    /// Restore categorized project memories by `project_id` (no identity lookup).
+    fn restore_project_memories(&self, project_id: &str) -> JaymiResult<ProjectMemoryBundle>;
 
     /// Create an intentional personal preference memory.
     ///
@@ -191,7 +190,7 @@ pub struct MemoryStats {
     pub active_total: u64,
     /// Persisted conversation transcripts.
     pub conversation_count: u64,
-    /// Registered projects.
+    /// Distinct project ids referenced by active memories (not a registry count).
     pub project_count: u64,
 }
 
@@ -266,7 +265,7 @@ impl MemoryEngine {
                 .collect(),
             active_total,
             conversation_count: self.store.conversation_count()?,
-            project_count: self.store.project_count()?,
+            project_count: self.store.referenced_project_count()?,
         })
     }
 }
@@ -653,11 +652,7 @@ impl MemoryEngineApi for MemoryEngine {
             )));
         }
         let project_id = request.project_id.clone().or_else(|| self.active_project_id());
-        if let Some(project_id) = &project_id {
-            if self.store.get_project(project_id)?.is_none() {
-                return Err(JaymiError::new(format!("project not found: {project_id}")));
-            }
-        }
+        // project_id is a Project Engine reference — Memory does not validate identity.
         let meta = ConversationMeta {
             id: jaymi_core::EntityId::new(id),
             title: request.title.clone(),
@@ -808,11 +803,7 @@ impl MemoryEngineApi for MemoryEngine {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(str::to_string);
-        if let Some(project_id) = &project_id {
-            if self.store.get_project(project_id)?.is_none() {
-                return Err(JaymiError::new(format!("project not found: {project_id}")));
-            }
-        }
+        // project_id is a Project Engine reference — Memory does not validate identity.
         meta.project_id = project_id;
         meta.updated_at = Self::now();
         self.store.upsert_conversation_meta(&meta)?;
@@ -827,43 +818,7 @@ impl MemoryEngineApi for MemoryEngine {
         Ok(meta)
     }
 
-    fn register_project(&self, request: &RegisterProjectRequest) -> JaymiResult<ProjectMeta> {
-        self.ensure_ready()?;
-        let name = request.name.trim();
-        if name.is_empty() {
-            return Err(JaymiError::new("register_project requires a name"));
-        }
-        if let Some(existing) = self.store.find_project_by_name(name)? {
-            return Ok(existing);
-        }
-        let now = Self::now();
-        let id = request
-            .project_id
-            .as_ref()
-            .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())
-            .unwrap_or_else(|| format!("project:{}:{}", slugify_project_name(name), now_nanos()));
-        let meta = ProjectMeta {
-            id: jaymi_core::EntityId::new(id),
-            name: name.to_string(),
-            slug: slugify_project_name(name),
-            root_path: request.root_path.clone(),
-            created_at: now,
-            updated_at: now,
-        };
-        self.store.upsert_project(&meta)?;
-        jaymi_logging::info(
-            "memory",
-            format!(
-                "registered project id={} name={}",
-                meta.id.as_str(),
-                meta.name
-            ),
-        );
-        Ok(meta)
-    }
-
-    fn set_active_project(&self, project_id: Option<&str>) -> JaymiResult<Option<ProjectMeta>> {
+    fn set_active_project(&self, project_id: Option<&str>) -> JaymiResult<()> {
         self.ensure_ready()?;
         let mut guard = self
             .active_project
@@ -872,14 +827,16 @@ impl MemoryEngineApi for MemoryEngine {
         match project_id {
             None => {
                 *guard = None;
-                Ok(None)
+                Ok(())
             }
             Some(id) => {
-                let Some(project) = self.store.get_project(id)? else {
-                    return Err(JaymiError::new(format!("project not found: {id}")));
-                };
-                *guard = Some(project.id.as_str().to_string());
-                Ok(Some(project))
+                let id = id.trim();
+                if id.is_empty() {
+                    return Err(JaymiError::new("set_active_project requires project_id"));
+                }
+                // Session hint only — Project Engine owns whether the id exists.
+                *guard = Some(id.to_string());
+                Ok(())
             }
         }
     }
@@ -934,12 +891,6 @@ impl MemoryEngineApi for MemoryEngine {
                 "store_project_memory requires project_id",
             ));
         }
-        if self.store.get_project(&request.project_id)?.is_none() {
-            return Err(JaymiError::new(format!(
-                "project not found: {}",
-                request.project_id
-            )));
-        }
         let mut tags = request.tags.clone();
         let kind_tag = format!("kind:{}", request.kind.as_str());
         if !tags.iter().any(|tag| tag == &kind_tag) {
@@ -972,12 +923,6 @@ impl MemoryEngineApi for MemoryEngine {
         }
         if request.title.trim().is_empty() {
             return Err(JaymiError::new("store_project_decision requires a title"));
-        }
-        if self.store.get_project(&request.project_id)?.is_none() {
-            return Err(JaymiError::new(format!(
-                "project not found: {}",
-                request.project_id
-            )));
         }
         let mut related_conversations = request.related_conversations.clone();
         if let Some(conversation_id) = &request.conversation_id {
@@ -1056,11 +1001,14 @@ impl MemoryEngineApi for MemoryEngine {
         Ok(project_decision_from_record(&record))
     }
 
-    fn restore_project_context(&self, project_id: &str) -> JaymiResult<ProjectContext> {
+    fn restore_project_memories(&self, project_id: &str) -> JaymiResult<ProjectMemoryBundle> {
         self.ensure_ready()?;
-        let Some(project) = self.store.get_project(project_id)? else {
-            return Err(JaymiError::new(format!("project not found: {project_id}")));
-        };
+        let project_id = project_id.trim();
+        if project_id.is_empty() {
+            return Err(JaymiError::new(
+                "restore_project_memories requires project_id",
+            ));
+        }
         let memories = self.store.search(&MemoryQuery {
             scope: Some(MemoryScope::Project),
             project_id: Some(project_id.to_string()),
@@ -1068,11 +1016,11 @@ impl MemoryEngineApi for MemoryEngine {
             ..MemoryQuery::default()
         })?;
 
-        let mut context = ProjectContext {
-            project_id: project.id.as_str().to_string(),
-            name: project.name.clone(),
+        let mut context = ProjectMemoryBundle {
+            project_id: project_id.to_string(),
+            name: project_id.to_string(),
             conversation_ids: self.store.list_conversation_ids_for_project(project_id)?,
-            ..ProjectContext::default()
+            ..ProjectMemoryBundle::default()
         };
 
         for record in memories {
@@ -1093,11 +1041,6 @@ impl MemoryEngineApi for MemoryEngine {
             }
         }
         Ok(context)
-    }
-
-    fn find_project_by_name(&self, name: &str) -> JaymiResult<Option<ProjectMeta>> {
-        self.ensure_ready()?;
-        self.store.find_project_by_name(name)
     }
 
     fn create_personal_memory(
@@ -1615,20 +1558,7 @@ mod tests {
         let mut engine = MemoryEngine::with_store(Arc::new(InMemoryMemoryStore::new()));
         engine.initialize().unwrap();
 
-        engine
-            .register_project(&crate::RegisterProjectRequest {
-                project_id: Some("project:jaymi".into()),
-                name: "Jaymi".into(),
-                root_path: None,
-            })
-            .unwrap();
-        engine
-            .register_project(&crate::RegisterProjectRequest {
-                project_id: Some("project:other".into()),
-                name: "Other".into(),
-                root_path: None,
-            })
-            .unwrap();
+        // Project Engine owns identity — Memory only needs the project_id string.
         engine.set_active_project(Some("project:jaymi")).unwrap();
         engine
             .set_active_conversation(Some("conv-a"))

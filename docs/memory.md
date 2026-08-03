@@ -1,5 +1,7 @@
 Memory
 
+**Status: Current Implementation** (core) · **Target:** graph, merge/split, aging, export
+
 Memory allows Jaymi to learn over time while remaining transparent, editable, and entirely under the user’s control.
 
 Unlike conversation history, memory is intentional.
@@ -26,6 +28,13 @@ Every memory should have a purpose.
 
 Memory Architecture
 
+**Current request path** for Planner responses:
+
+User → Conversation → Planner → Context Engine → Memory Engine → Memory Store
+
+Administrative store / promote / personal CRUD may call the Memory Engine directly (not a request bypass).
+
+```text
 User
    │
    ▼
@@ -33,6 +42,9 @@ Conversation
    │
    ▼
 Planner
+   │
+   ▼
+Context Engine  (assemble)
    │
    ▼
 Memory Engine
@@ -43,8 +55,9 @@ Retrieve      Promote
    │              │
    ▼              ▼
 Memory Store  Memory Store
+```
 
-The Planner decides when memory is useful.
+The Planner decides when memory is useful for a request (via Context).
 
 The Memory Engine decides how it is stored and retrieved.
 
@@ -84,6 +97,8 @@ Project Memory
 Project Memory belongs to a project.
 
 Every project maintains its own memory.
+
+Memory never owns project identity. The Project Engine creates and looks up projects; Memory stores and retrieves records keyed only by `project_id`.
 
 Project Memory may include:
 
@@ -220,6 +235,8 @@ This structure enables efficient retrieval and explainability.
 
 Memory Relationships
 
+**Status: Target** (scaffolding exists; not a productized graph)
+
 Memories should form a graph rather than isolated records.
 
 Example:
@@ -252,6 +269,8 @@ Jaymi should never create memories that cannot be modified.
 ⸻
 
 Memory Aging
+
+**Status: Target**
 
 Not every memory remains useful forever.
 

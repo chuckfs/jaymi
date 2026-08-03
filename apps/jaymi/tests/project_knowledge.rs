@@ -150,7 +150,7 @@ fn project_knowledge_is_isolated_and_search_is_project_aware() {
     assert!(context.tasks[0].content.contains("alphatask-token-11"));
     assert!(context.search_index.has_root);
 
-    // Direct project knowledge search stays inside Alpha.
+    // Project knowledge search (Planner-mediated; Application does not call PE directly).
     let hits = app
         .search_project_knowledge(project_a.id.as_str(), "alphaknowledge99", Some(20))
         .expect("search alpha content");

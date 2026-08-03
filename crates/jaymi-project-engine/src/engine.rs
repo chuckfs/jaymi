@@ -189,9 +189,10 @@ impl ProjectEngine {
         is_open: bool,
         sources: &ProjectContextSources,
     ) -> JaymiResult<ProjectContext> {
-        let memories = sources
+        let mut memories = sources
             .memory
-            .restore_project_context(project.id.as_str())?;
+            .restore_project_memories(project.id.as_str())?;
+        memories.name = project.name.clone();
 
         let conversation_ids = memories.conversation_ids.clone();
         let mut conversations = Vec::new();
