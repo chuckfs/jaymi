@@ -33,7 +33,7 @@ Jaymi defines primary workspace kinds. **Current:** conversation shell plus expa
 - Git (live status / stage / unstage / discard / commit via Planner → `git` → Git Provider)
 - Diagnostics (read-only operational panel: active project, workspace state, planner activity, tool execution, provider status, indexing, memory context, permissions, current capability, timing metrics; plus LSP problems)
 
-**Activation (UI):** conversation header **⋯** menu → **Start Coding Project**. That reuses the existing Coding shell and `CodingState` without creating a second conversation. Closing the workspace returns to the same chat.
+**Activation (UI):** conversation header **⋯** menu → **Open Project…** (folder picker; creates or reuses a project for that root, then opens Coding) or **Recent Projects**, or **Start Coding Project** (opens the Coding shell for the already-active project). That reuses the existing Coding shell and `CodingState` without creating a second conversation. Closing the workspace returns to the same chat. The Project Explorer empty state also offers **Open Project…**.
 
 The conversation remains visible and persistent. Monaco and the Language Server (Rust Analyzer) are embedded in Coding Workspace (buffers and diagnostics survive UI remounts via `CodingState`). Broader LSP tooling remains **Target** for Layer 7 polish. Terminal PTY and Git panel are available in Coding Workspace.
 

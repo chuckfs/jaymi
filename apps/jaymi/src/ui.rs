@@ -181,7 +181,7 @@ impl JaymiApp {
             );
             ui.add_space(10.0);
             ui.label(
-                egui::RichText::new("Ask anything, or open ⋯ → Start Coding Project.")
+                egui::RichText::new("Ask anything, or open ⋯ → Open Project… / Start Coding Project.")
                     .size(15.0)
                     .color(ui.visuals().weak_text_color()),
             );
@@ -275,17 +275,40 @@ impl JaymiApp {
 
     /// Three-dot action menu in the conversation header (discoverable activation).
     fn render_conversation_actions(&mut self, ui: &mut egui::Ui) {
-        #[derive(Clone, Copy)]
         enum ConversationAction {
+            OpenProjectFolder,
+            OpenProjectId(String),
             StartCoding,
             StartResearch,
             StartCreation,
             Settings,
         }
 
+        let known_projects = self.app.list_projects().unwrap_or_default();
         let mut action = None;
         ui.menu_button("⋯", |ui| {
-            ui.set_min_width(180.0);
+            ui.set_min_width(220.0);
+            if ui.button("Open Project…").clicked() {
+                action = Some(ConversationAction::OpenProjectFolder);
+                ui.close_menu();
+            }
+            if !known_projects.is_empty() {
+                ui.menu_button("Recent Projects", |ui| {
+                    ui.set_min_width(220.0);
+                    for project in &known_projects {
+                        let label = match project.root_directory.as_ref() {
+                            Some(root) => format!("{} — {}", project.name, root.display()),
+                            None => project.name.clone(),
+                        };
+                        if ui.button(label).clicked() {
+                            action =
+                                Some(ConversationAction::OpenProjectId(project.id.to_string()));
+                            ui.close_menu();
+                        }
+                    }
+                });
+            }
+            ui.separator();
             if ui.button("Start Coding Project").clicked() {
                 action = Some(ConversationAction::StartCoding);
                 ui.close_menu();
@@ -308,6 +331,10 @@ impl JaymiApp {
         .on_hover_text("Conversation actions");
 
         match action {
+            Some(ConversationAction::OpenProjectFolder) => self.open_project_folder(),
+            Some(ConversationAction::OpenProjectId(project_id)) => {
+                self.open_project_by_id(&project_id)
+            }
             Some(ConversationAction::StartCoding) => self.start_coding_project(),
             Some(ConversationAction::StartResearch) => self.start_research_workspace(),
             Some(ConversationAction::StartCreation) => self.start_creation_workspace(),
@@ -316,6 +343,32 @@ impl JaymiApp {
                 self.error = None;
             }
             None => {}
+        }
+    }
+
+    fn open_project_folder(&mut self) {
+        let picked = rfd::FileDialog::new()
+            .set_title("Open Project")
+            .pick_folder();
+        let Some(path) = picked else {
+            return;
+        };
+        match self.app.open_project_from_path(&path) {
+            Ok(_) => {
+                self.error = None;
+                self.start_coding_project();
+            }
+            Err(error) => self.error = Some(error.message().to_string()),
+        }
+    }
+
+    fn open_project_by_id(&mut self, project_id: &str) {
+        match self.app.open_project(project_id) {
+            Ok(_) => {
+                self.error = None;
+                self.start_coding_project();
+            }
+            Err(error) => self.error = Some(error.message().to_string()),
         }
     }
 
@@ -334,6 +387,10 @@ impl JaymiApp {
     fn handle_coding_events(&mut self, events: Vec<CodingShellEvent>) {
         for event in events {
             let result = match event {
+                CodingShellEvent::OpenProject => {
+                    self.open_project_folder();
+                    Ok(())
+                }
                 CodingShellEvent::ToggleExpand(path) => self.app.toggle_coding_expand(&path),
                 CodingShellEvent::SelectPath { path, is_dir } => {
                     self.app.select_coding_path(&path, is_dir)

@@ -41,7 +41,7 @@ use jaymi_planner::{Planner, PlannerDeps, PlannerResponse};
 use jaymi_policies::PolicyEngine;
 use jaymi_project_engine::{
     CreateProjectRequest, Project, ProjectContext, ProjectEngine, ProjectEngineApi, ProjectHealth,
-    SqliteProjectStore,
+    ProjectType, SqliteProjectStore,
 };
 use jaymi_providers::{
     EmbeddingProvider, FilesystemProvider, GitProvider, LocalEmbeddingProvider, LspProvider,
@@ -692,6 +692,55 @@ impl Application {
     ) -> JaymiResult<Project> {
         let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
         projects.create(request)
+    }
+
+    /// Open an existing project for `root`, or create one then open it.
+    ///
+    /// Reuses a project that already points at the same canonical directory.
+    pub fn open_project_from_path(
+        &self,
+        root: impl AsRef<Path>,
+    ) -> JaymiResult<ProjectContext> {
+        let root = root.as_ref();
+        if !root.is_dir() {
+            return Err(JaymiError::new(format!(
+                "project path is not a directory: {}",
+                root.display()
+            )));
+        }
+        let canonical = root
+            .canonicalize()
+            .map_err(|error| JaymiError::new(format!("resolve project path: {error}")))?;
+
+        if let Some(existing) = self.find_project_by_root(&canonical)? {
+            return self.open_project(existing.id.as_str());
+        }
+
+        let name = canonical
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "Project".to_string());
+        let project = self.create_project(&CreateProjectRequest {
+            project_id: None,
+            name,
+            description: None,
+            root_directory: Some(canonical),
+            project_type: Some(ProjectType::Code),
+        })?;
+        self.open_project(project.id.as_str())
+    }
+
+    fn find_project_by_root(&self, root: &Path) -> JaymiResult<Option<Project>> {
+        let projects = self.list_projects()?;
+        Ok(projects.into_iter().find(|project| {
+            project
+                .root_directory
+                .as_ref()
+                .and_then(|path| path.canonicalize().ok())
+                .as_deref()
+                == Some(root)
+        }))
     }
 
     /// Open a project through the Planner (sole session open path).

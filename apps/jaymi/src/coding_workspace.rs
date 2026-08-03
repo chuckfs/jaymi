@@ -435,6 +435,8 @@ pub struct LastPlannerActivity {
 /// Events emitted by interactive Coding shell panels.
 #[derive(Debug, Clone, PartialEq)]
 pub enum CodingShellEvent {
+    /// Open a project via the native folder picker (UI owns dialog).
+    OpenProject,
     /// Toggle expand/collapse for a directory path.
     ToggleExpand(String),
     /// Select a path (`is_dir` distinguishes folders from files).
@@ -630,7 +632,7 @@ fn explorer_lines(state: &CodingState) -> Vec<String> {
     match &state.explorer_status {
         ExplorerStatus::Idle => lines.push("Loading project tree…".to_string()),
         ExplorerStatus::NoProject => {
-            lines.push("No open project — open a project to browse files.".to_string());
+            lines.push("No open project — use Open Project… to browse files.".to_string());
         }
         ExplorerStatus::Error(message) => lines.push(format!("Explorer error: {message}")),
         ExplorerStatus::Ready => {
@@ -721,7 +723,7 @@ fn editor_lines(state: &CodingState) -> Vec<String> {
 
 fn placeholder_for(panel: WorkspacePanel) -> &'static str {
     match panel {
-        WorkspacePanel::ProjectExplorer => "No open project — open a project to browse files.",
+        WorkspacePanel::ProjectExplorer => "No open project — use Open Project… to browse files.",
         WorkspacePanel::Editor => "No open files — select a file in Project Explorer.",
         WorkspacePanel::Terminal => "No terminal sessions — open Coding to spawn a PTY.",
         WorkspacePanel::Git => "Git not connected — open Coding on a repository.",
@@ -876,7 +878,10 @@ fn render_explorer(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<Codi
             ui.weak("Loading project tree…");
         }
         ExplorerStatus::NoProject => {
-            ui.weak("No open project — open a project to browse files.");
+            ui.weak("No open project — choose a folder to browse files.");
+            if ui.button("Open Project…").clicked() {
+                events.push(CodingShellEvent::OpenProject);
+            }
         }
         ExplorerStatus::Error(message) => {
             ui.colored_label(egui::Color32::from_rgb(180, 60, 60), message);
