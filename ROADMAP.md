@@ -27,11 +27,11 @@ Progress
 | 4 | Memory Engine | **Current** (core; graph/export/aging Target) |
 | 5 | Project Engine | **Current** (core; Git/artifacts Target) |
 | 6 | Workspace & Capability Engine | **Current** (engine + thin UX; rich IDE/canvas Target) |
-| 7 | Tool Engine | **Partial** (framework + 5 tools; most catalog Target) |
+| 7 | Tool Engine | **Partial** (framework + 6 tools; most catalog Target) |
 | 8 | Provider Ecosystem | **Partial** (Registry + 3 local providers; plugins Target) |
 | 9 | Daily Driver | **Target** |
 
-Architectural Integrity (orthogonal to layers): Context sole assemble path, Project ownership, Planner responsibilities, Planner integrity (requests via `handle`), Provider simplification (no ProviderManager), Documentation alignment, Capability availability (Ready / Experimental / Planned / Unavailable) — **Current**.
+Architectural Integrity (orthogonal to layers): Context sole assemble path, Project ownership, Planner responsibilities, Planner integrity (requests via `handle`), Provider simplification (no ProviderManager), Capability availability (Ready / Experimental / Planned / Unavailable), Pipeline consistency (project knowledge via Cap → Policy → Permission → Tool), Session ownership (one project open/close lifecycle), Documentation & Diagnostics (Operational / Experimental / Stub / Disabled) — **Current**.
 
 ⸻
 
@@ -220,9 +220,11 @@ Give Jaymi useful abilities that reshape the experience — not just backend con
 
 Capabilities include (catalog):
 
-* Chat, Coding, Image generation, Search, Vision, Internet, Automation, File management, Terminal
+* Chat, Coding, Image generation, Search, Vision, OCR, Embeddings, Internet, Automation, File management, Terminal, and related aliases
 
-**Current registration at boot:** Search, ReadDocuments, Discover, Index, Code (planning / workspace mapping).
+**Boot registration:** the **full capability catalog** is registered. Availability (Ready / Experimental / Planned / Unavailable) distinguishes conceptual support from what is currently executable. Planned capabilities stay registered.
+
+**Currently executable (inventory-backed):** Search, ReadDocuments, Discover, Index (Ready); Embeddings (Experimental — local lexical). Code / Vision remain Experimental catalog but Unavailable without coding/vision tools. OCR is **Planned** (placeholder provider only; not executable).
 
 Capabilities are abstract.
 
@@ -260,6 +262,7 @@ Current tools
 
 * `search_files`
 * `search_knowledge`
+* `search_project_knowledge`
 * `read_file`
 * `query_inventory`
 * `scan_filesystem`

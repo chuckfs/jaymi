@@ -28,9 +28,9 @@ Registration is not the same as executability. Planned capabilities remain regis
 
 **Ready:** Search, Read Documents, Discover, Index
 
-**Experimental:** Code, OCR, Embeddings, Vision
+**Experimental:** Code, Embeddings, Vision
 
-**Planned:** Chat, Generate Images, Browse the Web, Organize Files, Execute Terminal Commands, Automate Tasks, File Management, Internet, Automation
+**Planned:** OCR (placeholder provider only — not executable), Chat, Generate Images, Browse the Web, Organize Files, Execute Terminal Commands, Automate Tasks, File Management, Internet, Automation
 
 Effective availability can demote Ready / Experimental to Unavailable when required tools or providers are missing. Planned stays Planned until the product promotes it.
 
@@ -53,8 +53,10 @@ Diagnostics and the Capability Inspector show:
 
 * Registered catalog size (conceptual)
 * Active / executable ids (Ready + Experimental with inventory)
-* Planned ids
+* Planned ids (including OCR until a real engine exists)
 * Per-capability availability labels in status detail lines
+
+Subsystem diagnostics use a separate readiness vocabulary: **Operational / Experimental / Stub / Disabled**.
 
 ---
 

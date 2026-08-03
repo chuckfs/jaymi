@@ -104,6 +104,12 @@ fn project_knowledge_and_user_requests_traverse_the_planner() {
         ))
         .expect("handle project knowledge");
     assert!(!response.project_knowledge.is_empty());
+    assert_eq!(
+        response.tool_id.as_deref(),
+        Some(jaymi_tools::SEARCH_PROJECT_KNOWLEDGE_TOOL_ID)
+    );
+    assert!(response.policy_evaluation.is_some());
+    assert!(response.permission_result.is_some());
     assert_eq!(planner.handle_count(), handles_before + 3);
     assert_eq!(context.assemble_count(), assembles_before + 3);
 

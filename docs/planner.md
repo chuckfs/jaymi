@@ -61,7 +61,11 @@ The Planner does not own long-lived Memory or Project CRUD APIs.
 * Memory store / retrieve / promote / conversations / personal preferences belong to the Memory Engine
 * Application (or tools) call those engines directly for administrative operations
 
-The Planner may open or close a project only as part of request orchestration (for example “Continue working on Jaymi”).
+Project session open/close has exactly one lifecycle: Application delegates →
+Planner orchestrates → Project Engine owns open state (Memory mirrors the id
+for context assembly). Continue / Open / Close intents and Application
+`open_project` / `close_project` / `set_active_project` all enter
+`Planner::handle` — there is no Application→Engine session bypass.
 
 ⸻
 
@@ -226,7 +230,7 @@ list / read / search / discover / index
 ↓
 Tool-backed paths through Policy → Permission → Tool
 
-search project knowledge (structured)
+search project knowledge (structured → Cap → Policy → Permission → `search_project_knowledge` tool)
 ↓
 Project Engine (mediated by Planner)
 
@@ -314,7 +318,8 @@ Examples include:
 * Chat (Planned)
 * Search (Ready)
 * Code (Experimental catalog; Unavailable until coding tools exist)
-* Vision / OCR / Embeddings (Experimental)
+* Vision / Embeddings (Experimental; Vision Unavailable without vision tools)
+* OCR (Planned — placeholder provider; not executable)
 * Generate Images / Browse Internet / Terminal / Automation (Planned)
 * Read Documents / Discover / Index (Ready)
 

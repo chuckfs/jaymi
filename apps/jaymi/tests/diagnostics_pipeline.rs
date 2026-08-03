@@ -1,4 +1,6 @@
 //! Integration tests for Slice 0.5 — diagnostics developer dashboard.
+//!
+//! Status vocabulary: Operational / Experimental / Stub / Disabled.
 
 use std::fs;
 use std::path::PathBuf;
@@ -20,10 +22,10 @@ fn diagnostics_dashboard_reports_honest_subsystem_states() {
         ("Configuration", OperationalStatus::Operational),
         ("Logging", OperationalStatus::Operational),
         ("Permissions", OperationalStatus::Operational),
-        ("Policies", OperationalStatus::Operational),
-        ("Providers", OperationalStatus::Operational),
+        ("Policies", OperationalStatus::Experimental),
+        ("Providers", OperationalStatus::Experimental),
         ("OCR Provider", OperationalStatus::Stub),
-        ("Embedding Provider", OperationalStatus::Operational),
+        ("Embedding Provider", OperationalStatus::Experimental),
         ("Embedding Queue", OperationalStatus::Operational),
         ("Capabilities", OperationalStatus::Operational),
         ("Tools", OperationalStatus::Operational),
@@ -38,7 +40,7 @@ fn diagnostics_dashboard_reports_honest_subsystem_states() {
         ("Memory Status", OperationalStatus::Operational),
         ("Context Engine", OperationalStatus::Operational),
         ("Project Status", OperationalStatus::Operational),
-        ("Reasoning Status", OperationalStatus::NotImplemented),
+        ("Reasoning Status", OperationalStatus::Stub),
     ];
 
     assert_eq!(snapshot.subsystems.len(), expected.len());
@@ -54,12 +56,28 @@ fn diagnostics_dashboard_reports_honest_subsystem_states() {
     assert!(rendered.contains("Jaymi Diagnostics"));
     assert!(rendered.contains("Memory Status"));
     assert!(rendered.contains("active="));
-    assert!(rendered.contains("Stub"));  // OCR Provider remains stub
-    assert!(rendered.contains("Not implemented"));
+    assert!(rendered.contains("Stub"));
+    assert!(rendered.contains("Experimental"));
     assert!(
         !rendered.contains("Healthy"),
         "dashboard must not claim Healthy for any subsystem"
     );
+    assert!(
+        !rendered.contains("Degraded"),
+        "dashboard must use Experimental instead of Degraded"
+    );
+    assert!(
+        !rendered.contains("Not implemented"),
+        "dashboard must use Stub instead of Not implemented"
+    );
+
+    let policies = snapshot.subsystem("Policies").unwrap();
+    assert!(policies.detail.contains("enforced: Offline First"));
+    assert!(policies.detail.contains("other builtins declared"));
+
+    let providers = snapshot.subsystem("Providers").unwrap();
+    assert!(providers.detail.contains("stub"));
+    assert!(providers.detail.contains("ready"));
 
     assert!(snapshot.planner_healthy);
     assert!(snapshot.database_connected);
@@ -121,6 +139,13 @@ fn diagnostics_dashboard_reports_honest_subsystem_states() {
         .unwrap()
         .detail
         .contains("collections="));
+
+    // OCR capability stays registered but Planned — not executable via placeholder.
+    assert!(snapshot.capability_ids.iter().any(|id| id == "ocr"));
+    assert!(!snapshot
+        .available_capability_ids
+        .iter()
+        .any(|id| id == "ocr"));
 }
 
 #[test]
@@ -135,8 +160,12 @@ fn diagnostics_reflect_config_indexing_flag_without_claiming_content_understandi
     let snapshot = app.diagnostics().expect("diagnostics");
     assert_eq!(snapshot.config_indexing_enabled, Some(false));
     let index = snapshot.subsystem("Index Status").unwrap();
-    assert_eq!(index.status, OperationalStatus::Operational);
+    assert_eq!(index.status, OperationalStatus::Disabled);
     assert!(index.detail.contains("indexing_enabled=false"));
+
+    let watcher = snapshot.subsystem("Watcher Status").unwrap();
+    assert_eq!(watcher.status, OperationalStatus::Disabled);
+    assert!(watcher.detail.contains("status=disabled"));
 }
 
 fn temp_dir(label: &str) -> PathBuf {

@@ -49,7 +49,7 @@ use jaymi_providers::{
 use jaymi_search::{EmbeddingQueue, SearchEngine, SearchEngineApi, SemanticDeps};
 use jaymi_tools::{
     QueryInventoryTool, ReadFileTool, ScanFilesystemTool, SearchFilesTool, SearchKnowledgeTool,
-    ToolOrchestrator, ToolRegistry,
+    SearchProjectKnowledgeTool, ToolOrchestrator, ToolRegistry,
 };
 use jaymi_understanding::{
     format_parser_usage, ContentIntelligence, ContentIntelligenceApi, SqliteContentStore,
@@ -316,6 +316,9 @@ impl Application {
         self.initialize_service(&mut tools)?;
         tools.register_tool(Arc::new(SearchFilesTool::new(Arc::clone(&filesystem))))?;
         tools.register_tool(Arc::new(SearchKnowledgeTool::new(Arc::clone(&search))))?;
+        tools.register_tool(Arc::new(SearchProjectKnowledgeTool::new(
+            Arc::clone(&projects) as Arc<dyn ProjectEngineApi>,
+        )))?;
         tools.register_tool(Arc::new(ReadFileTool::new(Arc::clone(&content_api))))?;
         tools.register_tool(Arc::new(ScanFilesystemTool::new(Arc::clone(&discovery))))?;
         tools.register_tool(Arc::new(QueryInventoryTool::new(Arc::clone(&search))))?;
@@ -568,40 +571,36 @@ impl Application {
         projects.create(request)
     }
 
-    /// Open a project: bind Memory session hints, open via Project Engine, resume conversation.
+    /// Open a project through the Planner (sole session open path).
+    ///
+    /// Always enters [`Planner::handle`]. Project Engine owns open state;
+    /// Planner syncs Memory and resumes conversation. Does not mutate engines
+    /// from Application.
     pub fn open_project(&self, project_id: &str) -> JaymiResult<ProjectContext> {
-        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
-        let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
-        memory.set_active_project(Some(project_id))?;
-        let context = projects.open(project_id)?;
-        if memory.active_conversation_id().is_none() {
-            if let Some(latest) = memory
-                .list_conversations_for_project(project_id)?
-                .into_iter()
-                .next()
-            {
-                memory.set_active_conversation(Some(latest.id.as_str()))?;
-            }
-        }
-        Ok(context)
+        let response = self.handle(UserRequest::open_project(project_id))?;
+        response.project_context.ok_or_else(|| {
+            JaymiError::new(format!(
+                "open project did not return context: {}",
+                response.content
+            ))
+        })
     }
 
     /// Switch the active workspace to another project by id.
+    ///
+    /// Same lifecycle as [`Self::open_project`] (Planner-orchestrated).
     pub fn switch_project(&self, project_id: &str) -> JaymiResult<ProjectContext> {
         self.open_project(project_id)
     }
 
-    /// Close the session-open project.
+    /// Close the session-open project through the Planner (sole session close path).
     /// Does not clear the active conversation.
     pub fn close_project(&self) -> JaymiResult<Option<Project>> {
-        let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
-        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
-        let closed = projects.close()?;
-        let _ = memory.set_active_project(None);
-        Ok(closed)
+        let response = self.handle(UserRequest::close_project())?;
+        Ok(response.closed_project)
     }
 
-    /// Current active workspace project id, when any.
+    /// Current open workspace project id (Project Engine is source of truth).
     pub fn active_project_id(&self) -> Option<String> {
         self.container
             .resolve::<Arc<ProjectEngine>>()
@@ -660,10 +659,22 @@ impl Application {
         Ok(response.project_knowledge)
     }
 
-    /// Point Memory at a project id for context assembly (Project Engine owns identity).
+    /// Activate or clear the project workspace session.
+    ///
+    /// Delegates to [`Self::open_project`] / [`Self::close_project`] so session
+    /// open/close has one Planner-orchestrated path (Project Engine owns state).
+    /// Does not mutate Memory or Project Engine directly.
     pub fn set_active_project(&self, project_id: Option<&str>) -> JaymiResult<()> {
-        let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
-        memory.set_active_project(project_id)
+        match project_id {
+            Some(id) => {
+                let _ = self.open_project(id)?;
+                Ok(())
+            }
+            None => {
+                let _ = self.close_project()?;
+                Ok(())
+            }
+        }
     }
 
     /// Activate a conversation for memory context assembly.
@@ -1096,16 +1107,24 @@ impl Application {
         let indexing_enabled = config.settings().indexing_enabled;
         let permission_mode = "filesystem read auto-allowed; write/internet denied".to_string();
 
+        let stub_provider_ids: Vec<&str> = provider_ids
+            .iter()
+            .filter(|id| id.contains("placeholder"))
+            .map(String::as_str)
+            .collect();
+        let ready_provider_ids: Vec<&str> = provider_ids
+            .iter()
+            .filter(|id| !id.contains("placeholder"))
+            .map(String::as_str)
+            .collect();
+
         let subsystems = vec![
             SubsystemStatus::new(
                 "Planner",
-                if planner_health.healthy {
-                    OperationalStatus::Operational
-                } else if planner_health.initialized {
-                    OperationalStatus::Degraded
-                } else {
-                    OperationalStatus::Unavailable
-                },
+                OperationalStatus::from_health(
+                    planner_health.healthy,
+                    planner_health.initialized,
+                ),
                 format!(
                     "initialized={} tools={} providers={}",
                     planner_health.initialized,
@@ -1118,9 +1137,9 @@ impl Application {
                 if database.is_connected() && database_health.healthy {
                     OperationalStatus::Operational
                 } else if database_health.initialized {
-                    OperationalStatus::Degraded
+                    OperationalStatus::Experimental
                 } else {
-                    OperationalStatus::Unavailable
+                    OperationalStatus::Disabled
                 },
                 format!(
                     "schema v{} · {} · {}",
@@ -1131,13 +1150,7 @@ impl Application {
             ),
             SubsystemStatus::new(
                 "Configuration",
-                if config_health.healthy {
-                    OperationalStatus::Operational
-                } else if config_health.initialized {
-                    OperationalStatus::Degraded
-                } else {
-                    OperationalStatus::Unavailable
-                },
+                OperationalStatus::from_health(config_health.healthy, config_health.initialized),
                 format!(
                     "log_level={} theme={} indexing_enabled={} · {}",
                     config.settings().log_level.as_str(),
@@ -1148,13 +1161,7 @@ impl Application {
             ),
             SubsystemStatus::new(
                 "Logging",
-                if logger_health.healthy {
-                    OperationalStatus::Operational
-                } else if logger_health.initialized {
-                    OperationalStatus::Degraded
-                } else {
-                    OperationalStatus::Unavailable
-                },
+                OperationalStatus::from_health(logger_health.healthy, logger_health.initialized),
                 format!(
                     "level={} · {}",
                     logging_level,
@@ -1163,55 +1170,78 @@ impl Application {
             ),
             SubsystemStatus::new(
                 "Permissions",
-                if permissions_health.healthy {
-                    OperationalStatus::Operational
-                } else if permissions_health.initialized {
-                    OperationalStatus::Stub
-                } else {
-                    OperationalStatus::Unavailable
-                },
+                OperationalStatus::from_health(
+                    permissions_health.healthy,
+                    permissions_health.initialized,
+                ),
                 permission_mode.clone(),
             ),
             SubsystemStatus::new(
                 "Policies",
-                if policies_health.healthy {
-                    OperationalStatus::Operational
-                } else if policies_health.initialized {
-                    OperationalStatus::Stub
+                if !policies_health.initialized {
+                    OperationalStatus::Disabled
                 } else {
-                    OperationalStatus::Unavailable
+                    // Only Offline First is boot-active and enforced; other builtins
+                    // are declared without constraint logic.
+                    OperationalStatus::Experimental
                 },
-                if active_policies.is_empty() {
-                    "no active policies".to_string()
-                } else {
-                    format!("active: {}", active_policies.join(", "))
+                {
+                    let enforced: Vec<&str> = active_policies
+                        .iter()
+                        .filter(|name| {
+                            *name == "Offline First" || *name == "Privacy Maximum"
+                        })
+                        .map(String::as_str)
+                        .collect();
+                    if active_policies.is_empty() {
+                        "no active policies · other builtins declared".to_string()
+                    } else {
+                        format!(
+                            "enforced: {} · active: {} · other builtins declared",
+                            if enforced.is_empty() {
+                                "none".to_string()
+                            } else {
+                                enforced.join(", ")
+                            },
+                            active_policies.join(", ")
+                        )
+                    }
                 },
             ),
             SubsystemStatus::new(
                 "Providers",
-                if providers.is_initialized() && !provider_ids.is_empty() {
-                    OperationalStatus::Operational
-                } else if providers.is_initialized() {
-                    OperationalStatus::Degraded
+                if !providers.is_initialized() {
+                    OperationalStatus::Disabled
+                } else if ready_provider_ids.is_empty() && !stub_provider_ids.is_empty() {
+                    OperationalStatus::Stub
+                } else if ready_provider_ids.is_empty() {
+                    OperationalStatus::Disabled
+                } else if !stub_provider_ids.is_empty() {
+                    OperationalStatus::Experimental
                 } else {
-                    OperationalStatus::Unavailable
+                    OperationalStatus::Operational
                 },
                 if provider_ids.is_empty() {
                     "none registered".to_string()
                 } else {
-                    format!("{} · {}", provider_ids.len(), provider_ids.join(", "))
+                    format!(
+                        "{} ready · {} stub · {}",
+                        ready_provider_ids.len(),
+                        stub_provider_ids.len(),
+                        provider_ids.join(", ")
+                    )
                 },
             ),
             SubsystemStatus::new(
                 "OCR Provider",
                 if !ocr_status.initialized {
-                    OperationalStatus::Unavailable
+                    OperationalStatus::Disabled
                 } else if ocr_status.placeholder {
                     OperationalStatus::Stub
                 } else if ocr_status.available {
                     OperationalStatus::Operational
                 } else {
-                    OperationalStatus::Degraded
+                    OperationalStatus::Experimental
                 },
                 format!(
                     "id={} · engine={} · available={} · {}",
@@ -1224,14 +1254,15 @@ impl Application {
             SubsystemStatus::new(
                 "Embedding Provider",
                 if !embedding_status.initialized {
-                    OperationalStatus::Unavailable
+                    OperationalStatus::Disabled
                 } else if embedding_status.available {
-                    OperationalStatus::Operational
+                    // Local lexical embeddings — usable, not a neural model.
+                    OperationalStatus::Experimental
                 } else {
-                    OperationalStatus::Degraded
+                    OperationalStatus::Disabled
                 },
                 format!(
-                    "id={} · model={} · dims={} · {}",
+                    "id={} · model={} · dims={} · lexical · {}",
                     embedding_status.provider_id,
                     embedding_status.model_id,
                     embedding_status.dimensions,
@@ -1243,9 +1274,9 @@ impl Application {
                 if embedding_diagnostics.running {
                     OperationalStatus::Operational
                 } else if embedding_queue.health_check().initialized {
-                    OperationalStatus::Degraded
+                    OperationalStatus::Experimental
                 } else {
-                    OperationalStatus::Unavailable
+                    OperationalStatus::Disabled
                 },
                 format!(
                     "indexed={} · model={} · queue={} · processed={} · last={}",
@@ -1264,11 +1295,11 @@ impl Application {
                 if capabilities.is_initialized() && !available_capability_ids.is_empty() {
                     OperationalStatus::Operational
                 } else if capabilities.is_initialized() && !capability_ids.is_empty() {
-                    OperationalStatus::Degraded
+                    OperationalStatus::Experimental
                 } else if capabilities.is_initialized() {
-                    OperationalStatus::Degraded
+                    OperationalStatus::Experimental
                 } else {
-                    OperationalStatus::Unavailable
+                    OperationalStatus::Disabled
                 },
                 if capability_ids.is_empty() {
                     "none registered".to_string()
@@ -1289,9 +1320,9 @@ impl Application {
                 if tools.is_initialized() && !tool_ids.is_empty() {
                     OperationalStatus::Operational
                 } else if tools.is_initialized() {
-                    OperationalStatus::Degraded
+                    OperationalStatus::Experimental
                 } else {
-                    OperationalStatus::Unavailable
+                    OperationalStatus::Disabled
                 },
                 if tool_ids.is_empty() {
                     "none registered".to_string()
@@ -1304,9 +1335,9 @@ impl Application {
                 if parsers.is_initialized() && !parser_ids.is_empty() {
                     OperationalStatus::Operational
                 } else if parsers.is_initialized() {
-                    OperationalStatus::Degraded
+                    OperationalStatus::Experimental
                 } else {
-                    OperationalStatus::Unavailable
+                    OperationalStatus::Disabled
                 },
                 if parser_ids.is_empty() {
                     "none registered".to_string()
@@ -1325,10 +1356,12 @@ impl Application {
             ),
             SubsystemStatus::new(
                 "Index Status",
-                if discovery_health.initialized {
+                if !indexing_enabled {
+                    OperationalStatus::Disabled
+                } else if discovery_health.initialized {
                     OperationalStatus::Operational
                 } else {
-                    OperationalStatus::Unavailable
+                    OperationalStatus::Disabled
                 },
                 {
                     let stats = discovery_stats.clone().unwrap_or_default();
@@ -1370,7 +1403,7 @@ impl Application {
                 if knowledge_health.initialized {
                     OperationalStatus::Operational
                 } else {
-                    OperationalStatus::Unavailable
+                    OperationalStatus::Disabled
                 },
                 {
                     let stats = discovery_stats.clone().unwrap_or_default();
@@ -1397,7 +1430,7 @@ impl Application {
                 if knowledge_health.initialized {
                     OperationalStatus::Operational
                 } else {
-                    OperationalStatus::Unavailable
+                    OperationalStatus::Disabled
                 },
                 {
                     let stats = collection_stats.clone().unwrap_or_default();
@@ -1417,7 +1450,7 @@ impl Application {
                 if understanding_health.initialized {
                     OperationalStatus::Operational
                 } else {
-                    OperationalStatus::Unavailable
+                    OperationalStatus::Disabled
                 },
                 {
                     let stats = understanding_stats.clone().unwrap_or_default();
@@ -1444,9 +1477,9 @@ impl Application {
                 "Content Intelligence",
                 match &content_health {
                     Some(health) if health.healthy => OperationalStatus::Operational,
-                    Some(health) if health.initialized => OperationalStatus::Degraded,
-                    Some(_) => OperationalStatus::Unavailable,
-                    None => OperationalStatus::Unavailable,
+                    Some(health) if health.initialized => OperationalStatus::Experimental,
+                    Some(_) => OperationalStatus::Disabled,
+                    None => OperationalStatus::Disabled,
                 },
                 content_health
                     .as_ref()
@@ -1457,9 +1490,9 @@ impl Application {
                 "Search Engine",
                 match &search_health {
                     Some(health) if health.healthy => OperationalStatus::Operational,
-                    Some(health) if health.initialized => OperationalStatus::Degraded,
-                    Some(_) => OperationalStatus::Unavailable,
-                    None => OperationalStatus::Unavailable,
+                    Some(health) if health.initialized => OperationalStatus::Experimental,
+                    Some(_) => OperationalStatus::Disabled,
+                    None => OperationalStatus::Disabled,
                 },
                 search_health
                     .as_ref()
@@ -1470,10 +1503,10 @@ impl Application {
                 "Watcher Status",
                 match &watcher_diagnostics.status {
                     jaymi_discovery::WatcherStatus::Watching
-                    | jaymi_discovery::WatcherStatus::Idle
-                    | jaymi_discovery::WatcherStatus::Disabled => OperationalStatus::Operational,
-                    jaymi_discovery::WatcherStatus::Stopped => OperationalStatus::Degraded,
-                    jaymi_discovery::WatcherStatus::Error(_) => OperationalStatus::Unavailable,
+                    | jaymi_discovery::WatcherStatus::Idle => OperationalStatus::Operational,
+                    jaymi_discovery::WatcherStatus::Disabled => OperationalStatus::Disabled,
+                    jaymi_discovery::WatcherStatus::Stopped => OperationalStatus::Disabled,
+                    jaymi_discovery::WatcherStatus::Error(_) => OperationalStatus::Disabled,
                 },
                 {
                     let watched = if watcher_diagnostics.watched_directories.is_empty() {
@@ -1500,24 +1533,12 @@ impl Application {
             ),
             SubsystemStatus::new(
                 "Memory Status",
-                if memory_status.healthy {
-                    OperationalStatus::Operational
-                } else if memory_status.initialized {
-                    OperationalStatus::Degraded
-                } else {
-                    OperationalStatus::Unavailable
-                },
+                OperationalStatus::from_health(memory_status.healthy, memory_status.initialized),
                 memory_status.detail.clone(),
             ),
             SubsystemStatus::new(
                 "Context Engine",
-                if context_health.healthy {
-                    OperationalStatus::Operational
-                } else if context_health.initialized {
-                    OperationalStatus::Degraded
-                } else {
-                    OperationalStatus::Unavailable
-                },
+                OperationalStatus::from_health(context_health.healthy, context_health.initialized),
                 format!(
                     "sources_bound={} · assembles={}",
                     context_engine.sources_bound(),
@@ -1526,13 +1547,7 @@ impl Application {
             ),
             SubsystemStatus::new(
                 "Project Status",
-                if project_status.healthy {
-                    OperationalStatus::Operational
-                } else if project_status.initialized {
-                    OperationalStatus::Degraded
-                } else {
-                    OperationalStatus::Unavailable
-                },
+                OperationalStatus::from_health(project_status.healthy, project_status.initialized),
                 project_status.detail.clone(),
             ),
             SubsystemStatus::new(
@@ -1540,7 +1555,7 @@ impl Application {
                 if planner.reasoning_implemented() {
                     OperationalStatus::Operational
                 } else {
-                    OperationalStatus::NotImplemented
+                    OperationalStatus::Stub
                 },
                 format!("backend={}", planner.reasoning_status()),
             ),
@@ -1751,7 +1766,7 @@ mod tests {
             .provider_ids
             .iter()
             .any(|id| id == OCR_PROVIDER_ID));
-        assert_eq!(diagnostics.tool_count, 5);
+        assert_eq!(diagnostics.tool_count, 6);
         assert_eq!(
             diagnostics.capability_count,
             jaymi_capabilities::Capability::all().len()
@@ -1800,7 +1815,7 @@ mod tests {
         );
         assert_eq!(
             diagnostics.subsystem("Reasoning Status").unwrap().status,
-            OperationalStatus::NotImplemented
+            OperationalStatus::Stub
         );
         assert!(!diagnostics.render_dashboard().contains("Healthy"));
     }

@@ -74,17 +74,18 @@ Jaymi’s architectural kernel is shipped through Layers 0–6, with foundation 
 | Memory (conversation / project / personal) | Current |
 | Project Engine (identity + workspace context) | Current |
 | Capability planning + availability + workspace expansion | Current |
-| Tools (search files/knowledge, read, inventory, scan) | Current (small set) |
+| Tools (search files/knowledge/project knowledge, read, inventory, scan) | Current (small set) |
 | Providers (filesystem, local embedding, OCR placeholder) | Current / Partial |
-| Reasoning (language-model backends) | Stub — not implemented |
+| Reasoning (language-model backends) | Stub |
 | OCR engine | Stub — architecture only |
+| Diagnostics readiness labels | Operational / Experimental / Stub / Disabled |
 | Git / Terminal / Messages / Mail / Image generation | Target |
 | Installable provider plugins | Target |
 | Daily-driver product UX (Layer 9) | Target |
 
 The Context Engine assembles request context for every Planner request.
 
-Administrative Memory and Project CRUD resolve owning engines directly; user retrieval (search, list, read, discover, continue, project knowledge) always goes through the Planner.
+Administrative Memory and Project CRUD resolve owning engines directly; user retrieval (search, list, read, discover, continue, open/close project, project knowledge) always goes through the Planner. Project knowledge uses Cap → Policy → Permission → Tool. Project session open/close has one Planner-orchestrated lifecycle (Project Engine owns open state).
 
 ⸻
 

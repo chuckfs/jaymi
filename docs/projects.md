@@ -128,6 +128,21 @@ There is a single `ProjectContext` type, owned by the Project Engine. Memory ret
 
 ⸻
 
+Session Ownership
+
+Exactly one project session lifecycle exists:
+
+Application (`open_project` / `close_project` / `set_active_project`)
+↓
+Planner (`handle` → open/close orchestration)
+↓
+Project Engine (owns open state)
++ Memory (mirrors active project id for context assembly)
+
+Continue / Open-by-id / Close intents use the same Planner helpers. Application never mutates Project Engine or Memory session state directly for open/close.
+
+⸻
+
 Project Lifecycle
 
 Every project follows the same lifecycle.
@@ -199,14 +214,20 @@ Project Memory should never become Personal Memory automatically.
 
 Active Context
 
-When a project is opened, Jaymi automatically restores:
+When a project is opened, Jaymi restores:
+
+### Current
 
 * Project Memory
 * Recent Conversations
-* Active Tasks
-* Working Files
+* Active Tasks (project memory kinds)
+* Working Files / indexed project knowledge
+* Planner Context (via Context Engine)
+
+### Target
+
 * Git Status
-* Planner Context
+* Live IDE / working-tree file state
 
 Users should not need to manually reload their workspace.
 
@@ -270,13 +291,18 @@ Artifacts remain searchable.
 
 Project Search
 
-Searching a project should include:
+### Current
 
-* Files
-* Documents
+Searching a project includes:
+
+* Files / documents under the project root
 * Memories
 * Conversations
-* Tasks
+* Tasks (project memory)
+* Architecture / decision entries
+
+### Target
+
 * Artifacts
 * Git History
 

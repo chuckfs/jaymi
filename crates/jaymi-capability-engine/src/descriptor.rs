@@ -85,11 +85,11 @@ pub fn catalog_availability(capability: Capability) -> CapabilityAvailability {
         | Capability::ReadDocuments
         | Capability::Discover
         | Capability::Index => CapabilityAvailability::Ready,
-        Capability::Code
-        | Capability::Ocr
-        | Capability::Embeddings
-        | Capability::Vision => CapabilityAvailability::Experimental,
-        Capability::Chat
+        Capability::Code | Capability::Embeddings | Capability::Vision => {
+            CapabilityAvailability::Experimental
+        }
+        Capability::Ocr
+        | Capability::Chat
         | Capability::GenerateImages
         | Capability::BrowseTheWeb
         | Capability::OrganizeFiles

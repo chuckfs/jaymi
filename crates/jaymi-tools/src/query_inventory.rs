@@ -93,6 +93,7 @@ impl Tool for QueryInventoryTool {
                 document: None,
                 parser_id: None,
                 message: Some(message),
+                project_knowledge: Vec::new(),
             });
         }
         let mut message = format!(
@@ -113,6 +114,7 @@ impl Tool for QueryInventoryTool {
             document: None,
             parser_id: None,
             message: Some(message),
+            project_knowledge: Vec::new(),
         })
     }
 }

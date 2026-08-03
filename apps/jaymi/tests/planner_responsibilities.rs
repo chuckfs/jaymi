@@ -72,8 +72,8 @@ fn planner_orchestrates_requests_engines_own_crud() {
         Some(project.id.as_str())
     );
 
-    app.set_active_project(Some(project.id.as_str()))
-        .expect("activate");
+    app.open_project(project.id.as_str())
+        .expect("open project session");
     let via_app_memory = app
         .store_memory(&StoreMemoryRequest {
             scope: MemoryScope::Working,
@@ -91,7 +91,7 @@ fn planner_orchestrates_requests_engines_own_crud() {
         .expect("store via app");
     assert!(!via_app_memory.id.as_str().is_empty());
 
-    // Planner still orchestrates Continue-working requests.
+    // Planner still orchestrates Continue-working requests (same open lifecycle).
     let planner = app.container().resolve::<Planner>().expect("planner");
     let response = planner
         .handle(UserRequest::new("Continue working on Kernel."))

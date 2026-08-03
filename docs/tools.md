@@ -1,6 +1,6 @@
 Tools
 
-**Status: Partial** — framework + five tools · **Target:** broad catalog
+**Status: Partial** — framework + six tools · **Target:** broad catalog
 
 Tools are the executable building blocks of Jaymi.
 
@@ -24,6 +24,7 @@ Current tools
 
 * `search_files`
 * `search_knowledge`
+* `search_project_knowledge`
 * `read_file`
 * `query_inventory`
 * `scan_filesystem`

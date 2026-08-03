@@ -14,6 +14,7 @@ pub mod registry;
 pub mod scan_filesystem;
 pub mod search_files;
 pub mod search_knowledge;
+pub mod search_project_knowledge;
 pub mod tool;
 
 pub use metadata::{
@@ -27,6 +28,9 @@ pub use registry::ToolRegistry;
 pub use scan_filesystem::{ScanFilesystemTool, SCAN_FILESYSTEM_TOOL_ID};
 pub use search_files::{SearchFilesTool, SEARCH_FILES_TOOL_ID};
 pub use search_knowledge::{SearchKnowledgeTool, SEARCH_KNOWLEDGE_TOOL_ID};
+pub use search_project_knowledge::{
+    SearchProjectKnowledgeTool, SEARCH_PROJECT_KNOWLEDGE_TOOL_ID,
+};
 pub use tool::{Tool, ToolInput, ToolOutput};
 
 use jaymi_core::{HealthReport, JaymiResult, Lifecycle};

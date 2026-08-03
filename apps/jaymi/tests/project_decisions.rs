@@ -160,10 +160,9 @@ fn project_decisions_persist_and_planner_retrieves_them() {
         .reasoning
         .contains("whydidwechooseplanner99"));
 
-    // Planner automatically retrieves the decision into memory_context.
+    // Project already open via open_project above (sole session path); no
+    // separate Memory-only activation.
     let planner = app.container().resolve::<Planner>().expect("planner");
-    app.set_active_project(Some(project_a.id.as_str()))
-        .expect("activate alpha");
     let response = planner
         .handle(UserRequest::new(
             "Remind me why we chose the planner for orchestration whydidwechooseplanner99",

@@ -97,6 +97,7 @@ impl Tool for ScanFilesystemTool {
             document: None,
             parser_id: None,
             message: Some(message),
+            project_knowledge: Vec::new(),
         })
     }
 }

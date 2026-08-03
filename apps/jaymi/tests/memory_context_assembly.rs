@@ -36,8 +36,8 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
         })
         .expect("create other");
 
-    app.set_active_project(Some(jaymi.id.as_str()))
-        .expect("activate jaymi");
+    app.open_project(jaymi.id.as_str())
+        .expect("open jaymi session");
     app.set_active_conversation(Some("conv-context"))
         .expect("activate conversation");
 

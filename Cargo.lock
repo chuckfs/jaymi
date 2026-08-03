@@ -1557,6 +1557,7 @@ dependencies = [
  "jaymi-knowledge",
  "jaymi-logging",
  "jaymi-parsers",
+ "jaymi-project-engine",
  "jaymi-providers",
  "jaymi-search",
  "jaymi-understanding",

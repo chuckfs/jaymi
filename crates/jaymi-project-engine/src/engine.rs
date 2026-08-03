@@ -42,9 +42,15 @@ pub trait ProjectEngineApi: Send + Sync {
     fn create(&self, request: &CreateProjectRequest) -> JaymiResult<Project>;
 
     /// Open a project and assemble its context.
+    ///
+    /// Owns session-open state. Application must not call this for user session
+    /// open — the Planner orchestrates open (PE state + Memory hint + resume).
     fn open(&self, project_id: &str) -> JaymiResult<ProjectContext>;
 
     /// Close the session-open project, when any.
+    ///
+    /// Owns clearing session-open state. Application must not call this for user
+    /// session close — the Planner orchestrates close (PE state + Memory hint).
     fn close(&self) -> JaymiResult<Option<Project>>;
 
     /// Soft-delete a project.

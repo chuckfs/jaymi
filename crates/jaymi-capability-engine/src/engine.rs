@@ -521,7 +521,8 @@ mod tests {
             plan.steps[0].required_tools,
             vec![
                 "search_files".to_string(),
-                "search_knowledge".to_string()
+                "search_knowledge".to_string(),
+                "search_project_knowledge".to_string(),
             ]
         );
         assert!(plan
@@ -660,11 +661,11 @@ mod tests {
             .available
             .iter()
             .any(|status| status.descriptor.id == "read_documents"));
-        assert!(report
-            .available
-            .iter()
-            .any(|status| status.descriptor.id == "ocr"
-                && status.availability == CapabilityAvailability::Experimental));
+        // OCR remains Planned — placeholder provider must not claim executability.
+        let ocr = report.get("ocr").expect("ocr status");
+        assert!(!ocr.is_available());
+        assert_eq!(ocr.availability, CapabilityAvailability::Planned);
+        assert!(ocr.registered);
 
         let vision = report.get("vision").expect("vision status");
         assert!(!vision.is_available());

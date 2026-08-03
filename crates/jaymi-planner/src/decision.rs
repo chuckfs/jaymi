@@ -41,6 +41,11 @@ pub enum Intent {
         /// Project display name (e.g. "Jaymi").
         name: String,
     },
+    /// Open a project by stable id (structured request; same session wiring as Continue).
+    OpenProject {
+        /// Project id.
+        project_id: String,
+    },
     /// Close the currently active project workspace.
     CloseProject,
     /// Search knowledge belonging to one project (Project Engine, via Planner).
@@ -79,6 +84,18 @@ impl DecisionEngine {
                 text: query.text.clone(),
                 limit: query.limit,
             };
+        }
+
+        if let Some(project_id) = &request.open_project_id {
+            if !project_id.trim().is_empty() {
+                return Intent::OpenProject {
+                    project_id: project_id.clone(),
+                };
+            }
+        }
+
+        if request.close_project {
+            return Intent::CloseProject;
         }
 
         if let Some(search) = &request.search {
@@ -191,13 +208,14 @@ impl DecisionEngine {
         match intent {
             Intent::ListDirectory { .. } => Some(Capability::Search),
             Intent::SearchKnowledge { .. } => Some(Capability::Search),
+            Intent::SearchProjectKnowledge { .. } => Some(Capability::Search),
             Intent::ReadFile { .. } => Some(Capability::ReadDocuments),
             Intent::DiscoverInventory { .. } => Some(Capability::Discover),
             Intent::IndexRoots { .. } => Some(Capability::Index),
             Intent::PlanWork { capabilities, .. } => capabilities.first().copied(),
             Intent::ContinueProject { .. } => None,
+            Intent::OpenProject { .. } => None,
             Intent::CloseProject => None,
-            Intent::SearchProjectKnowledge { .. } => None,
             Intent::Unknown => None,
         }
     }
@@ -714,7 +732,7 @@ mod tests {
                 limit: Some(10),
             }
         );
-        assert_eq!(engine.required_capability(&intent), None);
+        assert_eq!(engine.required_capability(&intent), Some(Capability::Search));
     }
 
     #[test]

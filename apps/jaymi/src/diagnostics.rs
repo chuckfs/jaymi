@@ -1,7 +1,8 @@
 //! Diagnostics snapshot for the developer dashboard.
 //!
-//! Health indicators reflect real subsystem state. Stub and unimplemented
-//! components are labeled honestly — never as healthy/operational.
+//! Health indicators reflect real subsystem state. Stub, experimental, and
+//! disabled components are labeled honestly — never as operational when they
+//! are not ready for their declared role.
 
 use std::path::PathBuf;
 
@@ -9,18 +10,22 @@ use jaymi_capabilities::CapabilityInspectorReport;
 use jaymi_core::{AppState, FileEntry};
 
 /// Operational readiness of a subsystem, distinct from lifecycle initialization.
+///
+/// Four honest labels — no soft “healthy” / “degraded” aliases:
+/// - **Operational** — ready for its declared role
+/// - **Experimental** — present and usable, with known limitations
+/// - **Stub** — lifecycle-wired placeholder / architecture only
+/// - **Disabled** — intentionally off, not wired, or failing
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OperationalStatus {
-    /// Feature-complete and usable for its Layer 0 role.
+    /// Ready for its declared role.
     Operational,
-    /// Present and enforcing, but with known limitations.
-    Degraded,
-    /// Lifecycle-initialized with stub behavior only.
+    /// Present and usable, but incomplete relative to the documented target.
+    Experimental,
+    /// Lifecycle-initialized with stub / placeholder behavior only.
     Stub,
-    /// Not wired into the running process yet.
-    NotImplemented,
-    /// Expected to work but currently failing or disconnected.
-    Unavailable,
+    /// Intentionally off, not wired, disconnected, or failing.
+    Disabled,
 }
 
 impl OperationalStatus {
@@ -28,16 +33,26 @@ impl OperationalStatus {
     pub fn label(self) -> &'static str {
         match self {
             Self::Operational => "Operational",
-            Self::Degraded => "Degraded",
+            Self::Experimental => "Experimental",
             Self::Stub => "Stub",
-            Self::NotImplemented => "Not implemented",
-            Self::Unavailable => "Unavailable",
+            Self::Disabled => "Disabled",
         }
     }
 
-    /// Whether this status should be treated as a green/healthy indicator.
+    /// Whether this status should be treated as a green/ready indicator.
     pub fn is_operational(self) -> bool {
         matches!(self, Self::Operational)
+    }
+
+    /// Map lifecycle health into the four honest labels.
+    pub fn from_health(healthy: bool, initialized: bool) -> Self {
+        if healthy {
+            Self::Operational
+        } else if initialized {
+            Self::Experimental
+        } else {
+            Self::Disabled
+        }
     }
 }
 
@@ -173,7 +188,7 @@ impl DiagnosticsSnapshot {
             .unwrap_or(if self.planner_healthy {
                 OperationalStatus::Operational.label()
             } else {
-                OperationalStatus::Unavailable.label()
+                OperationalStatus::Disabled.label()
             })
     }
 
@@ -184,7 +199,7 @@ impl DiagnosticsSnapshot {
             .unwrap_or(if self.database_connected {
                 OperationalStatus::Operational.label()
             } else {
-                OperationalStatus::Unavailable.label()
+                OperationalStatus::Disabled.label()
             })
     }
 
@@ -212,7 +227,7 @@ impl DiagnosticsSnapshot {
             .unwrap_or(if self.logging_healthy {
                 OperationalStatus::Operational.label()
             } else {
-                OperationalStatus::Unavailable.label()
+                OperationalStatus::Disabled.label()
             })
     }
 
@@ -333,13 +348,24 @@ mod tests {
     #[test]
     fn operational_status_labels_are_honest() {
         assert_eq!(OperationalStatus::Operational.label(), "Operational");
+        assert_eq!(OperationalStatus::Experimental.label(), "Experimental");
         assert_eq!(OperationalStatus::Stub.label(), "Stub");
-        assert_eq!(
-            OperationalStatus::NotImplemented.label(),
-            "Not implemented"
-        );
+        assert_eq!(OperationalStatus::Disabled.label(), "Disabled");
         assert!(!OperationalStatus::Stub.is_operational());
-        assert!(!OperationalStatus::NotImplemented.is_operational());
+        assert!(!OperationalStatus::Experimental.is_operational());
+        assert!(!OperationalStatus::Disabled.is_operational());
+        assert_eq!(
+            OperationalStatus::from_health(true, true),
+            OperationalStatus::Operational
+        );
+        assert_eq!(
+            OperationalStatus::from_health(false, true),
+            OperationalStatus::Experimental
+        );
+        assert_eq!(
+            OperationalStatus::from_health(false, false),
+            OperationalStatus::Disabled
+        );
     }
 
     #[test]
@@ -349,9 +375,19 @@ mod tests {
             subsystems: vec![
                 SubsystemStatus::new("Planner", OperationalStatus::Operational, "ready"),
                 SubsystemStatus::new(
-                    "Memory Status",
+                    "OCR Provider",
                     OperationalStatus::Stub,
-                    "retrieve not implemented",
+                    "engine=none",
+                ),
+                SubsystemStatus::new(
+                    "Policies",
+                    OperationalStatus::Experimental,
+                    "enforced: Offline First",
+                ),
+                SubsystemStatus::new(
+                    "Index Status",
+                    OperationalStatus::Disabled,
+                    "indexing_enabled=false",
                 ),
             ],
             planner_healthy: true,
@@ -401,8 +437,12 @@ mod tests {
         let rendered = snapshot.render_dashboard();
         assert!(rendered.contains("Planner"));
         assert!(rendered.contains("Operational"));
-        assert!(rendered.contains("Memory Status"));
+        assert!(rendered.contains("OCR Provider"));
         assert!(rendered.contains("Stub"));
+        assert!(rendered.contains("Experimental"));
+        assert!(rendered.contains("Disabled"));
         assert!(!rendered.contains("Healthy"));
+        assert!(!rendered.contains("Degraded"));
+        assert!(!rendered.contains("Not implemented"));
     }
 }

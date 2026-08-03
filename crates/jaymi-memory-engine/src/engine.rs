@@ -117,7 +117,10 @@ pub trait MemoryEngineApi: Send + Sync {
 
     /// Set the active project id used when assembling memory context.
     ///
-    /// This is a session hint only. Project identity lives in the Project Engine.
+    /// Session hint only — Project Engine owns whether a project is open.
+    /// For application session open/close, the Planner is the sole orchestrator
+    /// that pairs Project Engine `open`/`close` with this hint. Do not treat
+    /// this as a second project-session API.
     fn set_active_project(&self, project_id: Option<&str>) -> JaymiResult<()>;
 
     /// Current active project id, when any.

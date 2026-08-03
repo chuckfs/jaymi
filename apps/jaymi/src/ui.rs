@@ -59,10 +59,9 @@ struct JaymiApp {
 fn status_color(status: OperationalStatus) -> egui::Color32 {
     match status {
         OperationalStatus::Operational => egui::Color32::from_rgb(56, 142, 60),
-        OperationalStatus::Degraded => egui::Color32::from_rgb(194, 140, 0),
+        OperationalStatus::Experimental => egui::Color32::from_rgb(194, 140, 0),
         OperationalStatus::Stub => egui::Color32::from_rgb(120, 120, 120),
-        OperationalStatus::NotImplemented => egui::Color32::from_rgb(100, 100, 120),
-        OperationalStatus::Unavailable => egui::Color32::from_rgb(180, 60, 60),
+        OperationalStatus::Disabled => egui::Color32::from_rgb(180, 60, 60),
     }
 }
 

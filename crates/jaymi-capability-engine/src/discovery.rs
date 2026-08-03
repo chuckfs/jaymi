@@ -107,7 +107,11 @@ pub fn capability_requirements(capability: Capability) -> CapabilityRequirements
             requires_tool: true,
             requires_provider: true,
             preferred_providers: vec!["filesystem", "embedding.local"],
-            preferred_tools: vec!["search_files", "search_knowledge"],
+            preferred_tools: vec![
+                "search_files",
+                "search_knowledge",
+                "search_project_knowledge",
+            ],
         },
         Capability::Code => CapabilityRequirements {
             capability,

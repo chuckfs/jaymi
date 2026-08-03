@@ -40,12 +40,16 @@ fn ocr_provider_registers_without_planner_or_engine() {
     assert!(row.detail.contains("engine=none"));
     assert!(row.detail.contains("available=false"));
 
-    // OCR capability is catalogued (Experimental); the provider remains a stub.
+    // OCR capability is catalogued as Planned; the provider remains a stub.
     assert_eq!(
         snapshot.capability_count,
         jaymi_capabilities::Capability::all().len()
     );
     assert!(snapshot.capability_ids.iter().any(|id| id == "ocr"));
+    assert!(!snapshot
+        .available_capability_ids
+        .iter()
+        .any(|id| id == "ocr"));
 }
 
 fn temp_dir(label: &str) -> PathBuf {

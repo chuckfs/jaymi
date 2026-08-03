@@ -87,6 +87,7 @@ impl Tool for SearchKnowledgeTool {
                     "No search matches via search → search_knowledge (strategy={})",
                     results.strategy
                 )),
+                project_knowledge: Vec::new(),
             });
         }
         let mut message = format!(
@@ -107,6 +108,7 @@ impl Tool for SearchKnowledgeTool {
             document: None,
             parser_id: None,
             message: Some(message),
+            project_knowledge: Vec::new(),
         })
     }
 }

@@ -27,7 +27,8 @@ use jaymi_capabilities::{
 };
 use jaymi_context::ContextEngine;
 use jaymi_core::{
-    Citation, Document, FileEntry, HealthReport, JaymiError, JaymiResult, Lifecycle, UserRequest,
+    Citation, Document, FileEntry, HealthReport, JaymiError, JaymiResult, Lifecycle,
+    ProjectKnowledgeRequest, UserRequest,
 };
 use jaymi_memory_engine::{
     AssembledMemoryContext, MemoryEngineApi, PromotionAskDecision, PromotionSuggestion,
@@ -38,13 +39,13 @@ use jaymi_permissions::{
 };
 use jaymi_policies::{ExecutionCandidate, PolicyEngine, PolicyEvaluation};
 use jaymi_project_engine::{
-    Project, ProjectContext, ProjectEngineApi, ProjectKnowledgeHit, ProjectKnowledgeQuery,
+    Project, ProjectContext, ProjectEngineApi, ProjectKnowledgeHit,
 };
 use jaymi_providers::ProviderRegistry;
 use jaymi_tools::{
     InternetRequirement, PrivacyMode, ToolInput, ToolOrchestrator, ToolRegistry,
     QUERY_INVENTORY_TOOL_ID, READ_FILE_TOOL_ID, SCAN_FILESYSTEM_TOOL_ID, SEARCH_FILES_TOOL_ID,
-    SEARCH_KNOWLEDGE_TOOL_ID,
+    SEARCH_KNOWLEDGE_TOOL_ID, SEARCH_PROJECT_KNOWLEDGE_TOOL_ID,
 };
 use reasoning::ReasoningEngine;
 
@@ -90,6 +91,8 @@ pub struct PlannerResponse {
     pub blocked: bool,
     /// Assembled project context, when a project is the active workspace.
     pub project_context: Option<ProjectContext>,
+    /// Project closed by a Close intent, when any.
+    pub closed_project: Option<Project>,
     /// Capability execution plan selected for the request (never executed here).
     pub execution_plan: Option<ExecutionPlan>,
     /// Workspace expansion requested by the selected capability (conversation stays).
@@ -310,9 +313,13 @@ impl Planner {
         Ok(CapabilityInventory { tools, providers })
     }
 
-    /// Point Memory at the open project's id (Project Engine owns identity).
-    fn bind_memory_project(&self, project_id: &str) -> JaymiResult<()> {
-        self.memory.set_active_project(Some(project_id))?;
+    /// Sync Memory's session hint to the Project Engine open project.
+    ///
+    /// Memory does not own session open state — it only mirrors the id for
+    /// context assembly. Called only from [`Self::open_project`] /
+    /// [`Self::close_project`].
+    fn bind_memory_project(&self, project_id: Option<&str>) -> JaymiResult<()> {
+        self.memory.set_active_project(project_id)?;
         Ok(())
     }
 
@@ -338,14 +345,20 @@ impl Planner {
         Ok(())
     }
 
-    /// Open a project as the active workspace (request orchestration only).
+    /// Sole project session open lifecycle.
     ///
-    /// Administrative callers should use the Project Engine + Memory Engine
-    /// directly (see Application). This helper exists for Continue/Close intents.
+    /// Continue / Open-by-id intents and Application open helpers all enter
+    /// [`Self::handle`], which calls this once. Order:
+    /// 1. Project Engine owns open state (`open`)
+    /// 2. Memory mirrors the id for context assembly
+    /// 3. Resume the project's latest conversation when none is active
+    ///
+    /// Do not call `projects.open` or `memory.set_active_project` for session
+    /// activation anywhere else.
     fn open_project(&self, project_id: &str) -> JaymiResult<ProjectContext> {
         self.ensure_ready()?;
-        self.bind_memory_project(project_id)?;
         let context = self.projects.open(project_id)?;
+        self.bind_memory_project(Some(project_id))?;
         self.resume_project_conversation(project_id)?;
         jaymi_logging::info(
             "planner",
@@ -359,11 +372,14 @@ impl Planner {
         Ok(context)
     }
 
-    /// Close the session-open project. The active conversation is untouched.
+    /// Sole project session close lifecycle.
+    ///
+    /// Project Engine clears open state first; Memory's session hint is cleared
+    /// to match. The active conversation is untouched.
     fn close_project(&self) -> JaymiResult<Option<Project>> {
         self.ensure_ready()?;
         let closed = self.projects.close()?;
-        let _ = self.memory.set_active_project(None);
+        let _ = self.bind_memory_project(None);
         Ok(closed)
     }
 
@@ -402,7 +418,11 @@ impl Planner {
                 ..PlannerResponse::default()
             });
         };
-        let context = self.open_project(project.id.as_str())?;
+        self.handle_open_project_id(project.id.as_str())
+    }
+
+    fn handle_open_project_id(&self, project_id: &str) -> JaymiResult<PlannerResponse> {
+        let context = self.open_project(project_id)?;
         let content = format_project_context_summary(&context);
         Ok(PlannerResponse {
             content,
@@ -423,42 +443,59 @@ impl Planner {
         jaymi_logging::info("planner", &content);
         Ok(PlannerResponse {
             content,
+            closed_project: closed,
             ..PlannerResponse::default()
         })
     }
 
-    /// Search project-scoped knowledge through the Project Engine.
+    /// Search project-scoped knowledge through Cap → Policy → Permission → Tool.
     fn handle_search_project_knowledge(
         &self,
+        capability: Capability,
         project_id: &str,
         text: &str,
         limit: Option<usize>,
     ) -> JaymiResult<PlannerResponse> {
-        let hits = self.projects.search_knowledge(&ProjectKnowledgeQuery {
+        let request = ProjectKnowledgeRequest {
             project_id: project_id.to_string(),
             text: text.to_string(),
             limit,
-        })?;
-        jaymi_logging::info(
-            "planner",
-            format!(
-                "project knowledge search project={} hits={} query={:?}",
-                project_id,
-                hits.len(),
-                truncate_for_log(text)
-            ),
-        );
-        let content = if hits.is_empty() {
-            format!("No project knowledge matched \"{text}\" in project {project_id}.")
-        } else {
-            format!(
-                "Found {} project knowledge hit(s) for \"{text}\" in project {project_id}.",
-                hits.len()
-            )
         };
+        let resource = std::path::PathBuf::from(format!("project:{project_id}"));
+        let input = ToolInput::project_knowledge(request);
+        let prepared = self.prepare_execution(
+            capability,
+            Some(SEARCH_PROJECT_KNOWLEDGE_TOOL_ID),
+            &input,
+            &resource,
+            "Search project knowledge",
+        )?;
+        if let Some(blocked) = prepared.blocked_response {
+            return Ok(blocked);
+        }
+
+        let tool_id = prepared.tool_id.clone();
+        let output = self.orchestrator.execute(&tool_id, input)?;
+        self.ensure_success(&output)?;
+
+        let provider_id = prepared.provider_id.clone();
+        let content = output.message.clone().unwrap_or_else(|| {
+            format!(
+                "Project knowledge search completed via {} → {} → {}",
+                capability.id(),
+                tool_id,
+                provider_id.as_deref().unwrap_or("unknown")
+            )
+        });
+
         Ok(PlannerResponse {
             content,
-            project_knowledge: hits,
+            capability: Some(capability),
+            tool_id: Some(tool_id),
+            provider_id,
+            project_knowledge: output.project_knowledge,
+            policy_evaluation: prepared.policy_evaluation,
+            permission_result: prepared.permission_result,
             ..PlannerResponse::default()
         })
     }
@@ -563,8 +600,7 @@ impl Planner {
 
         let intent = self.decision.determine_intent(&request);
 
-        // Workspace and project-knowledge intents are answered by engines
-        // (still after ContextEngine::assemble — never bypass the Planner).
+        // Workspace session intents answer after Context assemble (no tool).
         match &intent {
             Intent::ContinueProject { name } => {
                 let response = self.handle_continue_project(name)?;
@@ -575,8 +611,8 @@ impl Planner {
                     promotion_ask,
                 ));
             }
-            Intent::CloseProject => {
-                let response = self.handle_close_project()?;
+            Intent::OpenProject { project_id } => {
+                let response = self.handle_open_project_id(project_id)?;
                 return Ok(finalize(
                     response,
                     memory_context,
@@ -584,13 +620,8 @@ impl Planner {
                     promotion_ask,
                 ));
             }
-            Intent::SearchProjectKnowledge {
-                project_id,
-                text,
-                limit,
-            } => {
-                let response =
-                    self.handle_search_project_knowledge(project_id, text, *limit)?;
+            Intent::CloseProject => {
+                let response = self.handle_close_project()?;
                 return Ok(finalize(
                     response,
                     memory_context,
@@ -667,12 +698,17 @@ impl Planner {
             Intent::SearchKnowledge { request } => {
                 self.handle_search_knowledge(capability, self.scope_search_request(request))
             }
+            Intent::SearchProjectKnowledge {
+                project_id,
+                text,
+                limit,
+            } => self.handle_search_project_knowledge(capability, &project_id, &text, limit),
             Intent::IndexRoots { path } => self.handle_index_roots(capability, path),
             Intent::ContinueProject { .. }
+            | Intent::OpenProject { .. }
             | Intent::CloseProject
-            | Intent::SearchProjectKnowledge { .. }
             | Intent::PlanWork { .. } => {
-                unreachable!("workspace, project-knowledge, and planning intents handled earlier")
+                unreachable!("workspace and planning intents handled earlier")
             }
             Intent::Unknown => {
                 jaymi_logging::warn("planner", "unknown intent after capability mapping");
@@ -949,6 +985,7 @@ impl Planner {
             path: path.clone(),
             discovery: None,
             search: None,
+            project_knowledge: None,
         };
         let prepared = self.prepare_execution(
             capability,

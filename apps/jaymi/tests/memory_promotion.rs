@@ -27,8 +27,8 @@ fn promotion_ladder_suggestions_and_intentional_apply() {
             project_type: None,
         })
         .expect("create project");
-    app.set_active_project(Some(project.id.as_str()))
-        .expect("activate");
+    app.open_project(project.id.as_str())
+        .expect("open project session");
 
     let working = app
         .store_memory(&StoreMemoryRequest {

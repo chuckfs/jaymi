@@ -20,14 +20,17 @@ Policies answer:
 
 This separation allows Jaymi to remain predictable while adapting to different users and situations.
 
-### Current enforcement
+### Current enforcement (boot-active)
 
-* Offline First — constrains cloud-only candidates
-* Privacy Maximum — constrains privacy-sensitive candidates
+* Offline First — default; constrains internet / cloud-only candidates
 
-### Declared / Target enforcement
+### Declared enforcement (constraint logic exists; not boot-active)
 
-Highest Quality, Fastest, Battery Saver, Developer / Creative / Research modes, rich multi-scope resolution, user-custom policies.
+* Privacy Maximum — rejects non-local-only candidates when activated
+
+### Declared / Target (builtins registered; no constraint logic yet)
+
+Highest Quality, Fastest Response, Battery Saver, Developer / Creative / Research modes, rich multi-scope resolution, user-custom policies.
 
 ⸻
 
@@ -72,6 +75,8 @@ Built-in Policies
 
 Offline First
 
+**Status: Current** — boot default; enforced on tool candidates.
+
 Default policy.
 
 Priorities:
@@ -91,6 +96,8 @@ Only use internet resources when:
 
 Highest Quality
 
+**Status: Declared / Target** — builtin identity exists; no constraint logic yet.
+
 Prioritize the highest quality result regardless of execution time.
 
 May choose:
@@ -103,6 +110,8 @@ May choose:
 ⸻
 
 Fastest Response
+
+**Status: Declared / Target** — builtin identity exists; no constraint logic yet.
 
 Prioritize speed.
 
@@ -117,6 +126,8 @@ Prefer:
 
 Privacy Maximum
 
+**Status: Declared** — constraint logic exists; not enabled at boot (activate explicitly).
+
 Never use cloud resources.
 
 Never send data outside the device.
@@ -126,6 +137,8 @@ Always prefer local providers.
 ⸻
 
 Battery Saver
+
+**Status: Declared / Target** — builtin identity exists; no constraint logic yet.
 
 Optimize for efficiency.
 
@@ -140,6 +153,8 @@ Prefer lightweight execution.
 ⸻
 
 Developer Mode
+
+**Status: Declared / Target** — builtin identity exists; no constraint logic yet.
 
 Optimize for software development.
 
@@ -156,6 +171,8 @@ Reduce unnecessary confirmations for approved development actions.
 
 Creative Mode
 
+**Status: Declared / Target** — builtin identity exists; no constraint logic yet.
+
 Optimize for ideation.
 
 Prefer:
@@ -168,6 +185,8 @@ Prefer:
 ⸻
 
 Research Mode
+
+**Status: Declared / Target** — builtin identity exists; no constraint logic yet.
 
 Optimize for information gathering.
 
@@ -201,6 +220,8 @@ Policies never replace permissions.
 ⸻
 
 Policy Scope
+
+**Status: Partial** — Global scope is Current (boot-active Offline First). Conversation / Project / Task scoped resolution and override order are Target.
 
 Policies may exist at multiple levels.
 

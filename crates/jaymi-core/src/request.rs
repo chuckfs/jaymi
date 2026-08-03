@@ -111,6 +111,10 @@ pub struct UserRequest {
     pub search: Option<SearchRequest>,
     /// Optional structured project-knowledge search (Planner-mediated).
     pub project_knowledge: Option<ProjectKnowledgeRequest>,
+    /// Optional structured open-project-by-id request (Planner-mediated).
+    pub open_project_id: Option<String>,
+    /// When true, close the active project workspace through the Planner.
+    pub close_project: bool,
 }
 
 impl UserRequest {
@@ -124,6 +128,8 @@ impl UserRequest {
             index_root: None,
             search: None,
             project_knowledge: None,
+            open_project_id: None,
+            close_project: false,
         }
     }
 
@@ -190,6 +196,25 @@ impl UserRequest {
                 text,
                 limit,
             }),
+            ..Self::bare("")
+        }
+    }
+
+    /// Create a structured request to open a project by id through the Planner.
+    pub fn open_project(project_id: impl Into<String>) -> Self {
+        let project_id = project_id.into();
+        Self {
+            content: format!("open project {project_id}"),
+            open_project_id: Some(project_id),
+            ..Self::bare("")
+        }
+    }
+
+    /// Create a structured request to close the active project through the Planner.
+    pub fn close_project() -> Self {
+        Self {
+            content: "close project".to_string(),
+            close_project: true,
             ..Self::bare("")
         }
     }

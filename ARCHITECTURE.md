@@ -114,7 +114,9 @@ It decides:
 
 Nothing bypasses it for request handling.
 
-Project knowledge search is a Planner-mediated request (`UserRequest::search_project_knowledge` → `handle`).
+Project knowledge search is a Planner-mediated request (`UserRequest::search_project_knowledge` → `handle` → Cap → Policy → Permission → `search_project_knowledge` tool → Project Engine).
+
+Project session open/close has one lifecycle: Application delegates → Planner orchestrates → Project Engine owns open state (Memory mirrors the id). There is no Application→Engine session bypass.
 
 **Partial / Stub:** Reasoning Engine (language-model backends) is not implemented (`is_implemented() == false`).
 
@@ -282,14 +284,34 @@ Status: **Partial**
 
 Policies constrain tool candidates before permissions.
 
-### Current enforced
+### Current enforced (boot-active)
 
 * Offline First
+
+### Declared enforcement (constraint logic exists; not boot-active)
+
 * Privacy Maximum
 
 ### Declared / Target enforcement
 
 Highest Quality, Fastest, Battery Saver, Developer / Creative / Research modes, rich multi-scope resolution, user-custom policies.
+
+⸻
+
+Diagnostics
+
+Status: **Current**
+
+The developer dashboard reports subsystem readiness with four honest labels:
+
+| Status | Meaning |
+| --- | --- |
+| **Operational** | Ready for its declared role |
+| **Experimental** | Present and usable, with known limitations |
+| **Stub** | Lifecycle-wired placeholder / architecture only |
+| **Disabled** | Intentionally off, not wired, or failing |
+
+Examples: OCR Provider and Reasoning are **Stub**; Policies and local lexical Embeddings are **Experimental**; Index / Watcher report **Disabled** when indexing is turned off. Subsystems must not overstate readiness.
 
 ⸻
 

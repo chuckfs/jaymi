@@ -1,7 +1,11 @@
 //! Tool interface and structured I/O.
 
 use crate::metadata::ToolMetadata;
-use jaymi_core::{Citation, DiscoveryQueryKind, Document, FileEntry, JaymiResult, SearchRequest};
+use jaymi_core::{
+    Citation, DiscoveryQueryKind, Document, FileEntry, JaymiResult, ProjectKnowledgeRequest,
+    SearchRequest,
+};
+use jaymi_project_engine::ProjectKnowledgeHit;
 
 /// Structured input supplied by the Planner.
 #[derive(Debug, Default, Clone)]
@@ -12,6 +16,8 @@ pub struct ToolInput {
     pub discovery: Option<DiscoveryQueryKind>,
     /// Structured Search Engine request.
     pub search: Option<SearchRequest>,
+    /// Structured project-knowledge search request.
+    pub project_knowledge: Option<ProjectKnowledgeRequest>,
 }
 
 impl ToolInput {
@@ -21,6 +27,7 @@ impl ToolInput {
             path: Some(path.into()),
             discovery: None,
             search: None,
+            project_knowledge: None,
         }
     }
 
@@ -30,6 +37,7 @@ impl ToolInput {
             path: Some(path.into()),
             discovery: None,
             search: None,
+            project_knowledge: None,
         }
     }
 
@@ -43,6 +51,7 @@ impl ToolInput {
             path,
             discovery: Some(kind),
             search: None,
+            project_knowledge: None,
         }
     }
 
@@ -52,6 +61,17 @@ impl ToolInput {
             path: request.folder.clone(),
             discovery: None,
             search: Some(request),
+            project_knowledge: None,
+        }
+    }
+
+    /// Create input for a project-knowledge search.
+    pub fn project_knowledge(request: ProjectKnowledgeRequest) -> Self {
+        Self {
+            path: None,
+            discovery: None,
+            search: None,
+            project_knowledge: Some(request),
         }
     }
 }
@@ -71,6 +91,8 @@ pub struct ToolOutput {
     pub parser_id: Option<String>,
     /// Optional human-readable message.
     pub message: Option<String>,
+    /// Project-scoped knowledge hits when applicable.
+    pub project_knowledge: Vec<ProjectKnowledgeHit>,
 }
 
 impl ToolOutput {
@@ -83,6 +105,7 @@ impl ToolOutput {
             document: None,
             parser_id: None,
             message: None,
+            project_knowledge: Vec::new(),
         }
     }
 
@@ -96,6 +119,7 @@ impl ToolOutput {
             document: Some(document),
             parser_id: Some(parser_id),
             message: None,
+            project_knowledge: Vec::new(),
         }
     }
 
@@ -108,6 +132,7 @@ impl ToolOutput {
             document: None,
             parser_id: None,
             message: Some(message.into()),
+            project_knowledge: Vec::new(),
         }
     }
 }
