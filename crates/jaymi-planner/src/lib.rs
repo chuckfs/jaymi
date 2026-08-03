@@ -27,8 +27,9 @@ use jaymi_capabilities::{
 };
 use jaymi_context::ContextEngine;
 use jaymi_core::{
-    Citation, Document, FileEntry, HealthReport, JaymiError, JaymiResult, Lifecycle,
-    ProjectKnowledgeRequest, UserRequest,
+    Citation, Document, FileEntry, GitOperation, GitPathStatus, HealthReport, JaymiError,
+    JaymiResult, Lifecycle, LspCompletionItem, LspDiagnostic, LspHover, LspLocation, LspRequest,
+    LspTextEdit, ProjectKnowledgeRequest, UserRequest,
 };
 use jaymi_memory_engine::{
     AssembledMemoryContext, MemoryEngineApi, PromotionAskDecision, PromotionSuggestion,
@@ -44,8 +45,9 @@ use jaymi_project_engine::{
 use jaymi_providers::ProviderRegistry;
 use jaymi_tools::{
     InternetRequirement, PrivacyMode, ToolInput, ToolOrchestrator, ToolRegistry,
-    QUERY_INVENTORY_TOOL_ID, READ_FILE_TOOL_ID, SCAN_FILESYSTEM_TOOL_ID, SEARCH_FILES_TOOL_ID,
-    SEARCH_KNOWLEDGE_TOOL_ID, SEARCH_PROJECT_KNOWLEDGE_TOOL_ID,
+    GIT_TOOL_ID, LANGUAGE_SERVER_TOOL_ID, LIST_PROJECT_TREE_TOOL_ID, QUERY_INVENTORY_TOOL_ID,
+    READ_FILE_TOOL_ID, SCAN_FILESYSTEM_TOOL_ID, SEARCH_FILES_TOOL_ID, SEARCH_KNOWLEDGE_TOOL_ID,
+    SEARCH_PROJECT_KNOWLEDGE_TOOL_ID, TERMINAL_TOOL_ID, WRITE_FILE_TOOL_ID,
 };
 use reasoning::ReasoningEngine;
 
@@ -105,6 +107,36 @@ pub struct PlannerResponse {
     pub memory_context: Option<AssembledMemoryContext>,
     /// Project-scoped knowledge hits (files, memories, tasks, decisions, …).
     pub project_knowledge: Vec<ProjectKnowledgeHit>,
+    /// Terminal session id when a terminal tool ran.
+    pub terminal_session_id: Option<String>,
+    /// Output produced by the latest terminal command.
+    pub terminal_output: Option<String>,
+    /// Full terminal scrollback for the session.
+    pub terminal_scrollback: Option<String>,
+    /// Terminal command history (oldest first).
+    pub terminal_history: Vec<String>,
+    /// Current Git branch when a Git tool ran.
+    pub git_branch: Option<String>,
+    /// Short Git status summary.
+    pub git_summary: Option<String>,
+    /// Unstaged modified files.
+    pub git_modified: Vec<GitPathStatus>,
+    /// Staged files.
+    pub git_staged: Vec<GitPathStatus>,
+    /// Untracked files.
+    pub git_untracked: Vec<GitPathStatus>,
+    /// Hover result from the language server.
+    pub lsp_hover: Option<LspHover>,
+    /// Completion candidates from the language server.
+    pub lsp_completions: Vec<LspCompletionItem>,
+    /// Diagnostics from the language server.
+    pub lsp_diagnostics: Vec<LspDiagnostic>,
+    /// Go-to-definition locations.
+    pub lsp_definitions: Vec<LspLocation>,
+    /// Find-references locations.
+    pub lsp_references: Vec<LspLocation>,
+    /// Rename / workspace text edits.
+    pub lsp_edits: Vec<LspTextEdit>,
 }
 
 /// Dependencies required to construct the Planner from registries.
@@ -469,6 +501,9 @@ impl Planner {
             &input,
             &resource,
             "Search project knowledge",
+
+            PermissionCategory::Filesystem,
+            PermissionAction::Read,
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
@@ -689,8 +724,44 @@ impl Planner {
             Intent::ListDirectory { path } => {
                 self.handle_list_directory(capability, self.resolve_workspace_path(path))
             }
+            Intent::ListProjectTree { path } => {
+                self.handle_list_project_tree(capability, self.resolve_workspace_path(path))
+            }
             Intent::ReadFile { path } => {
                 self.handle_read_file(capability, self.resolve_workspace_path(path))
+            }
+            Intent::WriteFile { path, content } => {
+                self.handle_write_file(capability, self.resolve_workspace_path(path), content)
+            }
+            Intent::RunTerminal {
+                session_id,
+                cwd,
+                command,
+            } => self.handle_run_terminal(
+                capability,
+                session_id,
+                self.resolve_workspace_path(cwd),
+                command,
+            ),
+            Intent::Git {
+                repo_root,
+                operation,
+                paths,
+                message,
+            } => self.handle_git(
+                capability,
+                self.resolve_workspace_path(repo_root),
+                operation,
+                paths,
+                message,
+            ),
+            Intent::Lsp { request } => {
+                let mut request = request;
+                request.workspace_root = self.resolve_workspace_path(request.workspace_root);
+                if let Some(path) = request.path {
+                    request.path = Some(self.resolve_workspace_path(path));
+                }
+                self.handle_lsp(capability, request)
             }
             Intent::DiscoverInventory { kind } => {
                 self.handle_discover_inventory(capability, kind)
@@ -792,6 +863,9 @@ impl Planner {
             &input,
             &path,
             "List directory",
+
+            PermissionCategory::Filesystem,
+            PermissionAction::Read,
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
@@ -825,6 +899,55 @@ impl Planner {
         })
     }
 
+    fn handle_list_project_tree(
+        &self,
+        capability: Capability,
+        path: std::path::PathBuf,
+    ) -> JaymiResult<PlannerResponse> {
+        let input = ToolInput::list_directory(path.clone());
+        let prepared = self.prepare_execution(
+            capability,
+            Some(LIST_PROJECT_TREE_TOOL_ID),
+            &input,
+            &path,
+            "List project tree",
+
+            PermissionCategory::Filesystem,
+            PermissionAction::Read,
+        )?;
+        if let Some(blocked) = prepared.blocked_response {
+            return Ok(blocked);
+        }
+
+        let tool_id = prepared.tool_id.clone();
+        let output = self.orchestrator.execute(&tool_id, input)?;
+        self.ensure_success(&output)?;
+
+        let provider_id = prepared.provider_id.clone();
+        let listed_path = output.listed_path.clone().unwrap_or(path);
+        let content = format!(
+            "Listed project tree with {} entries under {} via {} → {} → {}",
+            output.entries.len(),
+            listed_path.display(),
+            capability.id(),
+            tool_id,
+            provider_id.as_deref().unwrap_or("unknown")
+        );
+
+        Ok(PlannerResponse {
+            content,
+            capability: Some(capability),
+            tool_id: Some(tool_id),
+            provider_id,
+            listed_path: Some(listed_path),
+            entries: output.entries,
+            citations: output.citations,
+            policy_evaluation: prepared.policy_evaluation,
+            permission_result: prepared.permission_result,
+            ..PlannerResponse::default()
+        })
+    }
+
     fn handle_read_file(
         &self,
         capability: Capability,
@@ -837,6 +960,9 @@ impl Planner {
             &input,
             &path,
             "Read file",
+
+            PermissionCategory::Filesystem,
+            PermissionAction::Read,
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
@@ -872,6 +998,227 @@ impl Planner {
         })
     }
 
+    fn handle_write_file(
+        &self,
+        capability: Capability,
+        path: std::path::PathBuf,
+        content: String,
+    ) -> JaymiResult<PlannerResponse> {
+        let input = ToolInput::write_file(path.clone(), content);
+        let prepared = self.prepare_execution(
+            capability,
+            Some(WRITE_FILE_TOOL_ID),
+            &input,
+            &path,
+            "Write file",
+
+            PermissionCategory::Filesystem,
+            PermissionAction::Write,
+        )?;
+        if let Some(blocked) = prepared.blocked_response {
+            return Ok(blocked);
+        }
+
+        let tool_id = prepared.tool_id.clone();
+        let output = self.orchestrator.execute(&tool_id, input)?;
+        self.ensure_success(&output)?;
+
+        let provider_id = prepared.provider_id.clone();
+        let summary = output.message.unwrap_or_else(|| {
+            format!(
+                "Wrote {} via {} → {} → {}",
+                path.display(),
+                capability.id(),
+                tool_id,
+                provider_id.as_deref().unwrap_or("unknown")
+            )
+        });
+
+        Ok(PlannerResponse {
+            content: summary,
+            capability: Some(capability),
+            tool_id: Some(tool_id),
+            provider_id,
+            listed_path: Some(path),
+            policy_evaluation: prepared.policy_evaluation,
+            permission_result: prepared.permission_result,
+            ..PlannerResponse::default()
+        })
+    }
+
+    fn handle_run_terminal(
+        &self,
+        capability: Capability,
+        session_id: String,
+        cwd: std::path::PathBuf,
+        command: Option<String>,
+    ) -> JaymiResult<PlannerResponse> {
+        let input = match &command {
+            Some(cmd) => ToolInput::run_terminal(session_id.clone(), cwd.clone(), cmd.clone()),
+            None => ToolInput::ensure_terminal(session_id.clone(), cwd.clone()),
+        };
+        let prepared = self.prepare_execution(
+            capability,
+            Some(TERMINAL_TOOL_ID),
+            &input,
+            &cwd,
+            "Execute terminal command",
+            PermissionCategory::Terminal,
+            PermissionAction::Execute,
+        )?;
+        if let Some(blocked) = prepared.blocked_response {
+            return Ok(blocked);
+        }
+
+        let tool_id = prepared.tool_id.clone();
+        let output = self.orchestrator.execute(&tool_id, input)?;
+        self.ensure_success(&output)?;
+
+        let provider_id = prepared.provider_id.clone();
+        let summary = output.message.clone().unwrap_or_else(|| {
+            format!(
+                "Terminal session {} via {} → {} → {}",
+                session_id,
+                capability.id(),
+                tool_id,
+                provider_id.as_deref().unwrap_or("unknown")
+            )
+        });
+
+        Ok(PlannerResponse {
+            content: summary,
+            capability: Some(capability),
+            tool_id: Some(tool_id),
+            provider_id,
+            listed_path: Some(cwd),
+            terminal_session_id: output.session_id.or(Some(session_id)),
+            terminal_output: output.terminal_output,
+            terminal_scrollback: output.terminal_scrollback,
+            terminal_history: output.terminal_history,
+            policy_evaluation: prepared.policy_evaluation,
+            permission_result: prepared.permission_result,
+            ..PlannerResponse::default()
+        })
+    }
+
+    fn handle_git(
+        &self,
+        capability: Capability,
+        repo_root: std::path::PathBuf,
+        operation: GitOperation,
+        paths: Vec<std::path::PathBuf>,
+        message: Option<String>,
+    ) -> JaymiResult<PlannerResponse> {
+        let input = ToolInput::git(repo_root.clone(), operation, paths, message);
+        let permission_action = if operation.is_mutating() {
+            PermissionAction::Write
+        } else {
+            PermissionAction::Read
+        };
+        let prepared = self.prepare_execution(
+            capability,
+            Some(GIT_TOOL_ID),
+            &input,
+            &repo_root,
+            &format!("Git {}", operation.as_str()),
+            PermissionCategory::Filesystem,
+            permission_action,
+        )?;
+        if let Some(blocked) = prepared.blocked_response {
+            return Ok(blocked);
+        }
+
+        let tool_id = prepared.tool_id.clone();
+        let output = self.orchestrator.execute(&tool_id, input)?;
+        self.ensure_success(&output)?;
+
+        let provider_id = prepared.provider_id.clone();
+        let summary = output.message.clone().unwrap_or_else(|| {
+            format!(
+                "Git {} via {} → {} → {}",
+                operation.as_str(),
+                capability.id(),
+                tool_id,
+                provider_id.as_deref().unwrap_or("unknown")
+            )
+        });
+
+        Ok(PlannerResponse {
+            content: summary,
+            capability: Some(capability),
+            tool_id: Some(tool_id),
+            provider_id,
+            listed_path: Some(repo_root),
+            git_branch: output.git_branch,
+            git_summary: output.git_summary,
+            git_modified: output.git_modified,
+            git_staged: output.git_staged,
+            git_untracked: output.git_untracked,
+            policy_evaluation: prepared.policy_evaluation,
+            permission_result: prepared.permission_result,
+            ..PlannerResponse::default()
+        })
+    }
+
+    fn handle_lsp(
+        &self,
+        capability: Capability,
+        request: LspRequest,
+    ) -> JaymiResult<PlannerResponse> {
+        let workspace_root = request.workspace_root.clone();
+        let operation = request.operation;
+        let input = ToolInput::lsp(request);
+        let permission_action = if operation.is_mutating() {
+            PermissionAction::Write
+        } else {
+            PermissionAction::Read
+        };
+        let prepared = self.prepare_execution(
+            capability,
+            Some(LANGUAGE_SERVER_TOOL_ID),
+            &input,
+            &workspace_root,
+            &format!("LSP {}", operation.as_str()),
+            PermissionCategory::Filesystem,
+            permission_action,
+        )?;
+        if let Some(blocked) = prepared.blocked_response {
+            return Ok(blocked);
+        }
+
+        let tool_id = prepared.tool_id.clone();
+        let output = self.orchestrator.execute(&tool_id, input)?;
+        self.ensure_success(&output)?;
+
+        let provider_id = prepared.provider_id.clone();
+        let summary = output.message.clone().unwrap_or_else(|| {
+            format!(
+                "LSP {} via {} → {} → {}",
+                operation.as_str(),
+                capability.id(),
+                tool_id,
+                provider_id.as_deref().unwrap_or("unknown")
+            )
+        });
+
+        Ok(PlannerResponse {
+            content: summary,
+            capability: Some(capability),
+            tool_id: Some(tool_id),
+            provider_id,
+            listed_path: Some(workspace_root),
+            lsp_hover: output.lsp_hover,
+            lsp_completions: output.lsp_completions,
+            lsp_diagnostics: output.lsp_diagnostics,
+            lsp_definitions: output.lsp_definitions,
+            lsp_references: output.lsp_references,
+            lsp_edits: output.lsp_edits,
+            policy_evaluation: prepared.policy_evaluation,
+            permission_result: prepared.permission_result,
+            ..PlannerResponse::default()
+        })
+    }
+
     fn handle_discover_inventory(
         &self,
         capability: Capability,
@@ -891,6 +1238,9 @@ impl Planner {
             &input,
             &resource_path,
             "Query inventory",
+
+            PermissionCategory::Filesystem,
+            PermissionAction::Read,
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
@@ -940,6 +1290,9 @@ impl Planner {
             &input,
             &resource_path,
             "Search knowledge",
+
+            PermissionCategory::Filesystem,
+            PermissionAction::Read,
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
@@ -983,9 +1336,7 @@ impl Planner {
             .unwrap_or_else(|| std::path::PathBuf::from("configured-roots"));
         let input = ToolInput {
             path: path.clone(),
-            discovery: None,
-            search: None,
-            project_knowledge: None,
+            ..ToolInput::default()
         };
         let prepared = self.prepare_execution(
             capability,
@@ -993,6 +1344,9 @@ impl Planner {
             &input,
             &resource_path,
             "Index filesystem",
+
+            PermissionCategory::Filesystem,
+            PermissionAction::Read,
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
@@ -1027,6 +1381,8 @@ impl Planner {
         _input: &ToolInput,
         path: &Path,
         action_label: &str,
+        permission_category: PermissionCategory,
+        permission_action: PermissionAction,
     ) -> JaymiResult<PreparedExecution> {
         let tool_id = if let Some(preferred) = preferred_tool_id {
             match self.tools.get(preferred) {
@@ -1103,8 +1459,8 @@ impl Planner {
         }
 
         let permission_request = PermissionRequest {
-            category: PermissionCategory::Filesystem,
-            action: PermissionAction::Read,
+            category: permission_category,
+            action: permission_action,
             scope: PermissionScope::Once,
             explanation: format!("{action_label} at {}", path.display()),
             resource: Some(path.display().to_string()),
@@ -1112,7 +1468,9 @@ impl Planner {
         jaymi_logging::info(
             "planner",
             format!(
-                "permission check category=filesystem action=read resource={}",
+                "permission check category={} action={} resource={}",
+                permission_category_label(permission_category),
+                permission_action_label(permission_action),
                 path.display()
             ),
         );
@@ -1191,6 +1549,29 @@ fn finalize(
     response.promotion_ask = promotion_ask;
     response.memory_context = Some(memory_context);
     response
+}
+
+fn permission_category_label(category: PermissionCategory) -> &'static str {
+    match category {
+        PermissionCategory::Filesystem => "filesystem",
+        PermissionCategory::Internet => "internet",
+        PermissionCategory::Terminal => "terminal",
+        PermissionCategory::Communication => "communication",
+        PermissionCategory::System => "system",
+        PermissionCategory::AiProviders => "ai_providers",
+    }
+}
+
+fn permission_action_label(action: PermissionAction) -> &'static str {
+    match action {
+        PermissionAction::Read => "read",
+        PermissionAction::Write => "write",
+        PermissionAction::Execute => "execute",
+        PermissionAction::Delete => "delete",
+        PermissionAction::Network => "network",
+        PermissionAction::Import => "import",
+        PermissionAction::Export => "export",
+    }
 }
 
 fn format_project_context_summary(context: &ProjectContext) -> String {

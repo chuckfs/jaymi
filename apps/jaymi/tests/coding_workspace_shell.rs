@@ -1,7 +1,7 @@
 //! Layer 6 Slice 7 — Coding Workspace Shell.
 //!
 //! The Coding expansion materializes five shell panels beside conversation.
-//! Real editor / terminal / git tools remain Target; the shell binds to CodingState.
+//! Coding Workspace shell — Explorer + Editor + Terminal bound to CodingState.
 
 use std::fs;
 use std::path::PathBuf;
@@ -9,11 +9,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use jaymi::{coding_shell_summary, Application};
 use jaymi_capabilities::{
-    DiagnosticState, GitStatusState, OpenFileState, TerminalSessionState, WorkspaceKind,
-    WorkspacePanel,
+    DiagnosticState, EditorTab, ExplorerNode, ExplorerStatus, GitStatusState, TerminalSessionState,
+    WorkspaceKind, WorkspacePanel,
 };
 use jaymi_core::UserRequest;
 use jaymi_memory::MessageRole;
+use std::collections::BTreeSet;
 
 #[test]
 fn coding_workspace_shell_materializes_five_panels_beside_conversation() {
@@ -48,7 +49,6 @@ fn coding_workspace_shell_materializes_five_panels_beside_conversation() {
         );
     }
 
-    // Conversation remains the primary surface while the shell is expanded.
     assert!(
         session.turn_count() >= 2,
         "conversation must stay visible/populated while Coding is open"
@@ -64,26 +64,56 @@ fn coding_shell_reflects_state_and_clears_on_close() {
         .expect("coding");
 
     app.with_coding_state(|coding| {
-        coding.selected_path = Some("src/lib.rs".into());
-        coding.explorer_entries = vec!["src/".into(), "src/lib.rs".into(), "Cargo.toml".into()];
-        coding.open_files.push(OpenFileState {
-            path: "src/lib.rs".into(),
+        coding.selected_path = Some("/tmp/project/src/lib.rs".into());
+        coding.project_root = Some("/tmp/project".into());
+        coding.explorer_status = ExplorerStatus::Ready;
+        coding.explorer_nodes = vec![
+            ExplorerNode {
+                name: "src".into(),
+                path: "/tmp/project/src".into(),
+                is_dir: true,
+                children: vec![ExplorerNode {
+                    name: "lib.rs".into(),
+                    path: "/tmp/project/src/lib.rs".into(),
+                    is_dir: false,
+                    children: Vec::new(),
+                }],
+            },
+            ExplorerNode {
+                name: "Cargo.toml".into(),
+                path: "/tmp/project/Cargo.toml".into(),
+                is_dir: false,
+                children: Vec::new(),
+            },
+        ];
+        coding.expanded_paths = BTreeSet::from(["/tmp/project/src".into()]);
+        coding.upsert_tab(EditorTab {
+            path: "/tmp/project/src/lib.rs".into(),
+            name: "lib.rs".into(),
+            content: "fn x() {}".into(),
             dirty: true,
+            scroll_offset: 0.0,
         });
         coding.terminal_sessions.push(TerminalSessionState {
             id: "term-1".into(),
             cwd: Some("/tmp/project".into()),
             last_command: Some("cargo test".into()),
+            output: "$ cargo test\n".into(),
+            history: vec!["cargo test".into()],
+            input: String::new(),
+            history_index: None,
+            scroll_offset: 0.0,
         });
         coding.git = Some(GitStatusState {
             branch: Some("feature/shell".into()),
             summary: "1 modified".into(),
+            ..GitStatusState::default()
         });
-        coding.diagnostics.push(DiagnosticState {
-            message: "missing semicolon".into(),
-            path: Some("src/lib.rs".into()),
-            severity: "error".into(),
-        });
+        coding.diagnostics.push(DiagnosticState::simple(
+            "missing semicolon",
+            Some("/tmp/project/src/lib.rs".into()),
+            "error",
+        ));
     })
     .expect("populate coding state");
 
@@ -94,16 +124,17 @@ fn coding_shell_reflects_state_and_clears_on_close() {
         .coding()
         .expect("coding borrow")
         .clone();
-    let summary = coding_shell_summary(&state);
+    let summary = coding_shell_summary(&state, None);
     assert!(summary.contains("## Project Explorer"));
     assert!(summary.contains("## Editor"));
     assert!(summary.contains("## Terminal"));
     assert!(summary.contains("## Git"));
     assert!(summary.contains("## Diagnostics"));
-    assert!(summary.contains("src/lib.rs"));
+    assert!(summary.contains("lib.rs"));
     assert!(summary.contains("cargo test"));
     assert!(summary.contains("branch=feature/shell"));
     assert!(summary.contains("missing semicolon"));
+    assert!(!summary.contains("stub explorer"));
     assert!(state.entry_count() >= 5);
 
     let turns = app.experience().expect("experience").turn_count();

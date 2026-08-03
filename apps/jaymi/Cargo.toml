@@ -17,6 +17,9 @@ path = "src/main.rs"
 
 [dependencies]
 eframe = { version = "0.31.1", default-features = false, features = ["default_fonts", "glow", "x11"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+wry = "0.45"
 jaymi-capabilities = { workspace = true }
 jaymi-config = { workspace = true }
 jaymi-context = { workspace = true }

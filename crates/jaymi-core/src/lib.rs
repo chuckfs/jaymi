@@ -15,6 +15,7 @@ pub mod file_entry;
 pub mod health;
 pub mod id;
 pub mod lifecycle;
+pub mod lsp;
 pub mod request;
 pub mod result;
 pub mod search;
@@ -31,7 +32,14 @@ pub use file_entry::{EntryType, FileEntry};
 pub use health::HealthReport;
 pub use id::EntityId;
 pub use lifecycle::Lifecycle;
-pub use request::{DiscoveryQueryKind, ProjectKnowledgeRequest, UserRequest};
+pub use lsp::{
+    LspCompletionItem, LspDiagnostic, LspHover, LspLocation, LspOperation, LspPosition, LspRange,
+    LspRequest, LspTextEdit,
+};
+pub use request::{
+    DiscoveryQueryKind, GitOperation, GitPathStatus, GitRequest, ProjectKnowledgeRequest,
+    TerminalRequest, UserRequest, WriteFileRequest,
+};
 pub use result::JaymiResult;
 pub use search::{MetadataFilters, SearchRequest};
 pub use state::AppState;

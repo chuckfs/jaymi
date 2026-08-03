@@ -36,7 +36,11 @@ impl FilesystemProvider {
                 description: "Local filesystem access for listing and reading files".to_string(),
                 category: ProviderCategory::Local,
                 author: "jaymi".to_string(),
-                capabilities: vec![Capability::Search, Capability::ReadDocuments],
+                capabilities: vec![
+                    Capability::Search,
+                    Capability::ReadDocuments,
+                    Capability::FileManagement,
+                ],
             },
             initialized: false,
         }
@@ -111,6 +115,54 @@ impl FilesystemProvider {
         Ok(entries)
     }
 
+    /// Recursively list a directory tree for Project Explorer.
+    ///
+    /// Skips hidden names (leading `.`) and `.git`. Does not follow directory
+    /// symlinks. Returns the canonical root plus a flat list of files and
+    /// directories under it (not including the root itself). Sorting and nesting
+    /// belong to callers.
+    pub fn list_directory_tree(&self, path: &Path) -> JaymiResult<(PathBuf, Vec<FileEntry>)> {
+        if !self.initialized {
+            jaymi_logging::error(
+                "providers",
+                "filesystem list_directory_tree rejected: provider is not initialized",
+            );
+            return Err(JaymiError::new(
+                "filesystem provider is not initialized".to_string(),
+            ));
+        }
+
+        jaymi_logging::info(
+            "providers",
+            format!("filesystem list_directory_tree path={}", path.display()),
+        );
+
+        let path = normalize_path(path)?;
+        let metadata = fs::metadata(&path).map_err(|error| {
+            let message = format!("cannot access directory {}: {error}", path.display());
+            jaymi_logging::error("providers", &message);
+            JaymiError::new(message)
+        })?;
+
+        if !metadata.is_dir() {
+            let message = format!("path is not a directory: {}", path.display());
+            jaymi_logging::warn("providers", &message);
+            return Err(JaymiError::new(message));
+        }
+
+        let mut entries = Vec::new();
+        walk_directory_tree(&path, &mut entries)?;
+        jaymi_logging::info(
+            "providers",
+            format!(
+                "filesystem list_directory_tree completed path={} entries={}",
+                path.display(),
+                entries.len()
+            ),
+        );
+        Ok((path, entries))
+    }
+
     /// Read the raw bytes of a single file.
     ///
     /// Does not parse, index, or interpret content. Parsing belongs to the
@@ -162,6 +214,57 @@ impl FilesystemProvider {
                 JaymiError::new(message)
             })
     }
+
+    /// Write raw UTF-8 bytes to a file (create or overwrite).
+    ///
+    /// Does not create parent directories. Parent must already exist.
+    pub fn write_file(&self, path: &Path, content: &[u8]) -> JaymiResult<()> {
+        if !self.initialized {
+            jaymi_logging::error(
+                "providers",
+                "filesystem write_file rejected: provider is not initialized",
+            );
+            return Err(JaymiError::new(
+                "filesystem provider is not initialized".to_string(),
+            ));
+        }
+
+        jaymi_logging::info(
+            "providers",
+            format!("filesystem write_file path={}", path.display()),
+        );
+
+        let path = normalize_path_for_write(path)?;
+        if path.exists() {
+            let metadata = fs::metadata(&path).map_err(|error| {
+                let message = format!("cannot access file {}: {error}", path.display());
+                jaymi_logging::error("providers", &message);
+                JaymiError::new(message)
+            })?;
+            if metadata.is_dir() {
+                let message = format!("path is a directory, not a file: {}", path.display());
+                jaymi_logging::warn("providers", &message);
+                return Err(JaymiError::new(message));
+            }
+        }
+
+        fs::write(&path, content)
+            .map(|_| {
+                jaymi_logging::info(
+                    "providers",
+                    format!(
+                        "filesystem write_file completed path={} bytes={}",
+                        path.display(),
+                        content.len()
+                    ),
+                );
+            })
+            .map_err(|error| {
+                let message = format!("failed to write file {}: {error}", path.display());
+                jaymi_logging::error("providers", &message);
+                JaymiError::new(message)
+            })
+    }
 }
 
 impl Default for FilesystemProvider {
@@ -209,6 +312,72 @@ fn normalize_path(path: &Path) -> JaymiResult<PathBuf> {
                 .map_err(|error| JaymiError::new(format!("cannot resolve path: {error}")))
         }
     })
+}
+
+/// Resolve a write target without requiring the file to exist yet.
+fn normalize_path_for_write(path: &Path) -> JaymiResult<PathBuf> {
+    if path.as_os_str().is_empty() {
+        return Err(JaymiError::new("file path must not be empty"));
+    }
+    if path.exists() {
+        return normalize_path(path);
+    }
+    if let Some(parent) = path.parent() {
+        if !parent.as_os_str().is_empty() {
+            let parent = normalize_path(parent)?;
+            let name = path.file_name().ok_or_else(|| {
+                JaymiError::new(format!("invalid file path: {}", path.display()))
+            })?;
+            return Ok(parent.join(name));
+        }
+    }
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .map_err(|error| JaymiError::new(format!("cannot resolve path: {error}")))
+    }
+}
+
+fn should_skip_explorer_name(name: &str) -> bool {
+    name == ".git" || name.starts_with('.')
+}
+
+fn walk_directory_tree(dir: &Path, out: &mut Vec<FileEntry>) -> JaymiResult<()> {
+    let read_dir = fs::read_dir(dir).map_err(|error| {
+        JaymiError::new(format!(
+            "failed to read directory {}: {error}",
+            dir.display()
+        ))
+    })?;
+
+    let mut children = Vec::new();
+    for entry in read_dir {
+        let entry = entry.map_err(|error| {
+            JaymiError::new(format!(
+                "failed to read directory entry in {}: {error}",
+                dir.display()
+            ))
+        })?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if should_skip_explorer_name(&name) {
+            continue;
+        }
+        children.push(file_entry_from_dir_entry(entry)?);
+    }
+
+    children.sort_by(|left, right| left.name.cmp(&right.name));
+    for child in children {
+        let is_dir = child.entry_type == EntryType::Directory;
+        let child_path = child.path.clone();
+        out.push(child);
+        if is_dir {
+            // Do not follow symlinks — only real directories from metadata above.
+            walk_directory_tree(&child_path, out)?;
+        }
+    }
+    Ok(())
 }
 
 fn file_entry_from_dir_entry(entry: fs::DirEntry) -> JaymiResult<FileEntry> {
@@ -292,6 +461,46 @@ mod tests {
         let provider = FilesystemProvider::new();
         let error = provider.list_directory(Path::new(".")).unwrap_err();
         assert!(error.message().contains("not initialized"));
+    }
+
+    #[test]
+    fn list_directory_tree_skips_hidden_and_git_and_recurses() {
+        let dir = tempfile_dir();
+        fs::create_dir(dir.join("src")).unwrap();
+        File::create(dir.join("src").join("main.rs")).unwrap();
+        File::create(dir.join("Cargo.toml")).unwrap();
+        File::create(dir.join(".hidden")).unwrap();
+        // Prefer a file named `.git` so sandboxes that block creating a `.git`
+        // directory still exercise the name filter.
+        File::create(dir.join(".git")).unwrap();
+        fs::create_dir(dir.join("src").join("nested")).unwrap();
+        File::create(dir.join("src").join("nested").join("lib.rs")).unwrap();
+
+        let mut provider = FilesystemProvider::new();
+        provider.initialize().unwrap();
+        let entries = provider.list_directory_tree(&dir).unwrap().1;
+        let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
+
+        assert!(names.contains(&"src"));
+        assert!(names.contains(&"main.rs"));
+        assert!(names.contains(&"Cargo.toml"));
+        assert!(names.contains(&"nested"));
+        assert!(names.contains(&"lib.rs"));
+        assert!(!names.iter().any(|name| name.starts_with('.')));
+        assert!(!names.contains(&"config"));
+    }
+
+    #[test]
+    fn write_file_creates_and_overwrites() {
+        let dir = tempfile_dir();
+        let path = dir.join("out.txt");
+
+        let mut provider = FilesystemProvider::new();
+        provider.initialize().unwrap();
+        provider.write_file(&path, b"first").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"first");
+        provider.write_file(&path, b"second").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"second");
     }
 
     #[test]

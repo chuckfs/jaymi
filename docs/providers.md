@@ -20,6 +20,9 @@ Instead, every interaction flows through tools that hold bound providers.
 ### Current providers
 
 * Filesystem
+* Terminal (PTY)
+* Git
+* Language Server (Rust Analyzer)
 * Local embedding
 * OCR placeholder (architecture only)
 
@@ -98,7 +101,7 @@ Today, boot registers provider identities in the ProviderRegistry and binds live
 
 Provider Categories
 
-**Status: Target catalog** (Current: Filesystem, Local Embedding, OCR placeholder)
+**Status: Target catalog** (Current: Filesystem, Terminal/PTY, Git, Language Server / Rust Analyzer, Local Embedding, OCR placeholder)
 
 Jaymi groups providers into logical categories.
 

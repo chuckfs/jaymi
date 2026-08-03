@@ -98,7 +98,7 @@ impl ParserRegistry {
     pub fn detect_type(path: &Path) -> Option<FileType> {
         let ext = path.extension()?.to_str()?.to_ascii_lowercase();
         match ext.as_str() {
-            "txt" => Some(FileType::PlainText),
+            "txt" | "rs" | "toml" | "yaml" | "yml" => Some(FileType::PlainText),
             "md" | "markdown" => Some(FileType::Markdown),
             "json" => Some(FileType::Json),
             "pdf" => Some(FileType::Pdf),
@@ -192,6 +192,22 @@ mod tests {
     fn detect_type_from_extension() {
         assert_eq!(
             ParserRegistry::detect_type(Path::new("notes.txt")),
+            Some(FileType::PlainText)
+        );
+        assert_eq!(
+            ParserRegistry::detect_type(Path::new("main.rs")),
+            Some(FileType::PlainText)
+        );
+        assert_eq!(
+            ParserRegistry::detect_type(Path::new("Cargo.toml")),
+            Some(FileType::PlainText)
+        );
+        assert_eq!(
+            ParserRegistry::detect_type(Path::new("config.yaml")),
+            Some(FileType::PlainText)
+        );
+        assert_eq!(
+            ParserRegistry::detect_type(Path::new("config.yml")),
             Some(FileType::PlainText)
         );
         assert_eq!(

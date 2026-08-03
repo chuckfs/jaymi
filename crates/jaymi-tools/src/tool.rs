@@ -2,22 +2,36 @@
 
 use crate::metadata::ToolMetadata;
 use jaymi_core::{
-    Citation, DiscoveryQueryKind, Document, FileEntry, JaymiResult, ProjectKnowledgeRequest,
-    SearchRequest,
+    Citation, DiscoveryQueryKind, Document, FileEntry, GitOperation, GitPathStatus, JaymiResult,
+    LspCompletionItem, LspDiagnostic, LspHover, LspLocation, LspRequest, LspTextEdit,
+    ProjectKnowledgeRequest, SearchRequest,
 };
 use jaymi_project_engine::ProjectKnowledgeHit;
+use jaymi_providers::LspOperationResult;
 
 /// Structured input supplied by the Planner.
 #[derive(Debug, Default, Clone)]
 pub struct ToolInput {
     /// Directory or file path for filesystem tools.
     pub path: Option<std::path::PathBuf>,
+    /// Text content for write tools / commit messages.
+    pub content: Option<String>,
     /// Structured discovery query for inventory tools.
     pub discovery: Option<DiscoveryQueryKind>,
     /// Structured Search Engine request.
     pub search: Option<SearchRequest>,
     /// Structured project-knowledge search request.
     pub project_knowledge: Option<ProjectKnowledgeRequest>,
+    /// Terminal session id for PTY tools.
+    pub session_id: Option<String>,
+    /// Shell command for terminal tools (`None` = ensure/spawn only).
+    pub command: Option<String>,
+    /// Git operation for the Git tool.
+    pub git_operation: Option<GitOperation>,
+    /// Paths for Git stage / unstage / discard.
+    pub paths: Vec<std::path::PathBuf>,
+    /// Structured Language Server request.
+    pub lsp: Option<LspRequest>,
 }
 
 impl ToolInput {
@@ -25,9 +39,7 @@ impl ToolInput {
     pub fn list_directory(path: impl Into<std::path::PathBuf>) -> Self {
         Self {
             path: Some(path.into()),
-            discovery: None,
-            search: None,
-            project_knowledge: None,
+            ..Self::default()
         }
     }
 
@@ -35,9 +47,16 @@ impl ToolInput {
     pub fn read_file(path: impl Into<std::path::PathBuf>) -> Self {
         Self {
             path: Some(path.into()),
-            discovery: None,
-            search: None,
-            project_knowledge: None,
+            ..Self::default()
+        }
+    }
+
+    /// Create input for a single-file write operation.
+    pub fn write_file(path: impl Into<std::path::PathBuf>, content: impl Into<String>) -> Self {
+        Self {
+            path: Some(path.into()),
+            content: Some(content.into()),
+            ..Self::default()
         }
     }
 
@@ -50,8 +69,7 @@ impl ToolInput {
         Self {
             path,
             discovery: Some(kind),
-            search: None,
-            project_knowledge: None,
+            ..Self::default()
         }
     }
 
@@ -59,19 +77,68 @@ impl ToolInput {
     pub fn search(request: SearchRequest) -> Self {
         Self {
             path: request.folder.clone(),
-            discovery: None,
             search: Some(request),
-            project_knowledge: None,
+            ..Self::default()
         }
     }
 
     /// Create input for a project-knowledge search.
     pub fn project_knowledge(request: ProjectKnowledgeRequest) -> Self {
         Self {
-            path: None,
-            discovery: None,
-            search: None,
             project_knowledge: Some(request),
+            ..Self::default()
+        }
+    }
+
+    /// Create input to ensure a terminal session exists.
+    pub fn ensure_terminal(
+        session_id: impl Into<String>,
+        cwd: impl Into<std::path::PathBuf>,
+    ) -> Self {
+        Self {
+            path: Some(cwd.into()),
+            session_id: Some(session_id.into()),
+            command: None,
+            ..Self::default()
+        }
+    }
+
+    /// Create input to run a command in a terminal session.
+    pub fn run_terminal(
+        session_id: impl Into<String>,
+        cwd: impl Into<std::path::PathBuf>,
+        command: impl Into<String>,
+    ) -> Self {
+        Self {
+            path: Some(cwd.into()),
+            session_id: Some(session_id.into()),
+            command: Some(command.into()),
+            ..Self::default()
+        }
+    }
+
+    /// Create input for a Git operation.
+    pub fn git(
+        repo_root: impl Into<std::path::PathBuf>,
+        operation: GitOperation,
+        paths: Vec<std::path::PathBuf>,
+        message: Option<String>,
+    ) -> Self {
+        Self {
+            path: Some(repo_root.into()),
+            content: message,
+            git_operation: Some(operation),
+            paths,
+            ..Self::default()
+        }
+    }
+
+    /// Create input for a Language Server operation.
+    pub fn lsp(request: LspRequest) -> Self {
+        Self {
+            path: Some(request.workspace_root.clone()),
+            lsp: Some(request),
+            ..Self::default()
         }
     }
 }
@@ -91,8 +158,40 @@ pub struct ToolOutput {
     pub parser_id: Option<String>,
     /// Optional human-readable message.
     pub message: Option<String>,
+    /// Resolved/canonical path for listing tools, when applicable.
+    pub listed_path: Option<std::path::PathBuf>,
     /// Project-scoped knowledge hits when applicable.
     pub project_knowledge: Vec<ProjectKnowledgeHit>,
+    /// Terminal session id when applicable.
+    pub session_id: Option<String>,
+    /// Output produced by the latest terminal command.
+    pub terminal_output: Option<String>,
+    /// Full terminal scrollback for the session.
+    pub terminal_scrollback: Option<String>,
+    /// Terminal command history (oldest first).
+    pub terminal_history: Vec<String>,
+    /// Current Git branch when applicable.
+    pub git_branch: Option<String>,
+    /// Short Git status summary when applicable.
+    pub git_summary: Option<String>,
+    /// Unstaged modified files.
+    pub git_modified: Vec<GitPathStatus>,
+    /// Staged files.
+    pub git_staged: Vec<GitPathStatus>,
+    /// Untracked files.
+    pub git_untracked: Vec<GitPathStatus>,
+    /// Hover result from the language server.
+    pub lsp_hover: Option<LspHover>,
+    /// Completion candidates from the language server.
+    pub lsp_completions: Vec<LspCompletionItem>,
+    /// Diagnostics from the language server.
+    pub lsp_diagnostics: Vec<LspDiagnostic>,
+    /// Go-to-definition locations.
+    pub lsp_definitions: Vec<LspLocation>,
+    /// Find-references locations.
+    pub lsp_references: Vec<LspLocation>,
+    /// Rename / workspace text edits.
+    pub lsp_edits: Vec<LspTextEdit>,
 }
 
 impl ToolOutput {
@@ -101,11 +200,17 @@ impl ToolOutput {
         Self {
             success: true,
             entries,
-            citations: Vec::new(),
-            document: None,
-            parser_id: None,
-            message: None,
-            project_knowledge: Vec::new(),
+            ..Self::default()
+        }
+    }
+
+    /// Successful recursive project-tree listing with canonical root.
+    pub fn project_tree(root: impl Into<std::path::PathBuf>, entries: Vec<FileEntry>) -> Self {
+        Self {
+            success: true,
+            entries,
+            listed_path: Some(root.into()),
+            ..Self::default()
         }
     }
 
@@ -114,12 +219,69 @@ impl ToolOutput {
         let parser_id = document.parser_id.clone();
         Self {
             success: true,
-            entries: Vec::new(),
-            citations: Vec::new(),
             document: Some(document),
             parser_id: Some(parser_id),
-            message: None,
-            project_knowledge: Vec::new(),
+            ..Self::default()
+        }
+    }
+
+    /// Successful terminal operation.
+    pub fn terminal(
+        session_id: impl Into<String>,
+        cwd: impl Into<std::path::PathBuf>,
+        output: impl Into<String>,
+        scrollback: impl Into<String>,
+        history: Vec<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            success: true,
+            message: Some(message.into()),
+            listed_path: Some(cwd.into()),
+            session_id: Some(session_id.into()),
+            terminal_output: Some(output.into()),
+            terminal_scrollback: Some(scrollback.into()),
+            terminal_history: history,
+            ..Self::default()
+        }
+    }
+
+    /// Successful Git operation with refreshed status.
+    pub fn git_status(
+        repo_root: impl Into<std::path::PathBuf>,
+        branch: Option<String>,
+        summary: impl Into<String>,
+        modified: Vec<GitPathStatus>,
+        staged: Vec<GitPathStatus>,
+        untracked: Vec<GitPathStatus>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            success: true,
+            message: Some(message.into()),
+            listed_path: Some(repo_root.into()),
+            git_branch: branch,
+            git_summary: Some(summary.into()),
+            git_modified: modified,
+            git_staged: staged,
+            git_untracked: untracked,
+            ..Self::default()
+        }
+    }
+
+    /// Successful Language Server operation.
+    pub fn lsp(result: LspOperationResult, request: LspRequest) -> Self {
+        Self {
+            success: true,
+            message: Some(result.message),
+            listed_path: Some(request.workspace_root),
+            lsp_hover: result.hover,
+            lsp_completions: result.completions,
+            lsp_diagnostics: result.diagnostics,
+            lsp_definitions: result.definitions,
+            lsp_references: result.references,
+            lsp_edits: result.edits,
+            ..Self::default()
         }
     }
 
@@ -127,12 +289,8 @@ impl ToolOutput {
     pub fn failure(message: impl Into<String>) -> Self {
         Self {
             success: false,
-            entries: Vec::new(),
-            citations: Vec::new(),
-            document: None,
-            parser_id: None,
             message: Some(message.into()),
-            project_knowledge: Vec::new(),
+            ..Self::default()
         }
     }
 }

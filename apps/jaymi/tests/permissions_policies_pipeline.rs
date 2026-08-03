@@ -72,11 +72,11 @@ fn denied_permission_prevents_execution() {
     permissions.initialize().unwrap();
     let result = permissions
         .check(&PermissionRequest {
-            category: PermissionCategory::Filesystem,
-            action: PermissionAction::Write,
+            category: PermissionCategory::Internet,
+            action: PermissionAction::Network,
             scope: PermissionScope::Once,
-            explanation: "Overwrite notes.txt".into(),
-            resource: Some("/tmp/notes.txt".into()),
+            explanation: "Call a remote API".into(),
+            resource: Some("https://example.com".into()),
         })
         .unwrap();
     assert_eq!(result.decision, PermissionDecision::Denied);

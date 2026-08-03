@@ -11,3 +11,5 @@ authors.workspace = true
 jaymi-capabilities = { workspace = true }
 jaymi-core = { workspace = true }
 jaymi-logging = { workspace = true }
+portable-pty = { workspace = true }
+serde_json = { workspace = true }

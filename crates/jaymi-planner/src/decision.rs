@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use jaymi_capabilities::Capability;
-use jaymi_core::{DiscoveryQueryKind, SearchRequest, UserRequest};
+use jaymi_core::{DiscoveryQueryKind, GitOperation, SearchRequest, UserRequest};
 
 /// Deterministic intents recognized by the Planner.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,10 +16,47 @@ pub enum Intent {
         /// Directory path to list.
         path: PathBuf,
     },
+    /// Recursively list a project directory tree (Coding Explorer).
+    ListProjectTree {
+        /// Project root directory path.
+        path: PathBuf,
+    },
     /// Read one supported file into a unified document.
     ReadFile {
         /// File path to read.
         path: PathBuf,
+    },
+    /// Write text content to one file.
+    WriteFile {
+        /// Destination path.
+        path: PathBuf,
+        /// Full contents to write.
+        content: String,
+    },
+    /// Ensure or run a command in a persistent terminal session.
+    RunTerminal {
+        /// Stable session id.
+        session_id: String,
+        /// Working directory for the session.
+        cwd: PathBuf,
+        /// Command to run; `None` ensures/spawns only.
+        command: Option<String>,
+    },
+    /// Inspect or mutate a local Git repository.
+    Git {
+        /// Repository root.
+        repo_root: PathBuf,
+        /// Operation to perform.
+        operation: GitOperation,
+        /// Paths for stage / unstage / discard.
+        paths: Vec<PathBuf>,
+        /// Commit message when committing.
+        message: Option<String>,
+    },
+    /// Language Server Protocol operation (Rust Analyzer).
+    Lsp {
+        /// Structured LSP request.
+        request: jaymi_core::LspRequest,
     },
     /// Query the persistent discovery inventory.
     DiscoverInventory {
@@ -122,9 +159,53 @@ impl DecisionEngine {
             }
         }
 
+        if let Some(write) = &request.write_file {
+            if !write.path.as_os_str().is_empty() {
+                return Intent::WriteFile {
+                    path: write.path.clone(),
+                    content: write.content.clone(),
+                };
+            }
+        }
+
+        if let Some(terminal) = &request.terminal {
+            if !terminal.session_id.trim().is_empty() && !terminal.cwd.as_os_str().is_empty() {
+                return Intent::RunTerminal {
+                    session_id: terminal.session_id.clone(),
+                    cwd: terminal.cwd.clone(),
+                    command: terminal.command.clone(),
+                };
+            }
+        }
+
+        if let Some(git) = &request.git {
+            if !git.repo_root.as_os_str().is_empty() {
+                return Intent::Git {
+                    repo_root: git.repo_root.clone(),
+                    operation: git.operation,
+                    paths: git.paths.clone(),
+                    message: git.message.clone(),
+                };
+            }
+        }
+
+        if let Some(lsp) = &request.lsp {
+            if !lsp.workspace_root.as_os_str().is_empty() {
+                return Intent::Lsp {
+                    request: lsp.clone(),
+                };
+            }
+        }
+
         if let Some(path) = &request.file {
             if !path.as_os_str().is_empty() {
                 return Intent::ReadFile { path: path.clone() };
+            }
+        }
+
+        if let Some(path) = &request.project_tree {
+            if !path.as_os_str().is_empty() {
+                return Intent::ListProjectTree { path: path.clone() };
             }
         }
 
@@ -207,9 +288,14 @@ impl DecisionEngine {
     pub fn required_capability(&self, intent: &Intent) -> Option<Capability> {
         match intent {
             Intent::ListDirectory { .. } => Some(Capability::Search),
+            Intent::ListProjectTree { .. } => Some(Capability::Search),
             Intent::SearchKnowledge { .. } => Some(Capability::Search),
             Intent::SearchProjectKnowledge { .. } => Some(Capability::Search),
             Intent::ReadFile { .. } => Some(Capability::ReadDocuments),
+            Intent::WriteFile { .. } => Some(Capability::FileManagement),
+            Intent::RunTerminal { .. } => Some(Capability::ExecuteTerminalCommands),
+            Intent::Git { .. } => Some(Capability::Code),
+            Intent::Lsp { .. } => Some(Capability::Code),
             Intent::DiscoverInventory { .. } => Some(Capability::Discover),
             Intent::IndexRoots { .. } => Some(Capability::Index),
             Intent::PlanWork { capabilities, .. } => capabilities.first().copied(),

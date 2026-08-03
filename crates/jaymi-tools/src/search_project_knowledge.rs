@@ -117,6 +117,8 @@ fn project_knowledge_output(
         document: None,
         parser_id: None,
         message: Some(message),
+        listed_path: None,
         project_knowledge: hits,
-    }
+                ..Default::default()
+        }
 }

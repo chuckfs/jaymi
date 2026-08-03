@@ -16,9 +16,12 @@
 pub mod categories;
 pub mod embedding;
 pub mod filesystem;
+pub mod git;
+pub mod lsp;
 pub mod ocr;
 pub mod provider;
 pub mod registry;
+pub mod terminal;
 
 pub use categories::ProviderCategory;
 pub use embedding::{
@@ -26,12 +29,20 @@ pub use embedding::{
     LocalEmbeddingProvider, EMBEDDING_PROVIDER_ID, LOCAL_EMBEDDING_DIMS, LOCAL_EMBEDDING_MODEL,
 };
 pub use filesystem::{FilesystemProvider, FILESYSTEM_PROVIDER_ID};
+pub use git::{GitProvider, GitStatusSnapshot, GIT_PROVIDER_ID};
+pub use lsp::{
+    resolve_lsp_command, LspOperationResult, LspProvider, DEFAULT_LSP_COMMAND, LSP_PROVIDER_ID,
+    MOCK_LSP_COMMAND,
+};
 pub use ocr::{
     OcrExtraction, OcrImage, OcrProvider, OcrProviderStatus, PlaceholderOcrProvider,
     OCR_ENGINE_NONE, OCR_PROVIDER_ID,
 };
 pub use provider::{Provider, ProviderIdentity};
 pub use registry::ProviderRegistry;
+pub use terminal::{
+    TerminalCommandResult, TerminalProvider, DEFAULT_TERMINAL_SESSION_ID, TERMINAL_PROVIDER_ID,
+};
 
 use jaymi_core::{HealthReport, JaymiResult, Lifecycle};
 

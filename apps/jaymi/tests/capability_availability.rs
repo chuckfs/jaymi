@@ -27,9 +27,11 @@ fn boot_keeps_full_catalog_registered_with_availability() {
     assert!(chat.blockers.is_empty());
 
     let code = discovery.get("code").expect("code");
-    assert_eq!(code.availability, CapabilityAvailability::Unavailable);
-    assert!(!code.is_available());
+    // Terminal tool/provider fulfill Code inventory enough for Experimental.
+    assert_eq!(code.availability, CapabilityAvailability::Experimental);
+    assert!(code.is_available());
     assert!(code.registered);
+    assert!(code.fulfilling_tools.iter().any(|id| id == "terminal"));
 
     assert!(discovery.planned_count() > 0);
     assert!(!discovery.available.is_empty());

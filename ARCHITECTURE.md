@@ -221,8 +221,13 @@ Tools are concrete implementations of capabilities.
 ### Current tools
 
 * `search_files`
+* `list_project_tree`
 * `search_knowledge`
+* `search_project_knowledge`
 * `read_file`
+* `write_file`
+* `terminal`
+* `git`
 * `query_inventory`
 * `scan_filesystem`
 
@@ -230,7 +235,7 @@ The planner selects tools automatically for supported intents.
 
 ### Target tools
 
-Messages, Photos, Editor, LSP, Git, Terminal, Image Model, Vision Model, and many more — interchangeable under stable capabilities.
+Messages, Photos, Editor, LSP, Image Model, Vision Model, and many more — interchangeable under stable capabilities.
 
 ⸻
 
@@ -243,7 +248,7 @@ Providers connect Jaymi to resources.
 ### Current
 
 * ProviderRegistry — discovery and diagnostics (identity metadata)
-* Concrete provider instances bound into tools at boot: Filesystem, Local Embedding, OCR Placeholder
+* Concrete provider instances bound into tools at boot: Filesystem, Terminal (PTY), Git, Language Server (Rust Analyzer), Local Embedding, OCR Placeholder
 * Capability Engine soft-matching for plans (`providers_for`)
 
 There is no ProviderManager. Execution goes through tools.
@@ -268,7 +273,7 @@ Jaymi should never surprise the user.
 
 ### Current
 
-Permission categories and scopes; default rules (e.g. filesystem read allowed; many write/network/terminal actions denied or require approval); consulted before tool execution.
+Permission categories and scopes; default rules (e.g. filesystem read/write and terminal execute allowed; many network actions denied or require approval); consulted before tool execution.
 
 ### Target
 

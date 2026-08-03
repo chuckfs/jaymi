@@ -66,8 +66,9 @@ fn capability_inspector_reflects_registered_active_planned_and_requirements() {
         .required_providers
         .iter()
         .any(|id| id == "filesystem"));
-    // Code is Experimental in catalog but blocked without coding tools.
-    assert_eq!(code.availability, CapabilityAvailability::Unavailable);
+    // Code is Experimental once Terminal tool/provider are registered.
+    assert_eq!(code.availability, CapabilityAvailability::Experimental);
+    assert!(code.fulfilling_tools.iter().any(|id| id == "terminal"));
 
     let rendered = report.render();
     assert!(rendered.contains("Capability Inspector"));

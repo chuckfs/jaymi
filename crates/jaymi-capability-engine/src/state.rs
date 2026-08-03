@@ -4,9 +4,55 @@
 //! unless the caller explicitly promotes an entry elsewhere (conversation,
 //! project memory, etc.).
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use crate::{Capability, WorkspaceKind};
 
-/// One open file in a coding workspace.
+/// One node in the Project Explorer tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExplorerNode {
+    /// Display name (file or folder basename).
+    pub name: String,
+    /// Absolute path string.
+    pub path: String,
+    /// True when this node is a directory.
+    pub is_dir: bool,
+    /// Child nodes (directories first, then files; alphabetical).
+    pub children: Vec<ExplorerNode>,
+}
+
+/// Status of the Project Explorer load.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ExplorerStatus {
+    /// Not loaded yet.
+    #[default]
+    Idle,
+    /// Tree is ready to render.
+    Ready,
+    /// No open project / no root directory.
+    NoProject,
+    /// Load failed.
+    Error(String),
+}
+
+/// One open editor tab in the Coding workspace.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditorTab {
+    /// Absolute filesystem path.
+    pub path: String,
+    /// Basename for the tab label.
+    pub name: String,
+    /// Editable buffer contents (loaded via Planner → read_file).
+    pub content: String,
+    /// True when the buffer differs from the last loaded content.
+    pub dirty: bool,
+    /// Vertical scroll offset preserved while the workspace is open.
+    pub scroll_offset: f32,
+}
+
+impl Eq for EditorTab {}
+
+/// One open file in a coding workspace (legacy summary; prefer [`EditorTab`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenFileState {
     /// Filesystem path.
@@ -16,14 +62,91 @@ pub struct OpenFileState {
 }
 
 /// One terminal session in a coding workspace.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct TerminalSessionState {
     /// Stable session id for this workspace lifetime.
     pub id: String,
     /// Working directory, when known.
     pub cwd: Option<String>,
-    /// Last command preview (not a full scrollback buffer).
+    /// Last command preview.
     pub last_command: Option<String>,
+    /// Full scrollback buffer rendered by the UI.
+    pub output: String,
+    /// Command history (oldest first) for Up/Down navigation.
+    pub history: Vec<String>,
+    /// Current draft input line.
+    pub input: String,
+    /// Index into history while navigating (`None` = editing a new line).
+    pub history_index: Option<usize>,
+    /// Vertical scroll offset for the output pane.
+    pub scroll_offset: f32,
+}
+
+impl Eq for TerminalSessionState {}
+
+impl TerminalSessionState {
+    /// Create a new empty session bound to an optional cwd.
+    pub fn new(id: impl Into<String>, cwd: Option<String>) -> Self {
+        Self {
+            id: id.into(),
+            cwd,
+            last_command: None,
+            output: String::new(),
+            history: Vec::new(),
+            input: String::new(),
+            history_index: None,
+            scroll_offset: 0.0,
+        }
+    }
+
+    /// Apply a successful terminal tool result into UI state.
+    pub fn apply_result(
+        &mut self,
+        cwd: Option<String>,
+        last_command: Option<String>,
+        scrollback: String,
+        history: Vec<String>,
+    ) {
+        if let Some(cwd) = cwd {
+            self.cwd = Some(cwd);
+        }
+        if let Some(command) = last_command {
+            self.last_command = Some(command);
+        }
+        self.output = scrollback;
+        self.history = history;
+        self.input.clear();
+        self.history_index = None;
+    }
+
+    /// Move draft input to the previous history entry.
+    pub fn history_up(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        let next = match self.history_index {
+            None => self.history.len().saturating_sub(1),
+            Some(0) => 0,
+            Some(index) => index.saturating_sub(1),
+        };
+        self.history_index = Some(next);
+        self.input = self.history[next].clone();
+    }
+
+    /// Move draft input to the next history entry (or clear at the end).
+    pub fn history_down(&mut self) {
+        let Some(index) = self.history_index else {
+            return;
+        };
+        if index + 1 >= self.history.len() {
+            self.history_index = None;
+            self.input.clear();
+            return;
+        }
+        let next = index + 1;
+        self.history_index = Some(next);
+        self.input = self.history[next].clone();
+    }
 }
 
 /// One diagnostic entry in a coding workspace.
@@ -35,44 +158,280 @@ pub struct DiagnosticState {
     pub path: Option<String>,
     /// Severity label (`error`, `warning`, `info`, …).
     pub severity: String,
+    /// Zero-based start line, when known.
+    pub line: Option<u32>,
+    /// Zero-based start character, when known.
+    pub character: Option<u32>,
+    /// Zero-based end line, when known.
+    pub end_line: Option<u32>,
+    /// Zero-based end character, when known.
+    pub end_character: Option<u32>,
 }
 
-/// Stub Git status for the coding workspace shell (not a live Git integration).
+impl DiagnosticState {
+    /// Create a message-only diagnostic (no range).
+    pub fn simple(
+        message: impl Into<String>,
+        path: Option<String>,
+        severity: impl Into<String>,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            path,
+            severity: severity.into(),
+            line: None,
+            character: None,
+            end_line: None,
+            end_character: None,
+        }
+    }
+}
+
+/// Live Git status for the coding workspace shell.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GitFileEntry {
+    /// Repository-relative path.
+    pub path: String,
+    /// Short status label (`M`, `A`, `??`, …).
+    pub status: String,
+}
+
+/// Live Git status for the coding workspace shell.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GitStatusState {
     /// Current branch name, when known.
     pub branch: Option<String>,
     /// Short status summary (e.g. "clean", "2 modified").
     pub summary: String,
+    /// Unstaged worktree modifications.
+    pub modified: Vec<GitFileEntry>,
+    /// Staged index changes.
+    pub staged: Vec<GitFileEntry>,
+    /// Untracked paths.
+    pub untracked: Vec<GitFileEntry>,
+    /// Draft commit message for the panel.
+    pub commit_message: String,
+    /// Last error from a Git operation, when any.
+    pub last_error: Option<String>,
+}
+
+impl GitStatusState {
+    /// Apply a refreshed status snapshot from the Git tool.
+    pub fn apply_snapshot(
+        &mut self,
+        branch: Option<String>,
+        summary: String,
+        modified: Vec<GitFileEntry>,
+        staged: Vec<GitFileEntry>,
+        untracked: Vec<GitFileEntry>,
+    ) {
+        self.branch = branch;
+        self.summary = summary;
+        self.modified = modified;
+        self.staged = staged;
+        self.untracked = untracked;
+        self.last_error = None;
+    }
 }
 
 /// Temporary state for the Coding workspace.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct CodingState {
-    /// Selected path in the project explorer, when any.
+    /// Absolute project root path, when known.
+    pub project_root: Option<String>,
+    /// Root-level explorer nodes (children of the project root).
+    pub explorer_nodes: Vec<ExplorerNode>,
+    /// Paths currently expanded in the Project Explorer.
+    pub expanded_paths: BTreeSet<String>,
+    /// Selected path in the project explorer (file or folder).
     pub selected_path: Option<String>,
-    /// Explorer entries (stub paths — not a live filesystem walk).
-    pub explorer_entries: Vec<String>,
-    /// Open editor files.
-    pub open_files: Vec<OpenFileState>,
+    /// Explorer load status.
+    pub explorer_status: ExplorerStatus,
+    /// Open editor tabs (multiple files).
+    pub open_tabs: Vec<EditorTab>,
+    /// Path of the active editor tab, when any.
+    pub active_tab_path: Option<String>,
+    /// Scroll positions keyed by path (mirrors tab scroll for quick lookup).
+    pub scroll_positions: BTreeMap<String, f32>,
     /// Active terminal sessions.
     pub terminal_sessions: Vec<TerminalSessionState>,
-    /// Stub Git status for the shell, when set.
+    /// Live Git status for the shell, when set.
     pub git: Option<GitStatusState>,
     /// Current diagnostics.
     pub diagnostics: Vec<DiagnosticState>,
 }
 
+impl Eq for CodingState {}
+
 impl CodingState {
-    /// Number of tracked entries across explorer, files, terminals, git, and diagnostics.
+    /// Number of tracked entries across explorer, tabs, terminals, git, and diagnostics.
     pub fn entry_count(&self) -> usize {
-        self.explorer_entries.len()
-            + self.open_files.len()
+        count_explorer_nodes(&self.explorer_nodes)
+            + self.open_tabs.len()
             + self.terminal_sessions.len()
             + self.diagnostics.len()
             + usize::from(self.git.is_some())
             + usize::from(self.selected_path.is_some())
     }
+
+    /// Open editor files as a simple path/dirty list (compatibility helper).
+    pub fn open_files(&self) -> Vec<OpenFileState> {
+        self.open_tabs
+            .iter()
+            .map(|tab| OpenFileState {
+                path: tab.path.clone(),
+                dirty: tab.dirty,
+            })
+            .collect()
+    }
+
+    /// Focus an existing tab or return false when the path is not open.
+    pub fn focus_tab(&mut self, path: &str) -> bool {
+        if self.open_tabs.iter().any(|tab| tab.path == path) {
+            self.active_tab_path = Some(path.to_string());
+            self.selected_path = Some(path.to_string());
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Insert or replace a tab and make it active.
+    pub fn upsert_tab(&mut self, tab: EditorTab) {
+        if let Some(existing) = self
+            .open_tabs
+            .iter_mut()
+            .find(|open| open.path == tab.path)
+        {
+            *existing = tab.clone();
+        } else {
+            self.open_tabs.push(tab.clone());
+        }
+        self.scroll_positions
+            .insert(tab.path.clone(), tab.scroll_offset);
+        self.active_tab_path = Some(tab.path.clone());
+        self.selected_path = Some(tab.path);
+    }
+
+    /// Close a tab; activates a neighbor when the active tab is closed.
+    pub fn close_tab(&mut self, path: &str) -> bool {
+        let Some(index) = self.open_tabs.iter().position(|tab| tab.path == path) else {
+            return false;
+        };
+        self.open_tabs.remove(index);
+        self.scroll_positions.remove(path);
+        if self.active_tab_path.as_deref() == Some(path) {
+            self.active_tab_path = self
+                .open_tabs
+                .get(index)
+                .or_else(|| index.checked_sub(1).and_then(|i| self.open_tabs.get(i)))
+                .map(|tab| tab.path.clone());
+        }
+        true
+    }
+
+    /// Toggle whether a directory path is expanded.
+    pub fn toggle_expanded(&mut self, path: &str) {
+        if !self.expanded_paths.remove(path) {
+            self.expanded_paths.insert(path.to_string());
+        }
+    }
+
+    /// Update scroll offset for a tab path.
+    pub fn set_scroll_offset(&mut self, path: &str, offset: f32) {
+        if let Some(tab) = self.open_tabs.iter_mut().find(|tab| tab.path == path) {
+            tab.scroll_offset = offset;
+        }
+        self.scroll_positions.insert(path.to_string(), offset);
+    }
+
+    /// Update editable content for the active buffer.
+    pub fn set_tab_content(&mut self, path: &str, content: String) {
+        if let Some(tab) = self.open_tabs.iter_mut().find(|tab| tab.path == path) {
+            if tab.content != content {
+                tab.content = content;
+                tab.dirty = true;
+            }
+        }
+    }
+
+    /// Clear dirty after a successful save.
+    pub fn mark_tab_clean(&mut self, path: &str) {
+        if let Some(tab) = self.open_tabs.iter_mut().find(|tab| tab.path == path) {
+            tab.dirty = false;
+        }
+    }
+}
+
+fn count_explorer_nodes(nodes: &[ExplorerNode]) -> usize {
+    nodes
+        .iter()
+        .map(|node| 1 + count_explorer_nodes(&node.children))
+        .sum()
+}
+
+/// File extensions the Coding Editor opens as editable text.
+pub fn is_editable_coding_extension(path: &str) -> bool {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        "txt" | "md" | "rs" | "toml" | "json" | "yaml" | "yml"
+    )
+}
+
+/// Build a sorted explorer tree from a flat list of file entries under `root`.
+///
+/// Entries should already exclude hidden names and `.git`. Directories are
+/// sorted before files; siblings are alphabetical.
+pub fn build_explorer_tree(
+    root: &str,
+    entries: &[(String, String, bool)],
+) -> Vec<ExplorerNode> {
+    // entries: (absolute_path, name, is_dir)
+    let root = root.trim_end_matches('/').trim_end_matches('\\');
+    let mut by_parent: BTreeMap<String, Vec<(String, String, bool)>> = BTreeMap::new();
+
+    for (path, name, is_dir) in entries {
+        let parent = std::path::Path::new(path)
+            .parent()
+            .map(|parent| parent.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        by_parent
+            .entry(parent)
+            .or_default()
+            .push((path.clone(), name.clone(), *is_dir));
+    }
+
+    fn build_children(
+        parent: &str,
+        by_parent: &BTreeMap<String, Vec<(String, String, bool)>>,
+    ) -> Vec<ExplorerNode> {
+        let mut children = by_parent.get(parent).cloned().unwrap_or_default();
+        children.sort_by(|left, right| match (left.2, right.2) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => left.1.to_ascii_lowercase().cmp(&right.1.to_ascii_lowercase()),
+        });
+        children
+            .into_iter()
+            .map(|(path, name, is_dir)| ExplorerNode {
+                name,
+                path: path.clone(),
+                is_dir,
+                children: if is_dir {
+                    build_children(&path, by_parent)
+                } else {
+                    Vec::new()
+                },
+            })
+            .collect()
+    }
+
+    build_children(root, &by_parent)
 }
 
 /// One generated asset in a creation workspace.
@@ -255,10 +614,10 @@ impl CapabilityState {
                 .map(|item| format!("Diagnostic: {}", item.message))
                 .or_else(|| {
                     state
-                        .open_files
+                        .open_tabs
                         .iter()
-                        .find(|file| file.path == entry_id)
-                        .map(|file| format!("Open file: {}", file.path))
+                        .find(|tab| tab.path == entry_id)
+                        .map(|tab| format!("Open file: {}", tab.path))
                 }),
             Self::Creation(state) => state
                 .generated_assets
@@ -324,6 +683,77 @@ mod tests {
                 .workspace_kind(),
             WorkspaceKind::Research
         );
+    }
+
+    #[test]
+    fn build_explorer_tree_sorts_folders_before_files() {
+        let root = "/proj";
+        let entries = vec![
+            ("/proj/z.txt".into(), "z.txt".into(), false),
+            ("/proj/src".into(), "src".into(), true),
+            ("/proj/a.md".into(), "a.md".into(), false),
+            ("/proj/src/lib.rs".into(), "lib.rs".into(), false),
+            ("/proj/src/main.rs".into(), "main.rs".into(), false),
+        ];
+        let tree = build_explorer_tree(root, &entries);
+        assert_eq!(tree.len(), 3);
+        assert!(tree[0].is_dir);
+        assert_eq!(tree[0].name, "src");
+        assert_eq!(tree[1].name, "a.md");
+        assert_eq!(tree[2].name, "z.txt");
+        assert_eq!(tree[0].children[0].name, "lib.rs");
+        assert_eq!(tree[0].children[1].name, "main.rs");
+    }
+
+    #[test]
+    fn editor_tabs_focus_reopen_and_close() {
+        let mut state = CodingState::default();
+        state.upsert_tab(EditorTab {
+            path: "/proj/a.rs".into(),
+            name: "a.rs".into(),
+            content: "fn a() {}".into(),
+            dirty: false,
+            scroll_offset: 10.0,
+        });
+        state.upsert_tab(EditorTab {
+            path: "/proj/b.rs".into(),
+            name: "b.rs".into(),
+            content: "fn b() {}".into(),
+            dirty: false,
+            scroll_offset: 0.0,
+        });
+        assert_eq!(state.open_tabs.len(), 2);
+        assert_eq!(state.active_tab_path.as_deref(), Some("/proj/b.rs"));
+
+        assert!(state.focus_tab("/proj/a.rs"));
+        assert_eq!(state.active_tab_path.as_deref(), Some("/proj/a.rs"));
+        assert_eq!(state.selected_path.as_deref(), Some("/proj/a.rs"));
+
+        // Re-upsert focuses existing tab without duplicating.
+        state.upsert_tab(EditorTab {
+            path: "/proj/a.rs".into(),
+            name: "a.rs".into(),
+            content: "fn a() { /* updated */ }".into(),
+            dirty: true,
+            scroll_offset: 12.0,
+        });
+        assert_eq!(state.open_tabs.len(), 2);
+        assert_eq!(state.open_tabs[0].content, "fn a() { /* updated */ }");
+
+        assert!(state.close_tab("/proj/a.rs"));
+        assert_eq!(state.open_tabs.len(), 1);
+        assert_eq!(state.active_tab_path.as_deref(), Some("/proj/b.rs"));
+        assert!(!state.scroll_positions.contains_key("/proj/a.rs"));
+    }
+
+    #[test]
+    fn editable_extensions_match_editor_allowlist() {
+        assert!(is_editable_coding_extension("main.rs"));
+        assert!(is_editable_coding_extension("Cargo.toml"));
+        assert!(is_editable_coding_extension("notes.MD"));
+        assert!(is_editable_coding_extension("cfg.yaml"));
+        assert!(!is_editable_coding_extension("photo.png"));
+        assert!(!is_editable_coding_extension("bin"));
     }
 
     #[test]

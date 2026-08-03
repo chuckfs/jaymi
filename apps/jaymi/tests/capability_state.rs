@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use jaymi::Application;
 use jaymi_capabilities::{
-    workspace_expansion_for, Capability, CapabilityState, OpenFileState, ResearchNoteState,
+    workspace_expansion_for, Capability, CapabilityState, EditorTab, ResearchNoteState,
     ResearchSourceState, TerminalSessionState, WorkspaceKind,
 };
 use jaymi_core::UserRequest;
@@ -24,22 +24,30 @@ fn coding_state_is_independent_and_cleared_on_close() {
     assert_eq!(state.entry_count(), 0);
 
     app.with_coding_state(|coding| {
-        coding.open_files.push(OpenFileState {
+        coding.upsert_tab(EditorTab {
             path: "src/main.rs".into(),
+            name: "main.rs".into(),
+            content: "fn main() {}".into(),
             dirty: true,
+            scroll_offset: 0.0,
         });
         coding.terminal_sessions.push(TerminalSessionState {
             id: "term-1".into(),
             cwd: Some("/tmp/app".into()),
             last_command: Some("cargo check".into()),
+            output: String::new(),
+            history: vec!["cargo check".into()],
+            input: String::new(),
+            history_index: None,
+            scroll_offset: 0.0,
         });
     })
     .expect("mutate coding");
 
     let state = app.capability_state().expect("state").expect("populated");
-    assert_eq!(state.entry_count(), 2);
+    assert_eq!(state.entry_count(), 3);
     assert_eq!(
-        state.coding().expect("coding").open_files[0].path,
+        state.coding().expect("coding").open_files()[0].path,
         "src/main.rs"
     );
 
@@ -71,9 +79,12 @@ fn switching_workspace_kinds_isolates_capability_state() {
     app.handle_with_workspace(UserRequest::new("Help me build an app."))
         .expect("coding");
     app.with_coding_state(|coding| {
-        coding.open_files.push(OpenFileState {
+        coding.upsert_tab(EditorTab {
             path: "lib.rs".into(),
+            name: "lib.rs".into(),
+            content: String::new(),
             dirty: false,
+            scroll_offset: 0.0,
         });
     })
     .expect("coding mutate");
@@ -82,7 +93,7 @@ fn switching_workspace_kinds_isolates_capability_state() {
             .expect("state")
             .expect("coding")
             .entry_count(),
-        1
+        2
     );
 
     // Switch to Research — coding state must be replaced, not merged.
@@ -112,9 +123,12 @@ fn switching_workspace_kinds_isolates_capability_state() {
     // Coding mutation must fail while Research is active.
     assert!(app
         .with_coding_state(|coding| {
-            coding.open_files.push(OpenFileState {
+            coding.upsert_tab(EditorTab {
                 path: "should-not-exist".into(),
+                name: "should-not-exist".into(),
+                content: String::new(),
                 dirty: false,
+                scroll_offset: 0.0,
             });
         })
         .is_err());

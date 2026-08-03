@@ -6,6 +6,9 @@
 #![forbid(unsafe_code)]
 
 pub mod categories;
+pub mod git;
+pub mod list_project_tree;
+pub mod lsp;
 pub mod metadata;
 pub mod orchestrator;
 pub mod query_inventory;
@@ -15,8 +18,13 @@ pub mod scan_filesystem;
 pub mod search_files;
 pub mod search_knowledge;
 pub mod search_project_knowledge;
+pub mod terminal;
 pub mod tool;
+pub mod write_file;
 
+pub use git::{GitTool, GIT_TOOL_ID};
+pub use list_project_tree::{ListProjectTreeTool, LIST_PROJECT_TREE_TOOL_ID};
+pub use lsp::{LanguageServerTool, LANGUAGE_SERVER_TOOL_ID};
 pub use metadata::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
     PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata,
@@ -31,7 +39,9 @@ pub use search_knowledge::{SearchKnowledgeTool, SEARCH_KNOWLEDGE_TOOL_ID};
 pub use search_project_knowledge::{
     SearchProjectKnowledgeTool, SEARCH_PROJECT_KNOWLEDGE_TOOL_ID,
 };
+pub use terminal::{TerminalTool, TERMINAL_TOOL_ID};
 pub use tool::{Tool, ToolInput, ToolOutput};
+pub use write_file::{WriteFileTool, WRITE_FILE_TOOL_ID};
 
 use jaymi_core::{HealthReport, JaymiResult, Lifecycle};
 

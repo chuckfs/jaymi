@@ -84,7 +84,9 @@ pub fn catalog_availability(capability: Capability) -> CapabilityAvailability {
         Capability::Search
         | Capability::ReadDocuments
         | Capability::Discover
-        | Capability::Index => CapabilityAvailability::Ready,
+        | Capability::Index
+        | Capability::FileManagement
+        | Capability::ExecuteTerminalCommands => CapabilityAvailability::Ready,
         Capability::Code | Capability::Embeddings | Capability::Vision => {
             CapabilityAvailability::Experimental
         }
@@ -93,9 +95,7 @@ pub fn catalog_availability(capability: Capability) -> CapabilityAvailability {
         | Capability::GenerateImages
         | Capability::BrowseTheWeb
         | Capability::OrganizeFiles
-        | Capability::ExecuteTerminalCommands
         | Capability::AutomateTasks
-        | Capability::FileManagement
         | Capability::Internet
         | Capability::Automation => CapabilityAvailability::Planned,
     }

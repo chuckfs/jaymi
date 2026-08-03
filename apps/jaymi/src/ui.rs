@@ -6,9 +6,12 @@
 use eframe::egui;
 
 use crate::boot::Application;
-use crate::coding_workspace::render_coding_shell;
+use crate::coding_workspace::{render_coding_shell, CodingShellEvent, MonacoEditorSurface};
 use crate::diagnostics::{DiagnosticsSnapshot, OperationalStatus};
 use crate::experience::ExperienceSession;
+use crate::monaco_host::{
+    language_for_path, resolve_monaco_assets, MonacoDocument, MonacoHost, MonacoIpcMessage,
+};
 use jaymi_capabilities::{WorkspaceKind, WorkspacePanel};
 use jaymi_core::UserRequest;
 use jaymi_memory::MessageRole;
@@ -41,6 +44,9 @@ pub fn run_diagnostics(
                 experience,
                 show_diagnostics: false,
                 error: None,
+                monaco: None,
+                monaco_minimap: true,
+                monaco_last_error: None,
             }))
         }),
     )
@@ -55,6 +61,12 @@ struct JaymiApp {
     experience: ExperienceSession,
     show_diagnostics: bool,
     error: Option<String>,
+    /// Child WebView hosting Monaco (rehydrated from CodingState on Ready).
+    monaco: Option<MonacoHost>,
+    /// Minimap preference for the Monaco overlay.
+    monaco_minimap: bool,
+    /// Last Monaco host error (assets / webview create).
+    monaco_last_error: Option<String>,
 }
 
 fn status_color(status: OperationalStatus) -> egui::Color32 {
@@ -67,10 +79,13 @@ fn status_color(status: OperationalStatus) -> egui::Color32 {
 }
 
 impl eframe::App for JaymiApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         if let Ok(session) = self.app.experience() {
             self.experience = session;
         }
+
+        let coding_open = self.experience.active_workspace_kind() == Some(WorkspaceKind::Coding);
+        let mut monaco_surface: Option<MonacoEditorSurface> = None;
 
         egui::TopBottomPanel::top("jaymi_top").show(ctx, |ui| {
             ui.horizontal(|ui| {
@@ -88,14 +103,14 @@ impl eframe::App for JaymiApp {
 
         if self.experience.workspace_expanded() {
             let width = match self.experience.active_workspace_kind() {
-                Some(WorkspaceKind::Coding) => 480.0,
+                Some(WorkspaceKind::Coding) => 560.0,
                 _ => 420.0,
             };
             egui::SidePanel::right("jaymi_workspace")
                 .default_width(width)
                 .resizable(true)
                 .show(ctx, |ui| {
-                    self.render_workspace(ui);
+                    monaco_surface = self.render_workspace(ui);
                 });
         }
 
@@ -119,6 +134,8 @@ impl eframe::App for JaymiApp {
                 self.render_diagnostics(ui);
             }
         });
+
+        self.sync_monaco(ctx, frame, coding_open, monaco_surface.as_ref());
     }
 }
 
@@ -157,7 +174,7 @@ impl JaymiApp {
             let height = ui.available_height().max(200.0);
             ui.add_space((height * 0.32).clamp(48.0, 180.0));
             ui.label(
-                egui::RichText::new("Hi! Its Jaymi")
+                egui::RichText::new("HI, I'm Jaymi")
                     .size(42.0)
                     .strong()
                     .color(ui.visuals().strong_text_color()),
@@ -314,6 +331,64 @@ impl JaymiApp {
         }
     }
 
+    fn handle_coding_events(&mut self, events: Vec<CodingShellEvent>) {
+        for event in events {
+            let result = match event {
+                CodingShellEvent::ToggleExpand(path) => self.app.toggle_coding_expand(&path),
+                CodingShellEvent::SelectPath { path, is_dir } => {
+                    self.app.select_coding_path(&path, is_dir)
+                }
+                CodingShellEvent::ActivateTab(path) => self.app.activate_coding_tab(&path),
+                CodingShellEvent::CloseTab(path) => self.app.close_coding_tab(&path),
+                CodingShellEvent::EditContent { path, content } => {
+                    self.app.set_coding_tab_content(&path, content)
+                }
+                CodingShellEvent::Scroll { path, offset } => {
+                    self.app.set_coding_tab_scroll(&path, offset)
+                }
+                CodingShellEvent::SaveActive => self.app.save_active_coding_file(),
+                CodingShellEvent::SaveTab(path) => self.app.save_coding_file(&path),
+                CodingShellEvent::SetMinimap(enabled) => {
+                    self.monaco_minimap = enabled;
+                    if let Some(host) = &self.monaco {
+                        let _ = host.set_minimap(enabled);
+                    }
+                    Ok(())
+                }
+                CodingShellEvent::TerminalInput { session_id, input } => {
+                    self.app.set_coding_terminal_input(&session_id, input)
+                }
+                CodingShellEvent::TerminalRun {
+                    session_id,
+                    command,
+                } => self.app.run_coding_terminal_command(&session_id, &command),
+                CodingShellEvent::TerminalHistory {
+                    session_id,
+                    direction,
+                } => self
+                    .app
+                    .navigate_coding_terminal_history(&session_id, direction),
+                CodingShellEvent::TerminalScroll { session_id, offset } => {
+                    self.app.set_coding_terminal_scroll(&session_id, offset)
+                }
+                CodingShellEvent::GitRefresh => self.app.refresh_coding_git(),
+                CodingShellEvent::GitStage { paths } => self.app.coding_git_stage(&paths),
+                CodingShellEvent::GitUnstage { paths } => self.app.coding_git_unstage(&paths),
+                CodingShellEvent::GitDiscard { paths } => self.app.coding_git_discard(&paths),
+                CodingShellEvent::GitCommitMessage(message) => {
+                    self.app.set_coding_git_commit_message(message)
+                }
+                CodingShellEvent::GitCommit => self.app.coding_git_commit_active(),
+            };
+            if let Err(error) = result {
+                self.error = Some(error.message().to_string());
+            }
+        }
+        if let Ok(session) = self.app.experience() {
+            self.experience = session;
+        }
+    }
+
     fn start_research_workspace(&mut self) {
         match self.app.start_research_workspace() {
             Ok(()) => {
@@ -338,9 +413,9 @@ impl JaymiApp {
         }
     }
 
-    fn render_workspace(&mut self, ui: &mut egui::Ui) {
+    fn render_workspace(&mut self, ui: &mut egui::Ui) -> Option<MonacoEditorSurface> {
         let Some(workspace) = self.experience.active_workspace().cloned() else {
-            return;
+            return None;
         };
 
         if workspace.kind == WorkspaceKind::Coding {
@@ -349,13 +424,28 @@ impl JaymiApp {
                 .capability_state()
                 .and_then(|state| state.coding())
                 .cloned();
-            render_coding_shell(ui, &workspace, coding.as_ref());
+            let diagnostics = self.app.coding_diagnostics_view().ok();
+            let mut events = Vec::new();
+            let mut monaco_surface = None;
+            render_coding_shell(
+                ui,
+                &workspace,
+                coding.as_ref(),
+                diagnostics.as_ref(),
+                &mut events,
+                self.monaco_minimap,
+                &mut monaco_surface,
+            );
+            self.handle_coding_events(events);
+            if let Some(error) = &self.monaco_last_error {
+                ui.colored_label(egui::Color32::from_rgb(200, 80, 80), error);
+            }
             ui.add_space(12.0);
             if ui.button("Close workspace").clicked() {
                 self.close_workspace();
             }
             ui.weak("Closing returns to conversation without losing chat history.");
-            return;
+            return monaco_surface;
         }
 
         ui.heading(workspace.title());
@@ -389,6 +479,236 @@ impl JaymiApp {
             self.close_workspace();
         }
         ui.weak("Closing returns to conversation without losing chat history.");
+        None
+    }
+
+    fn sync_monaco(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &mut eframe::Frame,
+        coding_open: bool,
+        surface: Option<&MonacoEditorSurface>,
+    ) {
+        if !coding_open {
+            if let Some(host) = &self.monaco {
+                let _ = host.set_viewport(None, 0.0, 1.0);
+            }
+            self.monaco = None;
+            return;
+        }
+
+        if surface.is_some() && self.monaco.is_none() {
+            match MonacoHost::new(frame, resolve_monaco_assets()) {
+                Ok(host) => {
+                    self.monaco = Some(host);
+                    self.monaco_last_error = None;
+                }
+                Err(error) => {
+                    self.monaco_last_error = Some(error);
+                }
+            }
+        }
+
+        if self.monaco.is_none() {
+            return;
+        }
+
+        // Keep egui pumping so Monaco IPC (edits / save) reaches CodingState.
+        ctx.request_repaint();
+
+        let messages = self
+            .monaco
+            .as_mut()
+            .map(|host| host.poll())
+            .unwrap_or_default();
+        let mut events = Vec::new();
+        let mut lsp_requests = Vec::new();
+        for message in messages {
+            match message {
+                MonacoIpcMessage::Ready => {}
+                MonacoIpcMessage::Change { path, content } => {
+                    if let Some(host) = self.monaco.as_mut() {
+                        host.note_external_edit(&path, &content);
+                    }
+                    events.push(CodingShellEvent::EditContent { path, content });
+                }
+                MonacoIpcMessage::Scroll { path, offset } => {
+                    events.push(CodingShellEvent::Scroll { path, offset });
+                }
+                MonacoIpcMessage::Save { .. } => {
+                    events.push(CodingShellEvent::SaveActive);
+                }
+                MonacoIpcMessage::Lsp {
+                    id,
+                    method,
+                    path,
+                    line,
+                    character,
+                    new_name,
+                } => {
+                    lsp_requests.push((id, method, path, line, character, new_name));
+                }
+            }
+        }
+        if !events.is_empty() {
+            self.handle_coding_events(events);
+        }
+        for (id, method, path, line, character, new_name) in lsp_requests {
+            let payload = self.handle_monaco_lsp(&method, &path, line, character, new_name.as_deref());
+            if let Some(host) = &self.monaco {
+                let _ = host.resolve_lsp(id, &payload);
+            }
+        }
+
+        // Push CodingState diagnostics into Monaco markers for the active file.
+        if let Some(path) = surface.map(|surface| surface.document.path.clone()) {
+            let markers = self.monaco_diagnostic_markers(&path);
+            if let Some(host) = &self.monaco {
+                let _ = host.set_diagnostics(&markers);
+            }
+        }
+
+        let screen_height = ctx.screen_rect().height();
+        let zoom = ctx.pixels_per_point();
+        let document = surface.map(|surface| self.monaco_document_from_state(surface));
+        let Some(host) = self.monaco.as_mut() else {
+            return;
+        };
+        if let (Some(surface), Some(document)) = (surface, document) {
+            if let Err(error) = host.set_viewport(Some(surface.viewport), screen_height, zoom) {
+                self.monaco_last_error = Some(error);
+            } else if let Err(error) = host.sync_document(&document) {
+                self.monaco_last_error = Some(error);
+            }
+        } else if let Err(error) = host.set_viewport(None, screen_height, zoom) {
+            self.monaco_last_error = Some(error);
+        }
+    }
+
+    fn handle_monaco_lsp(
+        &mut self,
+        method: &str,
+        path: &str,
+        line: u32,
+        character: u32,
+        new_name: Option<&str>,
+    ) -> String {
+        let result = match method {
+            "hover" => self.app.coding_lsp_hover(path, line, character),
+            "completion" => self.app.coding_lsp_completion(path, line, character),
+            "definition" => self.app.coding_lsp_definition(path, line, character),
+            "references" => self.app.coding_lsp_references(path, line, character),
+            "rename" => self
+                .app
+                .coding_lsp_rename(path, line, character, new_name.unwrap_or("")),
+            _ => return "null".to_string(),
+        };
+        match result {
+            Ok(response) => match method {
+                "hover" => match response.lsp_hover {
+                    Some(hover) => serde_json::json!({
+                        "contents": hover.contents,
+                        "range": hover.range.map(|range| serde_json::json!({
+                            "start": { "line": range.start.line, "character": range.start.character },
+                            "end": { "line": range.end.line, "character": range.end.character },
+                        })),
+                    })
+                    .to_string(),
+                    None => "null".to_string(),
+                },
+                "completion" => serde_json::json!({
+                    "items": response.lsp_completions.iter().map(|item| serde_json::json!({
+                        "label": item.label,
+                        "detail": item.detail,
+                        "insertText": item.insert_text,
+                    })).collect::<Vec<_>>(),
+                })
+                .to_string(),
+                "definition" | "references" => {
+                    let locations = if method == "definition" {
+                        &response.lsp_definitions
+                    } else {
+                        &response.lsp_references
+                    };
+                    serde_json::json!({
+                        "locations": locations.iter().map(|loc| serde_json::json!({
+                            "path": loc.path,
+                            "range": {
+                                "start": { "line": loc.range.start.line, "character": loc.range.start.character },
+                                "end": { "line": loc.range.end.line, "character": loc.range.end.character },
+                            },
+                        })).collect::<Vec<_>>(),
+                    })
+                    .to_string()
+                }
+                "rename" => serde_json::json!({
+                    "edits": response.lsp_edits.iter().map(|edit| serde_json::json!({
+                        "path": edit.path,
+                        "newText": edit.new_text,
+                        "range": {
+                            "start": { "line": edit.range.start.line, "character": edit.range.start.character },
+                            "end": { "line": edit.range.end.line, "character": edit.range.end.character },
+                        },
+                    })).collect::<Vec<_>>(),
+                })
+                .to_string(),
+                _ => "null".to_string(),
+            },
+            Err(error) => {
+                self.monaco_last_error = Some(error.message().to_string());
+                "null".to_string()
+            }
+        }
+    }
+
+    fn monaco_diagnostic_markers(&self, path: &str) -> String {
+        let markers = self
+            .experience
+            .capability_state()
+            .and_then(|state| state.coding())
+            .map(|coding| {
+                coding
+                    .diagnostics
+                    .iter()
+                    .filter(|diag| diag.path.as_deref() == Some(path))
+                    .map(|diag| {
+                        serde_json::json!({
+                            "message": diag.message,
+                            "severity": diag.severity,
+                            "line": diag.line.unwrap_or(0),
+                            "character": diag.character.unwrap_or(0),
+                            "endLine": diag.end_line.unwrap_or(diag.line.unwrap_or(0)),
+                            "endCharacter": diag.end_character.unwrap_or(diag.character.unwrap_or(0) + 1),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        serde_json::to_string(&markers).unwrap_or_else(|_| "[]".to_string())
+    }
+
+    /// Prefer live CodingState so Monaco IPC edits aren't overwritten by a stale surface.
+    fn monaco_document_from_state(&self, surface: &MonacoEditorSurface) -> MonacoDocument {
+        let Some(tab) = self
+            .experience
+            .capability_state()
+            .and_then(|state| state.coding())
+            .and_then(|coding| {
+                coding.open_tabs.iter().find(|tab| {
+                    Some(tab.path.as_str()) == coding.active_tab_path.as_deref()
+                })
+            })
+        else {
+            return surface.document.clone();
+        };
+
+        MonacoDocument {
+            path: tab.path.clone(),
+            content: tab.content.clone(),
+            language: language_for_path(&tab.path).to_string(),
+            scroll_top: tab.scroll_offset,
+            minimap: self.monaco_minimap,
+        }
     }
 
     fn send_prompt(&mut self) {
@@ -412,6 +732,10 @@ impl JaymiApp {
     }
 
     fn close_workspace(&mut self) {
+        if let Some(host) = &self.monaco {
+            let _ = host.set_viewport(None, 0.0, 1.0);
+        }
+        self.monaco = None;
         match self.app.close_ui_workspace() {
             Ok(_) => {
                 self.error = None;

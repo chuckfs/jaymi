@@ -606,7 +606,10 @@ mod tests {
                 "git".to_string()
             ]
         );
-        assert_eq!(step.required_providers, vec!["filesystem".to_string()]);
+        assert_eq!(
+            step.required_providers,
+            vec!["filesystem".to_string(), "git".to_string()]
+        );
         assert_eq!(step.required_permissions.len(), 3);
         assert!(step
             .required_permissions

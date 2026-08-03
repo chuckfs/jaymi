@@ -10,16 +10,17 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use jaymi_capabilities::{
-    workspace_expansion_for, Capability, CapabilityDiscoveryReport, CapabilityEngine,
-    CapabilityEngineApi, CapabilityInspectorReport, CapabilityState, CodingState, CreationState,
-    ResearchState, WorkspaceKind,
+    build_explorer_tree, is_editable_coding_extension, workspace_expansion_for, Capability,
+    CapabilityDiscoveryReport, CapabilityEngine, CapabilityEngineApi, CapabilityInspectorReport,
+    CapabilityState, CodingState, CreationState, DiagnosticState, EditorTab, ExplorerStatus,
+    GitFileEntry, GitStatusState, ResearchState, WorkspaceKind,
 };
 
 use jaymi_config::Config;
 use jaymi_context::ContextEngine;
 use jaymi_core::{
-    AppState, DiscoveryQueryKind, HealthReport, JaymiError, JaymiResult, Lifecycle,
-    SearchRequest, ServiceContainer, UserRequest,
+    AppState, DiscoveryQueryKind, EntryType, GitOperation, HealthReport, JaymiError, JaymiResult,
+    Lifecycle, SearchRequest, ServiceContainer, UserRequest,
 };
 use jaymi_database::Database;
 use jaymi_discovery::{DiscoveryEngine, FilesystemWatcher};
@@ -43,19 +44,25 @@ use jaymi_project_engine::{
     SqliteProjectStore,
 };
 use jaymi_providers::{
-    EmbeddingProvider, FilesystemProvider, LocalEmbeddingProvider, OcrProvider,
-    PlaceholderOcrProvider, Provider, ProviderRegistry,
+    EmbeddingProvider, FilesystemProvider, GitProvider, LocalEmbeddingProvider, LspProvider,
+    OcrProvider, PlaceholderOcrProvider, Provider, ProviderRegistry, TerminalProvider,
+    DEFAULT_TERMINAL_SESSION_ID,
 };
 use jaymi_search::{EmbeddingQueue, SearchEngine, SearchEngineApi, SemanticDeps};
 use jaymi_tools::{
-    QueryInventoryTool, ReadFileTool, ScanFilesystemTool, SearchFilesTool, SearchKnowledgeTool,
-    SearchProjectKnowledgeTool, ToolOrchestrator, ToolRegistry,
+    GitTool, LanguageServerTool, ListProjectTreeTool, QueryInventoryTool, ReadFileTool,
+    ScanFilesystemTool, SearchFilesTool, SearchKnowledgeTool, SearchProjectKnowledgeTool,
+    TerminalTool,
+    ToolOrchestrator, ToolRegistry, WriteFileTool,
 };
 use jaymi_understanding::{
     format_parser_usage, ContentIntelligence, ContentIntelligenceApi, SqliteContentStore,
     UnderstandingEngine,
 };
 
+use crate::coding_workspace::{
+    build_coding_diagnostics_view, CodingDiagnosticsView, LastPlannerActivity,
+};
 use crate::diagnostics::DiagnosticsSnapshot;
 use crate::experience::ExperienceSession;
 
@@ -66,6 +73,8 @@ pub struct Application {
     health_reports: Vec<HealthReport>,
     /// Conversation-first experience (workspaces expand without destroying chat).
     experience: Mutex<ExperienceSession>,
+    /// Last Planner turn for Coding Diagnostics (activity / timing).
+    last_planner_activity: Mutex<Option<LastPlannerActivity>>,
 }
 
 impl Application {
@@ -76,6 +85,7 @@ impl Application {
             container: ServiceContainer::new(),
             health_reports: Vec::new(),
             experience: Mutex::new(ExperienceSession::new()),
+            last_planner_activity: Mutex::new(None),
         }
     }
 
@@ -193,6 +203,28 @@ impl Application {
         providers.register(&filesystem)?;
         let filesystem = Arc::new(filesystem);
         self.container.register(Arc::clone(&filesystem));
+
+        let mut terminal = TerminalProvider::new();
+        terminal.initialize()?;
+        providers.register(&terminal)?;
+        let terminal = Arc::new(terminal);
+        self.container.register(Arc::clone(&terminal));
+
+        let mut git = GitProvider::new();
+        git.initialize()?;
+        providers.register(&git)?;
+        let git = Arc::new(git);
+        self.container.register(Arc::clone(&git));
+
+        let mut lsp = if cfg!(test) {
+            LspProvider::mock()
+        } else {
+            LspProvider::new()
+        };
+        lsp.initialize()?;
+        providers.register(&lsp)?;
+        let lsp = Arc::new(lsp);
+        self.container.register(Arc::clone(&lsp));
 
         let mut ocr = PlaceholderOcrProvider::new();
         ocr.initialize()?;
@@ -315,11 +347,16 @@ impl Application {
         let mut tools = ToolRegistry::new();
         self.initialize_service(&mut tools)?;
         tools.register_tool(Arc::new(SearchFilesTool::new(Arc::clone(&filesystem))))?;
+        tools.register_tool(Arc::new(ListProjectTreeTool::new(Arc::clone(&filesystem))))?;
         tools.register_tool(Arc::new(SearchKnowledgeTool::new(Arc::clone(&search))))?;
         tools.register_tool(Arc::new(SearchProjectKnowledgeTool::new(
             Arc::clone(&projects) as Arc<dyn ProjectEngineApi>,
         )))?;
         tools.register_tool(Arc::new(ReadFileTool::new(Arc::clone(&content_api))))?;
+        tools.register_tool(Arc::new(WriteFileTool::new(Arc::clone(&filesystem))))?;
+        tools.register_tool(Arc::new(TerminalTool::new(Arc::clone(&terminal))))?;
+        tools.register_tool(Arc::new(GitTool::new(Arc::clone(&git))))?;
+        tools.register_tool(Arc::new(LanguageServerTool::new(Arc::clone(&lsp))))?;
         tools.register_tool(Arc::new(ScanFilesystemTool::new(Arc::clone(&discovery))))?;
         tools.register_tool(Arc::new(QueryInventoryTool::new(Arc::clone(&search))))?;
         let tools = Arc::new(tools);
@@ -421,7 +458,10 @@ impl Application {
     pub fn handle(&self, request: UserRequest) -> JaymiResult<PlannerResponse> {
         self.prepare_context_session()?;
         let planner = self.container.resolve::<Planner>()?;
-        planner.handle(request)
+        let started = std::time::Instant::now();
+        let response = planner.handle(request)?;
+        self.record_planner_activity(&response, started.elapsed().as_millis() as u64);
+        Ok(response)
     }
 
     /// Ask the Planner to list a single directory through the full architecture.
@@ -429,9 +469,92 @@ impl Application {
         self.handle(UserRequest::list_directory(path.as_ref()))
     }
 
+    /// Ask the Planner to recursively list a project tree for Coding Explorer.
+    pub fn list_project_tree(&self, path: impl AsRef<Path>) -> JaymiResult<PlannerResponse> {
+        self.handle(UserRequest::list_project_tree(path.as_ref()))
+    }
+
     /// Ask the Planner to read a supported file into a unified document.
     pub fn read_file(&self, path: impl AsRef<Path>) -> JaymiResult<PlannerResponse> {
         self.handle(UserRequest::read_file(path.as_ref()))
+    }
+
+    /// Ask the Planner to write text content to a file.
+    pub fn write_file(
+        &self,
+        path: impl AsRef<Path>,
+        content: impl Into<String>,
+    ) -> JaymiResult<PlannerResponse> {
+        self.handle(UserRequest::write_file(path.as_ref(), content))
+    }
+
+    /// Ask the Planner to ensure a terminal PTY session exists.
+    pub fn ensure_terminal(
+        &self,
+        session_id: impl Into<String>,
+        cwd: impl AsRef<Path>,
+    ) -> JaymiResult<PlannerResponse> {
+        self.handle(UserRequest::ensure_terminal(session_id, cwd.as_ref()))
+    }
+
+    /// Ask the Planner to run a command in a terminal PTY session.
+    pub fn run_terminal(
+        &self,
+        session_id: impl Into<String>,
+        cwd: impl AsRef<Path>,
+        command: impl Into<String>,
+    ) -> JaymiResult<PlannerResponse> {
+        self.handle(UserRequest::run_terminal(
+            session_id,
+            cwd.as_ref(),
+            command,
+        ))
+    }
+
+    /// Ask the Planner for Git repository status.
+    pub fn git_status(&self, repo_root: impl AsRef<Path>) -> JaymiResult<PlannerResponse> {
+        self.handle(UserRequest::git_status(repo_root.as_ref()))
+    }
+
+    /// Ask the Planner to stage paths in a Git repository.
+    pub fn git_stage(
+        &self,
+        repo_root: impl AsRef<Path>,
+        paths: Vec<PathBuf>,
+    ) -> JaymiResult<PlannerResponse> {
+        self.handle(UserRequest::git_stage(repo_root.as_ref(), paths))
+    }
+
+    /// Ask the Planner to unstage paths in a Git repository.
+    pub fn git_unstage(
+        &self,
+        repo_root: impl AsRef<Path>,
+        paths: Vec<PathBuf>,
+    ) -> JaymiResult<PlannerResponse> {
+        self.handle(UserRequest::git_unstage(repo_root.as_ref(), paths))
+    }
+
+    /// Ask the Planner to discard path changes in a Git repository.
+    pub fn git_discard(
+        &self,
+        repo_root: impl AsRef<Path>,
+        paths: Vec<PathBuf>,
+    ) -> JaymiResult<PlannerResponse> {
+        self.handle(UserRequest::git_discard(repo_root.as_ref(), paths))
+    }
+
+    /// Ask the Planner to create a Git commit.
+    pub fn git_commit(
+        &self,
+        repo_root: impl AsRef<Path>,
+        message: impl Into<String>,
+    ) -> JaymiResult<PlannerResponse> {
+        self.handle(UserRequest::git_commit(repo_root.as_ref(), message))
+    }
+
+    /// Ask the Planner to run a Language Server operation.
+    pub fn lsp(&self, request: jaymi_core::LspRequest) -> JaymiResult<PlannerResponse> {
+        self.handle(UserRequest::lsp(request))
     }
 
     /// Ask the Planner to recursively index a root into the discovery inventory.
@@ -825,6 +948,11 @@ impl Application {
             .lock()
             .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
         experience.apply_planner_response(response);
+        let coding_open = experience.active_workspace_kind() == Some(WorkspaceKind::Coding);
+        drop(experience);
+        if coding_open {
+            let _ = self.refresh_coding_explorer();
+        }
         Ok(())
     }
 
@@ -849,14 +977,717 @@ impl Application {
     /// Open the Coding Workspace from the conversation action menu.
     ///
     /// Reuses the existing Coding shell and empty [`CodingState`]. Does not
-    /// create a new conversation or clear turns.
+    /// create a new conversation or clear turns. Loads the Project Explorer
+    /// from the active project root when one is open.
     pub fn start_coding_project(&self) -> JaymiResult<()> {
         let expansion = workspace_expansion_for(
             Capability::Code,
             "Started Coding Project from conversation menu",
         )
         .ok_or_else(|| JaymiError::new("code capability has no coding workspace mapping"))?;
-        self.expand_ui_workspace(expansion)
+        self.expand_ui_workspace(expansion)?;
+        self.refresh_coding_explorer()?;
+        self.ensure_coding_terminal()?;
+        let _ = self.refresh_coding_git();
+        Ok(())
+    }
+
+    /// Refresh Project Explorer from the active project via Planner → Tool → Provider.
+    pub fn refresh_coding_explorer(&self) -> JaymiResult<()> {
+        let root = self
+            .active_project_id()
+            .and_then(|id| {
+                self.container
+                    .resolve::<Arc<ProjectEngine>>()
+                    .ok()
+                    .and_then(|projects| projects.get(&id).ok().flatten())
+                    .and_then(|project| project.root_directory)
+            });
+
+        let Some(root) = root else {
+            return self.with_coding_state(|coding| {
+                coding.project_root = None;
+                coding.explorer_nodes.clear();
+                coding.expanded_paths.clear();
+                coding.explorer_status = ExplorerStatus::NoProject;
+            });
+        };
+
+        let response = self.list_project_tree(&root)?;
+        if response.blocked {
+            let message = response.content.clone();
+            let root_display = root.to_string_lossy().into_owned();
+            return self.with_coding_state(|coding| {
+                coding.project_root = Some(root_display);
+                coding.explorer_nodes.clear();
+                coding.explorer_status = ExplorerStatus::Error(message);
+            });
+        }
+
+        let root_display = response
+            .listed_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| root.to_string_lossy().into_owned());
+        let flat: Vec<(String, String, bool)> = response
+            .entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.path.to_string_lossy().into_owned(),
+                    entry.name.clone(),
+                    entry.entry_type == EntryType::Directory,
+                )
+            })
+            .collect();
+        let nodes = build_explorer_tree(&root_display, &flat);
+        self.with_coding_state(|coding| {
+            coding.project_root = Some(root_display);
+            coding.explorer_nodes = nodes;
+            coding.explorer_status = ExplorerStatus::Ready;
+        })?;
+        Ok(())
+    }
+
+    /// Select a path in Project Explorer; files open in the Editor when editable.
+    pub fn select_coding_path(&self, path: &str, is_dir: bool) -> JaymiResult<()> {
+        self.with_coding_state(|coding| {
+            coding.selected_path = Some(path.to_string());
+        })?;
+        if is_dir {
+            return Ok(());
+        }
+        if is_editable_coding_extension(path) {
+            self.open_coding_file(path)?;
+        }
+        Ok(())
+    }
+
+    /// Toggle folder expansion in Project Explorer.
+    pub fn toggle_coding_expand(&self, path: &str) -> JaymiResult<()> {
+        self.with_coding_state(|coding| {
+            coding.toggle_expanded(path);
+        })
+    }
+
+    /// Open a file in the Coding Editor through Planner → read_file.
+    ///
+    /// Reopening an already-open path focuses that tab without re-reading.
+    pub fn open_coding_file(&self, path: &str) -> JaymiResult<()> {
+        let focused = self.with_coding_state(|coding| coding.focus_tab(path))?;
+        if focused {
+            return Ok(());
+        }
+
+        if !is_editable_coding_extension(path) {
+            return Err(JaymiError::new(format!(
+                "unsupported editor file type: {path}"
+            )));
+        }
+
+        let response = self.read_file(path)?;
+        if response.blocked {
+            return Err(JaymiError::new(response.content));
+        }
+        let document = response.document.ok_or_else(|| {
+            JaymiError::new(format!("read_file returned no document for {path}"))
+        })?;
+        let name = Path::new(path)
+            .file_name()
+            .map(|value| value.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.to_string());
+        let text = document.text.clone();
+        let scroll_offset = self.with_coding_state(|coding| {
+            coding
+                .scroll_positions
+                .get(path)
+                .copied()
+                .unwrap_or(0.0)
+        })?;
+
+        self.with_coding_state(|coding| {
+            coding.upsert_tab(EditorTab {
+                path: path.to_string(),
+                name,
+                content: text.clone(),
+                dirty: false,
+                scroll_offset,
+            });
+        })?;
+        let _ = self.coding_lsp_did_open(path, &text);
+        Ok(())
+    }
+
+    /// Activate an already-open editor tab.
+    pub fn activate_coding_tab(&self, path: &str) -> JaymiResult<()> {
+        let focused = self.with_coding_state(|coding| coding.focus_tab(path))?;
+        if !focused {
+            return Err(JaymiError::new(format!("no open tab for {path}")));
+        }
+        Ok(())
+    }
+
+    /// Close an editor tab.
+    pub fn close_coding_tab(&self, path: &str) -> JaymiResult<()> {
+        let closed = self.with_coding_state(|coding| coding.close_tab(path))?;
+        if !closed {
+            return Err(JaymiError::new(format!("no open tab for {path}")));
+        }
+        Ok(())
+    }
+
+    /// Update editor buffer content for a tab.
+    pub fn set_coding_tab_content(&self, path: &str, content: String) -> JaymiResult<()> {
+        self.with_coding_state(|coding| {
+            coding.set_tab_content(path, content.clone());
+        })?;
+        let _ = self.coding_lsp_did_change(path, &content);
+        Ok(())
+    }
+
+    /// Persist scroll offset for a tab.
+    pub fn set_coding_tab_scroll(&self, path: &str, offset: f32) -> JaymiResult<()> {
+        self.with_coding_state(|coding| {
+            coding.set_scroll_offset(path, offset);
+        })
+    }
+
+    /// Save an open editor tab through Planner → write_file.
+    pub fn save_coding_file(&self, path: &str) -> JaymiResult<()> {
+        let content = self.with_coding_state(|coding| {
+            coding
+                .open_tabs
+                .iter()
+                .find(|tab| tab.path == path)
+                .map(|tab| tab.content.clone())
+        })?;
+        let Some(content) = content else {
+            return Err(JaymiError::new(format!("no open tab for {path}")));
+        };
+
+        let response = self.write_file(path, content.clone())?;
+        if response.blocked {
+            return Err(JaymiError::new(response.content));
+        }
+        self.with_coding_state(|coding| {
+            coding.mark_tab_clean(path);
+        })?;
+        let _ = self.coding_lsp_did_change(path, &content);
+        Ok(())
+    }
+
+    /// Notify the language server that a coding tab was opened.
+    pub fn coding_lsp_did_open(&self, path: &str, content: &str) -> JaymiResult<PlannerResponse> {
+        let request = self.coding_lsp_request(
+            jaymi_core::LspOperation::DidOpen,
+            Some(path),
+            Some(content),
+            None,
+            None,
+            None,
+            Some(1),
+        )?;
+        let response = self.lsp(request)?;
+        self.apply_lsp_diagnostics(&response);
+        Ok(response)
+    }
+
+    /// Notify the language server that a coding tab changed.
+    pub fn coding_lsp_did_change(&self, path: &str, content: &str) -> JaymiResult<PlannerResponse> {
+        let version = (content.len() as i32).saturating_add(1);
+        let request = self.coding_lsp_request(
+            jaymi_core::LspOperation::DidChange,
+            Some(path),
+            Some(content),
+            None,
+            None,
+            None,
+            Some(version),
+        )?;
+        let response = self.lsp(request)?;
+        self.apply_lsp_diagnostics(&response);
+        Ok(response)
+    }
+
+    /// Request hover information for the active coding buffer.
+    pub fn coding_lsp_hover(
+        &self,
+        path: &str,
+        line: u32,
+        character: u32,
+    ) -> JaymiResult<PlannerResponse> {
+        let request = self.coding_lsp_request(
+            jaymi_core::LspOperation::Hover,
+            Some(path),
+            None,
+            Some(line),
+            Some(character),
+            None,
+            None,
+        )?;
+        self.lsp(request)
+    }
+
+    /// Request completions for the active coding buffer.
+    pub fn coding_lsp_completion(
+        &self,
+        path: &str,
+        line: u32,
+        character: u32,
+    ) -> JaymiResult<PlannerResponse> {
+        let request = self.coding_lsp_request(
+            jaymi_core::LspOperation::Completion,
+            Some(path),
+            None,
+            Some(line),
+            Some(character),
+            None,
+            None,
+        )?;
+        self.lsp(request)
+    }
+
+    /// Refresh diagnostics into CodingState through Planner → language_server.
+    pub fn coding_lsp_diagnostics(&self, path: Option<&str>) -> JaymiResult<PlannerResponse> {
+        let request = self.coding_lsp_request(
+            jaymi_core::LspOperation::Diagnostics,
+            path,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )?;
+        let response = self.lsp(request)?;
+        self.apply_lsp_diagnostics(&response);
+        Ok(response)
+    }
+
+    /// Go to definition at a coding buffer position.
+    pub fn coding_lsp_definition(
+        &self,
+        path: &str,
+        line: u32,
+        character: u32,
+    ) -> JaymiResult<PlannerResponse> {
+        let request = self.coding_lsp_request(
+            jaymi_core::LspOperation::Definition,
+            Some(path),
+            None,
+            Some(line),
+            Some(character),
+            None,
+            None,
+        )?;
+        self.lsp(request)
+    }
+
+    /// Rename the symbol under the cursor.
+    pub fn coding_lsp_rename(
+        &self,
+        path: &str,
+        line: u32,
+        character: u32,
+        new_name: &str,
+    ) -> JaymiResult<PlannerResponse> {
+        let request = self.coding_lsp_request(
+            jaymi_core::LspOperation::Rename,
+            Some(path),
+            None,
+            Some(line),
+            Some(character),
+            Some(new_name),
+            None,
+        )?;
+        self.lsp(request)
+    }
+
+    /// Find references for the symbol under the cursor.
+    pub fn coding_lsp_references(
+        &self,
+        path: &str,
+        line: u32,
+        character: u32,
+    ) -> JaymiResult<PlannerResponse> {
+        let request = self.coding_lsp_request(
+            jaymi_core::LspOperation::References,
+            Some(path),
+            None,
+            Some(line),
+            Some(character),
+            None,
+            None,
+        )?;
+        self.lsp(request)
+    }
+
+    fn coding_lsp_request(
+        &self,
+        operation: jaymi_core::LspOperation,
+        path: Option<&str>,
+        content: Option<&str>,
+        line: Option<u32>,
+        character: Option<u32>,
+        new_name: Option<&str>,
+        version: Option<i32>,
+    ) -> JaymiResult<jaymi_core::LspRequest> {
+        let workspace_root = self
+            .with_coding_state(|coding| coding.project_root.clone())?
+            .map(PathBuf::from)
+            .or_else(|| {
+                path.and_then(|value| {
+                    Path::new(value)
+                        .parent()
+                        .map(|parent| parent.to_path_buf())
+                })
+            })
+            .ok_or_else(|| JaymiError::new("coding lsp has no workspace root"))?;
+        let language = path.map(|value| {
+            if Path::new(value)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("rs"))
+            {
+                "rust".to_string()
+            } else {
+                "plaintext".to_string()
+            }
+        });
+        Ok(jaymi_core::LspRequest {
+            workspace_root,
+            operation,
+            path: path.map(PathBuf::from),
+            content: content.map(str::to_string),
+            language,
+            version,
+            line,
+            character,
+            new_name: new_name.map(str::to_string),
+        })
+    }
+
+    fn apply_lsp_diagnostics(&self, response: &PlannerResponse) {
+        let diagnostics = response
+            .lsp_diagnostics
+            .iter()
+            .map(|diag| DiagnosticState {
+                message: diag.message.clone(),
+                path: Some(diag.path.clone()),
+                severity: diag.severity.clone(),
+                line: Some(diag.range.start.line),
+                character: Some(diag.range.start.character),
+                end_line: Some(diag.range.end.line),
+                end_character: Some(diag.range.end.character),
+            })
+            .collect::<Vec<_>>();
+        let _ = self.with_coding_state(|coding| {
+            if response
+                .lsp_diagnostics
+                .first()
+                .and_then(|diag| Some(diag.path.as_str()))
+                .is_some()
+            {
+                // Replace diagnostics for touched paths; keep others.
+                let touched: std::collections::BTreeSet<_> = response
+                    .lsp_diagnostics
+                    .iter()
+                    .map(|diag| diag.path.clone())
+                    .collect();
+                coding
+                    .diagnostics
+                    .retain(|item| item.path.as_ref().is_none_or(|path| !touched.contains(path)));
+                coding.diagnostics.extend(diagnostics);
+            } else if !diagnostics.is_empty() {
+                coding.diagnostics = diagnostics;
+            }
+        });
+    }
+
+    /// Save the active editor tab, when any.
+    pub fn save_active_coding_file(&self) -> JaymiResult<()> {
+        let path = self.with_coding_state(|coding| coding.active_tab_path.clone())?;
+        let Some(path) = path else {
+            return Err(JaymiError::new("no active editor tab to save"));
+        };
+        self.save_coding_file(&path)
+    }
+
+    /// Ensure the Coding Workspace has a persistent PTY session.
+    pub fn ensure_coding_terminal(&self) -> JaymiResult<()> {
+        let cwd = self.with_coding_state(|coding| coding.project_root.clone())?;
+        let Some(cwd) = cwd else {
+            return self.with_coding_state(|coding| {
+                if coding.terminal_sessions.is_empty() {
+                    coding.terminal_sessions.push(
+                        jaymi_capabilities::TerminalSessionState::new(
+                            DEFAULT_TERMINAL_SESSION_ID,
+                            None,
+                        ),
+                    );
+                }
+            });
+        };
+
+        let response = self.ensure_terminal(DEFAULT_TERMINAL_SESSION_ID, &cwd)?;
+        if response.blocked {
+            return Err(JaymiError::new(response.content));
+        }
+        self.apply_terminal_response(&response)?;
+        Ok(())
+    }
+
+    /// Run a command in the Coding Workspace terminal through Planner → Tool → PTY.
+    pub fn run_coding_terminal_command(&self, session_id: &str, command: &str) -> JaymiResult<()> {
+        let command = command.trim();
+        if command.is_empty() {
+            return Err(JaymiError::new("terminal command must not be empty"));
+        }
+        let cwd = self.with_coding_state(|coding| {
+            coding
+                .terminal_sessions
+                .iter()
+                .find(|session| session.id == session_id)
+                .and_then(|session| session.cwd.clone())
+                .or_else(|| coding.project_root.clone())
+        })?;
+        let Some(cwd) = cwd else {
+            return Err(JaymiError::new(
+                "coding terminal has no working directory — open a project first",
+            ));
+        };
+
+        let response = self.run_terminal(session_id, &cwd, command)?;
+        if response.blocked {
+            return Err(JaymiError::new(response.content));
+        }
+        self.apply_terminal_response(&response)?;
+        Ok(())
+    }
+
+    /// Update the draft input line for a terminal session.
+    pub fn set_coding_terminal_input(&self, session_id: &str, input: String) -> JaymiResult<()> {
+        self.with_coding_state(|coding| {
+            if let Some(session) = coding
+                .terminal_sessions
+                .iter_mut()
+                .find(|session| session.id == session_id)
+            {
+                session.input = input;
+                session.history_index = None;
+            }
+        })
+    }
+
+    /// Persist terminal output scroll offset.
+    pub fn set_coding_terminal_scroll(&self, session_id: &str, offset: f32) -> JaymiResult<()> {
+        self.with_coding_state(|coding| {
+            if let Some(session) = coding
+                .terminal_sessions
+                .iter_mut()
+                .find(|session| session.id == session_id)
+            {
+                session.scroll_offset = offset;
+            }
+        })
+    }
+
+    /// Navigate terminal command history (negative = older, positive = newer).
+    pub fn navigate_coding_terminal_history(
+        &self,
+        session_id: &str,
+        direction: i8,
+    ) -> JaymiResult<()> {
+        self.with_coding_state(|coding| {
+            if let Some(session) = coding
+                .terminal_sessions
+                .iter_mut()
+                .find(|session| session.id == session_id)
+            {
+                if direction < 0 {
+                    session.history_up();
+                } else if direction > 0 {
+                    session.history_down();
+                }
+            }
+        })
+    }
+
+    fn apply_terminal_response(&self, response: &PlannerResponse) -> JaymiResult<()> {
+        let session_id = response
+            .terminal_session_id
+            .clone()
+            .unwrap_or_else(|| DEFAULT_TERMINAL_SESSION_ID.to_string());
+        let cwd = response
+            .listed_path
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned());
+        let scrollback = response
+            .terminal_scrollback
+            .clone()
+            .unwrap_or_else(|| response.terminal_output.clone().unwrap_or_default());
+        let history = response.terminal_history.clone();
+        let last_command = history.last().cloned();
+
+        self.with_coding_state(|coding| {
+            let session = if let Some(existing) = coding
+                .terminal_sessions
+                .iter_mut()
+                .find(|session| session.id == session_id)
+            {
+                existing
+            } else {
+                coding.terminal_sessions.push(
+                    jaymi_capabilities::TerminalSessionState::new(session_id.clone(), cwd.clone()),
+                );
+                coding.terminal_sessions.last_mut().expect("just pushed")
+            };
+            session.apply_result(cwd, last_command, scrollback, history);
+        })
+    }
+
+    /// Refresh Coding Workspace Git status through Planner → git → Git Provider.
+    pub fn refresh_coding_git(&self) -> JaymiResult<()> {
+        let root = self.with_coding_state(|coding| coding.project_root.clone())?;
+        let Some(root) = root else {
+            return self.with_coding_state(|coding| {
+                coding.git = Some(GitStatusState {
+                    summary: "No open project".into(),
+                    last_error: Some("open a project to use Git".into()),
+                    ..GitStatusState::default()
+                });
+            });
+        };
+
+        match self.git_status(&root) {
+            Ok(response) if !response.blocked => self.apply_git_response(&response),
+            Ok(response) => self.with_coding_state(|coding| {
+                coding.git = Some(GitStatusState {
+                    summary: "unavailable".into(),
+                    last_error: Some(response.content),
+                    ..GitStatusState::default()
+                });
+            }),
+            Err(error) => self.with_coding_state(|coding| {
+                coding.git = Some(GitStatusState {
+                    summary: "unavailable".into(),
+                    last_error: Some(error.message().to_string()),
+                    ..GitStatusState::default()
+                });
+            }),
+        }
+    }
+
+    /// Stage paths from the Coding Git panel.
+    pub fn coding_git_stage(&self, paths: &[String]) -> JaymiResult<()> {
+        self.coding_git_mutate(GitOperation::Stage, paths, None)
+    }
+
+    /// Unstage paths from the Coding Git panel.
+    pub fn coding_git_unstage(&self, paths: &[String]) -> JaymiResult<()> {
+        self.coding_git_mutate(GitOperation::Unstage, paths, None)
+    }
+
+    /// Discard path changes from the Coding Git panel.
+    pub fn coding_git_discard(&self, paths: &[String]) -> JaymiResult<()> {
+        self.coding_git_mutate(GitOperation::Discard, paths, None)
+    }
+
+    /// Commit staged changes using the draft commit message.
+    pub fn coding_git_commit_active(&self) -> JaymiResult<()> {
+        let message = self.with_coding_state(|coding| {
+            coding
+                .git
+                .as_ref()
+                .map(|git| git.commit_message.clone())
+                .unwrap_or_default()
+        })?;
+        self.coding_git_commit(&message)
+    }
+
+    /// Commit staged changes from the Coding Git panel.
+    pub fn coding_git_commit(&self, message: &str) -> JaymiResult<()> {
+        self.coding_git_mutate(GitOperation::Commit, &[], Some(message))
+    }
+
+    /// Update the draft commit message in Coding Git state.
+    pub fn set_coding_git_commit_message(&self, message: String) -> JaymiResult<()> {
+        self.with_coding_state(|coding| {
+            let git = coding.git.get_or_insert_with(GitStatusState::default);
+            git.commit_message = message;
+        })
+    }
+
+    fn coding_git_mutate(
+        &self,
+        operation: GitOperation,
+        paths: &[String],
+        message: Option<&str>,
+    ) -> JaymiResult<()> {
+        let root = self
+            .with_coding_state(|coding| coding.project_root.clone())?
+            .ok_or_else(|| JaymiError::new("coding git has no project root"))?;
+        let path_bufs: Vec<PathBuf> = paths.iter().map(PathBuf::from).collect();
+        let response = match operation {
+            GitOperation::Status => self.git_status(&root)?,
+            GitOperation::Stage => self.git_stage(&root, path_bufs)?,
+            GitOperation::Unstage => self.git_unstage(&root, path_bufs)?,
+            GitOperation::Discard => self.git_discard(&root, path_bufs)?,
+            GitOperation::Commit => {
+                let message = message
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .ok_or_else(|| JaymiError::new("commit requires a message"))?;
+                self.git_commit(&root, message)?
+            }
+        };
+        if response.blocked {
+            return Err(JaymiError::new(response.content));
+        }
+        self.apply_git_response(&response)?;
+        if matches!(operation, GitOperation::Commit) {
+            self.with_coding_state(|coding| {
+                if let Some(git) = coding.git.as_mut() {
+                    git.commit_message.clear();
+                }
+            })?;
+        }
+        Ok(())
+    }
+
+    fn apply_git_response(&self, response: &PlannerResponse) -> JaymiResult<()> {
+        let commit_message = self.with_coding_state(|coding| {
+            coding
+                .git
+                .as_ref()
+                .map(|git| git.commit_message.clone())
+                .unwrap_or_default()
+        })?;
+        let to_entries = |items: &[jaymi_core::GitPathStatus]| -> Vec<GitFileEntry> {
+            items
+                .iter()
+                .map(|item| GitFileEntry {
+                    path: item.path.clone(),
+                    status: item.status.clone(),
+                })
+                .collect()
+        };
+        self.with_coding_state(|coding| {
+            let mut state = GitStatusState {
+                commit_message,
+                ..GitStatusState::default()
+            };
+            state.apply_snapshot(
+                response.git_branch.clone(),
+                response
+                    .git_summary
+                    .clone()
+                    .unwrap_or_else(|| "clean".into()),
+                to_entries(&response.git_modified),
+                to_entries(&response.git_staged),
+                to_entries(&response.git_untracked),
+            );
+            coding.git = Some(state);
+        })
     }
 
     /// Open the Research Workspace from the conversation action menu.
@@ -902,6 +1733,9 @@ impl Application {
             ));
         }
         drop(experience);
+        if let Ok(terminal) = self.container.resolve::<Arc<TerminalProvider>>() {
+            let _ = terminal.close_all_sessions();
+        }
         self.prepare_context_session()?;
         Ok(closed)
     }
@@ -1018,6 +1852,65 @@ impl Application {
     /// Build the diagnostics snapshot for the temporary UI.
     pub fn diagnostics(&self) -> JaymiResult<DiagnosticsSnapshot> {
         self.diagnostics_from_response(None)
+    }
+
+    /// Last Planner activity recorded for Coding Diagnostics.
+    pub fn last_planner_activity(&self) -> Option<LastPlannerActivity> {
+        self.last_planner_activity
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    /// Build the read-only Coding Workspace diagnostics view.
+    pub fn coding_diagnostics_view(&self) -> JaymiResult<CodingDiagnosticsView> {
+        let snapshot = self.diagnostics()?;
+        let experience = self.experience().unwrap_or_default();
+        let coding = experience
+            .capability_state()
+            .and_then(|state| state.coding())
+            .cloned();
+        let activity = self.last_planner_activity();
+        let project = self
+            .project_context(None)
+            .ok()
+            .flatten()
+            .map(|context| context.project);
+
+        Ok(build_coding_diagnostics_view(
+            &snapshot,
+            &experience,
+            coding.as_ref(),
+            project.as_ref(),
+            activity.as_ref(),
+        ))
+    }
+
+    fn record_planner_activity(&self, response: &PlannerResponse, duration_ms: u64) {
+        let activity = LastPlannerActivity {
+            summary: response.content.clone(),
+            capability_id: response.capability.map(|capability| capability.id().to_string()),
+            tool_id: response.tool_id.clone(),
+            provider_id: response.provider_id.clone(),
+            blocked: response.blocked,
+            duration_ms,
+            permission_decision: response
+                .permission_result
+                .as_ref()
+                .map(|result| result.decision.as_str().to_string()),
+            policy_summary: response
+                .policy_evaluation
+                .as_ref()
+                .map(|evaluation| evaluation.summary()),
+            memory_hits: response
+                .memory_context
+                .as_ref()
+                .map(|context| context.memories.len())
+                .unwrap_or(0),
+        };
+        if let Ok(mut guard) = self.last_planner_activity.lock() {
+            *guard = Some(activity);
+        }
     }
 
     /// Build diagnostics including an optional Planner response.
@@ -1801,12 +2694,12 @@ mod tests {
         let diagnostics = app.diagnostics().unwrap();
         assert_eq!(diagnostics.app_state.label(), "Ready");
         assert!(diagnostics.planner_healthy);
-        assert_eq!(diagnostics.provider_count, 3);
+        assert_eq!(diagnostics.provider_count, 6);
         assert!(diagnostics
             .provider_ids
             .iter()
             .any(|id| id == OCR_PROVIDER_ID));
-        assert_eq!(diagnostics.tool_count, 6);
+        assert_eq!(diagnostics.tool_count, 11);
         assert_eq!(
             diagnostics.capability_count,
             jaymi_capabilities::Capability::all().len()

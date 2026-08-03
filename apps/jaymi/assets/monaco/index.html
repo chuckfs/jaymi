@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Jaymi Monaco</title>
+  <style>
+    html, body, #container {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #1e1e1e;
+    }
+  </style>
+</head>
+<body>
+  <div id="container"></div>
+  <script src="./vs/loader.js"></script>
+  <script>
+    (function () {
+      const ipc = (payload) => {
+        try {
+          window.ipc.postMessage(JSON.stringify(payload));
+        } catch (err) {
+          console.error("ipc failed", err);
+        }
+      };
+
+      let editor = null;
+      let currentPath = "";
+      let applyingExternal = false;
+      let scrollTimer = null;
+      let nextRequestId = 1;
+      const pending = {};
+
+      function lspRequest(method, extra) {
+        const id = nextRequestId++;
+        return new Promise(function (resolve) {
+          pending[id] = resolve;
+          ipc(Object.assign({
+            type: "lsp",
+            id: id,
+            method: method,
+            path: currentPath,
+          }, extra || {}));
+          setTimeout(function () {
+            if (pending[id]) {
+              delete pending[id];
+              resolve(null);
+            }
+          }, 8000);
+        });
+      }
+
+      require.config({ paths: { vs: "./vs" } });
+      require(["vs/editor/editor.main"], function () {
+        editor = monaco.editor.create(document.getElementById("container"), {
+          value: "",
+          language: "plaintext",
+          theme: "vs-dark",
+          automaticLayout: true,
+          lineNumbers: "on",
+          minimap: { enabled: true },
+          wordWrap: "off",
+          multiCursorModifier: "alt",
+          fontSize: 13,
+          fontFamily: "Menlo, Monaco, 'Courier New', monospace",
+          renderWhitespace: "selection",
+          scrollBeyondLastLine: false,
+          find: {
+            addExtraSpaceOnTop: false,
+            autoFindInSelection: "never",
+            seedSearchStringFromSelection: "always",
+          },
+        });
+
+        monaco.languages.registerHoverProvider("*", {
+          provideHover: function (model, position) {
+            if (!currentPath) {
+              return null;
+            }
+            return lspRequest("hover", {
+              line: position.lineNumber - 1,
+              character: position.column - 1,
+            }).then(function (result) {
+              if (!result || !result.contents) {
+                return null;
+              }
+              return {
+                contents: [{ value: result.contents }],
+                range: result.range ? {
+                  startLineNumber: result.range.start.line + 1,
+                  startColumn: result.range.start.character + 1,
+                  endLineNumber: result.range.end.line + 1,
+                  endColumn: result.range.end.character + 1,
+                } : undefined,
+              };
+            });
+          },
+        });
+
+        monaco.languages.registerCompletionItemProvider("*", {
+          triggerCharacters: [".", ":"],
+          provideCompletionItems: function (model, position) {
+            if (!currentPath) {
+              return { suggestions: [] };
+            }
+            return lspRequest("completion", {
+              line: position.lineNumber - 1,
+              character: position.column - 1,
+            }).then(function (result) {
+              const items = (result && result.items) || [];
+              const word = model.getWordUntilPosition(position);
+              const range = {
+                startLineNumber: position.lineNumber,
+                endLineNumber: position.lineNumber,
+                startColumn: word.startColumn,
+                endColumn: word.endColumn,
+              };
+              return {
+                suggestions: items.map(function (item) {
+                  return {
+                    label: item.label,
+                    kind: monaco.languages.CompletionItemKind.Function,
+                    detail: item.detail || undefined,
+                    insertText: item.insertText || item.label,
+                    range: range,
+                  };
+                }),
+              };
+            });
+          },
+        });
+
+        monaco.languages.registerDefinitionProvider("*", {
+          provideDefinition: function (model, position) {
+            if (!currentPath) {
+              return null;
+            }
+            return lspRequest("definition", {
+              line: position.lineNumber - 1,
+              character: position.column - 1,
+            }).then(function (result) {
+              const locs = (result && result.locations) || [];
+              return locs.map(function (loc) {
+                return {
+                  uri: model.uri,
+                  range: {
+                    startLineNumber: loc.range.start.line + 1,
+                    startColumn: loc.range.start.character + 1,
+                    endLineNumber: loc.range.end.line + 1,
+                    endColumn: loc.range.end.character + 1,
+                  },
+                };
+              });
+            });
+          },
+        });
+
+        monaco.languages.registerReferenceProvider("*", {
+          provideReferences: function (model, position) {
+            if (!currentPath) {
+              return [];
+            }
+            return lspRequest("references", {
+              line: position.lineNumber - 1,
+              character: position.column - 1,
+            }).then(function (result) {
+              const locs = (result && result.locations) || [];
+              return locs.map(function (loc) {
+                return {
+                  uri: model.uri,
+                  range: {
+                    startLineNumber: loc.range.start.line + 1,
+                    startColumn: loc.range.start.character + 1,
+                    endLineNumber: loc.range.end.line + 1,
+                    endColumn: loc.range.end.character + 1,
+                  },
+                };
+              });
+            });
+          },
+        });
+
+        monaco.languages.registerRenameProvider("*", {
+          provideRenameEdits: function (model, position, newName) {
+            if (!currentPath) {
+              return null;
+            }
+            return lspRequest("rename", {
+              line: position.lineNumber - 1,
+              character: position.column - 1,
+              newName: newName,
+            }).then(function (result) {
+              const edits = (result && result.edits) || [];
+              return {
+                edits: edits.map(function (edit) {
+                  return {
+                    resource: model.uri,
+                    textEdit: {
+                      range: {
+                        startLineNumber: edit.range.start.line + 1,
+                        startColumn: edit.range.start.character + 1,
+                        endLineNumber: edit.range.end.line + 1,
+                        endColumn: edit.range.end.character + 1,
+                      },
+                      text: edit.newText,
+                    },
+                  };
+                }),
+              };
+            });
+          },
+        });
+
+        editor.onDidChangeModelContent(function () {
+          if (applyingExternal || !currentPath) {
+            return;
+          }
+          ipc({
+            type: "change",
+            path: currentPath,
+            content: editor.getValue(),
+          });
+        });
+
+        editor.onDidScrollChange(function (event) {
+          if (!currentPath) {
+            return;
+          }
+          if (scrollTimer) {
+            clearTimeout(scrollTimer);
+          }
+          scrollTimer = setTimeout(function () {
+            ipc({
+              type: "scroll",
+              path: currentPath,
+              offset: event.scrollTop || 0,
+            });
+          }, 50);
+        });
+
+        window.addEventListener("keydown", function (event) {
+          const meta = event.metaKey || event.ctrlKey;
+          if (meta && String(event.key).toLowerCase() === "s") {
+            event.preventDefault();
+            ipc({ type: "save", path: currentPath });
+          }
+        });
+
+        ipc({ type: "ready" });
+      });
+
+      window.__jaymiSetDocument = function (path, content, language, minimap, scrollTop) {
+        if (!editor) {
+          return;
+        }
+        applyingExternal = true;
+        currentPath = path || "";
+        const model = editor.getModel();
+        if (model) {
+          monaco.editor.setModelLanguage(model, language || "plaintext");
+          if (model.getValue() !== content) {
+            model.setValue(content || "");
+          }
+        }
+        editor.updateOptions({
+          minimap: { enabled: !!minimap },
+        });
+        if (typeof scrollTop === "number") {
+          editor.setScrollTop(scrollTop);
+        }
+        applyingExternal = false;
+      };
+
+      window.__jaymiSetMinimap = function (enabled) {
+        if (!editor) {
+          return;
+        }
+        editor.updateOptions({
+          minimap: { enabled: !!enabled },
+        });
+      };
+
+      window.__jaymiFocus = function () {
+        if (editor) {
+          editor.focus();
+        }
+      };
+
+      window.__jaymiLspResult = function (id, payload) {
+        const resolve = pending[id];
+        if (resolve) {
+          delete pending[id];
+          resolve(payload || null);
+        }
+      };
+
+      window.__jaymiSetDiagnostics = function (markers) {
+        if (!editor) {
+          return;
+        }
+        const model = editor.getModel();
+        if (!model) {
+          return;
+        }
+        const mapped = (markers || []).map(function (marker) {
+          const severity = marker.severity === "error"
+            ? monaco.MarkerSeverity.Error
+            : marker.severity === "warning"
+              ? monaco.MarkerSeverity.Warning
+              : marker.severity === "info"
+                ? monaco.MarkerSeverity.Info
+                : monaco.MarkerSeverity.Hint;
+          return {
+            severity: severity,
+            message: marker.message || "",
+            startLineNumber: (marker.line || 0) + 1,
+            startColumn: (marker.character || 0) + 1,
+            endLineNumber: (marker.endLine != null ? marker.endLine : marker.line || 0) + 1,
+            endColumn: (marker.endCharacter != null ? marker.endCharacter : (marker.character || 0) + 1) + 1,
+          };
+        });
+        monaco.editor.setModelMarkers(model, "jaymi-lsp", mapped);
+      };
+    })();
+  </script>
+</body>
+</html>

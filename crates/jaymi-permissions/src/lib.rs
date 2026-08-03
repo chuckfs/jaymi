@@ -97,20 +97,22 @@ impl PermissionEngine {
         self.initialized
     }
 
-    /// Evaluate whether an action is authorized.
-    ///
-    /// Slice 0.4: read-only filesystem actions are allowed automatically.
-    /// Destructive, network, and other actions are denied (no approval UI yet).
+    /// Slice 0.4+: local filesystem read/write and terminal execute are allowed.
+    /// Network and other actions remain denied / approval-gated.
     pub fn check(&self, request: &PermissionRequest) -> JaymiResult<PermissionCheckResult> {
         self.ensure_initialized()?;
 
         let decision = match (request.category, request.action) {
-            (PermissionCategory::Filesystem, PermissionAction::Read) => {
+            (PermissionCategory::Filesystem, PermissionAction::Read)
+            | (PermissionCategory::Filesystem, PermissionAction::Write) => {
                 PermissionDecision::Allowed
             }
             (PermissionCategory::Filesystem, _) => PermissionDecision::Denied,
-            (PermissionCategory::Internet, _) => PermissionDecision::Denied,
+            (PermissionCategory::Terminal, PermissionAction::Execute) => {
+                PermissionDecision::Allowed
+            }
             (PermissionCategory::Terminal, _) => PermissionDecision::Denied,
+            (PermissionCategory::Internet, _) => PermissionDecision::Denied,
             (PermissionCategory::Communication, _) => PermissionDecision::RequiresApproval,
             (PermissionCategory::System, _) => PermissionDecision::RequiresApproval,
             (PermissionCategory::AiProviders, _) => PermissionDecision::RequiresApproval,
@@ -160,10 +162,16 @@ impl Lifecycle for PermissionEngine {
             self.version(),
             DEPENDENCIES,
         )
-        .with_details(vec![(
-            "read_only_filesystem".to_string(),
-            "auto_allowed".to_string(),
-        )])
+        .with_details(vec![
+            (
+                "local_filesystem".to_string(),
+                "read_write_auto_allowed".to_string(),
+            ),
+            (
+                "local_terminal".to_string(),
+                "execute_auto_allowed".to_string(),
+            ),
+        ])
     }
 
     fn shutdown(&mut self) -> JaymiResult<()> {
@@ -204,7 +212,7 @@ mod tests {
     }
 
     #[test]
-    fn denies_filesystem_write() {
+    fn allows_filesystem_write() {
         let mut engine = PermissionEngine::new();
         engine.initialize().unwrap();
         let result = engine
@@ -216,8 +224,25 @@ mod tests {
                 resource: Some("/tmp/a.txt".into()),
             })
             .unwrap();
-        assert_eq!(result.decision, PermissionDecision::Denied);
-        assert!(!result.allows_execution());
+        assert_eq!(result.decision, PermissionDecision::Allowed);
+        assert!(result.allows_execution());
+    }
+
+    #[test]
+    fn allows_terminal_execute() {
+        let mut engine = PermissionEngine::new();
+        engine.initialize().unwrap();
+        let result = engine
+            .check(&PermissionRequest {
+                category: PermissionCategory::Terminal,
+                action: PermissionAction::Execute,
+                scope: PermissionScope::Once,
+                explanation: "Run a shell command".into(),
+                resource: Some("pwd".into()),
+            })
+            .unwrap();
+        assert_eq!(result.decision, PermissionDecision::Allowed);
+        assert!(result.allows_execution());
     }
 
     #[test]

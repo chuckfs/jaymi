@@ -93,8 +93,10 @@ impl Tool for QueryInventoryTool {
                 document: None,
                 parser_id: None,
                 message: Some(message),
+                listed_path: None,
                 project_knowledge: Vec::new(),
-            });
+                        ..Default::default()
+        });
         }
         let mut message = format!(
             "Found {rows} inventoried entries for {} via discover → query_inventory → search (strategy={} citations={})",
@@ -114,7 +116,9 @@ impl Tool for QueryInventoryTool {
             document: None,
             parser_id: None,
             message: Some(message),
+            listed_path: None,
             project_knowledge: Vec::new(),
+                    ..Default::default()
         })
     }
 }

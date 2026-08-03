@@ -86,6 +86,81 @@ pub struct ProjectKnowledgeRequest {
     pub limit: Option<usize>,
 }
 
+/// Structured request to write text content to a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriteFileRequest {
+    /// Destination file path.
+    pub path: PathBuf,
+    /// Full file contents to write.
+    pub content: String,
+}
+
+/// Structured request to ensure or run a command in a terminal session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TerminalRequest {
+    /// Stable session id (persists while the workspace remains open).
+    pub session_id: String,
+    /// Working directory for the session (usually the project root).
+    pub cwd: PathBuf,
+    /// Command to run; `None` only ensures/spawns the session.
+    pub command: Option<String>,
+}
+
+/// Git operations exposed through the Git tool / provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitOperation {
+    /// Read repository status.
+    Status,
+    /// Stage paths into the index.
+    Stage,
+    /// Remove paths from the index (keep worktree).
+    Unstage,
+    /// Discard worktree / untracked changes for paths.
+    Discard,
+    /// Create a commit from the staged index.
+    Commit,
+}
+
+impl GitOperation {
+    /// Stable label for diagnostics and logging.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Status => "status",
+            Self::Stage => "stage",
+            Self::Unstage => "unstage",
+            Self::Discard => "discard",
+            Self::Commit => "commit",
+        }
+    }
+
+    /// Whether this operation mutates the repository.
+    pub fn is_mutating(self) -> bool {
+        !matches!(self, Self::Status)
+    }
+}
+
+/// One path with a short Git status code (`M`, `A`, `??`, …).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitPathStatus {
+    /// Repository-relative path.
+    pub path: String,
+    /// Short status label.
+    pub status: String,
+}
+
+/// Structured Git request mediated by the Planner.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitRequest {
+    /// Repository root (usually the project root).
+    pub repo_root: PathBuf,
+    /// Operation to perform.
+    pub operation: GitOperation,
+    /// Paths for stage / unstage / discard.
+    pub paths: Vec<PathBuf>,
+    /// Commit message when [`GitOperation::Commit`].
+    pub message: Option<String>,
+}
+
 /// A request originating from the conversation interface.
 ///
 /// Every interaction begins with understanding intent. The Planner receives
@@ -99,8 +174,18 @@ pub struct UserRequest {
     /// When set, the Decision Engine treats this as an explicit list-directory
     /// request without requiring natural-language parsing.
     pub directory: Option<PathBuf>,
+    /// Optional structured root path for a recursive project-tree listing.
+    pub project_tree: Option<PathBuf>,
     /// Optional structured file path for read-file intents.
     pub file: Option<PathBuf>,
+    /// Optional structured write-file request.
+    pub write_file: Option<WriteFileRequest>,
+    /// Optional structured terminal ensure/run request.
+    pub terminal: Option<TerminalRequest>,
+    /// Optional structured Git request.
+    pub git: Option<GitRequest>,
+    /// Optional structured Language Server request.
+    pub lsp: Option<crate::lsp::LspRequest>,
     /// When true, query the persistent discovery inventory.
     pub discover: bool,
     /// Optional structured discovery query kind.
@@ -122,7 +207,12 @@ impl UserRequest {
         Self {
             content: content.into(),
             directory: None,
+            project_tree: None,
             file: None,
+            write_file: None,
+            terminal: None,
+            git: None,
+            lsp: None,
             discover: false,
             discovery_kind: None,
             index_root: None,
@@ -148,12 +238,128 @@ impl UserRequest {
         }
     }
 
+    /// Create a structured request to recursively list a project tree.
+    pub fn list_project_tree(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        Self {
+            content: format!("list project tree {}", path.display()),
+            project_tree: Some(path),
+            ..Self::bare("")
+        }
+    }
+
     /// Create a structured request to read a single file.
     pub fn read_file(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         Self {
             content: format!("read {}", path.display()),
             file: Some(path),
+            ..Self::bare("")
+        }
+    }
+
+    /// Create a structured request to write a single file.
+    pub fn write_file(path: impl Into<PathBuf>, content: impl Into<String>) -> Self {
+        let path = path.into();
+        let content = content.into();
+        Self {
+            content: format!("write {}", path.display()),
+            write_file: Some(WriteFileRequest {
+                path,
+                content,
+            }),
+            ..Self::bare("")
+        }
+    }
+
+    /// Create a structured request to ensure a terminal session exists.
+    pub fn ensure_terminal(session_id: impl Into<String>, cwd: impl Into<PathBuf>) -> Self {
+        let session_id = session_id.into();
+        let cwd = cwd.into();
+        Self {
+            content: format!("ensure terminal {session_id}"),
+            terminal: Some(TerminalRequest {
+                session_id,
+                cwd,
+                command: None,
+            }),
+            ..Self::bare("")
+        }
+    }
+
+    /// Create a structured request to run a command in a terminal session.
+    pub fn run_terminal(
+        session_id: impl Into<String>,
+        cwd: impl Into<PathBuf>,
+        command: impl Into<String>,
+    ) -> Self {
+        let session_id = session_id.into();
+        let cwd = cwd.into();
+        let command = command.into();
+        Self {
+            content: format!("run terminal: {command}"),
+            terminal: Some(TerminalRequest {
+                session_id,
+                cwd,
+                command: Some(command),
+            }),
+            ..Self::bare("")
+        }
+    }
+
+    /// Create a structured Language Server request.
+    pub fn lsp(request: crate::lsp::LspRequest) -> Self {
+        Self {
+            content: format!(
+                "lsp {} {}",
+                request.operation.as_str(),
+                request.workspace_root.display()
+            ),
+            lsp: Some(request),
+            ..Self::bare("")
+        }
+    }
+
+    /// Create a structured Git status request.
+    pub fn git_status(repo_root: impl Into<PathBuf>) -> Self {
+        Self::git(repo_root, GitOperation::Status, Vec::new(), None)
+    }
+
+    /// Create a structured Git stage request.
+    pub fn git_stage(repo_root: impl Into<PathBuf>, paths: Vec<PathBuf>) -> Self {
+        Self::git(repo_root, GitOperation::Stage, paths, None)
+    }
+
+    /// Create a structured Git unstage request.
+    pub fn git_unstage(repo_root: impl Into<PathBuf>, paths: Vec<PathBuf>) -> Self {
+        Self::git(repo_root, GitOperation::Unstage, paths, None)
+    }
+
+    /// Create a structured Git discard request.
+    pub fn git_discard(repo_root: impl Into<PathBuf>, paths: Vec<PathBuf>) -> Self {
+        Self::git(repo_root, GitOperation::Discard, paths, None)
+    }
+
+    /// Create a structured Git commit request.
+    pub fn git_commit(repo_root: impl Into<PathBuf>, message: impl Into<String>) -> Self {
+        Self::git(repo_root, GitOperation::Commit, Vec::new(), Some(message.into()))
+    }
+
+    fn git(
+        repo_root: impl Into<PathBuf>,
+        operation: GitOperation,
+        paths: Vec<PathBuf>,
+        message: Option<String>,
+    ) -> Self {
+        let repo_root = repo_root.into();
+        Self {
+            content: format!("git {} {}", operation.as_str(), repo_root.display()),
+            git: Some(GitRequest {
+                repo_root,
+                operation,
+                paths,
+                message,
+            }),
             ..Self::bare("")
         }
     }

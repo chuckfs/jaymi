@@ -81,13 +81,11 @@ impl Tool for SearchKnowledgeTool {
                 success: true,
                 entries,
                 citations,
-                document: None,
-                parser_id: None,
                 message: Some(format!(
                     "No search matches via search → search_knowledge (strategy={})",
                     results.strategy
                 )),
-                project_knowledge: Vec::new(),
+                ..Default::default()
             });
         }
         let mut message = format!(
@@ -108,7 +106,9 @@ impl Tool for SearchKnowledgeTool {
             document: None,
             parser_id: None,
             message: Some(message),
+            listed_path: None,
             project_knowledge: Vec::new(),
+                    ..Default::default()
         })
     }
 }

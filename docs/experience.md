@@ -26,15 +26,16 @@ Jaymi defines primary workspace kinds. **Current:** conversation shell plus expa
 
 **Current:** shell expands from the right with five panels bound to temporary `CodingState`:
 
-- Project Explorer (stub tree / selection)
-- Editor (open-file list)
-- Terminal (session placeholders)
-- Git (status placeholder)
-- Diagnostics (workspace diagnostic list)
+- Project Explorer (live project tree via Planner → `list_project_tree` → Filesystem Provider)
+- Editor (Monaco via wry WebView overlay; syntax highlighting, line numbers, optional minimap, search, multi-cursor, undo/redo; buffers in `CodingState` via Planner → `read_file` / `write_file`; Save + ⌘S)
+- Language Server (Rust Analyzer via Planner → `language_server` → LSP Provider: diagnostics, hover, autocomplete, go to definition, rename, find references)
+- Terminal (persistent PTY via Planner → `terminal` → Terminal Provider; scrolling + history)
+- Git (live status / stage / unstage / discard / commit via Planner → `git` → Git Provider)
+- Diagnostics (read-only operational panel: active project, workspace state, planner activity, tool execution, provider status, indexing, memory context, permissions, current capability, timing metrics; plus LSP problems)
 
 **Activation (UI):** conversation header **⋯** menu → **Start Coding Project**. That reuses the existing Coding shell and `CodingState` without creating a second conversation. Closing the workspace returns to the same chat.
 
-The conversation remains visible and persistent. Real editor / LSP / PTY / Git tools are **Target** (Layer 7); Code capability stays Unavailable until those tools exist.
+The conversation remains visible and persistent. Monaco and the Language Server (Rust Analyzer) are embedded in Coding Workspace (buffers and diagnostics survive UI remounts via `CodingState`). Broader LSP tooling remains **Target** for Layer 7 polish. Terminal PTY and Git panel are available in Coding Workspace.
 
 The conversation becomes project-aware but never resets.
 

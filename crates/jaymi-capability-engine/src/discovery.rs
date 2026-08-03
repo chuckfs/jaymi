@@ -117,7 +117,7 @@ pub fn capability_requirements(capability: Capability) -> CapabilityRequirements
             capability,
             requires_tool: true,
             requires_provider: true,
-            preferred_providers: vec!["filesystem"],
+            preferred_providers: vec!["filesystem", "git"],
             preferred_tools: vec!["editor", "language_server", "terminal", "git"],
         },
         Capability::Vision => CapabilityRequirements {
@@ -187,8 +187,8 @@ pub fn capability_requirements(capability: Capability) -> CapabilityRequirements
             capability,
             requires_tool: true,
             requires_provider: true,
-            preferred_providers: vec![],
-            preferred_tools: vec![],
+            preferred_providers: vec!["terminal"],
+            preferred_tools: vec!["terminal"],
         },
         Capability::AutomateTasks => CapabilityRequirements {
             capability,
@@ -202,7 +202,7 @@ pub fn capability_requirements(capability: Capability) -> CapabilityRequirements
             requires_tool: true,
             requires_provider: true,
             preferred_providers: vec!["filesystem"],
-            preferred_tools: vec![],
+            preferred_tools: vec!["write_file"],
         },
         Capability::Internet => CapabilityRequirements {
             capability,
