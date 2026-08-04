@@ -10,3 +10,5 @@ authors.workspace = true
 [dependencies]
 jaymi-core = { workspace = true }
 jaymi-logging = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

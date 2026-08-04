@@ -58,6 +58,10 @@ impl SearchHit {
             why_matched: self.match_reason.why_matched(),
             confidence: self.score.min(SCORE_SCALE),
             matching_section: self.matching_section.clone(),
+            line: self.line,
+            column: self.column,
+            end_line: self.end_line,
+            end_column: self.end_column,
         }
     }
 
@@ -130,6 +134,10 @@ mod tests {
             matching_section: None,
             snippet: None,
             is_directory: false,
+            line: None,
+            column: None,
+            end_line: None,
+            end_column: None,
         };
         let citation = hit.to_citation();
         assert_eq!(citation.title, "a.md");

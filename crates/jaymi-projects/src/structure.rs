@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 /// ├── assets/
 /// └── .jaymi/
 ///     ├── project.json
+///     ├── workspace.json
 ///     ├── conversations/
 ///     ├── memories/
 ///     ├── tasks/
@@ -26,6 +27,8 @@ pub struct JaymiProjectLayout {
     pub tasks: PathBuf,
     pub artifacts: PathBuf,
     pub cache: PathBuf,
+    /// Coding workspace UI state (editor tabs/view — no file contents).
+    pub workspace_json: PathBuf,
 }
 
 impl JaymiProjectLayout {
@@ -39,6 +42,7 @@ impl JaymiProjectLayout {
             tasks: jaymi_dir.join("tasks"),
             artifacts: jaymi_dir.join("artifacts"),
             cache: jaymi_dir.join("cache"),
+            workspace_json: jaymi_dir.join("workspace.json"),
             jaymi_dir,
         }
     }

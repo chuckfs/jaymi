@@ -27,8 +27,18 @@ pub struct MonacoDocument {
     pub language: String,
     /// Vertical scroll in pixels.
     pub scroll_top: f32,
+    /// Zero-based cursor line.
+    pub cursor_line: u32,
+    /// Zero-based cursor column.
+    pub cursor_column: u32,
+    /// Collapsed fold ranges (zero-based inclusive).
+    pub folded_regions: Vec<(u32, u32)>,
     /// Whether the minimap is enabled.
     pub minimap: bool,
+    /// Whether word wrap is enabled.
+    pub word_wrap: bool,
+    /// Font size in pixels.
+    pub font_size: u32,
 }
 
 /// Screen-space viewport reserved for the Monaco overlay.
@@ -47,6 +57,17 @@ pub enum MonacoIpcMessage {
     Change { path: String, content: String },
     /// Scroll position changed.
     Scroll { path: String, offset: f32 },
+    /// Cursor position changed.
+    Cursor {
+        path: String,
+        line: u32,
+        column: u32,
+    },
+    /// Folded regions changed.
+    Folds {
+        path: String,
+        regions: Vec<(u32, u32)>,
+    },
     /// ⌘S / Ctrl+S inside Monaco.
     Save { path: String },
     /// Language Server request from Monaco providers.
@@ -71,8 +92,19 @@ struct IpcPayload {
     method: Option<String>,
     line: Option<u32>,
     character: Option<u32>,
+    column: Option<u32>,
     #[serde(rename = "newName")]
     new_name: Option<String>,
+    #[serde(default)]
+    folds: Option<Vec<IpcFold>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct IpcFold {
+    #[serde(rename = "startLine")]
+    start_line: u32,
+    #[serde(rename = "endLine")]
+    end_line: u32,
 }
 
 /// Owns the wry WebView and keeps it synced with CodingState.
@@ -211,13 +243,26 @@ impl MonacoHost {
             return Ok(());
         }
 
+        let folds_json = serde_json::to_string(
+            &document
+                .folded_regions
+                .iter()
+                .map(|(start, end)| serde_json::json!({ "startLine": start, "endLine": end }))
+                .collect::<Vec<_>>(),
+        )
+        .unwrap_or_else(|_| "[]".to_string());
         let script = format!(
-            "window.__jaymiSetDocument && window.__jaymiSetDocument({}, {}, {}, {}, {});",
+            "window.__jaymiSetDocument && window.__jaymiSetDocument({}, {}, {}, {}, {}, {}, {}, {}, {}, {});",
             json_string(&document.path),
             json_string(&document.content),
             json_string(&document.language),
             if document.minimap { "true" } else { "false" },
-            document.scroll_top as i64
+            if document.word_wrap { "true" } else { "false" },
+            document.font_size,
+            document.scroll_top as i64,
+            document.cursor_line,
+            document.cursor_column,
+            folds_json
         );
         self.webview
             .evaluate_script(&script)
@@ -228,16 +273,34 @@ impl MonacoHost {
 
     /// Update minimap without rewriting the buffer.
     pub fn set_minimap(&self, enabled: bool) -> Result<(), String> {
+        self.set_editor_options(Some(enabled), None, None)
+    }
+
+    /// Push workspace-owned editor chrome options into Monaco.
+    pub fn set_editor_options(
+        &self,
+        minimap: Option<bool>,
+        word_wrap: Option<bool>,
+        font_size: Option<u32>,
+    ) -> Result<(), String> {
         if !self.ready {
             return Ok(());
         }
+        let minimap_js = minimap
+            .map(|value| if value { "true" } else { "false" })
+            .unwrap_or("null");
+        let wrap_js = word_wrap
+            .map(|value| if value { "true" } else { "false" })
+            .unwrap_or("null");
+        let font_js = font_size
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".to_string());
         let script = format!(
-            "window.__jaymiSetMinimap && window.__jaymiSetMinimap({});",
-            if enabled { "true" } else { "false" }
+            "window.__jaymiSetOptions && window.__jaymiSetOptions({{ minimap: {minimap_js}, wordWrap: {wrap_js}, fontSize: {font_js} }});"
         );
         self.webview
             .evaluate_script(&script)
-            .map_err(|error| format!("monaco minimap: {error}"))
+            .map_err(|error| format!("monaco options: {error}"))
     }
 
     /// Mark that CodingState accepted an edit originating from Monaco (echo suppression).
@@ -337,6 +400,23 @@ fn parse_ipc(body: &str) -> Option<MonacoIpcMessage> {
         "scroll" => Some(MonacoIpcMessage::Scroll {
             path: payload.path.unwrap_or_default(),
             offset: payload.offset.unwrap_or(0.0) as f32,
+        }),
+        "cursor" => Some(MonacoIpcMessage::Cursor {
+            path: payload.path.unwrap_or_default(),
+            line: payload.line.unwrap_or(0),
+            column: payload
+                .column
+                .or(payload.character)
+                .unwrap_or(0),
+        }),
+        "folds" => Some(MonacoIpcMessage::Folds {
+            path: payload.path.unwrap_or_default(),
+            regions: payload
+                .folds
+                .unwrap_or_default()
+                .into_iter()
+                .map(|fold| (fold.start_line, fold.end_line))
+                .collect(),
         }),
         "save" => Some(MonacoIpcMessage::Save {
             path: payload.path.unwrap_or_default(),
@@ -446,6 +526,14 @@ mod tests {
             Some(MonacoIpcMessage::Scroll {
                 path: "/a.rs".into(),
                 offset: 12.5,
+            })
+        );
+        assert_eq!(
+            parse_ipc(r#"{"type":"cursor","path":"/a.rs","line":3,"column":7}"#),
+            Some(MonacoIpcMessage::Cursor {
+                path: "/a.rs".into(),
+                line: 3,
+                column: 7,
             })
         );
         assert_eq!(

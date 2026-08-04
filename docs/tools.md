@@ -28,7 +28,7 @@ Current tools
 * `search_project_knowledge`
 * `read_file`
 * `write_file`
-* `terminal`
+* `terminal` — ensure / run / create / rename / kill PTY sessions (`TerminalOperation`) through the Terminal Provider
 * `git`
 * `language_server`
 * `query_inventory`
@@ -49,14 +49,15 @@ Every tool performs exactly one well-defined job.
 * Search files
 * Read a document
 * Index a folder / query inventory
+* Git status / stage / unstage / discard / commit (via `git` → Git Provider)
+* Ensure / run / create / rename / kill a terminal session (via `terminal` → Terminal Provider); `cargo test`, `git status`, `npm test`, `python …` all run the same way — a persistent local PTY shell
 
 ### Target examples
 
-* Execute a terminal command
 * Generate an image
-* Create a Git commit
 * Search messages
 * Parse a PDF (understanding pipeline exists; dedicated tool catalog expands)
+* Git merge / rebase / cherry-pick
 
 Tools should remain focused, deterministic, and reusable.
 

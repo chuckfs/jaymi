@@ -40,6 +40,7 @@ fn git_status_stage_unstage_and_commit_metadata() {
         .git
         .clone()
         .expect("git state");
+    assert!(git.is_repository);
     assert!(git.branch.is_some());
     assert!(
         git.untracked.iter().any(|entry| entry.path == "readme.md"),
@@ -47,6 +48,7 @@ fn git_status_stage_unstage_and_commit_metadata() {
         git.untracked
     );
     assert!(git.staged.is_empty());
+    assert!(git.added.is_empty());
 
     let response = app
         .git_stage(&root, vec![PathBuf::from("readme.md")])
@@ -58,8 +60,13 @@ fn git_status_stage_unstage_and_commit_metadata() {
         response.capability.map(|capability| capability.id()),
         Some("code")
     );
+    assert_eq!(response.git_is_repository, Some(true));
     assert!(response
         .git_staged
+        .iter()
+        .any(|entry| entry.path == "readme.md"));
+    assert!(response
+        .git_added
         .iter()
         .any(|entry| entry.path == "readme.md"));
     assert!(!response
@@ -78,6 +85,7 @@ fn git_status_stage_unstage_and_commit_metadata() {
         .clone()
         .expect("git after stage");
     assert!(git.staged.iter().any(|entry| entry.path == "readme.md"));
+    assert!(git.added.iter().any(|entry| entry.path == "readme.md"));
     assert!(!git.untracked.iter().any(|entry| entry.path == "readme.md"));
 
     app.coding_git_unstage(&["readme.md".into()])
@@ -92,6 +100,7 @@ fn git_status_stage_unstage_and_commit_metadata() {
         .clone()
         .expect("git after unstage");
     assert!(!git.staged.iter().any(|entry| entry.path == "readme.md"));
+    assert!(!git.added.iter().any(|entry| entry.path == "readme.md"));
     assert!(git.untracked.iter().any(|entry| entry.path == "readme.md"));
 
     app.coding_git_stage(&["readme.md".into()]).expect("restage");
@@ -111,6 +120,8 @@ fn git_status_stage_unstage_and_commit_metadata() {
     assert!(!git.staged.iter().any(|entry| entry.path == "readme.md"));
     assert!(!git.untracked.iter().any(|entry| entry.path == "readme.md"));
     assert!(git.modified.is_empty());
+    assert!(git.added.is_empty());
+    assert!(git.deleted.is_empty());
     assert!(git.commit_message.is_empty());
 
     let log = Command::new("git")
@@ -123,7 +134,68 @@ fn git_status_stage_unstage_and_commit_metadata() {
 }
 
 #[test]
-fn git_discard_restores_tracked_file() {
+fn git_detects_non_repository_and_classifies_modified_deleted() {
+    let data_dir = temp_dir("git-detect-data");
+    let root = temp_dir("git-detect-root");
+    // Not a git repo yet.
+    fs::write(root.join("orphan.txt"), "x\n").unwrap();
+
+    let app = Application::boot_with_data_dir(&data_dir).expect("boot");
+    let project = app
+        .create_project(&CreateProjectRequest {
+            project_id: Some("project:git-detect".into()),
+            name: "Git Detect".into(),
+            description: None,
+            root_directory: Some(root.clone()),
+            project_type: Some(ProjectType::Code),
+        })
+        .expect("create");
+    app.open_project(project.id.as_str()).expect("open");
+    app.start_coding_project().expect("coding");
+    app.refresh_coding_git().expect("status");
+
+    let git = app
+        .capability_state()
+        .unwrap()
+        .unwrap()
+        .coding()
+        .unwrap()
+        .git
+        .clone()
+        .expect("git");
+    assert!(!git.is_repository);
+    assert!(git.summary.contains("not a git repository"));
+
+    // Initialize repo and create modified + deleted entries.
+    init_repo(&root);
+    fs::write(root.join("keep.txt"), "v1\n").unwrap();
+    fs::write(root.join("gone.txt"), "x\n").unwrap();
+    app.coding_git_stage(&["keep.txt".into(), "gone.txt".into()])
+        .expect("stage init");
+    app.set_coding_git_commit_message("init".into())
+        .expect("msg");
+    app.coding_git_commit_active().expect("commit init");
+
+    fs::write(root.join("keep.txt"), "v2\n").unwrap();
+    fs::remove_file(root.join("gone.txt")).unwrap();
+    app.refresh_coding_git().expect("refresh");
+
+    let git = app
+        .capability_state()
+        .unwrap()
+        .unwrap()
+        .coding()
+        .unwrap()
+        .git
+        .clone()
+        .expect("git after edits");
+    assert!(git.is_repository);
+    assert!(git.modified.iter().any(|entry| entry.path == "keep.txt"));
+    assert!(git.deleted.iter().any(|entry| entry.path == "gone.txt"));
+}
+
+#[test]
+fn git_discard_requires_confirmation_then_restores() {
     let data_dir = temp_dir("git-discard-data");
     let root = temp_dir("git-discard-root");
     init_repo(&root);
@@ -131,7 +203,14 @@ fn git_discard_restores_tracked_file() {
     Command::new("git")
         .arg("-C")
         .arg(&root)
-        .args(["-c", "user.name=Jaymi", "-c", "user.email=jaymi@local", "add", "tracked.txt"])
+        .args([
+            "-c",
+            "user.name=Jaymi",
+            "-c",
+            "user.email=jaymi@local",
+            "add",
+            "tracked.txt",
+        ])
         .output()
         .unwrap();
     Command::new("git")
@@ -175,8 +254,40 @@ fn git_discard_restores_tracked_file() {
         .expect("git");
     assert_eq!(git.modified.len(), 1);
 
-    app.coding_git_discard(&["tracked.txt".into()])
-        .expect("discard");
+    app.coding_git_request_discard(&["tracked.txt".into()])
+        .expect("request discard");
+    let git = app
+        .capability_state()
+        .unwrap()
+        .unwrap()
+        .coding()
+        .unwrap()
+        .git
+        .clone()
+        .expect("pending");
+    assert_eq!(
+        git.pending_discard.as_deref(),
+        Some(["tracked.txt".to_string()].as_slice())
+    );
+    // File still dirty until confirmed.
+    assert_eq!(fs::read_to_string(root.join("tracked.txt")).unwrap(), "v2\n");
+
+    app.coding_git_cancel_discard().expect("cancel");
+    let git = app
+        .capability_state()
+        .unwrap()
+        .unwrap()
+        .coding()
+        .unwrap()
+        .git
+        .clone()
+        .expect("cancelled");
+    assert!(git.pending_discard.is_none());
+    assert_eq!(fs::read_to_string(root.join("tracked.txt")).unwrap(), "v2\n");
+
+    app.coding_git_request_discard(&["tracked.txt".into()])
+        .expect("request again");
+    app.coding_git_confirm_discard(None).expect("confirm");
     assert_eq!(fs::read_to_string(root.join("tracked.txt")).unwrap(), "v1\n");
     let git = app
         .capability_state()
@@ -188,6 +299,7 @@ fn git_discard_restores_tracked_file() {
         .clone()
         .expect("git after discard");
     assert!(git.modified.is_empty());
+    assert!(git.pending_discard.is_none());
     assert!(!git.untracked.iter().any(|entry| entry.path == "tracked.txt"));
 }
 

@@ -223,11 +223,12 @@ When a project is opened, Jaymi restores:
 * Active Tasks (project memory kinds)
 * Working Files / indexed project knowledge
 * Planner Context (via Context Engine)
+* Coding editor UI state (open tabs, active tab, cursor/scroll/folds, minimap/wrap/font) in `.jaymi/workspace.json` — buffer contents are re-read from disk, never serialized
 
 ### Target
 
 * Git Status
-* Live IDE / working-tree file state
+* Broader Live IDE / working-tree file state beyond the editor snapshot
 
 Users should not need to manually reload their workspace.
 
@@ -293,9 +294,13 @@ Project Search
 
 ### Current
 
+All product search surfaces (Quick Open, Find in Files, Search Files, Search Knowledge) enter through the Planner’s Search capability (`search_knowledge` → Layer 3 Search Engine). There is no second index for the Coding Workspace.
+
+Coding Workspace Find in Files supports free-text / filename-only queries with Regex, Case Sensitive, Whole Word, and Replace All. Results jump to Monaco at the located line/column. Quick Open (⌘P) is filename-only via the same path.
+
 Searching a project includes:
 
-* Files / documents under the project root
+* Files / documents under the project root (indexed Knowledge + Content Intelligence plain text)
 * Memories
 * Conversations
 * Tasks (project memory)

@@ -339,19 +339,17 @@ Search
 
 ↓
 
-Filesystem Tool
+Search Engine (`search_knowledge`) — single retrieval index for Quick Open, Find in Files, Search Files, and Search Knowledge
 
 ↓
 
-Messages Tool
+Filesystem / list tools (directory browse, project tree)
 
 ↓
 
-Documents Tool
+Messages / Documents / Photos tools (as available)
 
-↓
-
-Photos Tool
+UI never queries the Search Engine directly — Application → Planner → Capability::Search.
 
 Tools may change over time.
 

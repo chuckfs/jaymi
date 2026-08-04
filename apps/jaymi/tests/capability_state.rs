@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use jaymi::Application;
 use jaymi_capabilities::{
-    workspace_expansion_for, Capability, CapabilityState, EditorTab, ResearchNoteState,
-    ResearchSourceState, TerminalSessionState, WorkspaceKind,
+    workspace_expansion_for, Capability, CapabilityState, ResearchNoteState, ResearchSourceState,
+    TerminalSessionState, WorkspaceKind,
 };
 use jaymi_core::UserRequest;
 
@@ -24,15 +24,10 @@ fn coding_state_is_independent_and_cleared_on_close() {
     assert_eq!(state.entry_count(), 0);
 
     app.with_coding_state(|coding| {
-        coding.upsert_tab(EditorTab {
-            path: "src/main.rs".into(),
-            name: "main.rs".into(),
-            content: "fn main() {}".into(),
-            dirty: true,
-            scroll_offset: 0.0,
-        });
+        coding.upsert_tab("src/main.rs", "main.rs", "fn main() {}".into(), 0.0);
         coding.terminal_sessions.push(TerminalSessionState {
             id: "term-1".into(),
+            title: "Terminal".into(),
             cwd: Some("/tmp/app".into()),
             last_command: Some("cargo check".into()),
             output: String::new(),
@@ -79,13 +74,7 @@ fn switching_workspace_kinds_isolates_capability_state() {
     app.handle_with_workspace(UserRequest::new("Help me build an app."))
         .expect("coding");
     app.with_coding_state(|coding| {
-        coding.upsert_tab(EditorTab {
-            path: "lib.rs".into(),
-            name: "lib.rs".into(),
-            content: String::new(),
-            dirty: false,
-            scroll_offset: 0.0,
-        });
+        coding.upsert_tab("lib.rs", "lib.rs", String::new(), 0.0);
     })
     .expect("coding mutate");
     assert_eq!(
@@ -123,13 +112,7 @@ fn switching_workspace_kinds_isolates_capability_state() {
     // Coding mutation must fail while Research is active.
     assert!(app
         .with_coding_state(|coding| {
-            coding.upsert_tab(EditorTab {
-                path: "should-not-exist".into(),
-                name: "should-not-exist".into(),
-                content: String::new(),
-                dirty: false,
-                scroll_offset: 0.0,
-            });
+            coding.upsert_tab("should-not-exist", "should-not-exist", String::new(), 0.0);
         })
         .is_err());
 

@@ -218,6 +218,219 @@ edition = "2021"
     );
 }
 
+#[test]
+fn create_second_terminal_switches_active_session() {
+    let data_dir = temp_dir("term-create-data");
+    let root = temp_dir("term-create-root");
+
+    let app = Application::boot_with_data_dir(&data_dir).expect("boot");
+    let project = app
+        .create_project(&CreateProjectRequest {
+            project_id: Some("project:term-create".into()),
+            name: "Term Create".into(),
+            description: None,
+            root_directory: Some(root.clone()),
+            project_type: Some(ProjectType::Code),
+        })
+        .expect("create");
+    app.open_project(project.id.as_str()).expect("open");
+    app.start_coding_project().expect("coding");
+
+    let coding = app
+        .capability_state()
+        .unwrap()
+        .unwrap()
+        .coding()
+        .unwrap()
+        .clone();
+    assert_eq!(coding.terminal_sessions.len(), 1);
+    assert_eq!(
+        coding.active_terminal_id.as_deref(),
+        Some(DEFAULT_TERMINAL_SESSION_ID)
+    );
+
+    app.create_coding_terminal(Some("Build".to_string()))
+        .expect("create second terminal");
+
+    let coding = app
+        .capability_state()
+        .unwrap()
+        .unwrap()
+        .coding()
+        .unwrap()
+        .clone();
+    assert_eq!(coding.terminal_sessions.len(), 2);
+    let active_id = coding.active_terminal_id.clone().expect("active id");
+    assert_ne!(active_id, DEFAULT_TERMINAL_SESSION_ID);
+    let active_session = coding
+        .terminal_sessions
+        .iter()
+        .find(|session| session.id == active_id)
+        .expect("active session present");
+    assert_eq!(active_session.title, "Build");
+    let expected_root = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+    assert_eq!(
+        active_session.cwd.as_deref(),
+        Some(expected_root.to_string_lossy().into_owned().as_str())
+    );
+
+    // Selecting the original session switches active back.
+    app.select_coding_terminal(DEFAULT_TERMINAL_SESSION_ID)
+        .expect("select");
+    let coding = app
+        .capability_state()
+        .unwrap()
+        .unwrap()
+        .coding()
+        .unwrap()
+        .clone();
+    assert_eq!(
+        coding.active_terminal_id.as_deref(),
+        Some(DEFAULT_TERMINAL_SESSION_ID)
+    );
+}
+
+#[test]
+fn rename_terminal_title_persists_on_coding_state() {
+    let data_dir = temp_dir("term-rename-data");
+    let root = temp_dir("term-rename-root");
+
+    let app = Application::boot_with_data_dir(&data_dir).expect("boot");
+    let project = app
+        .create_project(&CreateProjectRequest {
+            project_id: Some("project:term-rename".into()),
+            name: "Term Rename".into(),
+            description: None,
+            root_directory: Some(root.clone()),
+            project_type: Some(ProjectType::Code),
+        })
+        .expect("create");
+    app.open_project(project.id.as_str()).expect("open");
+    app.start_coding_project().expect("coding");
+
+    app.rename_coding_terminal(DEFAULT_TERMINAL_SESSION_ID, "Server")
+        .expect("rename");
+
+    let coding = app
+        .capability_state()
+        .unwrap()
+        .unwrap()
+        .coding()
+        .unwrap()
+        .clone();
+    let session = coding
+        .terminal_sessions
+        .iter()
+        .find(|session| session.id == DEFAULT_TERMINAL_SESSION_ID)
+        .expect("session");
+    assert_eq!(session.title, "Server");
+}
+
+#[test]
+fn kill_terminal_removes_session_and_provider_forgets_it() {
+    let data_dir = temp_dir("term-kill-data");
+    let root = temp_dir("term-kill-root");
+
+    let app = Application::boot_with_data_dir(&data_dir).expect("boot");
+    let project = app
+        .create_project(&CreateProjectRequest {
+            project_id: Some("project:term-kill".into()),
+            name: "Term Kill".into(),
+            description: None,
+            root_directory: Some(root.clone()),
+            project_type: Some(ProjectType::Code),
+        })
+        .expect("create");
+    app.open_project(project.id.as_str()).expect("open");
+    app.start_coding_project().expect("coding");
+
+    app.create_coding_terminal(Some("Extra".to_string()))
+        .expect("create second terminal");
+
+    let coding = app
+        .capability_state()
+        .unwrap()
+        .unwrap()
+        .coding()
+        .unwrap()
+        .clone();
+    assert_eq!(coding.terminal_sessions.len(), 2);
+    let extra_id = coding
+        .terminal_sessions
+        .iter()
+        .find(|session| session.id != DEFAULT_TERMINAL_SESSION_ID)
+        .map(|session| session.id.clone())
+        .expect("extra session id");
+
+    app.kill_coding_terminal(&extra_id).expect("kill");
+
+    let coding = app
+        .capability_state()
+        .unwrap()
+        .unwrap()
+        .coding()
+        .unwrap()
+        .clone();
+    assert_eq!(coding.terminal_sessions.len(), 1);
+    assert!(coding
+        .terminal_sessions
+        .iter()
+        .all(|session| session.id != extra_id));
+    assert_eq!(
+        coding.active_terminal_id.as_deref(),
+        Some(DEFAULT_TERMINAL_SESSION_ID)
+    );
+
+    let terminal = app
+        .container()
+        .resolve::<std::sync::Arc<jaymi_providers::TerminalProvider>>()
+        .expect("terminal provider");
+    assert!(!terminal.has_session(&extra_id).expect("has session"));
+    assert!(terminal
+        .has_session(DEFAULT_TERMINAL_SESSION_ID)
+        .expect("has session"));
+}
+
+#[test]
+fn created_terminal_cwd_follows_project_root() {
+    let data_dir = temp_dir("term-cwd-data");
+    let root = temp_dir("term-cwd-root");
+
+    let app = Application::boot_with_data_dir(&data_dir).expect("boot");
+    let project = app
+        .create_project(&CreateProjectRequest {
+            project_id: Some("project:term-cwd".into()),
+            name: "Term Cwd".into(),
+            description: None,
+            root_directory: Some(root.clone()),
+            project_type: Some(ProjectType::Code),
+        })
+        .expect("create");
+    app.open_project(project.id.as_str()).expect("open");
+    app.start_coding_project().expect("coding");
+
+    app.create_coding_terminal(None).expect("create terminal");
+
+    let coding = app
+        .capability_state()
+        .unwrap()
+        .unwrap()
+        .coding()
+        .unwrap()
+        .clone();
+    let active_id = coding.active_terminal_id.clone().expect("active id");
+    let session = coding
+        .terminal_sessions
+        .iter()
+        .find(|session| session.id == active_id)
+        .expect("active session");
+    let expected_root = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+    assert_eq!(
+        session.cwd.as_deref(),
+        Some(expected_root.to_string_lossy().into_owned().as_str())
+    );
+}
+
 fn temp_dir(label: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "jaymi-coding-term-{label}-{}",

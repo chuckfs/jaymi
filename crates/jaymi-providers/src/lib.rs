@@ -41,7 +41,8 @@ pub use ocr::{
 pub use provider::{Provider, ProviderIdentity};
 pub use registry::ProviderRegistry;
 pub use terminal::{
-    TerminalCommandResult, TerminalProvider, DEFAULT_TERMINAL_SESSION_ID, TERMINAL_PROVIDER_ID,
+    TerminalCommandResult, TerminalManager, TerminalProvider, TerminalSession,
+    DEFAULT_TERMINAL_SESSION_ID, TERMINAL_PROVIDER_ID,
 };
 
 use jaymi_core::{HealthReport, JaymiResult, Lifecycle};

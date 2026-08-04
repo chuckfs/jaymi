@@ -3,16 +3,28 @@
 //! The conversation stays visible. Capabilities may expand a workspace from
 //! the right. Closing the workspace never destroys the conversation.
 
+pub mod explorer;
+
 use eframe::egui;
 
 use crate::boot::Application;
 use crate::coding_workspace::{render_coding_shell, CodingShellEvent, MonacoEditorSurface};
+use crate::command_dispatch::{dispatch_command, CommandDispatchEffect};
+use crate::command_palette::{
+    render_command_palette, CommandPaletteOutcome, CommandPaletteState,
+};
 use crate::diagnostics::{DiagnosticsSnapshot, OperationalStatus};
 use crate::experience::ExperienceSession;
 use crate::monaco_host::{
     language_for_path, resolve_monaco_assets, MonacoDocument, MonacoHost, MonacoIpcMessage,
 };
-use jaymi_capabilities::{WorkspaceKind, WorkspacePanel};
+use crate::quick_open::{render_quick_open, QuickOpenOutcome, QuickOpenState};
+use crate::ui::explorer::ExplorerEvent;
+use jaymi_capabilities::{
+    EditorSettings, FoldedRegion, SplitDirection, WorkspaceKind, WorkspacePanel,
+    DEFAULT_WORKSPACE_PANEL_WIDTH, MAX_WORKSPACE_PANEL_WIDTH, MIN_CONVERSATION_WIDTH,
+    MIN_WORKSPACE_PANEL_WIDTH,
+};
 use jaymi_core::UserRequest;
 use jaymi_memory::MessageRole;
 
@@ -45,8 +57,13 @@ pub fn run_diagnostics(
                 show_diagnostics: false,
                 error: None,
                 monaco: None,
-                monaco_minimap: true,
                 monaco_last_error: None,
+                command_palette: CommandPaletteState::default(),
+                quick_open: QuickOpenState::default(),
+                workspace_was_expanded: false,
+                workspace_anim_start: None,
+                workspace_anim_from: MIN_WORKSPACE_PANEL_WIDTH,
+                workspace_anim_target: DEFAULT_WORKSPACE_PANEL_WIDTH,
             }))
         }),
     )
@@ -63,10 +80,30 @@ struct JaymiApp {
     error: Option<String>,
     /// Child WebView hosting Monaco (rehydrated from CodingState on Ready).
     monaco: Option<MonacoHost>,
-    /// Minimap preference for the Monaco overlay.
-    monaco_minimap: bool,
     /// Last Monaco host error (assets / webview create).
     monaco_last_error: Option<String>,
+    /// VS Code–style Command Palette (⌘⇧P).
+    command_palette: CommandPaletteState,
+    /// Quick Open filename jump (⌘P).
+    quick_open: QuickOpenState,
+    /// Whether the workspace SidePanel was expanded on the previous frame
+    /// (drives the expand-in animation on the false → true transition).
+    workspace_was_expanded: bool,
+    /// Wall-clock start of the current expand animation, when running.
+    workspace_anim_start: Option<std::time::Instant>,
+    /// Width the expand animation starts from (typically the min width).
+    workspace_anim_from: f32,
+    /// Width the expand animation eases toward (the remembered/default width).
+    workspace_anim_target: f32,
+}
+
+/// Duration of the workspace expand-in animation.
+const WORKSPACE_EXPAND_ANIM_SECS: f32 = 0.18;
+
+/// Ease-out cubic — quick start, gentle settle (used for the expand animation).
+fn ease_out_cubic(t: f32) -> f32 {
+    let inv = 1.0 - t.clamp(0.0, 1.0);
+    1.0 - inv * inv * inv
 }
 
 fn status_color(status: OperationalStatus) -> egui::Color32 {
@@ -84,6 +121,21 @@ impl eframe::App for JaymiApp {
             self.experience = session;
         }
 
+        // ⌘⇧P opens the Command Palette; plain ⌘P opens Quick Open (Go to File).
+        let (open_palette, open_quick_open) = ctx.input(|input| {
+            let command = input.modifiers.command || input.modifiers.mac_cmd;
+            let shift = input.modifiers.shift;
+            let p_pressed = input.key_pressed(egui::Key::P);
+            (command && shift && p_pressed, command && !shift && p_pressed)
+        });
+        if open_palette {
+            self.command_palette.open();
+        }
+        if open_quick_open {
+            self.quick_open.open();
+            self.run_quick_open_search();
+        }
+
         let coding_open = self.experience.active_workspace_kind() == Some(WorkspaceKind::Coding);
         let mut monaco_surface: Option<MonacoEditorSurface> = None;
 
@@ -91,6 +143,21 @@ impl eframe::App for JaymiApp {
             ui.horizontal(|ui| {
                 ui.heading("Jaymi");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .small_button("⌘⇧P")
+                        .on_hover_text("Command Palette (⌘⇧P)")
+                        .clicked()
+                    {
+                        self.command_palette.open();
+                    }
+                    if ui
+                        .small_button("⌘P")
+                        .on_hover_text("Quick Open (⌘P)")
+                        .clicked()
+                    {
+                        self.quick_open.open();
+                        self.run_quick_open_search();
+                    }
                     ui.checkbox(&mut self.show_diagnostics, "Diagnostics");
                     if self.experience.workspace_expanded() {
                         if ui.button("Close workspace").clicked() {
@@ -103,18 +170,88 @@ impl eframe::App for JaymiApp {
 
         if self.experience.workspace_expanded() {
             // Chat-forward: Coding expands beside conversation, never full-window.
-            let (default_w, min_w, max_w) = match self.experience.active_workspace_kind() {
-                Some(WorkspaceKind::Coding) => (640.0, 420.0, 760.0),
-                _ => (420.0, 320.0, 560.0),
+            let is_coding = self.experience.active_workspace_kind() == Some(WorkspaceKind::Coding);
+            let remembered_coding_width = self
+                .experience
+                .capability_state()
+                .and_then(|state| state.coding())
+                .map(|coding| coding.workspace_panel_width)
+                .unwrap_or(DEFAULT_WORKSPACE_PANEL_WIDTH);
+
+            let (default_w, min_w, max_w) = if is_coding {
+                // Coding's remembered width is clamped so the conversation column
+                // never shrinks below MIN_CONVERSATION_WIDTH.
+                let window_w = ctx.screen_rect().width();
+                let max_w = (window_w - MIN_CONVERSATION_WIDTH)
+                    .min(MAX_WORKSPACE_PANEL_WIDTH)
+                    .max(MIN_WORKSPACE_PANEL_WIDTH);
+                let default_w = remembered_coding_width.clamp(MIN_WORKSPACE_PANEL_WIDTH, max_w);
+                (default_w, MIN_WORKSPACE_PANEL_WIDTH, max_w)
+            } else {
+                (420.0, 320.0, 560.0)
             };
-            egui::SidePanel::right("jaymi_workspace")
-                .default_width(default_w)
+
+            // Smooth expansion: the first frame a workspace opens, animate from a
+            // compact width up to the remembered/default width.
+            let just_expanded = !self.workspace_was_expanded;
+            if just_expanded {
+                self.workspace_anim_start = Some(std::time::Instant::now());
+                self.workspace_anim_from = min_w;
+                self.workspace_anim_target = default_w;
+            }
+            self.workspace_was_expanded = true;
+
+            let animating = self
+                .workspace_anim_start
+                .is_some_and(|start| start.elapsed().as_secs_f32() < WORKSPACE_EXPAND_ANIM_SECS);
+
+            let mut panel = egui::SidePanel::right("jaymi_workspace")
                 .min_width(min_w)
                 .max_width(max_w)
-                .resizable(true)
-                .show(ctx, |ui| {
-                    monaco_surface = self.render_workspace(ui);
-                });
+                .resizable(true);
+            if animating {
+                let elapsed = self
+                    .workspace_anim_start
+                    .expect("animating implies start")
+                    .elapsed()
+                    .as_secs_f32();
+                let t = ease_out_cubic(elapsed / WORKSPACE_EXPAND_ANIM_SECS);
+                let width = self.workspace_anim_from
+                    + (self.workspace_anim_target - self.workspace_anim_from) * t;
+                panel = panel.exact_width(width.clamp(min_w, max_w));
+                ctx.request_repaint();
+            } else {
+                panel = panel.default_width(default_w);
+            }
+
+            let panel_response = panel.show(ctx, |ui| {
+                monaco_surface = self.render_workspace(ui);
+            });
+
+            // Write back user resizes of the Coding side panel so they survive
+            // workspace close/reopen (persisted in `.jaymi/workspace.json`).
+            if is_coding && !animating {
+                let rendered_width = panel_response.response.rect.width();
+                if (rendered_width - remembered_coding_width).abs() > 1.0 {
+                    let updated = self
+                        .app
+                        .with_coding_state(|coding| coding.set_workspace_panel_width(rendered_width))
+                        .is_ok();
+                    if updated {
+                        // Avoid a disk write on every dragged frame — persist once
+                        // the mouse button is released.
+                        if !ctx.input(|input| input.pointer.primary_down()) {
+                            let _ = self.app.persist_coding_editor_workspace();
+                        }
+                        if let Ok(session) = self.app.experience() {
+                            self.experience = session;
+                        }
+                    }
+                }
+            }
+        } else {
+            self.workspace_was_expanded = false;
+            self.workspace_anim_start = None;
         }
 
         // Composer stays pinned to the bottom of the conversation column.
@@ -138,11 +275,113 @@ impl eframe::App for JaymiApp {
             }
         });
 
+        if let Ok(registry) = self.app.command_registry() {
+            let outcome = render_command_palette(ctx, &mut self.command_palette, registry.as_ref());
+            self.handle_command_palette_outcome(outcome);
+        }
+
+        let quick_open_outcome = render_quick_open(ctx, &mut self.quick_open);
+        self.handle_quick_open_outcome(quick_open_outcome);
+
         self.sync_monaco(ctx, frame, coding_open, monaco_surface.as_ref());
     }
 }
 
 impl JaymiApp {
+    fn handle_command_palette_outcome(&mut self, outcome: CommandPaletteOutcome) {
+        let CommandPaletteOutcome::Run { id, argument } = outcome else {
+            return;
+        };
+        match dispatch_command(&self.app, &id, argument.as_deref()) {
+            Ok(CommandDispatchEffect::None) => {
+                self.error = None;
+            }
+            Ok(CommandDispatchEffect::RefreshExperience) => {
+                self.error = None;
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
+                }
+            }
+            Ok(CommandDispatchEffect::CloseWorkspace) => {
+                self.close_workspace();
+            }
+            Ok(CommandDispatchEffect::PickAndOpenFile) => {
+                self.palette_open_file();
+            }
+            Ok(CommandDispatchEffect::PickAndOpenFolder) => {
+                self.open_project_folder();
+            }
+            Ok(CommandDispatchEffect::Status(message)) => {
+                self.error = None;
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
+                }
+                // Reuse the status line for search summaries.
+                self.error = Some(message);
+            }
+            Ok(CommandDispatchEffect::OpenQuickOpen) => {
+                self.quick_open.open();
+                self.run_quick_open_search();
+            }
+            Err(error) => self.error = Some(error.message().to_string()),
+        }
+    }
+
+    /// Re-run the Quick Open filename search from the current query.
+    fn run_quick_open_search(&mut self) {
+        let query = self.quick_open.query().trim();
+        if query.is_empty() {
+            self.quick_open.set_results(Vec::new());
+            return;
+        }
+        let mut request = jaymi_core::SearchRequest::filename(query);
+        if let Some(root) = self.app.active_project_root_path() {
+            request.folder = Some(root);
+        }
+        match self.app.project_search(request) {
+            Ok(results) => self.quick_open.set_results(results),
+            Err(_) => self.quick_open.set_results(Vec::new()),
+        }
+    }
+
+    fn handle_quick_open_outcome(&mut self, outcome: QuickOpenOutcome) {
+        match outcome {
+            QuickOpenOutcome::None => {}
+            QuickOpenOutcome::QueryChanged(_) => self.run_quick_open_search(),
+            QuickOpenOutcome::Open(path) => match self.app.open_search_result(&path, None, None) {
+                Ok(()) => {
+                    self.error = None;
+                    if let Ok(session) = self.app.experience() {
+                        self.experience = session;
+                    }
+                }
+                Err(error) => self.error = Some(error.message().to_string()),
+            },
+        }
+    }
+
+    fn palette_open_file(&mut self) {
+        let picked = rfd::FileDialog::new()
+            .set_title("Open File")
+            .pick_file();
+        let Some(path) = picked else {
+            return;
+        };
+        if let Err(error) = self.app.start_coding_project() {
+            self.error = Some(error.message().to_string());
+            return;
+        }
+        match self.app.open_coding_file(&path.to_string_lossy()) {
+            Ok(()) => {
+                self.error = None;
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
+                }
+            }
+            Err(error) => self.error = Some(error.message().to_string()),
+        }
+    }
+
     fn render_chat(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.heading("Conversation");
@@ -356,6 +595,7 @@ impl JaymiApp {
         let Some(path) = picked else {
             return;
         };
+        let _ = self.app.persist_coding_editor_workspace();
         match self.app.open_project_from_path(&path) {
             Ok(_) => {
                 self.error = None;
@@ -366,6 +606,7 @@ impl JaymiApp {
     }
 
     fn open_project_by_id(&mut self, project_id: &str) {
+        let _ = self.app.persist_coding_editor_workspace();
         match self.app.open_project(project_id) {
             Ok(_) => {
                 self.error = None;
@@ -390,40 +631,95 @@ impl JaymiApp {
     fn handle_coding_events(&mut self, events: Vec<CodingShellEvent>) {
         for event in events {
             let result = match event {
-                CodingShellEvent::OpenProject => {
-                    self.open_project_folder();
-                    Ok(())
+                CodingShellEvent::ActivateTab { pane, path } => {
+                    self.app.activate_coding_tab_in_pane(&pane, &path)
                 }
-                CodingShellEvent::ToggleExpand(path) => self.app.toggle_coding_expand(&path),
-                CodingShellEvent::SelectPath { path, is_dir } => {
-                    match self.app.select_coding_path(&path, is_dir) {
-                        Ok(()) => {
-                            self.error = None;
-                            Ok(())
-                        }
-                        Err(error) => Err(error),
-                    }
+                CodingShellEvent::CloseTab { pane, path } => {
+                    self.app.close_coding_tab_in_pane(&pane, &path)
                 }
-                CodingShellEvent::ActivateTab(path) => self.app.activate_coding_tab(&path),
-                CodingShellEvent::CloseTab(path) => self.app.close_coding_tab(&path),
-                CodingShellEvent::EditContent { path, content } => {
-                    self.app.set_coding_tab_content(&path, content)
+                CodingShellEvent::EditContent {
+                    pane,
+                    path,
+                    content,
+                } => self.app.set_coding_tab_content_in_pane(&pane, &path, content),
+                CodingShellEvent::Scroll { pane, path, offset } => {
+                    self.app.set_coding_tab_scroll_in_pane(&pane, &path, offset)
                 }
-                CodingShellEvent::Scroll { path, offset } => {
-                    self.app.set_coding_tab_scroll(&path, offset)
+                CodingShellEvent::SetCursor {
+                    pane,
+                    path,
+                    line,
+                    column,
+                } => self
+                    .app
+                    .set_coding_tab_cursor_in_pane(&pane, &path, line, column),
+                CodingShellEvent::SetFolds { pane, path, regions } => {
+                    let folds = regions
+                        .into_iter()
+                        .map(|(start_line, end_line)| FoldedRegion {
+                            start_line,
+                            end_line,
+                        })
+                        .collect();
+                    self.app.set_coding_tab_folds_in_pane(&pane, &path, folds)
                 }
                 CodingShellEvent::SaveActive => self.app.save_active_coding_file(),
                 CodingShellEvent::SaveTab(path) => self.app.save_coding_file(&path),
                 CodingShellEvent::SetMinimap(enabled) => {
-                    self.monaco_minimap = enabled;
-                    if let Some(host) = &self.monaco {
-                        let _ = host.set_minimap(enabled);
-                    }
-                    Ok(())
+                    self.update_editor_setting(|settings| settings.minimap = enabled)
+                }
+                CodingShellEvent::SetWordWrap(enabled) => {
+                    self.update_editor_setting(|settings| settings.word_wrap = enabled)
+                }
+                CodingShellEvent::SetFontSize(size) => {
+                    self.update_editor_setting(|settings| settings.font_size = size.max(8))
                 }
                 CodingShellEvent::SetBottomTab(tab) => self.app.with_coding_state(|coding| {
                     coding.bottom_tab = tab;
                 }),
+                CodingShellEvent::SplitVertical => self
+                    .app
+                    .split_coding_editor(SplitDirection::Vertical)
+                    .map(|_| ()),
+                CodingShellEvent::SplitHorizontal => self
+                    .app
+                    .split_coding_editor(SplitDirection::Horizontal)
+                    .map(|_| ()),
+                CodingShellEvent::ClosePane(pane_id) => {
+                    self.app.close_coding_editor_pane(&pane_id)
+                }
+                CodingShellEvent::FocusPane(pane_id) => {
+                    self.app.focus_coding_editor_pane(&pane_id)
+                }
+                CodingShellEvent::MoveTab {
+                    from_pane,
+                    path,
+                    to_pane,
+                    index,
+                } => self
+                    .app
+                    .move_coding_editor_tab(&from_pane, &path, &to_pane, index),
+                CodingShellEvent::ResizeSplit { node_path, sizes } => {
+                    self.app.resize_coding_editor_split(&node_path, sizes)
+                }
+                CodingShellEvent::SetExplorerWidth { width, commit } => {
+                    let result = self
+                        .app
+                        .with_coding_state(|coding| coding.set_explorer_width(width));
+                    if commit && result.is_ok() {
+                        let _ = self.app.persist_coding_editor_workspace();
+                    }
+                    result
+                }
+                CodingShellEvent::SetBottomPanelHeight { height, commit } => {
+                    let result = self
+                        .app
+                        .with_coding_state(|coding| coding.set_bottom_panel_height(height));
+                    if commit && result.is_ok() {
+                        let _ = self.app.persist_coding_editor_workspace();
+                    }
+                    result
+                }
                 CodingShellEvent::TerminalInput { session_id, input } => {
                     self.app.set_coding_terminal_input(&session_id, input)
                 }
@@ -440,14 +736,140 @@ impl JaymiApp {
                 CodingShellEvent::TerminalScroll { session_id, offset } => {
                     self.app.set_coding_terminal_scroll(&session_id, offset)
                 }
+                CodingShellEvent::TerminalCreate { title } => {
+                    self.app.create_coding_terminal(title)
+                }
+                CodingShellEvent::TerminalSelect { session_id } => {
+                    self.app.select_coding_terminal(&session_id)
+                }
+                CodingShellEvent::TerminalRename { session_id, title } => {
+                    self.app.rename_coding_terminal(&session_id, &title)
+                }
+                CodingShellEvent::TerminalKill { session_id } => {
+                    self.app.kill_coding_terminal(&session_id)
+                }
                 CodingShellEvent::GitRefresh => self.app.refresh_coding_git(),
                 CodingShellEvent::GitStage { paths } => self.app.coding_git_stage(&paths),
                 CodingShellEvent::GitUnstage { paths } => self.app.coding_git_unstage(&paths),
-                CodingShellEvent::GitDiscard { paths } => self.app.coding_git_discard(&paths),
+                CodingShellEvent::GitDiscardRequest { paths } => {
+                    self.app.coding_git_request_discard(&paths)
+                }
+                CodingShellEvent::GitDiscardConfirm => self.app.coding_git_confirm_discard(None),
+                CodingShellEvent::GitDiscardCancel => self.app.coding_git_cancel_discard(),
                 CodingShellEvent::GitCommitMessage(message) => {
                     self.app.set_coding_git_commit_message(message)
                 }
                 CodingShellEvent::GitCommit => self.app.coding_git_commit_active(),
+                CodingShellEvent::UpdateSearchPanel {
+                    query,
+                    replace_text,
+                    use_regex,
+                    case_sensitive,
+                    whole_word,
+                    filename_only,
+                } => self.app.with_coding_state(|coding| {
+                    if let Some(query) = query {
+                        coding.search.query = query;
+                    }
+                    if let Some(replace_text) = replace_text {
+                        coding.search.replace_text = replace_text;
+                    }
+                    if let Some(use_regex) = use_regex {
+                        coding.search.use_regex = use_regex;
+                    }
+                    if let Some(case_sensitive) = case_sensitive {
+                        coding.search.case_sensitive = case_sensitive;
+                    }
+                    if let Some(whole_word) = whole_word {
+                        coding.search.whole_word = whole_word;
+                    }
+                    if let Some(filename_only) = filename_only {
+                        coding.search.filename_only = filename_only;
+                    }
+                }),
+                CodingShellEvent::RunSearch => self.app.run_coding_search_from_panel(),
+                CodingShellEvent::ReplaceAll => {
+                    let panel = self.app.with_coding_state(|coding| coding.search.clone());
+                    match panel {
+                        Ok(panel) => {
+                            let query = panel.query.trim().to_string();
+                            if query.is_empty() {
+                                Ok(())
+                            } else {
+                                let mut request = jaymi_core::SearchRequest::free_text(query)
+                                    .with_case_sensitive(panel.case_sensitive)
+                                    .with_whole_word(panel.whole_word)
+                                    .with_regex(panel.use_regex);
+                                request.limit = Some(500);
+                                if let Ok(Some(root)) = self
+                                    .app
+                                    .with_coding_state(|coding| coding.explorer.project_root.clone())
+                                {
+                                    request.folder = Some(std::path::PathBuf::from(root));
+                                }
+                                self.app
+                                    .replace_in_search_results(request, &panel.replace_text)
+                                    .and_then(|count| {
+                                        self.app.with_coding_state(|coding| {
+                                            coding.search.status = format!("Replaced {count} match(es)");
+                                        })
+                                    })
+                                    .and_then(|_| self.app.run_coding_search_from_panel())
+                            }
+                        }
+                        Err(error) => Err(error),
+                    }
+                }
+                CodingShellEvent::OpenSearchResult { path, line, column } => {
+                    self.app.open_search_result(&path, line, column)
+                }
+                CodingShellEvent::OpenProblem { path, line, column } => {
+                    self.app.open_search_result(&path, line, column)
+                }
+                CodingShellEvent::ProblemsRefresh => self.app.refresh_coding_problems(),
+            };
+            if let Err(error) = result {
+                self.error = Some(error.message().to_string());
+            }
+        }
+        if let Ok(session) = self.app.experience() {
+            self.experience = session;
+        }
+    }
+
+    fn handle_explorer_events(&mut self, events: Vec<ExplorerEvent>) {
+        for event in events {
+            let result = match event {
+                ExplorerEvent::OpenProject => {
+                    self.open_project_folder();
+                    Ok(())
+                }
+                ExplorerEvent::ToggleExpand(path) => self.app.toggle_coding_expand(&path),
+                ExplorerEvent::Select { path, is_dir } => self
+                    .app
+                    .select_coding_path(&path, is_dir)
+                    .and_then(|_| {
+                        if is_dir {
+                            Ok(())
+                        } else {
+                            self.app.open_coding_file_preview(&path)
+                        }
+                    }),
+                ExplorerEvent::Open(path) => self.app.open_coding_file(&path),
+                ExplorerEvent::BeginNewFile { parent } => self.app.begin_coding_new_file(&parent),
+                ExplorerEvent::BeginNewFolder { parent } => {
+                    self.app.begin_coding_new_folder(&parent)
+                }
+                ExplorerEvent::BeginRename { path, name } => {
+                    self.app.begin_coding_rename(&path, &name)
+                }
+                ExplorerEvent::PendingNameChanged(name) => {
+                    self.app.set_coding_explorer_pending_name(name)
+                }
+                ExplorerEvent::ConfirmPending => self.app.confirm_coding_explorer_pending(),
+                ExplorerEvent::CancelPending => self.app.cancel_coding_explorer_pending(),
+                ExplorerEvent::Delete(path) => self.app.delete_coding_path(&path),
+                ExplorerEvent::Reveal(path) => self.app.reveal_in_file_manager(&path),
             };
             if let Err(error) = result {
                 self.error = Some(error.message().to_string());
@@ -495,6 +917,7 @@ impl JaymiApp {
                 .cloned();
             let diagnostics = self.app.coding_diagnostics_view().ok();
             let mut events = Vec::new();
+            let mut explorer_events = Vec::new();
             let mut monaco_surface = None;
             let open_error = self.error.clone();
             render_coding_shell(
@@ -503,12 +926,20 @@ impl JaymiApp {
                 coding.as_ref(),
                 diagnostics.as_ref(),
                 &mut events,
-                self.monaco_minimap,
                 &mut monaco_surface,
                 open_error.as_deref(),
+                |ui, state| {
+                    explorer::render_explorer(
+                        ui,
+                        &state.explorer,
+                        state.active_tab_path(),
+                        &mut explorer_events,
+                    );
+                },
             );
             let had_surface = monaco_surface.is_some();
             self.handle_coding_events(events);
+            self.handle_explorer_events(explorer_events);
             // Selecting a file updates CodingState after the shell paints; repaint
             // so tabs and Monaco mount against the newly opened file next frame.
             if !had_surface
@@ -516,7 +947,7 @@ impl JaymiApp {
                     .experience
                     .capability_state()
                     .and_then(|state| state.coding())
-                    .is_some_and(|coding| !coding.open_tabs.is_empty())
+                    .is_some_and(|coding| !coding.editors.is_empty())
             {
                 ui.ctx().request_repaint();
             }
@@ -606,6 +1037,16 @@ impl JaymiApp {
             .as_mut()
             .map(|host| host.poll())
             .unwrap_or_default();
+        // Monaco only ever overlays the focused pane's active tab (see
+        // `monaco_document_from_state`), so every IPC message it sends
+        // originates from that pane.
+        let focused_pane = self
+            .experience
+            .capability_state()
+            .and_then(|state| state.coding())
+            .map(|coding| coding.editors.focused_pane.as_str().to_string())
+            .unwrap_or_default();
+
         let mut events = Vec::new();
         let mut lsp_requests = Vec::new();
         for message in messages {
@@ -615,10 +1056,33 @@ impl JaymiApp {
                     if let Some(host) = self.monaco.as_mut() {
                         host.note_external_edit(&path, &content);
                     }
-                    events.push(CodingShellEvent::EditContent { path, content });
+                    events.push(CodingShellEvent::EditContent {
+                        pane: focused_pane.clone(),
+                        path,
+                        content,
+                    });
                 }
                 MonacoIpcMessage::Scroll { path, offset } => {
-                    events.push(CodingShellEvent::Scroll { path, offset });
+                    events.push(CodingShellEvent::Scroll {
+                        pane: focused_pane.clone(),
+                        path,
+                        offset,
+                    });
+                }
+                MonacoIpcMessage::Cursor { path, line, column } => {
+                    events.push(CodingShellEvent::SetCursor {
+                        pane: focused_pane.clone(),
+                        path,
+                        line,
+                        column,
+                    });
+                }
+                MonacoIpcMessage::Folds { path, regions } => {
+                    events.push(CodingShellEvent::SetFolds {
+                        pane: focused_pane.clone(),
+                        path,
+                        regions,
+                    });
                 }
                 MonacoIpcMessage::Save { .. } => {
                     events.push(CodingShellEvent::SaveActive);
@@ -746,27 +1210,48 @@ impl JaymiApp {
         }
     }
 
+    /// Markers for Monaco, sourced from the aggregated Problems panel when it
+    /// has been populated (via `refresh_coding_problems`), falling back to the
+    /// raw LSP working set otherwise.
     fn monaco_diagnostic_markers(&self, path: &str) -> String {
         let markers = self
             .experience
             .capability_state()
             .and_then(|state| state.coding())
             .map(|coding| {
-                coding
-                    .diagnostics
-                    .iter()
-                    .filter(|diag| diag.path.as_deref() == Some(path))
-                    .map(|diag| {
-                        serde_json::json!({
-                            "message": diag.message,
-                            "severity": diag.severity,
-                            "line": diag.line.unwrap_or(0),
-                            "character": diag.character.unwrap_or(0),
-                            "endLine": diag.end_line.unwrap_or(diag.line.unwrap_or(0)),
-                            "endCharacter": diag.end_character.unwrap_or(diag.character.unwrap_or(0) + 1),
+                if !coding.problems.is_empty() {
+                    coding
+                        .problems
+                        .iter()
+                        .filter(|issue| issue.path.as_deref() == Some(path))
+                        .map(|issue| {
+                            serde_json::json!({
+                                "message": issue.message,
+                                "severity": issue.severity.as_str(),
+                                "line": issue.line.unwrap_or(0),
+                                "character": issue.column.unwrap_or(0),
+                                "endLine": issue.end_line.unwrap_or(issue.line.unwrap_or(0)),
+                                "endCharacter": issue.end_column.unwrap_or(issue.column.unwrap_or(0) + 1),
+                            })
                         })
-                    })
-                    .collect::<Vec<_>>()
+                        .collect::<Vec<_>>()
+                } else {
+                    coding
+                        .diagnostics
+                        .iter()
+                        .filter(|diag| diag.path.as_deref() == Some(path))
+                        .map(|diag| {
+                            serde_json::json!({
+                                "message": diag.message,
+                                "severity": diag.severity,
+                                "line": diag.line.unwrap_or(0),
+                                "character": diag.character.unwrap_or(0),
+                                "endLine": diag.end_line.unwrap_or(diag.line.unwrap_or(0)),
+                                "endCharacter": diag.end_character.unwrap_or(diag.character.unwrap_or(0) + 1),
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                }
             })
             .unwrap_or_default();
         serde_json::to_string(&markers).unwrap_or_else(|_| "[]".to_string())
@@ -774,26 +1259,54 @@ impl JaymiApp {
 
     /// Prefer live CodingState so Monaco IPC edits aren't overwritten by a stale surface.
     fn monaco_document_from_state(&self, surface: &MonacoEditorSurface) -> MonacoDocument {
-        let Some(tab) = self
+        let Some(coding) = self
             .experience
             .capability_state()
             .and_then(|state| state.coding())
-            .and_then(|coding| {
-                coding.open_tabs.iter().find(|tab| {
-                    Some(tab.path.as_str()) == coding.active_tab_path.as_deref()
-                })
-            })
         else {
             return surface.document.clone();
         };
+        let Some(session) = coding.editors.active_session() else {
+            return surface.document.clone();
+        };
+        let settings = &coding.editor_settings;
 
         MonacoDocument {
-            path: tab.path.clone(),
-            content: tab.content.clone(),
-            language: language_for_path(&tab.path).to_string(),
-            scroll_top: tab.scroll_offset,
-            minimap: self.monaco_minimap,
+            path: session.path.clone(),
+            content: session.content.clone(),
+            language: language_for_path(&session.path).to_string(),
+            scroll_top: session.view.scroll_top,
+            cursor_line: session.view.cursor.line,
+            cursor_column: session.view.cursor.column,
+            folded_regions: session
+                .view
+                .folded_regions
+                .iter()
+                .map(|region| (region.start_line, region.end_line))
+                .collect(),
+            minimap: settings.minimap,
+            word_wrap: settings.word_wrap,
+            font_size: settings.font_size,
         }
+    }
+
+    fn update_editor_setting(
+        &mut self,
+        update: impl FnOnce(&mut EditorSettings),
+    ) -> Result<(), jaymi_core::JaymiError> {
+        let settings = self.app.with_coding_state(|coding| {
+            update(&mut coding.editor_settings);
+            coding.editor_settings.clone()
+        })?;
+        let _ = self.app.persist_coding_editor_workspace();
+        if let Some(host) = &self.monaco {
+            let _ = host.set_editor_options(
+                Some(settings.minimap),
+                Some(settings.word_wrap),
+                Some(settings.font_size),
+            );
+        }
+        Ok(())
     }
 
     fn send_prompt(&mut self) {

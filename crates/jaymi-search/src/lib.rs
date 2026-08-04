@@ -12,6 +12,7 @@ mod content_rank;
 mod embedding_queue;
 mod engine;
 mod hybrid_rank;
+mod locate;
 mod result;
 mod stats;
 mod strategy;
@@ -26,6 +27,7 @@ pub use hybrid_rank::{
     fuse_relevance, normalize_channel, ranking_now_unix, recency_score,
     semantic_signal_from_similarity, RankSignals, SCORE_SCALE,
 };
+pub use locate::{locate_matches, replace_matches, LocatedMatch};
 pub use result::{MatchReason, SearchHit, SearchResults};
 pub use stats::{SearchHealth, SearchStats};
 pub use strategy::{select_strategy, SearchStrategy};
@@ -41,6 +43,9 @@ mod tests {
     use jaymi_core::{Lifecycle, MetadataFilters, SearchRequest};
     use jaymi_database::Database;
     use jaymi_knowledge::{normalize_path, KnowledgeItem, KnowledgeStore, SqliteKnowledgeStore};
+    use jaymi_parsers::default_registry;
+    use jaymi_providers::{FilesystemProvider, Provider};
+    use jaymi_understanding::{ContentIntelligenceApi, SqliteContentStore, UnderstandingEngine};
 
     fn boot_engine(data: &std::path::Path) -> (Arc<SqliteKnowledgeStore>, SearchEngine) {
         let mut db = Database::with_data_dir(data);
@@ -188,6 +193,79 @@ mod tests {
         let health = engine.health().unwrap();
         assert!(health.healthy);
         assert!(health.detail.contains("searches="));
+    }
+
+    fn boot_engine_with_content(
+        data: &std::path::Path,
+    ) -> (Arc<SqliteKnowledgeStore>, Arc<UnderstandingEngine>, SearchEngine) {
+        let mut db = Database::with_data_dir(data);
+        db.initialize().unwrap();
+        let db = Arc::new(db);
+
+        let mut knowledge = SqliteKnowledgeStore::new(Arc::clone(&db));
+        knowledge.initialize().unwrap();
+        let knowledge = Arc::new(knowledge);
+
+        let content_store = Arc::new(SqliteContentStore::new(Arc::clone(&db)));
+        let mut filesystem = FilesystemProvider::new();
+        filesystem.initialize().unwrap();
+        let filesystem = Arc::new(filesystem);
+        let parsers = Arc::new(default_registry().unwrap());
+
+        let mut understanding = UnderstandingEngine::new(
+            Arc::clone(&knowledge),
+            content_store,
+            filesystem,
+            parsers,
+        );
+        understanding.initialize().unwrap();
+        let understanding = Arc::new(understanding);
+        let content_api = Arc::new(ContentIntelligenceApi::new(Arc::clone(&understanding)));
+
+        let mut engine = SearchEngine::new(Arc::clone(&knowledge), Some(content_api));
+        engine.initialize().unwrap();
+        (knowledge, understanding, engine)
+    }
+
+    #[test]
+    fn free_text_search_expands_content_matches_with_locations() {
+        let data = temp_dir("search-locate-data");
+        let root = temp_dir("search-locate-root");
+        let path = root.join("main.rs");
+        fs::write(
+            &path,
+            "fn main() {\n    let needle = find_the_needle();\n    println!(\"{needle}\");\n}\n",
+        )
+        .unwrap();
+
+        let (knowledge, understanding, engine) = boot_engine_with_content(&data);
+        publish(&knowledge, &path, "main.rs", Some("rs"), 64, false);
+        let item = knowledge.get_by_path(&path).unwrap().unwrap();
+        understanding.understand_item(&item).unwrap();
+
+        let results = engine
+            .search(&SearchRequest::free_text("find_the_needle"))
+            .unwrap();
+        let hit = results
+            .hits
+            .iter()
+            .find(|hit| hit.path == normalize_path(&path).unwrap())
+            .expect("expected a located content hit");
+        assert_eq!(hit.line, Some(1));
+        assert!(hit.column.unwrap() > 0);
+        assert_eq!(hit.end_line, Some(1));
+        assert!(hit.preview.as_deref().unwrap().contains("find_the_needle"));
+
+        let citation = hit.to_citation();
+        assert_eq!(citation.line, Some(1));
+
+        // filename_only must never expand into per-line hits.
+        let filename_only = SearchRequest::free_text("find_the_needle").with_filename_only(true);
+        let filename_results = engine.search(&filename_only).unwrap();
+        assert!(filename_results
+            .hits
+            .iter()
+            .all(|hit| hit.line.is_none()));
     }
 
     fn temp_dir(label: &str) -> PathBuf {

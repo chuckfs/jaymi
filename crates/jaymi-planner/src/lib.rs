@@ -29,7 +29,7 @@ use jaymi_context::ContextEngine;
 use jaymi_core::{
     Citation, Document, FileEntry, GitOperation, GitPathStatus, HealthReport, JaymiError,
     JaymiResult, Lifecycle, LspCompletionItem, LspDiagnostic, LspHover, LspLocation, LspRequest,
-    LspTextEdit, ProjectKnowledgeRequest, UserRequest,
+    LspTextEdit, ProjectKnowledgeRequest, TerminalOperation, UserRequest,
 };
 use jaymi_memory_engine::{
     AssembledMemoryContext, MemoryEngineApi, PromotionAskDecision, PromotionSuggestion,
@@ -45,9 +45,9 @@ use jaymi_project_engine::{
 use jaymi_providers::ProviderRegistry;
 use jaymi_tools::{
     InternetRequirement, PrivacyMode, ToolInput, ToolOrchestrator, ToolRegistry,
-    GIT_TOOL_ID, LANGUAGE_SERVER_TOOL_ID, LIST_PROJECT_TREE_TOOL_ID, QUERY_INVENTORY_TOOL_ID,
-    READ_FILE_TOOL_ID, SCAN_FILESYSTEM_TOOL_ID, SEARCH_FILES_TOOL_ID, SEARCH_KNOWLEDGE_TOOL_ID,
-    SEARCH_PROJECT_KNOWLEDGE_TOOL_ID, TERMINAL_TOOL_ID, WRITE_FILE_TOOL_ID,
+    GIT_TOOL_ID, LANGUAGE_SERVER_TOOL_ID, LIST_PROJECT_TREE_TOOL_ID, MANAGE_PATH_TOOL_ID,
+    QUERY_INVENTORY_TOOL_ID, READ_FILE_TOOL_ID, SCAN_FILESYSTEM_TOOL_ID, SEARCH_FILES_TOOL_ID,
+    SEARCH_KNOWLEDGE_TOOL_ID, SEARCH_PROJECT_KNOWLEDGE_TOOL_ID, TERMINAL_TOOL_ID, WRITE_FILE_TOOL_ID,
 };
 use reasoning::ReasoningEngine;
 
@@ -115,12 +115,22 @@ pub struct PlannerResponse {
     pub terminal_scrollback: Option<String>,
     /// Terminal command history (oldest first).
     pub terminal_history: Vec<String>,
+    /// Display title for the terminal session, when a terminal tool ran.
+    pub terminal_title: Option<String>,
+    /// Whether the terminal session is still alive after the operation.
+    pub terminal_alive: Option<bool>,
     /// Current Git branch when a Git tool ran.
     pub git_branch: Option<String>,
     /// Short Git status summary.
     pub git_summary: Option<String>,
+    /// Whether the probed path is inside a Git work tree.
+    pub git_is_repository: Option<bool>,
     /// Unstaged modified files.
     pub git_modified: Vec<GitPathStatus>,
+    /// Newly staged (added) files.
+    pub git_added: Vec<GitPathStatus>,
+    /// Deleted files (worktree and/or index).
+    pub git_deleted: Vec<GitPathStatus>,
     /// Staged files.
     pub git_staged: Vec<GitPathStatus>,
     /// Untracked files.
@@ -733,15 +743,29 @@ impl Planner {
             Intent::WriteFile { path, content } => {
                 self.handle_write_file(capability, self.resolve_workspace_path(path), content)
             }
+            Intent::ManagePath {
+                command,
+                path,
+                destination,
+            } => self.handle_manage_path(
+                capability,
+                command,
+                self.resolve_workspace_path(path),
+                destination.map(|path| self.resolve_workspace_path(path)),
+            ),
             Intent::RunTerminal {
+                operation,
                 session_id,
                 cwd,
                 command,
+                title,
             } => self.handle_run_terminal(
                 capability,
+                operation,
                 session_id,
                 self.resolve_workspace_path(cwd),
                 command,
+                title,
             ),
             Intent::Git {
                 repo_root,
@@ -1046,16 +1070,89 @@ impl Planner {
         })
     }
 
+    fn handle_manage_path(
+        &self,
+        capability: Capability,
+        command: String,
+        path: std::path::PathBuf,
+        destination: Option<std::path::PathBuf>,
+    ) -> JaymiResult<PlannerResponse> {
+        let content = destination
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned());
+        let input = ToolInput::manage_path(command.clone(), path.clone(), content);
+        let action = if command == "delete" {
+            PermissionAction::Delete
+        } else {
+            PermissionAction::Write
+        };
+        let prepared = self.prepare_execution(
+            capability,
+            Some(MANAGE_PATH_TOOL_ID),
+            &input,
+            &path,
+            "Manage path",
+            PermissionCategory::Filesystem,
+            action,
+        )?;
+        if let Some(blocked) = prepared.blocked_response {
+            return Ok(blocked);
+        }
+
+        let tool_id = prepared.tool_id.clone();
+        let output = self.orchestrator.execute(&tool_id, input)?;
+        self.ensure_success(&output)?;
+
+        let provider_id = prepared.provider_id.clone();
+        let listed = output.listed_path.clone().or(destination).or(Some(path.clone()));
+        let summary = output.message.unwrap_or_else(|| {
+            format!(
+                "Managed path {} ({}) via {} → {} → {}",
+                path.display(),
+                command,
+                capability.id(),
+                tool_id,
+                provider_id.as_deref().unwrap_or("unknown")
+            )
+        });
+
+        Ok(PlannerResponse {
+            content: summary,
+            capability: Some(capability),
+            tool_id: Some(tool_id),
+            provider_id,
+            listed_path: listed,
+            policy_evaluation: prepared.policy_evaluation,
+            permission_result: prepared.permission_result,
+            ..PlannerResponse::default()
+        })
+    }
+
     fn handle_run_terminal(
         &self,
         capability: Capability,
+        operation: TerminalOperation,
         session_id: String,
         cwd: std::path::PathBuf,
         command: Option<String>,
+        title: Option<String>,
     ) -> JaymiResult<PlannerResponse> {
-        let input = match &command {
-            Some(cmd) => ToolInput::run_terminal(session_id.clone(), cwd.clone(), cmd.clone()),
-            None => ToolInput::ensure_terminal(session_id.clone(), cwd.clone()),
+        let input = match operation {
+            TerminalOperation::Ensure => ToolInput::ensure_terminal(session_id.clone(), cwd.clone()),
+            TerminalOperation::Run => {
+                let command = command
+                    .clone()
+                    .ok_or_else(|| JaymiError::new("terminal run requires a command"))?;
+                ToolInput::run_terminal(session_id.clone(), cwd.clone(), command)
+            }
+            TerminalOperation::Create => ToolInput::create_terminal(cwd.clone(), title.clone()),
+            TerminalOperation::Rename => {
+                let title = title
+                    .clone()
+                    .ok_or_else(|| JaymiError::new("terminal rename requires a title"))?;
+                ToolInput::rename_terminal(session_id.clone(), cwd.clone(), title)
+            }
+            TerminalOperation::Kill => ToolInput::kill_terminal(session_id.clone(), cwd.clone()),
         };
         let prepared = self.prepare_execution(
             capability,
@@ -1095,6 +1192,8 @@ impl Planner {
             terminal_output: output.terminal_output,
             terminal_scrollback: output.terminal_scrollback,
             terminal_history: output.terminal_history,
+            terminal_title: output.terminal_title,
+            terminal_alive: output.terminal_alive,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
             ..PlannerResponse::default()
@@ -1151,7 +1250,10 @@ impl Planner {
             listed_path: Some(repo_root),
             git_branch: output.git_branch,
             git_summary: output.git_summary,
+            git_is_repository: output.git_is_repository,
             git_modified: output.git_modified,
+            git_added: output.git_added,
+            git_deleted: output.git_deleted,
             git_staged: output.git_staged,
             git_untracked: output.git_untracked,
             policy_evaluation: prepared.policy_evaluation,

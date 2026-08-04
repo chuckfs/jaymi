@@ -31,9 +31,10 @@ fn open_project_from_path_creates_opens_and_loads_explorer() {
         CapabilityState::Coding(coding) => coding,
         other => panic!("expected coding state, got {other:?}"),
     };
-    assert_eq!(coding.explorer_status, ExplorerStatus::Ready);
+    assert_eq!(coding.explorer.status, ExplorerStatus::Ready);
     assert!(
         coding
+            .explorer
             .project_root
             .as_ref()
             .is_some_and(|p| PathBuf::from(p).canonicalize().ok().as_deref()
@@ -41,7 +42,7 @@ fn open_project_from_path_creates_opens_and_loads_explorer() {
         "explorer root should match opened folder"
     );
     assert!(
-        !coding.explorer_nodes.is_empty(),
+        !coding.explorer.nodes.is_empty(),
         "explorer should list project files"
     );
     let experience = app.experience().expect("experience");

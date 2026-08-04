@@ -20,8 +20,8 @@ Instead, every interaction flows through tools that hold bound providers.
 ### Current providers
 
 * Filesystem
-* Terminal (PTY)
-* Git
+* Terminal (PTY) — `TerminalProvider` wraps a `TerminalManager` that owns every live `TerminalSession` (independent PTY shells, one per tab) for the workspace lifetime. Supports `ensure`/`run` (existing session), `create` (spawn a new session at a cwd, id assigned by the manager unless it's the first session), `rename` (display title), and `kill` (close one session). Bound into the `terminal` tool; Coding Workspace never touches the PTY directly — it renders `TerminalSession` metadata (id, title, cwd, history, alive) only.
+* Git — repository detection, status (branch / modified / added / deleted / staged / untracked), stage, unstage, discard, commit. Bound into the `git` tool; Coding Workspace consumes results via Planner only. Merge / rebase / cherry-pick are not implemented.
 * Language Server (Rust Analyzer)
 * Local embedding
 * OCR placeholder (architecture only)

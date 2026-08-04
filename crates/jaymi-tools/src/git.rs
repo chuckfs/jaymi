@@ -104,9 +104,12 @@ impl Tool for GitTool {
 
         Ok(ToolOutput::git_status(
             snapshot.repo_root,
+            snapshot.is_repository,
             snapshot.branch,
             snapshot.summary.clone(),
             snapshot.modified,
+            snapshot.added,
+            snapshot.deleted,
             snapshot.staged,
             snapshot.untracked,
             format!(

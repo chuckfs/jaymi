@@ -169,6 +169,8 @@ impl SearchEngine {
             self.search_inventory(request, strategy, limit)?
         };
 
+        hits = self.expand_content_matches(hits, request, limit)?;
+
         // Guarantee explainable provenance on every returned hit.
         crate::citation::ensure_hit_previews(&mut hits);
         let citation_count = hits.len();
@@ -204,6 +206,10 @@ impl SearchEngine {
                     matching_section: None,
                     snippet: None,
                     is_directory: true,
+                    line: None,
+                    column: None,
+                    end_line: None,
+                    end_column: None,
                 }
             })
             .collect::<Vec<_>>();
@@ -548,6 +554,10 @@ impl SearchEngine {
             matching_section,
             snippet: preview,
             is_directory: item.map(|value| value.is_directory).unwrap_or(false),
+            line: None,
+            column: None,
+            end_line: None,
+            end_column: None,
         }))
     }
 
@@ -658,6 +668,10 @@ impl SearchEngine {
                 matching_section: None,
                 snippet: preview,
                 is_directory: item.map(|value| value.is_directory).unwrap_or(false),
+                line: None,
+                column: None,
+                end_line: None,
+                end_column: None,
             };
 
             if let Some(existing) = by_path.get_mut(&sim.source_id) {
@@ -791,6 +805,10 @@ impl SearchEngine {
                     matching_section: ranked.matching_section,
                     snippet: ranked.snippet,
                     is_directory: item.map(|value| value.is_directory).unwrap_or(false),
+                    line: None,
+                    column: None,
+                    end_line: None,
+                    end_column: None,
                 };
                 by_path.insert(content_hit.source_id, hit);
             }
@@ -956,12 +974,16 @@ impl SearchEngine {
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
         {
-            let needle = name.to_ascii_lowercase();
-            if filename_lower == needle {
+            let (haystack, needle): (&str, String) = if request.case_sensitive {
+                (item.filename.as_str(), name.to_string())
+            } else {
+                (filename_lower.as_str(), name.to_ascii_lowercase())
+            };
+            if haystack == needle {
                 signals.filename = signals.filename.saturating_add(100);
                 primary_reason = MatchReason::FilenameExact;
                 reasons.push("filename_exact".into());
-            } else if filename_lower.contains(&needle) {
+            } else if haystack.contains(&needle) {
                 signals.filename = signals.filename.saturating_add(80);
                 primary_reason = MatchReason::FilenameContains;
                 reasons.push("filename_contains".into());
@@ -1114,7 +1136,67 @@ impl SearchEngine {
             matching_section,
             snippet,
             is_directory: item.is_directory,
+            line: None,
+            column: None,
+            end_line: None,
+            end_column: None,
         }))
+    }
+
+    /// Expand file-level hits into one hit per located content match.
+    ///
+    /// Only applies to free-text requests that are not filename-only. Files
+    /// without a locatable match (or without stored plain text) keep their
+    /// single file-level hit so filename / metadata matches are preserved.
+    fn expand_content_matches(
+        &self,
+        hits: Vec<SearchHit>,
+        request: &SearchRequest,
+        limit: usize,
+    ) -> JaymiResult<Vec<SearchHit>> {
+        let Some(query) = request
+            .free_text
+            .as_ref()
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        else {
+            return Ok(hits);
+        };
+        if request.filename_only {
+            return Ok(hits);
+        }
+        let Some(content) = &self.content else {
+            return Ok(hits);
+        };
+
+        let mut expanded = Vec::with_capacity(hits.len());
+        'hits: for hit in hits {
+            if hit.is_directory {
+                expanded.push(hit);
+                continue;
+            }
+            let text = content.retrieve_plain_text(&hit.path).unwrap_or_default();
+            let located = crate::locate::locate_matches(&text, query, request);
+            if located.is_empty() {
+                expanded.push(hit);
+                continue;
+            }
+            for found in located {
+                if expanded.len() >= limit {
+                    break 'hits;
+                }
+                let mut located_hit = hit.clone();
+                located_hit.line = Some(found.line);
+                located_hit.column = Some(found.column);
+                located_hit.end_line = Some(found.end_line);
+                located_hit.end_column = Some(found.end_column);
+                located_hit.preview = Some(found.preview.clone());
+                located_hit.snippet = Some(found.preview);
+                expanded.push(located_hit);
+            }
+        }
+        expanded.truncate(limit);
+        Ok(expanded)
     }
 
     fn preview_for(&self, path: &Path) -> Option<String> {

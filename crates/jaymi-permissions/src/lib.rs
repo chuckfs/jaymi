@@ -104,7 +104,8 @@ impl PermissionEngine {
 
         let decision = match (request.category, request.action) {
             (PermissionCategory::Filesystem, PermissionAction::Read)
-            | (PermissionCategory::Filesystem, PermissionAction::Write) => {
+            | (PermissionCategory::Filesystem, PermissionAction::Write)
+            | (PermissionCategory::Filesystem, PermissionAction::Delete) => {
                 PermissionDecision::Allowed
             }
             (PermissionCategory::Filesystem, _) => PermissionDecision::Denied,

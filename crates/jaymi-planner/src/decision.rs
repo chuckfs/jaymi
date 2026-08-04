@@ -6,7 +6,9 @@
 use std::path::PathBuf;
 
 use jaymi_capabilities::Capability;
-use jaymi_core::{DiscoveryQueryKind, GitOperation, SearchRequest, UserRequest};
+use jaymi_core::{
+    DiscoveryQueryKind, GitOperation, SearchRequest, TerminalOperation, UserRequest,
+};
 
 /// Deterministic intents recognized by the Planner.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,14 +35,27 @@ pub enum Intent {
         /// Full contents to write.
         content: String,
     },
-    /// Ensure or run a command in a persistent terminal session.
+    /// Create, rename, or delete a filesystem path.
+    ManagePath {
+        /// Operation: `mkdir`, `rename`, or `delete`.
+        command: String,
+        /// Source path.
+        path: PathBuf,
+        /// Destination path when renaming.
+        destination: Option<PathBuf>,
+    },
+    /// Ensure, run, create, rename, or kill a persistent terminal session.
     RunTerminal {
-        /// Stable session id.
+        /// Operation to perform.
+        operation: TerminalOperation,
+        /// Stable session id (empty on Create; provider assigns one).
         session_id: String,
         /// Working directory for the session.
         cwd: PathBuf,
-        /// Command to run; `None` ensures/spawns only.
+        /// Command to run; only set for [`TerminalOperation::Run`].
         command: Option<String>,
+        /// Display title for Create / Rename.
+        title: Option<String>,
     },
     /// Inspect or mutate a local Git repository.
     Git {
@@ -168,12 +183,26 @@ impl DecisionEngine {
             }
         }
 
+        if let Some(manage) = &request.manage_path {
+            if !manage.path.as_os_str().is_empty() && !manage.command.trim().is_empty() {
+                return Intent::ManagePath {
+                    command: manage.command.clone(),
+                    path: manage.path.clone(),
+                    destination: manage.destination.clone(),
+                };
+            }
+        }
+
         if let Some(terminal) = &request.terminal {
-            if !terminal.session_id.trim().is_empty() && !terminal.cwd.as_os_str().is_empty() {
+            let session_id_ok = terminal.operation == TerminalOperation::Create
+                || !terminal.session_id.trim().is_empty();
+            if session_id_ok && !terminal.cwd.as_os_str().is_empty() {
                 return Intent::RunTerminal {
+                    operation: terminal.operation,
                     session_id: terminal.session_id.clone(),
                     cwd: terminal.cwd.clone(),
                     command: terminal.command.clone(),
+                    title: terminal.title.clone(),
                 };
             }
         }
@@ -293,6 +322,7 @@ impl DecisionEngine {
             Intent::SearchProjectKnowledge { .. } => Some(Capability::Search),
             Intent::ReadFile { .. } => Some(Capability::ReadDocuments),
             Intent::WriteFile { .. } => Some(Capability::FileManagement),
+            Intent::ManagePath { .. } => Some(Capability::FileManagement),
             Intent::RunTerminal { .. } => Some(Capability::ExecuteTerminalCommands),
             Intent::Git { .. } => Some(Capability::Code),
             Intent::Lsp { .. } => Some(Capability::Code),

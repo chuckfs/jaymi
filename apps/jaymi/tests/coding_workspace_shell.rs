@@ -9,8 +9,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use jaymi::{coding_shell_summary, Application};
 use jaymi_capabilities::{
-    DiagnosticState, EditorTab, ExplorerNode, ExplorerStatus, GitStatusState, TerminalSessionState,
-    WorkspaceKind, WorkspacePanel,
+    DiagnosticState, ExplorerNode, ExplorerStatus, GitStatusState, ProblemIssue, ProblemSeverity,
+    TerminalSessionState, WorkspaceKind, WorkspacePanel,
 };
 use jaymi_core::UserRequest;
 use jaymi_memory::MessageRole;
@@ -64,10 +64,10 @@ fn coding_shell_reflects_state_and_clears_on_close() {
         .expect("coding");
 
     app.with_coding_state(|coding| {
-        coding.selected_path = Some("/tmp/project/src/lib.rs".into());
-        coding.project_root = Some("/tmp/project".into());
-        coding.explorer_status = ExplorerStatus::Ready;
-        coding.explorer_nodes = vec![
+        coding.explorer.selected_path = Some("/tmp/project/src/lib.rs".into());
+        coding.explorer.project_root = Some("/tmp/project".into());
+        coding.explorer.status = ExplorerStatus::Ready;
+        coding.explorer.nodes = vec![
             ExplorerNode {
                 name: "src".into(),
                 path: "/tmp/project/src".into(),
@@ -86,16 +86,16 @@ fn coding_shell_reflects_state_and_clears_on_close() {
                 children: Vec::new(),
             },
         ];
-        coding.expanded_paths = BTreeSet::from(["/tmp/project/src".into()]);
-        coding.upsert_tab(EditorTab {
-            path: "/tmp/project/src/lib.rs".into(),
-            name: "lib.rs".into(),
-            content: "fn x() {}".into(),
-            dirty: true,
-            scroll_offset: 0.0,
-        });
+        coding.explorer.expanded_paths = BTreeSet::from(["/tmp/project/src".into()]);
+        coding.upsert_tab(
+            "/tmp/project/src/lib.rs",
+            "lib.rs",
+            "fn x() {}".into(),
+            0.0,
+        );
         coding.terminal_sessions.push(TerminalSessionState {
             id: "term-1".into(),
+            title: "Terminal".into(),
             cwd: Some("/tmp/project".into()),
             last_command: Some("cargo test".into()),
             output: "$ cargo test\n".into(),
@@ -105,6 +105,7 @@ fn coding_shell_reflects_state_and_clears_on_close() {
             scroll_offset: 0.0,
         });
         coding.git = Some(GitStatusState {
+            is_repository: true,
             branch: Some("feature/shell".into()),
             summary: "1 modified".into(),
             ..GitStatusState::default()
@@ -114,6 +115,18 @@ fn coding_shell_reflects_state_and_clears_on_close() {
             Some("/tmp/project/src/lib.rs".into()),
             "error",
         ));
+        coding.problems.push(ProblemIssue {
+            id: "lsp:0".into(),
+            severity: ProblemSeverity::Error,
+            source: "lsp".into(),
+            source_label: "rust-analyzer".into(),
+            path: Some("/tmp/project/src/lib.rs".into()),
+            line: Some(0),
+            column: Some(0),
+            end_line: Some(0),
+            end_column: Some(1),
+            message: "missing semicolon".into(),
+        });
     })
     .expect("populate coding state");
 

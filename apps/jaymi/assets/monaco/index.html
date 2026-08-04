@@ -32,8 +32,117 @@
       let currentPath = "";
       let applyingExternal = false;
       let scrollTimer = null;
+      let cursorTimer = null;
+      let foldsTimer = null;
       let nextRequestId = 1;
       const pending = {};
+
+      function collectFoldedRegions() {
+        if (!editor) {
+          return [];
+        }
+        const contribution = editor.getContribution("editor.contrib.folding");
+        if (!contribution || typeof contribution.getFoldingModel !== "function") {
+          return [];
+        }
+        const modelPromise = contribution.getFoldingModel();
+        if (!modelPromise || typeof modelPromise.then !== "function") {
+          return [];
+        }
+        // Synchronous snapshot when already resolved is ideal; otherwise skip.
+        let regions = [];
+        try {
+          const foldingModel = contribution._foldingModel || null;
+          if (foldingModel && foldingModel.regions) {
+            const folded = foldingModel.regions;
+            for (let i = 0; i < folded.length; i++) {
+              if (typeof folded.isCollapsed === "function" && folded.isCollapsed(i)) {
+                regions.push({
+                  startLine: Math.max(0, (folded.getStartLineNumber(i) || 1) - 1),
+                  endLine: Math.max(0, (folded.getEndLineNumber(i) || 1) - 1),
+                });
+              }
+            }
+          }
+        } catch (err) {
+          regions = [];
+        }
+        return regions;
+      }
+
+      function reportFolds() {
+        if (applyingExternal || !currentPath) {
+          return;
+        }
+        if (foldsTimer) {
+          clearTimeout(foldsTimer);
+        }
+        foldsTimer = setTimeout(function () {
+          ipc({
+            type: "folds",
+            path: currentPath,
+            folds: collectFoldedRegions(),
+          });
+        }, 80);
+      }
+
+      function applyFoldedRegions(folds) {
+        if (!editor || !folds || !folds.length) {
+          return;
+        }
+        const contribution = editor.getContribution("editor.contrib.folding");
+        if (!contribution || typeof contribution.getFoldingModel !== "function") {
+          return;
+        }
+        contribution.getFoldingModel().then(function (foldingModel) {
+          if (!foldingModel || !foldingModel.regions) {
+            return;
+          }
+          applyingExternal = true;
+          try {
+            const regions = foldingModel.regions;
+            const toCollapse = [];
+            for (let i = 0; i < regions.length; i++) {
+              const start = Math.max(0, (regions.getStartLineNumber(i) || 1) - 1);
+              const end = Math.max(0, (regions.getEndLineNumber(i) || 1) - 1);
+              for (let f = 0; f < folds.length; f++) {
+                if (folds[f].startLine === start && folds[f].endLine === end) {
+                  toCollapse.push(i);
+                  break;
+                }
+              }
+            }
+            if (toCollapse.length && typeof foldingModel.toggleCollapseState === "function") {
+              foldingModel.toggleCollapseState(toCollapse);
+            } else if (toCollapse.length && typeof foldingModel.setCollapsed === "function") {
+              toCollapse.forEach(function (index) {
+                foldingModel.setCollapsed(index, true);
+              });
+            }
+          } finally {
+            applyingExternal = false;
+          }
+        }).catch(function () {});
+      }
+
+      function applyEditorOptions(minimap, wordWrap, fontSize) {
+        if (!editor) {
+          return;
+        }
+        const options = {};
+        if (typeof minimap === "boolean") {
+          options.minimap = { enabled: minimap };
+        }
+        if (typeof wordWrap === "boolean") {
+          options.wordWrap = wordWrap ? "on" : "off";
+        }
+        if (typeof fontSize === "number" && fontSize > 0) {
+          options.fontSize = fontSize;
+        }
+        if (Object.keys(options).length) {
+          editor.updateOptions(options);
+        }
+      }
 
       function lspRequest(method, extra) {
         const id = nextRequestId++;
@@ -242,6 +351,33 @@
           }, 50);
         });
 
+        editor.onDidChangeCursorPosition(function (event) {
+          if (applyingExternal || !currentPath) {
+            return;
+          }
+          if (cursorTimer) {
+            clearTimeout(cursorTimer);
+          }
+          cursorTimer = setTimeout(function () {
+            const position = event.position || editor.getPosition();
+            if (!position) {
+              return;
+            }
+            ipc({
+              type: "cursor",
+              path: currentPath,
+              line: Math.max(0, (position.lineNumber || 1) - 1),
+              column: Math.max(0, (position.column || 1) - 1),
+            });
+          }, 50);
+        });
+
+        // Fold changes are reported opportunistically after cursor/scroll settles
+        // and when Monaco fires hidden-area updates.
+        editor.onDidChangeHiddenAreas(function () {
+          reportFolds();
+        });
+
         window.addEventListener("keydown", function (event) {
           const meta = event.metaKey || event.ctrlKey;
           if (meta && String(event.key).toLowerCase() === "s") {
@@ -253,11 +389,23 @@
         ipc({ type: "ready" });
       });
 
-      window.__jaymiSetDocument = function (path, content, language, minimap, scrollTop) {
+      window.__jaymiSetDocument = function (
+        path,
+        content,
+        language,
+        minimap,
+        wordWrap,
+        fontSize,
+        scrollTop,
+        cursorLine,
+        cursorColumn,
+        folds
+      ) {
         if (!editor) {
           return;
         }
         applyingExternal = true;
+        const pathChanged = currentPath !== (path || "");
         currentPath = path || "";
         const model = editor.getModel();
         if (model) {
@@ -266,22 +414,34 @@
             model.setValue(content || "");
           }
         }
-        editor.updateOptions({
-          minimap: { enabled: !!minimap },
-        });
+        applyEditorOptions(minimap, wordWrap, fontSize);
         if (typeof scrollTop === "number") {
           editor.setScrollTop(scrollTop);
         }
+        if (pathChanged || typeof cursorLine === "number") {
+          const line = (typeof cursorLine === "number" ? cursorLine : 0) + 1;
+          const column = (typeof cursorColumn === "number" ? cursorColumn : 0) + 1;
+          editor.setPosition({ lineNumber: line, column: column });
+          editor.revealPositionInCenterIfOutsideViewport({
+            lineNumber: line,
+            column: column,
+          });
+        }
         applyingExternal = false;
+        if (folds && folds.length) {
+          setTimeout(function () {
+            applyFoldedRegions(folds);
+          }, 30);
+        }
+      };
+
+      window.__jaymiSetOptions = function (options) {
+        options = options || {};
+        applyEditorOptions(options.minimap, options.wordWrap, options.fontSize);
       };
 
       window.__jaymiSetMinimap = function (enabled) {
-        if (!editor) {
-          return;
-        }
-        editor.updateOptions({
-          minimap: { enabled: !!enabled },
-        });
+        applyEditorOptions(!!enabled, null, null);
       };
 
       window.__jaymiFocus = function () {

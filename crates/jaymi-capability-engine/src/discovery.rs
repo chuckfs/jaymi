@@ -202,7 +202,7 @@ pub fn capability_requirements(capability: Capability) -> CapabilityRequirements
             requires_tool: true,
             requires_provider: true,
             preferred_providers: vec!["filesystem"],
-            preferred_tools: vec!["write_file"],
+            preferred_tools: vec!["write_file", "manage_path"],
         },
         Capability::Internet => CapabilityRequirements {
             capability,

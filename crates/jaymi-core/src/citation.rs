@@ -20,6 +20,14 @@ pub struct Citation {
     pub confidence: u32,
     /// Optional section title that localized the match.
     pub matching_section: Option<String>,
+    /// Zero-based start line of the match in the source, when known.
+    pub line: Option<u32>,
+    /// Zero-based start column of the match, when known.
+    pub column: Option<u32>,
+    /// Zero-based end line of the match, when known.
+    pub end_line: Option<u32>,
+    /// Zero-based end column of the match, when known.
+    pub end_column: Option<u32>,
 }
 
 impl Citation {
@@ -83,6 +91,10 @@ mod tests {
             why_matched: "exact phrase in body".into(),
             confidence: 7_500,
             matching_section: Some("Habitat".into()),
+            line: Some(2),
+            column: Some(0),
+            end_line: Some(2),
+            end_column: Some(5),
         }];
         let text = format_citations(&citations);
         assert!(text.contains("Citations:"));

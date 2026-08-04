@@ -14,3 +14,7 @@ jaymi-knowledge = { workspace = true }
 jaymi-logging = { workspace = true }
 jaymi-providers = { workspace = true }
 jaymi-understanding = { workspace = true }
+regex = { workspace = true }
+
+[dev-dependencies]
+jaymi-parsers = { workspace = true }

@@ -95,15 +95,58 @@ pub struct WriteFileRequest {
     pub content: String,
 }
 
-/// Structured request to ensure or run a command in a terminal session.
+/// Structured request to create, rename, or delete a filesystem path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagePathRequest {
+    /// Operation: `mkdir`, `rename`, or `delete`.
+    pub command: String,
+    /// Source path (directory to create, path to rename, or path to delete).
+    pub path: PathBuf,
+    /// Destination path when renaming (also accepted via [`UserRequest`] content helpers).
+    pub destination: Option<PathBuf>,
+}
+
+/// Terminal operations exposed through the Terminal tool / provider.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TerminalOperation {
+    /// Ensure/spawn a session with a known id.
+    Ensure,
+    /// Run a shell command in a session.
+    Run,
+    /// Create a new session (id may be assigned by the provider).
+    Create,
+    /// Rename a session's display title.
+    Rename,
+    /// Kill / close a session.
+    Kill,
+}
+
+impl TerminalOperation {
+    /// Stable label for diagnostics and logging.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ensure => "ensure",
+            Self::Run => "run",
+            Self::Create => "create",
+            Self::Rename => "rename",
+            Self::Kill => "kill",
+        }
+    }
+}
+
+/// Structured request to manage or run a command in a terminal session.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TerminalRequest {
-    /// Stable session id (persists while the workspace remains open).
+    /// Operation to perform.
+    pub operation: TerminalOperation,
+    /// Stable session id (ignored/overwritten on Create when empty).
     pub session_id: String,
     /// Working directory for the session (usually the project root).
     pub cwd: PathBuf,
-    /// Command to run; `None` only ensures/spawns the session.
+    /// Command to run when [`TerminalOperation::Run`].
     pub command: Option<String>,
+    /// Display title for Create / Rename.
+    pub title: Option<String>,
 }
 
 /// Git operations exposed through the Git tool / provider.
@@ -180,6 +223,8 @@ pub struct UserRequest {
     pub file: Option<PathBuf>,
     /// Optional structured write-file request.
     pub write_file: Option<WriteFileRequest>,
+    /// Optional structured path management request (mkdir / rename / delete).
+    pub manage_path: Option<ManagePathRequest>,
     /// Optional structured terminal ensure/run request.
     pub terminal: Option<TerminalRequest>,
     /// Optional structured Git request.
@@ -210,6 +255,7 @@ impl UserRequest {
             project_tree: None,
             file: None,
             write_file: None,
+            manage_path: None,
             terminal: None,
             git: None,
             lsp: None,
@@ -272,6 +318,49 @@ impl UserRequest {
         }
     }
 
+    /// Create a structured request to create a directory.
+    pub fn manage_mkdir(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        Self {
+            content: format!("mkdir {}", path.display()),
+            manage_path: Some(ManagePathRequest {
+                command: "mkdir".into(),
+                path,
+                destination: None,
+            }),
+            ..Self::bare("")
+        }
+    }
+
+    /// Create a structured request to rename/move a path.
+    pub fn manage_rename(from: impl Into<PathBuf>, to: impl Into<PathBuf>) -> Self {
+        let path = from.into();
+        let destination = to.into();
+        Self {
+            content: format!("rename {} → {}", path.display(), destination.display()),
+            manage_path: Some(ManagePathRequest {
+                command: "rename".into(),
+                path,
+                destination: Some(destination),
+            }),
+            ..Self::bare("")
+        }
+    }
+
+    /// Create a structured request to delete a file or directory.
+    pub fn manage_delete(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        Self {
+            content: format!("delete {}", path.display()),
+            manage_path: Some(ManagePathRequest {
+                command: "delete".into(),
+                path,
+                destination: None,
+            }),
+            ..Self::bare("")
+        }
+    }
+
     /// Create a structured request to ensure a terminal session exists.
     pub fn ensure_terminal(session_id: impl Into<String>, cwd: impl Into<PathBuf>) -> Self {
         let session_id = session_id.into();
@@ -279,9 +368,11 @@ impl UserRequest {
         Self {
             content: format!("ensure terminal {session_id}"),
             terminal: Some(TerminalRequest {
+                operation: TerminalOperation::Ensure,
                 session_id,
                 cwd,
                 command: None,
+                title: None,
             }),
             ..Self::bare("")
         }
@@ -299,9 +390,64 @@ impl UserRequest {
         Self {
             content: format!("run terminal: {command}"),
             terminal: Some(TerminalRequest {
+                operation: TerminalOperation::Run,
                 session_id,
                 cwd,
                 command: Some(command),
+                title: None,
+            }),
+            ..Self::bare("")
+        }
+    }
+
+    /// Create a structured request to spawn a new terminal session.
+    pub fn create_terminal(cwd: impl Into<PathBuf>, title: Option<String>) -> Self {
+        let cwd = cwd.into();
+        Self {
+            content: format!("create terminal at {}", cwd.display()),
+            terminal: Some(TerminalRequest {
+                operation: TerminalOperation::Create,
+                session_id: String::new(),
+                cwd,
+                command: None,
+                title,
+            }),
+            ..Self::bare("")
+        }
+    }
+
+    /// Create a structured request to rename a terminal session.
+    pub fn rename_terminal(
+        session_id: impl Into<String>,
+        cwd: impl Into<PathBuf>,
+        title: impl Into<String>,
+    ) -> Self {
+        let session_id = session_id.into();
+        let title = title.into();
+        Self {
+            content: format!("rename terminal {session_id} → {title}"),
+            terminal: Some(TerminalRequest {
+                operation: TerminalOperation::Rename,
+                session_id,
+                cwd: cwd.into(),
+                command: None,
+                title: Some(title),
+            }),
+            ..Self::bare("")
+        }
+    }
+
+    /// Create a structured request to kill a terminal session.
+    pub fn kill_terminal(session_id: impl Into<String>, cwd: impl Into<PathBuf>) -> Self {
+        let session_id = session_id.into();
+        Self {
+            content: format!("kill terminal {session_id}"),
+            terminal: Some(TerminalRequest {
+                operation: TerminalOperation::Kill,
+                session_id,
+                cwd: cwd.into(),
+                command: None,
+                title: None,
             }),
             ..Self::bare("")
         }

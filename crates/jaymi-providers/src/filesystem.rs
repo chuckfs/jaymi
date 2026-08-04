@@ -265,6 +265,139 @@ impl FilesystemProvider {
                 JaymiError::new(message)
             })
     }
+
+    /// Create a single directory (parent must already exist).
+    pub fn create_directory(&self, path: &Path) -> JaymiResult<()> {
+        if !self.initialized {
+            jaymi_logging::error(
+                "providers",
+                "filesystem create_directory rejected: provider is not initialized",
+            );
+            return Err(JaymiError::new(
+                "filesystem provider is not initialized".to_string(),
+            ));
+        }
+
+        jaymi_logging::info(
+            "providers",
+            format!("filesystem create_directory path={}", path.display()),
+        );
+
+        let path = normalize_path_for_write(path)?;
+        if path.exists() {
+            let message = format!("path already exists: {}", path.display());
+            jaymi_logging::warn("providers", &message);
+            return Err(JaymiError::new(message));
+        }
+
+        fs::create_dir(&path)
+            .map(|_| {
+                jaymi_logging::info(
+                    "providers",
+                    format!("filesystem create_directory completed path={}", path.display()),
+                );
+            })
+            .map_err(|error| {
+                let message = format!("failed to create directory {}: {error}", path.display());
+                jaymi_logging::error("providers", &message);
+                JaymiError::new(message)
+            })
+    }
+
+    /// Rename or move a path to a new destination.
+    pub fn rename_path(&self, from: &Path, to: &Path) -> JaymiResult<()> {
+        if !self.initialized {
+            jaymi_logging::error(
+                "providers",
+                "filesystem rename_path rejected: provider is not initialized",
+            );
+            return Err(JaymiError::new(
+                "filesystem provider is not initialized".to_string(),
+            ));
+        }
+
+        jaymi_logging::info(
+            "providers",
+            format!(
+                "filesystem rename_path from={} to={}",
+                from.display(),
+                to.display()
+            ),
+        );
+
+        let from = normalize_path(from)?;
+        let to = normalize_path_for_write(to)?;
+        if to.exists() {
+            let message = format!("destination already exists: {}", to.display());
+            jaymi_logging::warn("providers", &message);
+            return Err(JaymiError::new(message));
+        }
+
+        fs::rename(&from, &to)
+            .map(|_| {
+                jaymi_logging::info(
+                    "providers",
+                    format!(
+                        "filesystem rename_path completed from={} to={}",
+                        from.display(),
+                        to.display()
+                    ),
+                );
+            })
+            .map_err(|error| {
+                let message = format!(
+                    "failed to rename {} → {}: {error}",
+                    from.display(),
+                    to.display()
+                );
+                jaymi_logging::error("providers", &message);
+                JaymiError::new(message)
+            })
+    }
+
+    /// Delete a file or directory (directories removed recursively).
+    pub fn delete_path(&self, path: &Path) -> JaymiResult<()> {
+        if !self.initialized {
+            jaymi_logging::error(
+                "providers",
+                "filesystem delete_path rejected: provider is not initialized",
+            );
+            return Err(JaymiError::new(
+                "filesystem provider is not initialized".to_string(),
+            ));
+        }
+
+        jaymi_logging::info(
+            "providers",
+            format!("filesystem delete_path path={}", path.display()),
+        );
+
+        let path = normalize_path(path)?;
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            let message = format!("cannot access path {}: {error}", path.display());
+            jaymi_logging::error("providers", &message);
+            JaymiError::new(message)
+        })?;
+
+        let result = if metadata.is_dir() {
+            fs::remove_dir_all(&path)
+        } else {
+            fs::remove_file(&path)
+        };
+
+        result
+            .map(|_| {
+                jaymi_logging::info(
+                    "providers",
+                    format!("filesystem delete_path completed path={}", path.display()),
+                );
+            })
+            .map_err(|error| {
+                let message = format!("failed to delete {}: {error}", path.display());
+                jaymi_logging::error("providers", &message);
+                JaymiError::new(message)
+            })
+    }
 }
 
 impl Default for FilesystemProvider {
@@ -523,6 +656,29 @@ mod tests {
         provider.initialize().unwrap();
         let error = provider.read_file(&dir).unwrap_err();
         assert!(error.message().contains("not a file"));
+    }
+
+    #[test]
+    fn create_rename_delete_paths() {
+        let dir = tempfile_dir();
+        let mut provider = FilesystemProvider::new();
+        provider.initialize().unwrap();
+
+        let nested = dir.join("nested");
+        provider.create_directory(&nested).unwrap();
+        assert!(nested.is_dir());
+
+        let file = nested.join("note.txt");
+        provider.write_file(&file, b"hi").unwrap();
+        let renamed = nested.join("renamed.txt");
+        provider.rename_path(&file, &renamed).unwrap();
+        assert!(!file.exists());
+        assert_eq!(fs::read(&renamed).unwrap(), b"hi");
+
+        provider.delete_path(&renamed).unwrap();
+        assert!(!renamed.exists());
+        provider.delete_path(&nested).unwrap();
+        assert!(!nested.exists());
     }
 
     fn tempfile_dir() -> PathBuf {

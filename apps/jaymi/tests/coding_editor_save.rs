@@ -37,7 +37,8 @@ fn editing_marks_tab_dirty_and_save_clears_it() {
         .unwrap()
         .coding()
         .unwrap()
-        .open_tabs[0]
+        .editors
+        .sessions()[0]
         .dirty);
 
     app.set_coding_tab_content(&path, "fn main() { println!(\"edited\"); }\n".into())
@@ -49,8 +50,8 @@ fn editing_marks_tab_dirty_and_save_clears_it() {
         .coding()
         .unwrap()
         .clone();
-    assert!(coding.open_tabs[0].dirty);
-    assert!(coding.open_tabs[0].content.contains("edited"));
+    assert!(coding.editors.sessions()[0].dirty);
+    assert!(coding.editors.sessions()[0].content.contains("edited"));
 
     app.save_coding_file(&path).expect("save");
     let coding = app
@@ -60,7 +61,7 @@ fn editing_marks_tab_dirty_and_save_clears_it() {
         .coding()
         .unwrap()
         .clone();
-    assert!(!coding.open_tabs[0].dirty);
+    assert!(!coding.editors.sessions()[0].dirty);
 }
 
 #[test]
@@ -108,7 +109,8 @@ fn save_writes_file_contents_through_planner_pipeline() {
         .unwrap()
         .coding()
         .unwrap()
-        .open_tabs[0]
+        .editors
+        .sessions()[0]
         .dirty);
 }
 

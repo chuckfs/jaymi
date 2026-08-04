@@ -107,6 +107,14 @@ pub struct SearchHit {
     pub snippet: Option<String>,
     /// True when the hit represents a directory / collection.
     pub is_directory: bool,
+    /// Zero-based start line of the match, when known.
+    pub line: Option<u32>,
+    /// Zero-based start column of the match, when known.
+    pub column: Option<u32>,
+    /// Zero-based end line of the match, when known.
+    pub end_line: Option<u32>,
+    /// Zero-based end column of the match, when known.
+    pub end_column: Option<u32>,
 }
 
 impl SearchHit {

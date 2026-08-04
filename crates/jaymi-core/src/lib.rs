@@ -37,8 +37,8 @@ pub use lsp::{
     LspRequest, LspTextEdit,
 };
 pub use request::{
-    DiscoveryQueryKind, GitOperation, GitPathStatus, GitRequest, ProjectKnowledgeRequest,
-    TerminalRequest, UserRequest, WriteFileRequest,
+    DiscoveryQueryKind, GitOperation, GitPathStatus, GitRequest, ManagePathRequest,
+    ProjectKnowledgeRequest, TerminalOperation, TerminalRequest, UserRequest, WriteFileRequest,
 };
 pub use result::JaymiResult;
 pub use search::{MetadataFilters, SearchRequest};

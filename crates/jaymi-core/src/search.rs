@@ -120,12 +120,13 @@ impl MetadataFilters {
 /// Structured search request accepted by the Search Engine.
 ///
 /// Supports free text, filename, extension, folder, and metadata filters.
-/// The Search Engine selects a strategy and ranks results deterministically.
+/// Match options (regex / case / whole-word) refine content locating without a
+/// second index — Layer 3 still owns retrieval.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct SearchRequest {
-    /// Free-text query matched against filenames and available previews.
+    /// Free-text query matched against filenames and available previews / body.
     pub free_text: Option<String>,
-    /// Filename substring (case-insensitive).
+    /// Filename substring (case-insensitive unless [`Self::case_sensitive`]).
     pub filename: Option<String>,
     /// Extension without a leading dot (case-insensitive).
     pub extension: Option<String>,
@@ -137,6 +138,14 @@ pub struct SearchRequest {
     pub metadata: MetadataFilters,
     /// Maximum number of ranked hits to return.
     pub limit: Option<usize>,
+    /// Case-sensitive matching for filename / content locate.
+    pub case_sensitive: bool,
+    /// Match whole words only (content locate).
+    pub whole_word: bool,
+    /// Treat `free_text` as a regular expression when locating content matches.
+    pub use_regex: bool,
+    /// When true with `free_text`, skip body matching and only match filenames.
+    pub filename_only: bool,
 }
 
 impl SearchRequest {
@@ -145,7 +154,7 @@ impl SearchRequest {
         Self::default()
     }
 
-    /// Free-text search.
+    /// Free-text search (content + filename).
     pub fn free_text(text: impl Into<String>) -> Self {
         Self {
             free_text: Some(text.into()),
@@ -154,10 +163,11 @@ impl SearchRequest {
         }
     }
 
-    /// Filename substring search.
+    /// Filename substring search (Quick Open / File Search).
     pub fn filename(name: impl Into<String>) -> Self {
         Self {
             filename: Some(name.into()),
+            filename_only: true,
             limit: Some(100),
             ..Self::default()
         }
@@ -189,6 +199,35 @@ impl SearchRequest {
             limit: Some(100),
             ..Self::default()
         }
+    }
+
+    /// Enable case-sensitive matching.
+    pub fn with_case_sensitive(mut self, enabled: bool) -> Self {
+        self.case_sensitive = enabled;
+        self
+    }
+
+    /// Enable whole-word content matching.
+    pub fn with_whole_word(mut self, enabled: bool) -> Self {
+        self.whole_word = enabled;
+        self
+    }
+
+    /// Enable regex content matching.
+    pub fn with_regex(mut self, enabled: bool) -> Self {
+        self.use_regex = enabled;
+        self
+    }
+
+    /// Restrict free-text to filenames only.
+    pub fn with_filename_only(mut self, enabled: bool) -> Self {
+        self.filename_only = enabled;
+        self
+    }
+
+    /// True when content-locate options require precise body scanning.
+    pub fn needs_precise_content_match(&self) -> bool {
+        self.use_regex || self.whole_word || self.case_sensitive
     }
 
     /// True when any primary search dimension is set.

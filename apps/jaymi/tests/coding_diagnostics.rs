@@ -85,6 +85,9 @@ fn coding_diagnostics_view_covers_required_sections() {
         "permissions missing: {flat}"
     );
 
+    // The Diagnostics/Problems tab prioritizes the aggregated Problems list;
+    // full operational sections remain available on `CodingDiagnosticsView`
+    // (asserted above), with only a one-line footer surfaced in the summary.
     let coding = app
         .capability_state()
         .unwrap()
@@ -94,9 +97,14 @@ fn coding_diagnostics_view_covers_required_sections() {
         .clone();
     let summary = coding_shell_summary(&coding, Some(&view));
     assert!(summary.contains("## Diagnostics"));
-    assert!(summary.contains("Active project:"));
-    assert!(summary.contains("Timing metrics:"));
-    assert!(!summary.contains("No workspace diagnostics."));
+    assert!(
+        summary.contains("problem(s)") || summary.contains("No problems"),
+        "problems summary missing: {summary}"
+    );
+    assert!(
+        summary.contains("Active project:"),
+        "operational footer missing: {summary}"
+    );
 }
 
 #[test]

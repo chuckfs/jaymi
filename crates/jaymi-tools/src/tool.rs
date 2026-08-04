@@ -4,7 +4,7 @@ use crate::metadata::ToolMetadata;
 use jaymi_core::{
     Citation, DiscoveryQueryKind, Document, FileEntry, GitOperation, GitPathStatus, JaymiResult,
     LspCompletionItem, LspDiagnostic, LspHover, LspLocation, LspRequest, LspTextEdit,
-    ProjectKnowledgeRequest, SearchRequest,
+    ProjectKnowledgeRequest, SearchRequest, TerminalOperation,
 };
 use jaymi_project_engine::ProjectKnowledgeHit;
 use jaymi_providers::LspOperationResult;
@@ -26,6 +26,11 @@ pub struct ToolInput {
     pub session_id: Option<String>,
     /// Shell command for terminal tools (`None` = ensure/spawn only).
     pub command: Option<String>,
+    /// Terminal operation to perform (`None` defaults to Run when `command`
+    /// is set, otherwise Ensure).
+    pub terminal_operation: Option<TerminalOperation>,
+    /// Display title for terminal Create / Rename operations.
+    pub title: Option<String>,
     /// Git operation for the Git tool.
     pub git_operation: Option<GitOperation>,
     /// Paths for Git stage / unstage / discard.
@@ -56,6 +61,23 @@ impl ToolInput {
         Self {
             path: Some(path.into()),
             content: Some(content.into()),
+            ..Self::default()
+        }
+    }
+
+    /// Create input for mkdir / rename / delete path management.
+    ///
+    /// `command` is `mkdir`, `rename`, or `delete`. For rename, `content` is the
+    /// destination path string.
+    pub fn manage_path(
+        command: impl Into<String>,
+        path: impl Into<std::path::PathBuf>,
+        content: Option<impl Into<String>>,
+    ) -> Self {
+        Self {
+            path: Some(path.into()),
+            command: Some(command.into()),
+            content: content.map(Into::into),
             ..Self::default()
         }
     }
@@ -99,6 +121,7 @@ impl ToolInput {
             path: Some(cwd.into()),
             session_id: Some(session_id.into()),
             command: None,
+            terminal_operation: Some(TerminalOperation::Ensure),
             ..Self::default()
         }
     }
@@ -113,6 +136,52 @@ impl ToolInput {
             path: Some(cwd.into()),
             session_id: Some(session_id.into()),
             command: Some(command.into()),
+            terminal_operation: Some(TerminalOperation::Run),
+            ..Self::default()
+        }
+    }
+
+    /// Create input to spawn a new terminal session (cwd is the project root).
+    pub fn create_terminal(
+        cwd: impl Into<std::path::PathBuf>,
+        title: Option<String>,
+    ) -> Self {
+        Self {
+            path: Some(cwd.into()),
+            session_id: None,
+            command: None,
+            terminal_operation: Some(TerminalOperation::Create),
+            title,
+            ..Self::default()
+        }
+    }
+
+    /// Create input to rename a terminal session's display title.
+    pub fn rename_terminal(
+        session_id: impl Into<String>,
+        cwd: impl Into<std::path::PathBuf>,
+        title: impl Into<String>,
+    ) -> Self {
+        Self {
+            path: Some(cwd.into()),
+            session_id: Some(session_id.into()),
+            command: None,
+            terminal_operation: Some(TerminalOperation::Rename),
+            title: Some(title.into()),
+            ..Self::default()
+        }
+    }
+
+    /// Create input to kill / close a terminal session.
+    pub fn kill_terminal(
+        session_id: impl Into<String>,
+        cwd: impl Into<std::path::PathBuf>,
+    ) -> Self {
+        Self {
+            path: Some(cwd.into()),
+            session_id: Some(session_id.into()),
+            command: None,
+            terminal_operation: Some(TerminalOperation::Kill),
             ..Self::default()
         }
     }
@@ -170,12 +239,22 @@ pub struct ToolOutput {
     pub terminal_scrollback: Option<String>,
     /// Terminal command history (oldest first).
     pub terminal_history: Vec<String>,
+    /// Display title for the terminal session.
+    pub terminal_title: Option<String>,
+    /// Whether the terminal session is still alive after the operation.
+    pub terminal_alive: Option<bool>,
     /// Current Git branch when applicable.
     pub git_branch: Option<String>,
     /// Short Git status summary when applicable.
     pub git_summary: Option<String>,
+    /// Whether the probed path is inside a Git work tree.
+    pub git_is_repository: Option<bool>,
     /// Unstaged modified files.
     pub git_modified: Vec<GitPathStatus>,
+    /// Newly staged (added) files.
+    pub git_added: Vec<GitPathStatus>,
+    /// Deleted files (worktree and/or index).
+    pub git_deleted: Vec<GitPathStatus>,
     /// Staged files.
     pub git_staged: Vec<GitPathStatus>,
     /// Untracked files.
@@ -226,12 +305,15 @@ impl ToolOutput {
     }
 
     /// Successful terminal operation.
+    #[allow(clippy::too_many_arguments)]
     pub fn terminal(
         session_id: impl Into<String>,
         cwd: impl Into<std::path::PathBuf>,
         output: impl Into<String>,
         scrollback: impl Into<String>,
         history: Vec<String>,
+        title: impl Into<String>,
+        alive: bool,
         message: impl Into<String>,
     ) -> Self {
         Self {
@@ -242,6 +324,8 @@ impl ToolOutput {
             terminal_output: Some(output.into()),
             terminal_scrollback: Some(scrollback.into()),
             terminal_history: history,
+            terminal_title: Some(title.into()),
+            terminal_alive: Some(alive),
             ..Self::default()
         }
     }
@@ -249,9 +333,12 @@ impl ToolOutput {
     /// Successful Git operation with refreshed status.
     pub fn git_status(
         repo_root: impl Into<std::path::PathBuf>,
+        is_repository: bool,
         branch: Option<String>,
         summary: impl Into<String>,
         modified: Vec<GitPathStatus>,
+        added: Vec<GitPathStatus>,
+        deleted: Vec<GitPathStatus>,
         staged: Vec<GitPathStatus>,
         untracked: Vec<GitPathStatus>,
         message: impl Into<String>,
@@ -262,7 +349,10 @@ impl ToolOutput {
             listed_path: Some(repo_root.into()),
             git_branch: branch,
             git_summary: Some(summary.into()),
+            git_is_repository: Some(is_repository),
             git_modified: modified,
+            git_added: added,
+            git_deleted: deleted,
             git_staged: staged,
             git_untracked: untracked,
             ..Self::default()

@@ -22,6 +22,7 @@ serde_json = "1"
 wry = "0.45"
 rfd = "0.15"
 jaymi-capabilities = { workspace = true }
+jaymi-commands = { workspace = true }
 jaymi-config = { workspace = true }
 jaymi-context = { workspace = true }
 jaymi-core = { workspace = true }
@@ -36,6 +37,7 @@ jaymi-permissions = { workspace = true }
 jaymi-planner = { workspace = true }
 jaymi-policies = { workspace = true }
 jaymi-project-engine = { workspace = true }
+jaymi-projects = { workspace = true }
 jaymi-providers = { workspace = true }
 jaymi-search = { workspace = true }
 jaymi-tools = { workspace = true }
@@ -43,6 +45,7 @@ jaymi-understanding = { workspace = true }
 
 [dev-dependencies]
 jaymi-capabilities = { workspace = true }
+jaymi-commands = { workspace = true }
 jaymi-config = { workspace = true }
 jaymi-context = { workspace = true }
 jaymi-core = { workspace = true }
@@ -57,6 +60,7 @@ jaymi-permissions = { workspace = true }
 jaymi-planner = { workspace = true }
 jaymi-policies = { workspace = true }
 jaymi-project-engine = { workspace = true }
+jaymi-projects = { workspace = true }
 jaymi-providers = { workspace = true }
 jaymi-search = { workspace = true }
 jaymi-tools = { workspace = true }

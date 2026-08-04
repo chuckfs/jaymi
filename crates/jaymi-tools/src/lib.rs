@@ -9,6 +9,7 @@ pub mod categories;
 pub mod git;
 pub mod list_project_tree;
 pub mod lsp;
+pub mod manage_path;
 pub mod metadata;
 pub mod orchestrator;
 pub mod query_inventory;
@@ -25,6 +26,7 @@ pub mod write_file;
 pub use git::{GitTool, GIT_TOOL_ID};
 pub use list_project_tree::{ListProjectTreeTool, LIST_PROJECT_TREE_TOOL_ID};
 pub use lsp::{LanguageServerTool, LANGUAGE_SERVER_TOOL_ID};
+pub use manage_path::{ManagePathTool, MANAGE_PATH_TOOL_ID};
 pub use metadata::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
     PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata,
