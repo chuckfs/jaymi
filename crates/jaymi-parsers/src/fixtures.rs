@@ -74,8 +74,8 @@ pub fn minimal_docx() -> Vec<u8> {
     let mut cursor = Cursor::new(Vec::new());
     {
         let mut zip = ZipWriter::new(&mut cursor);
-        let options = SimpleFileOptions::default()
-            .compression_method(zip::CompressionMethod::Stored);
+        let options =
+            SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
 
         zip.start_file("[Content_Types].xml", options).unwrap();
         zip.write_all(
@@ -154,9 +154,7 @@ pub fn corrupt_docx() -> &'static [u8] {
 
 /// Minimal 2×3 RGB PNG.
 pub fn minimal_png() -> Vec<u8> {
-    let buffer = ImageBuffer::from_fn(2, 3, |x, y| {
-        Rgb([(x * 40) as u8, (y * 40) as u8, 120])
-    });
+    let buffer = ImageBuffer::from_fn(2, 3, |x, y| Rgb([(x * 40) as u8, (y * 40) as u8, 120]));
     let image = DynamicImage::ImageRgb8(buffer);
     let mut cursor = Cursor::new(Vec::new());
     image
@@ -201,7 +199,7 @@ fn build_exif_app1(datetime: &[u8]) -> Vec<u8> {
     // IFD0 with 1 entry pointing to Exif IFD
     let exif_ifd_offset = 8 + 2 + 12 + 4; // after IFD0
     tiff.extend_from_slice(&1u16.to_le_bytes()); // entry count
-    // ExifIFDPointer tag 0x8769, type LONG (4), count 1
+                                                 // ExifIFDPointer tag 0x8769, type LONG (4), count 1
     tiff.extend_from_slice(&0x8769u16.to_le_bytes());
     tiff.extend_from_slice(&4u16.to_le_bytes());
     tiff.extend_from_slice(&1u32.to_le_bytes());

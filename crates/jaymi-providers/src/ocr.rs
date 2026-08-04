@@ -219,9 +219,7 @@ mod tests {
         let mut ocr = PlaceholderOcrProvider::new();
         ocr.initialize().unwrap();
         let bytes = b"not-an-image";
-        let error = ocr
-            .extract_text(&OcrImage::from_bytes(bytes))
-            .unwrap_err();
+        let error = ocr.extract_text(&OcrImage::from_bytes(bytes)).unwrap_err();
         assert!(error.message().contains("not integrated"));
         let status = ocr.ocr_status();
         assert!(status.placeholder);

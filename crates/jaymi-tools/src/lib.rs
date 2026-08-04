@@ -38,9 +38,7 @@ pub use registry::ToolRegistry;
 pub use scan_filesystem::{ScanFilesystemTool, SCAN_FILESYSTEM_TOOL_ID};
 pub use search_files::{SearchFilesTool, SEARCH_FILES_TOOL_ID};
 pub use search_knowledge::{SearchKnowledgeTool, SEARCH_KNOWLEDGE_TOOL_ID};
-pub use search_project_knowledge::{
-    SearchProjectKnowledgeTool, SEARCH_PROJECT_KNOWLEDGE_TOOL_ID,
-};
+pub use search_project_knowledge::{SearchProjectKnowledgeTool, SEARCH_PROJECT_KNOWLEDGE_TOOL_ID};
 pub use terminal::{TerminalTool, TERMINAL_TOOL_ID};
 pub use tool::{Tool, ToolInput, ToolOutput};
 pub use write_file::{WriteFileTool, WRITE_FILE_TOOL_ID};

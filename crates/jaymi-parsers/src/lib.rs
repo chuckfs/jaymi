@@ -53,14 +53,7 @@ mod tests {
         let registry = default_registry().unwrap();
         assert_eq!(
             registry.parser_ids(),
-            vec![
-                "docx",
-                "image",
-                "json",
-                "markdown",
-                "pdf",
-                "plain_text"
-            ]
+            vec!["docx", "image", "json", "markdown", "pdf", "plain_text"]
         );
         for file_type in [
             FileType::PlainText,

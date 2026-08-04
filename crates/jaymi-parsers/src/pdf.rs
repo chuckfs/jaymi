@@ -6,9 +6,7 @@ use jaymi_core::{Document, DocumentMetadata, FileType, JaymiError, JaymiResult};
 use lopdf::Document as PdfDocument;
 
 use crate::parser::FileParser;
-use crate::util::{
-    build_document, insert_author, insert_page_count, title_from_path,
-};
+use crate::util::{build_document, insert_author, insert_page_count, title_from_path};
 
 /// Parser for PDF documents.
 ///
@@ -40,9 +38,8 @@ impl FileParser for PdfParser {
             ));
         }
 
-        let text = pdf_extract::extract_text_from_mem(bytes).map_err(|error| {
-            JaymiError::new(format!("failed to extract PDF text: {error}"))
-        })?;
+        let text = pdf_extract::extract_text_from_mem(bytes)
+            .map_err(|error| JaymiError::new(format!("failed to extract PDF text: {error}")))?;
 
         let (page_count, title, author, creation_date, modification_date) =
             read_pdf_info(bytes).unwrap_or((None, None, None, None, None));
@@ -85,6 +82,7 @@ fn looks_like_pdf(bytes: &[u8]) -> bool {
     bytes.starts_with(b"%PDF")
 }
 
+#[allow(clippy::type_complexity)]
 fn read_pdf_info(
     bytes: &[u8],
 ) -> JaymiResult<(
@@ -94,9 +92,8 @@ fn read_pdf_info(
     Option<String>,
     Option<String>,
 )> {
-    let document = PdfDocument::load_mem(bytes).map_err(|error| {
-        JaymiError::new(format!("failed to open PDF structure: {error}"))
-    })?;
+    let document = PdfDocument::load_mem(bytes)
+        .map_err(|error| JaymiError::new(format!("failed to open PDF structure: {error}")))?;
     let page_count = Some(document.get_pages().len() as u64);
     let mut title = None;
     let mut author = None;
@@ -114,13 +111,7 @@ fn read_pdf_info(
         }
     }
 
-    Ok((
-        page_count,
-        title,
-        author,
-        creation_date,
-        modification_date,
-    ))
+    Ok((page_count, title, author, creation_date, modification_date))
 }
 
 fn dict_string(dict: &lopdf::Dictionary, key: &[u8]) -> Option<String> {

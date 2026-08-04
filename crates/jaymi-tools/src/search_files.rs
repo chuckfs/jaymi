@@ -96,9 +96,7 @@ mod tests {
         provider.initialize().unwrap();
         let tool = SearchFilesTool::new(Arc::new(provider));
 
-        let output = tool
-            .execute(&ToolInput::list_directory(&dir))
-            .unwrap();
+        let output = tool.execute(&ToolInput::list_directory(&dir)).unwrap();
         assert!(output.success);
         assert_eq!(output.entries.len(), 1);
         assert_eq!(output.entries[0].name, "a.txt");

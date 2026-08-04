@@ -8,7 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use jaymi::Application;
 use jaymi_core::{MetadataFilters, SearchRequest};
 use jaymi_search::{MatchReason, SearchEngine, SearchEngineApi, SearchStrategy};
-use jaymi_understanding::{ContentIntelligence, ContentIntelligenceApi, ContentStore, UnderstandingEngine};
+use jaymi_understanding::{
+    ContentIntelligence, ContentIntelligenceApi, ContentStore, UnderstandingEngine,
+};
 
 #[test]
 fn metadata_search_is_deterministic_and_independent_of_fts() {
@@ -75,7 +77,10 @@ fn metadata_search_is_deterministic_and_independent_of_fts() {
         }))
         .expect("language");
     assert_eq!(by_lang.strategy, SearchStrategy::StructuredMetadata);
-    assert!(by_lang.hits.iter().any(|hit| hit.path.ends_with("report.md")));
+    assert!(by_lang
+        .hits
+        .iter()
+        .any(|hit| hit.path.ends_with("report.md")));
     assert!(!by_lang.hits.iter().any(|hit| hit.path.ends_with("nota.md")));
     let by_lang_again = engine
         .search(&SearchRequest::metadata(MetadataFilters {
@@ -127,7 +132,10 @@ fn metadata_search_is_deterministic_and_independent_of_fts() {
         }))
         .expect("heading");
     assert_eq!(by_heading.hits.len(), 1);
-    assert_eq!(by_heading.hits[0].match_reason, MatchReason::MetadataHeading);
+    assert_eq!(
+        by_heading.hits[0].match_reason,
+        MatchReason::MetadataHeading
+    );
     assert_eq!(
         by_heading.hits[0].matching_section.as_deref(),
         Some("Habitat")
@@ -161,7 +169,10 @@ fn metadata_search_is_deterministic_and_independent_of_fts() {
             ..MetadataFilters::default()
         }))
         .expect("es");
-    assert!(spanish_only.hits.iter().any(|hit| hit.path.ends_with("nota.md")));
+    assert!(spanish_only
+        .hits
+        .iter()
+        .any(|hit| hit.path.ends_with("nota.md")));
     assert!(!spanish_only
         .hits
         .iter()
@@ -180,7 +191,10 @@ fn metadata_search_is_deterministic_and_independent_of_fts() {
         })
         .expect("combined");
     assert_eq!(combined.strategy, SearchStrategy::Combined);
-    assert!(combined.hits.iter().any(|hit| hit.path.ends_with("report.md")));
+    assert!(combined
+        .hits
+        .iter()
+        .any(|hit| hit.path.ends_with("report.md")));
 
     // Content Intelligence API surface.
     let api = app

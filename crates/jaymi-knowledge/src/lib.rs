@@ -79,7 +79,13 @@ mod tests {
         let now = 1_700_000_000i64;
 
         // Publish directory + files.
-        let root_item = item(normalize_path(&root).unwrap(), "knowledge-api-root", None, 0, true);
+        let root_item = item(
+            normalize_path(&root).unwrap(),
+            "knowledge-api-root",
+            None,
+            0,
+            true,
+        );
         let downloads_item = item(
             normalize_path(&downloads).unwrap(),
             "Downloads",
@@ -87,20 +93,41 @@ mod tests {
             0,
             true,
         );
-        let mut pdf_item = item(normalize_path(&pdf).unwrap(), "report.pdf", Some("pdf"), 4, false);
+        let mut pdf_item = item(
+            normalize_path(&pdf).unwrap(),
+            "report.pdf",
+            Some("pdf"),
+            4,
+            false,
+        );
         pdf_item.modified = Some(300);
-        let mut txt_item = item(normalize_path(&txt).unwrap(), "notes.txt", Some("txt"), 2, false);
+        let mut txt_item = item(
+            normalize_path(&txt).unwrap(),
+            "notes.txt",
+            Some("txt"),
+            2,
+            false,
+        );
         txt_item.modified = Some(250);
         txt_item.created = Some(150);
         let hidden_item = item(normalize_path(&hidden).unwrap(), ".secret", None, 1, false);
 
-        assert_eq!(store.publish(&root_item, now).unwrap(), PublishOutcome::Inserted);
+        assert_eq!(
+            store.publish(&root_item, now).unwrap(),
+            PublishOutcome::Inserted
+        );
         assert_eq!(
             store.publish(&downloads_item, now).unwrap(),
             PublishOutcome::Inserted
         );
-        assert_eq!(store.publish(&pdf_item, now).unwrap(), PublishOutcome::Inserted);
-        assert_eq!(store.publish(&txt_item, now).unwrap(), PublishOutcome::Inserted);
+        assert_eq!(
+            store.publish(&pdf_item, now).unwrap(),
+            PublishOutcome::Inserted
+        );
+        assert_eq!(
+            store.publish(&txt_item, now).unwrap(),
+            PublishOutcome::Inserted
+        );
         assert_eq!(
             store.publish(&hidden_item, now).unwrap(),
             PublishOutcome::Inserted
@@ -109,7 +136,10 @@ mod tests {
         // find by path
         let found = store.get_by_path(&pdf).unwrap().expect("pdf");
         assert_eq!(found.filename, "report.pdf");
-        assert!(store.get_by_path(&root.join("missing.txt")).unwrap().is_none());
+        assert!(store
+            .get_by_path(&root.join("missing.txt"))
+            .unwrap()
+            .is_none());
 
         // existence
         assert!(store.exists(&pdf).unwrap());
@@ -121,7 +151,10 @@ mod tests {
 
         // recent
         let recent = store.recent(RecentKind::Modified, 10).unwrap();
-        assert_eq!(recent.first().map(|i| i.filename.as_str()), Some("report.pdf"));
+        assert_eq!(
+            recent.first().map(|i| i.filename.as_str()),
+            Some("report.pdf")
+        );
         let recent_created = store.recent(RecentKind::Created, 10).unwrap();
         assert!(!recent_created.is_empty());
 
@@ -133,9 +166,7 @@ mod tests {
         // collections
         let collections = store.list_collections().unwrap();
         assert!(
-            collections
-                .iter()
-                .any(|c| c.id == CollectionId::Downloads),
+            collections.iter().any(|c| c.id == CollectionId::Downloads),
             "{collections:?}"
         );
         let downloads_col = store.resolve_collection("downloads").unwrap().unwrap();
@@ -173,7 +204,10 @@ mod tests {
                 started_at: now,
                 finished_at: now + 1,
                 duration_ms: 10,
-                roots: vec![normalize_path(&root).unwrap().to_string_lossy().into_owned()],
+                roots: vec![normalize_path(&root)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()],
                 files_seen: 3,
                 folders_seen: 2,
                 files_added: 5,

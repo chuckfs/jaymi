@@ -80,7 +80,10 @@ fn project_search_finds_content_line_and_opens_at_location() {
         .unwrap()
         .clone();
     assert_eq!(coding.active_tab_path(), Some(path_str.as_str()));
-    let session = coding.editors.session_by_path(&path_str).expect("open session");
+    let session = coding
+        .editors
+        .session_by_path(&path_str)
+        .expect("open session");
     assert_eq!(session.view.cursor.line, 1);
     assert_eq!(session.view.cursor.column, hit.column.unwrap());
 }
@@ -102,7 +105,11 @@ fn project_search_filename_only_supports_quick_open() {
     request.folder = Some(root.clone());
     let results = app.project_search(request).expect("quick open search");
 
-    assert_eq!(results.len(), 1, "expected exactly one filename match: {results:?}");
+    assert_eq!(
+        results.len(),
+        1,
+        "expected exactly one filename match: {results:?}"
+    );
     let hit = &results[0];
     assert_eq!(hit.path, alpha.to_string_lossy());
     assert!(hit.line.is_none(), "filename-only hits carry no location");

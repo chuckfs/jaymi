@@ -36,14 +36,14 @@ impl PolicyEvaluation {
     /// Short summary suitable for diagnostics.
     pub fn summary(&self) -> String {
         if self.allowed {
-            format!(
-                "allowed ({})",
-                self.policies_applied.join(", ")
-            )
+            format!("allowed ({})", self.policies_applied.join(", "))
         } else {
             format!(
                 "denied ({})",
-                self.reasons.first().cloned().unwrap_or_else(|| "policy".into())
+                self.reasons
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| "policy".into())
             )
         }
     }

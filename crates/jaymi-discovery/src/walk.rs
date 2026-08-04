@@ -106,7 +106,10 @@ fn walk_into(path: &Path, items: &mut Vec<DiscoveredItem>) -> JaymiResult<()> {
 fn collect_metadata(path: &Path) -> JaymiResult<DiscoveredItem> {
     let path = normalize_path(path)?;
     let meta = fs::symlink_metadata(&path).map_err(|error| {
-        JaymiError::new(format!("failed to read metadata for {}: {error}", path.display()))
+        JaymiError::new(format!(
+            "failed to read metadata for {}: {error}",
+            path.display()
+        ))
     })?;
 
     // Do not follow symlinks into arbitrary trees for Slice 1.
@@ -188,7 +191,9 @@ mod tests {
 
         let items = walk_recursive(&root).unwrap();
         assert!(items.iter().any(|item| item.filename == "c.md"));
-        assert!(items.iter().any(|item| item.is_directory && item.filename == "b"));
+        assert!(items
+            .iter()
+            .any(|item| item.is_directory && item.filename == "b"));
         let file = items.iter().find(|item| item.filename == "c.md").unwrap();
         assert_eq!(file.extension.as_deref(), Some("md"));
         assert_eq!(file.size, 1);

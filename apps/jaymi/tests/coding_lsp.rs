@@ -37,7 +37,8 @@ fn lsp_hover_completion_and_diagnostics_through_planner() {
         .expect("create");
     app.open_project(project.id.as_str()).expect("open");
     app.start_coding_project().expect("coding");
-    app.open_coding_file(file.to_str().unwrap()).expect("open file");
+    app.open_coding_file(file.to_str().unwrap())
+        .expect("open file");
 
     let opened = app
         .coding_lsp_did_open(file.to_str().unwrap(), content)

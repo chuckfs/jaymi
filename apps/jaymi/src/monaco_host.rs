@@ -113,6 +113,8 @@ pub struct MonacoHost {
     rx: Receiver<MonacoIpcMessage>,
     ready: bool,
     last_pushed: Option<MonacoDocument>,
+    /// Last Monaco theme id pushed (`jaymi-light` / `jaymi-dark`).
+    last_theme_id: Option<String>,
     assets_dir: PathBuf,
 }
 
@@ -156,6 +158,7 @@ impl MonacoHost {
             rx,
             ready: false,
             last_pushed: None,
+            last_theme_id: None,
             assets_dir,
         })
     }
@@ -303,6 +306,34 @@ impl MonacoHost {
             .map_err(|error| format!("monaco options: {error}"))
     }
 
+    /// Define and activate a Jaymi Monaco theme generated from the app [`crate::Theme`].
+    ///
+    /// `definition_json` is a Monaco `IStandaloneThemeData` object (already JSON).
+    /// No-ops when the same theme id is already active.
+    pub fn set_theme(&mut self, theme_id: &str, definition_json: &str) -> Result<(), String> {
+        if !self.ready {
+            return Ok(());
+        }
+        if self.last_theme_id.as_deref() == Some(theme_id) {
+            return Ok(());
+        }
+        let script = format!(
+            "window.__jaymiSetTheme && window.__jaymiSetTheme({}, {});",
+            json_string(theme_id),
+            definition_json
+        );
+        self.webview
+            .evaluate_script(&script)
+            .map_err(|error| format!("monaco theme: {error}"))?;
+        self.last_theme_id = Some(theme_id.to_string());
+        Ok(())
+    }
+
+    /// Force the next [`Self::set_theme`] call to re-push (e.g. after WebView remount).
+    pub fn clear_theme_cache(&mut self) {
+        self.last_theme_id = None;
+    }
+
     /// Mark that CodingState accepted an edit originating from Monaco (echo suppression).
     pub fn note_external_edit(&mut self, path: &str, content: &str) {
         if let Some(previous) = &mut self.last_pushed {
@@ -404,10 +435,7 @@ fn parse_ipc(body: &str) -> Option<MonacoIpcMessage> {
         "cursor" => Some(MonacoIpcMessage::Cursor {
             path: payload.path.unwrap_or_default(),
             line: payload.line.unwrap_or(0),
-            column: payload
-                .column
-                .or(payload.character)
-                .unwrap_or(0),
+            column: payload.column.or(payload.character).unwrap_or(0),
         }),
         "folds" => Some(MonacoIpcMessage::Folds {
             path: payload.path.unwrap_or_default(),
@@ -445,7 +473,9 @@ fn serve_asset(assets_dir: &Path, request_path: &str) -> Response<Cow<'static, [
         relative
     };
     let path = assets_dir.join(relative);
-    let canonical_assets = assets_dir.canonicalize().unwrap_or_else(|_| assets_dir.to_path_buf());
+    let canonical_assets = assets_dir
+        .canonicalize()
+        .unwrap_or_else(|_| assets_dir.to_path_buf());
     let Ok(canonical_file) = path.canonicalize() else {
         return not_found();
     };

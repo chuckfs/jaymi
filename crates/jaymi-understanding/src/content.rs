@@ -49,11 +49,8 @@ impl Content {
     pub fn from_document(document: &Document, parser_version: &str) -> Self {
         let source_id = document.path.to_string_lossy().into_owned();
         let content_type = document.file_type.id().to_string();
-        let enrichment = ContentEnrichment::extract(
-            &document.text,
-            &content_type,
-            document.title.as_deref(),
-        );
+        let enrichment =
+            ContentEnrichment::extract(&document.text, &content_type, document.title.as_deref());
         let image = if content_type == "image" {
             ImageContent::from_document(document).ok()
         } else {
@@ -139,10 +136,7 @@ fn append_image_metadata(metadata: &mut DocumentMetadata, image: &ImageContent) 
     }
 }
 
-fn enrichment_metadata(
-    enrichment: &ContentEnrichment,
-    language: Option<&str>,
-) -> DocumentMetadata {
+fn enrichment_metadata(enrichment: &ContentEnrichment, language: Option<&str>) -> DocumentMetadata {
     let mut metadata = DocumentMetadata::new();
     metadata.insert("word_count", enrichment.word_count.to_string());
     metadata.insert("character_count", enrichment.character_count.to_string());

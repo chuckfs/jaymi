@@ -92,7 +92,9 @@ impl ExperienceSession {
 
     /// Active workspace kind, when expanded.
     pub fn active_workspace_kind(&self) -> Option<WorkspaceKind> {
-        self.active_workspace.as_ref().map(|workspace| workspace.kind)
+        self.active_workspace
+            .as_ref()
+            .map(|workspace| workspace.kind)
     }
 
     /// True when a non-conversation workspace is open.
@@ -176,9 +178,9 @@ impl ExperienceSession {
         let state = self.capability_state_mut().ok_or_else(|| {
             JaymiError::new("no active capability state — expand a coding workspace first")
         })?;
-        let coding = state.coding_mut().ok_or_else(|| {
-            JaymiError::new("active capability state is not a coding workspace")
-        })?;
+        let coding = state
+            .coding_mut()
+            .ok_or_else(|| JaymiError::new("active capability state is not a coding workspace"))?;
         Ok(update(coding))
     }
 

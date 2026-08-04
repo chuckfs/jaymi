@@ -30,11 +30,17 @@ fn list_directory_request_flows_through_every_layer() {
         Some("search")
     );
     assert_eq!(response.tool_id.as_deref(), Some(SEARCH_FILES_TOOL_ID));
-    assert_eq!(response.provider_id.as_deref(), Some(FILESYSTEM_PROVIDER_ID));
+    assert_eq!(
+        response.provider_id.as_deref(),
+        Some(FILESYSTEM_PROVIDER_ID)
+    );
 
     // Non-recursive: nested/hidden.txt must not appear.
     assert_eq!(response.entries.len(), 3);
-    assert!(response.entries.iter().all(|entry| entry.name != "hidden.txt"));
+    assert!(response
+        .entries
+        .iter()
+        .all(|entry| entry.name != "hidden.txt"));
 
     let alpha = response
         .entries

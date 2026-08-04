@@ -67,10 +67,7 @@ impl ProviderRegistry {
 
     /// Number of registered providers.
     pub fn len(&self) -> usize {
-        self.providers
-            .read()
-            .map(|guard| guard.len())
-            .unwrap_or(0)
+        self.providers.read().map(|guard| guard.len()).unwrap_or(0)
     }
 
     /// Returns true when no providers are registered.

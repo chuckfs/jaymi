@@ -58,7 +58,10 @@ fn coding_diagnostics_view_covers_required_sections() {
     }
 
     let flat = view.summary_lines().join("\n");
-    assert!(flat.contains("Diagnostics Demo"), "active project name missing: {flat}");
+    assert!(
+        flat.contains("Diagnostics Demo"),
+        "active project name missing: {flat}"
+    );
     assert!(flat.contains("code"), "current capability missing: {flat}");
     assert!(
         flat.to_lowercase().contains("planner") || flat.contains("Operational"),
@@ -120,7 +123,10 @@ fn coding_diagnostics_are_read_only_snapshot() {
         second.sections.len(),
         "diagnostics view should be a stable read-only snapshot shape"
     );
-    assert!(first.sections.iter().all(|section| !section.title.is_empty()));
+    assert!(first
+        .sections
+        .iter()
+        .all(|section| !section.title.is_empty()));
 }
 
 fn temp_dir(label: &str) -> PathBuf {

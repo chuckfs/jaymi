@@ -32,8 +32,7 @@ fn watcher_applies_create_modify_delete_without_manual_rescan() {
     let watched = watcher.diagnostics().watched_directories;
     assert!(
         watched.iter().any(|path| {
-            path == &root
-                || path.canonicalize().ok().as_ref() == root.canonicalize().ok().as_ref()
+            path == &root || path.canonicalize().ok().as_ref() == root.canonicalize().ok().as_ref()
         }),
         "expected watched root {root:?}, got {watched:?}"
     );

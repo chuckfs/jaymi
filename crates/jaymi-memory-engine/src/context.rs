@@ -136,7 +136,10 @@ pub fn token_overlap(tokens: &[String], haystack: &str) -> usize {
         return 0;
     }
     let hay = haystack.to_ascii_lowercase();
-    tokens.iter().filter(|token| hay.contains(token.as_str())).count()
+    tokens
+        .iter()
+        .filter(|token| hay.contains(token.as_str()))
+        .count()
 }
 
 /// Score a candidate and collect relevance reasons.
@@ -205,19 +208,19 @@ pub fn score_candidate(
         return None;
     }
 
-    if record.scope == MemoryScope::Working || record.updated_at >= recent_cutoff {
-        if record.scope == MemoryScope::Working || now.saturating_sub(record.updated_at) <= 86_400 {
-            reasons.push(MemoryRelevanceKind::RecentWork);
-            let age = now.saturating_sub(record.updated_at).max(0);
-            let recency_boost = if age <= 3_600 {
-                20
-            } else if age <= 86_400 {
-                10
-            } else {
-                4
-            };
-            score = score.saturating_add(recency_boost);
-        }
+    if record.scope == MemoryScope::Working
+        || (record.updated_at >= recent_cutoff && now.saturating_sub(record.updated_at) <= 86_400)
+    {
+        reasons.push(MemoryRelevanceKind::RecentWork);
+        let age = now.saturating_sub(record.updated_at).max(0);
+        let recency_boost = if age <= 3_600 {
+            20
+        } else if age <= 86_400 {
+            10
+        } else {
+            4
+        };
+        score = score.saturating_add(recency_boost);
     }
 
     // Require at least one explicit reason; never return arbitrary global rows.
@@ -290,12 +293,7 @@ mod tests {
 
     #[test]
     fn request_match_and_personal_are_scored() {
-        let personal = record(
-            MemoryScope::Personal,
-            "Preferred name",
-            "Charlie",
-            90,
-        );
+        let personal = record(MemoryScope::Personal, "Preferred name", "Charlie", 90);
         let (score, reasons) =
             score_candidate(&personal, &tokenize("hello"), None, None, 200, 0).unwrap();
         assert!(score > 0);
@@ -307,15 +305,8 @@ mod tests {
             "Keep promotions intentional",
             80,
         );
-        let (score, reasons) = score_candidate(
-            &working,
-            &tokenize("promotion ladder"),
-            None,
-            None,
-            200,
-            0,
-        )
-        .unwrap();
+        let (score, reasons) =
+            score_candidate(&working, &tokenize("promotion ladder"), None, None, 200, 0).unwrap();
         assert!(reasons.contains(&MemoryRelevanceKind::RequestMatch));
         assert!(score >= 40);
     }

@@ -71,10 +71,7 @@ fn persistence_survives_restart() {
     let response = app.discover_inventory().expect("discover");
     assert!(!response.blocked);
     assert!(
-        response
-            .entries
-            .iter()
-            .any(|entry| entry.name == "file.md"),
+        response.entries.iter().any(|entry| entry.name == "file.md"),
         "inventory should survive restart: {:?}",
         response.entries
     );
@@ -173,7 +170,11 @@ fn incremental_indexing_detects_add_update_delete_and_noop() {
     assert!(second.content.contains("updated=0"), "{}", second.content);
     assert!(second.content.contains("removed=0"), "{}", second.content);
     let unchanged = parse_counter(&second.content, "unchanged=");
-    assert!(unchanged >= 1, "noop scan should verify unchanged rows: {}", second.content);
+    assert!(
+        unchanged >= 1,
+        "noop scan should verify unchanged rows: {}",
+        second.content
+    );
 
     thread::sleep(Duration::from_millis(25));
     fs::write(root.join("keep.txt"), "v2-changed").unwrap();
@@ -271,10 +272,7 @@ fn knowledge_queries_answer_from_database_only() {
     assert!(!folder.entries.iter().any(|e| e.name == "big.bin"));
 
     let under = planner
-        .handle(UserRequest::new(format!(
-            "files under {}",
-            docs.display()
-        )))
+        .handle(UserRequest::new(format!("files under {}", docs.display())))
         .expect("under nl");
     assert_eq!(under.tool_id.as_deref(), Some("query_inventory"));
     assert!(under.entries.iter().any(|e| e.name == "report.pdf"));
@@ -292,7 +290,10 @@ fn knowledge_queries_answer_from_database_only() {
     let largest = app
         .discover_query(DiscoveryQueryKind::Largest)
         .expect("largest");
-    assert_eq!(largest.entries.first().map(|e| e.name.as_str()), Some("big.bin"));
+    assert_eq!(
+        largest.entries.first().map(|e| e.name.as_str()),
+        Some("big.bin")
+    );
 
     let hidden = app
         .discover_query(DiscoveryQueryKind::Hidden)
@@ -308,9 +309,7 @@ fn knowledge_queries_answer_from_database_only() {
         empties.entries
     );
 
-    let by_ext_nl = planner
-        .handle(UserRequest::new("*.pdf"))
-        .expect("star pdf");
+    let by_ext_nl = planner.handle(UserRequest::new("*.pdf")).expect("star pdf");
     assert!(by_ext_nl.entries.iter().any(|e| e.name == "report.pdf"));
 
     let snapshot = app.diagnostics().expect("diagnostics");

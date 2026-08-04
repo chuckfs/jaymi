@@ -31,15 +31,16 @@ fn editing_marks_tab_dirty_and_save_clears_it() {
 
     let path = path.to_string_lossy().into_owned();
     app.open_coding_file(&path).expect("open");
-    assert!(!app
-        .capability_state()
-        .unwrap()
-        .unwrap()
-        .coding()
-        .unwrap()
-        .editors
-        .sessions()[0]
-        .dirty);
+    assert!(
+        !app.capability_state()
+            .unwrap()
+            .unwrap()
+            .coding()
+            .unwrap()
+            .editors
+            .sessions()[0]
+            .dirty
+    );
 
     app.set_coding_tab_content(&path, "fn main() { println!(\"edited\"); }\n".into())
         .expect("edit");
@@ -93,7 +94,10 @@ fn save_writes_file_contents_through_planner_pipeline() {
         .write_file(&path, "# new content\n")
         .expect("write through planner");
     assert_eq!(response.tool_id.as_deref(), Some(WRITE_FILE_TOOL_ID));
-    assert_eq!(response.provider_id.as_deref(), Some(FILESYSTEM_PROVIDER_ID));
+    assert_eq!(
+        response.provider_id.as_deref(),
+        Some(FILESYSTEM_PROVIDER_ID)
+    );
     assert_eq!(
         response.capability.map(|capability| capability.id()),
         Some("file_management")
@@ -103,15 +107,16 @@ fn save_writes_file_contents_through_planner_pipeline() {
 
     app.save_coding_file(&path_str).expect("save coding");
     assert_eq!(fs::read_to_string(&path).unwrap(), "# new content\n");
-    assert!(!app
-        .capability_state()
-        .unwrap()
-        .unwrap()
-        .coding()
-        .unwrap()
-        .editors
-        .sessions()[0]
-        .dirty);
+    assert!(
+        !app.capability_state()
+            .unwrap()
+            .unwrap()
+            .coding()
+            .unwrap()
+            .editors
+            .sessions()[0]
+            .dirty
+    );
 }
 
 #[test]

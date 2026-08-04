@@ -21,10 +21,13 @@ fn open_project_from_path_creates_opens_and_loads_explorer() {
         .open_project_from_path(&root)
         .expect("open project from path");
     assert_eq!(
-        context.project.root_directory.as_ref().map(|p| p.as_path()),
+        context.project.root_directory.as_deref(),
         Some(root.canonicalize().unwrap().as_path())
     );
-    assert_eq!(app.active_project_id().as_deref(), Some(context.project.id.as_str()));
+    assert_eq!(
+        app.active_project_id().as_deref(),
+        Some(context.project.id.as_str())
+    );
 
     app.start_coding_project().expect("coding");
     let coding = match app.capability_state().expect("state").expect("coding") {
@@ -46,7 +49,10 @@ fn open_project_from_path_creates_opens_and_loads_explorer() {
         "explorer should list project files"
     );
     let experience = app.experience().expect("experience");
-    assert_eq!(experience.active_workspace_kind(), Some(WorkspaceKind::Coding));
+    assert_eq!(
+        experience.active_workspace_kind(),
+        Some(WorkspaceKind::Coding)
+    );
 }
 
 #[test]
@@ -66,7 +72,10 @@ fn open_project_from_path_reuses_existing_project() {
         .expect("second open")
         .project
         .id;
-    assert_eq!(first, second, "same folder must not create a duplicate project");
+    assert_eq!(
+        first, second,
+        "same folder must not create a duplicate project"
+    );
     assert_eq!(app.list_projects().expect("list").len(), 1);
 }
 

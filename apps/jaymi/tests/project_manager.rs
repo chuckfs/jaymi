@@ -5,9 +5,7 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jaymi::Application;
-use jaymi_project_engine::{
-    CreateProjectRequest, ProjectEngineApi, ProjectStatus, ProjectType,
-};
+use jaymi_project_engine::{CreateProjectRequest, ProjectEngineApi, ProjectStatus, ProjectType};
 
 #[test]
 fn project_manager_creates_loads_and_deletes_persistently() {

@@ -203,7 +203,10 @@ mod tests {
             }"#,
         )
         .unwrap();
-        assert_eq!(settings.extensions.get("future_flag"), Some(&serde_json::json!(true)));
+        assert_eq!(
+            settings.extensions.get("future_flag"),
+            Some(&serde_json::json!(true))
+        );
         assert!(settings.extensions.contains_key("future_map"));
 
         let encoded = serde_json::to_value(&settings).unwrap();

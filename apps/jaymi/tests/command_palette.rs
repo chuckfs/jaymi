@@ -2,7 +2,9 @@
 
 use jaymi::command_dispatch::{dispatch_command, CommandDispatchEffect};
 use jaymi::Application;
-use jaymi_commands::{builtin_descriptors, ids, CommandCategory, CommandDescriptor, CommandRegistry};
+use jaymi_commands::{
+    builtin_descriptors, ids, CommandCategory, CommandDescriptor, CommandRegistry,
+};
 use jaymi_core::Lifecycle;
 use jaymi_project_engine::{CreateProjectRequest, ProjectType};
 
@@ -154,7 +156,10 @@ fn search_files_populates_search_panel_results() {
     let (results, bottom_tab) = app
         .with_coding_state(|coding| (coding.search.results.clone(), coding.bottom_tab))
         .expect("state");
-    assert!(!results.is_empty(), "expected Search Files to populate results");
+    assert!(
+        !results.is_empty(),
+        "expected Search Files to populate results"
+    );
     assert_eq!(bottom_tab, jaymi_capabilities::CodingBottomTab::Search);
 }
 

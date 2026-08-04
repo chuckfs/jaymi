@@ -6,11 +6,11 @@
 use std::path::PathBuf;
 
 use jaymi_core::{JaymiError, JaymiResult, SearchRequest};
-use jaymi_memory_engine::{
-    project_decision_from_record, MemoryQuery, MemoryRecord, MemoryScope,
-};
+use jaymi_memory_engine::{project_decision_from_record, MemoryQuery, MemoryRecord, MemoryScope};
 
-use crate::context::{ProjectDecisionEntry, ProjectFileEntry, ProjectParsedContent, ProjectTaskEntry};
+use crate::context::{
+    ProjectDecisionEntry, ProjectFileEntry, ProjectParsedContent, ProjectTaskEntry,
+};
 use crate::engine::{ProjectEngine, ProjectEngineApi};
 use crate::types::Project;
 
@@ -108,11 +108,7 @@ impl ProjectEngine {
         if text.is_empty() {
             return Ok(Vec::new());
         }
-        let limit = query
-            .limit
-            .unwrap_or(DEFAULT_KNOWLEDGE_LIMIT)
-            .max(1)
-            .min(200);
+        let limit = query.limit.unwrap_or(DEFAULT_KNOWLEDGE_LIMIT).clamp(1, 200);
         let needle = text.to_ascii_lowercase();
         let mut hits = Vec::new();
 
@@ -153,18 +149,13 @@ impl ProjectEngine {
             .memory
             .list_conversations_for_project(project.id.as_str())?;
         for meta in conversation_ids.into_iter().take(limit) {
-            let Some(conversation) = sources
-                .memory
-                .load_conversation(meta.id.as_str())?
-            else {
+            let Some(conversation) = sources.memory.load_conversation(meta.id.as_str())? else {
                 continue;
             };
-            let matched = conversation.messages.iter().find(|message| {
-                message
-                    .content
-                    .to_ascii_lowercase()
-                    .contains(&needle)
-            });
+            let matched = conversation
+                .messages
+                .iter()
+                .find(|message| message.content.to_ascii_lowercase().contains(&needle));
             let Some(message) = matched else {
                 continue;
             };
@@ -219,21 +210,17 @@ fn memory_hit(project: &Project, record: &MemoryRecord, needle: &str) -> Project
         .unwrap_or_else(|| record.content.clone());
     let hay = format!(
         "{} {} {}",
-        record.summary,
-        record.content,
-        record.metadata_json
+        record.summary, record.content, record.metadata_json
     )
     .to_ascii_lowercase();
     let score = if hay.contains(needle) { 80 } else { 50 };
-    let path = decision
-        .as_ref()
-        .and_then(|value| {
-            if value.related_files.len() == 1 {
-                Some(std::path::PathBuf::from(&value.related_files[0]))
-            } else {
-                None
-            }
-        });
+    let path = decision.as_ref().and_then(|value| {
+        if value.related_files.len() == 1 {
+            Some(std::path::PathBuf::from(&value.related_files[0]))
+        } else {
+            None
+        }
+    });
     ProjectKnowledgeHit {
         kind,
         title: record.summary.clone(),

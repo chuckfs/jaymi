@@ -142,10 +142,7 @@ impl ToolInput {
     }
 
     /// Create input to spawn a new terminal session (cwd is the project root).
-    pub fn create_terminal(
-        cwd: impl Into<std::path::PathBuf>,
-        title: Option<String>,
-    ) -> Self {
+    pub fn create_terminal(cwd: impl Into<std::path::PathBuf>, title: Option<String>) -> Self {
         Self {
             path: Some(cwd.into()),
             session_id: None,
@@ -331,6 +328,7 @@ impl ToolOutput {
     }
 
     /// Successful Git operation with refreshed status.
+    #[allow(clippy::too_many_arguments)]
     pub fn git_status(
         repo_root: impl Into<std::path::PathBuf>,
         is_repository: bool,

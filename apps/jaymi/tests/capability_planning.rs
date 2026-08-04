@@ -16,12 +16,8 @@ fn coding_request_builds_deterministic_execution_plan_without_tools() {
     let planner = app.container().resolve::<Planner>().expect("planner");
 
     let goal = "Help me build an app.";
-    let first = planner
-        .handle(UserRequest::new(goal))
-        .expect("first plan");
-    let second = planner
-        .handle(UserRequest::new(goal))
-        .expect("second plan");
+    let first = planner.handle(UserRequest::new(goal)).expect("first plan");
+    let second = planner.handle(UserRequest::new(goal)).expect("second plan");
 
     assert_eq!(first.capability, Some(Capability::Code));
     assert_eq!(second.capability, Some(Capability::Code));
@@ -67,10 +63,7 @@ fn coding_request_builds_deterministic_execution_plan_without_tools() {
         .plan_capability(Capability::Code, Some(goal))
         .expect("direct plan");
     assert_eq!(direct.steps[0].required_tools, plan.steps[0].required_tools);
-    assert_eq!(
-        direct.required_permissions(),
-        plan.required_permissions()
-    );
+    assert_eq!(direct.required_permissions(), plan.required_permissions());
 }
 
 #[test]

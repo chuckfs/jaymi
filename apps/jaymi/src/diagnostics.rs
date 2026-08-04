@@ -320,10 +320,7 @@ impl DiagnosticsSnapshot {
         lines.push("Jaymi Diagnostics".to_string());
         lines.push(format!("App state: {}", self.app_state.label()));
         lines.push(String::new());
-        lines.push(format!(
-            "{:<18} {:<16} {}",
-            "Subsystem", "Status", "Detail"
-        ));
+        lines.push(format!("{:<18} {:<16} {}", "Subsystem", "Status", "Detail"));
         lines.push("-".repeat(72));
         for row in &self.subsystems {
             lines.push(format!(
@@ -374,11 +371,7 @@ mod tests {
             app_state: AppState::Ready,
             subsystems: vec![
                 SubsystemStatus::new("Planner", OperationalStatus::Operational, "ready"),
-                SubsystemStatus::new(
-                    "OCR Provider",
-                    OperationalStatus::Stub,
-                    "engine=none",
-                ),
+                SubsystemStatus::new("OCR Provider", OperationalStatus::Stub, "engine=none"),
                 SubsystemStatus::new(
                     "Policies",
                     OperationalStatus::Experimental,

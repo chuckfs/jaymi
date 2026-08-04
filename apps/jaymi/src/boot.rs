@@ -29,12 +29,12 @@ use jaymi_discovery::{DiscoveryEngine, FilesystemWatcher};
 use jaymi_knowledge::{KnowledgeStore, SqliteKnowledgeStore};
 use jaymi_logging::Logger;
 use jaymi_memory::{
-    AppendMessageRequest, ArchiveConversationRequest, AssembleContextRequest, AssembledMemoryContext,
-    Conversation, ConversationMessage, ConversationMeta, CreateConversationRequest,
-    CreatePersonalMemoryRequest, ListProjectDecisionsQuery, MemoryEngine, MemoryEngineApi,
-    MemoryQuery, MemoryRecord, PersonalContext, ProjectDecision, PromoteMemoryRequest,
-    PromotionAskDecision, PromotionSuggestQuery, PromotionSuggestion, SqliteMemoryStore,
-    StoreMemoryRequest, StoreProjectDecisionRequest, StoreProjectMemoryRequest,
+    AppendMessageRequest, ArchiveConversationRequest, AssembleContextRequest,
+    AssembledMemoryContext, Conversation, ConversationMessage, ConversationMeta,
+    CreateConversationRequest, CreatePersonalMemoryRequest, ListProjectDecisionsQuery,
+    MemoryEngine, MemoryEngineApi, MemoryQuery, MemoryRecord, PersonalContext, ProjectDecision,
+    PromoteMemoryRequest, PromotionAskDecision, PromotionSuggestQuery, PromotionSuggestion,
+    SqliteMemoryStore, StoreMemoryRequest, StoreProjectDecisionRequest, StoreProjectMemoryRequest,
     UpdatePersonalMemoryRequest,
 };
 use jaymi_parsers::{default_registry, ParserRegistry};
@@ -312,15 +312,14 @@ impl Application {
         self.container.register(Arc::clone(&projects));
 
         // Bind Memory / Knowledge / Search / Content so Project Engine can assemble knowledge.
-        projects
-            .bind_sources(jaymi_project_engine::ProjectContextSources {
-                memory: Arc::clone(&memory) as Arc<dyn jaymi_memory::MemoryEngineApi>,
-                knowledge: Arc::clone(&knowledge) as Arc<dyn jaymi_knowledge::KnowledgeStore>,
-                search: Arc::clone(&search) as Arc<dyn jaymi_search::SearchEngineApi>,
-                content: Some(
-                    Arc::clone(&content_api) as Arc<dyn jaymi_understanding::ContentIntelligence>
-                ),
-            })?;
+        projects.bind_sources(jaymi_project_engine::ProjectContextSources {
+            memory: Arc::clone(&memory) as Arc<dyn jaymi_memory::MemoryEngineApi>,
+            knowledge: Arc::clone(&knowledge) as Arc<dyn jaymi_knowledge::KnowledgeStore>,
+            search: Arc::clone(&search) as Arc<dyn jaymi_search::SearchEngineApi>,
+            content: Some(
+                Arc::clone(&content_api) as Arc<dyn jaymi_understanding::ContentIntelligence>
+            ),
+        })?;
 
         // Context Engine coordinates Memory + Project + Search for every request.
         context.bind_sources(jaymi_context::ContextSources {
@@ -342,11 +341,8 @@ impl Application {
                 config.settings().indexing_enabled,
             )
         };
-        let mut discovery = DiscoveryEngine::new(
-            Arc::clone(&knowledge),
-            discovery_roots,
-            indexing_enabled,
-        );
+        let mut discovery =
+            DiscoveryEngine::new(Arc::clone(&knowledge), discovery_roots, indexing_enabled);
         self.initialize_service(&mut discovery)?;
         let discovery = Arc::new(discovery);
         self.container.register(Arc::clone(&discovery));
@@ -538,11 +534,7 @@ impl Application {
         cwd: impl AsRef<Path>,
         command: impl Into<String>,
     ) -> JaymiResult<PlannerResponse> {
-        self.handle(UserRequest::run_terminal(
-            session_id,
-            cwd.as_ref(),
-            command,
-        ))
+        self.handle(UserRequest::run_terminal(session_id, cwd.as_ref(), command))
     }
 
     /// Ask the Planner to spawn a new terminal PTY session.
@@ -697,10 +689,7 @@ impl Application {
     }
 
     /// Promote a memory up the durability ladder through the Memory Engine.
-    pub fn promote_memory(
-        &self,
-        request: &PromoteMemoryRequest,
-    ) -> JaymiResult<MemoryRecord> {
+    pub fn promote_memory(&self, request: &PromoteMemoryRequest) -> JaymiResult<MemoryRecord> {
         let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
         memory.promote(request)
     }
@@ -750,10 +739,7 @@ impl Application {
     }
 
     /// Load an entire conversation through the Memory Engine.
-    pub fn load_conversation(
-        &self,
-        conversation_id: &str,
-    ) -> JaymiResult<Option<Conversation>> {
+    pub fn load_conversation(&self, conversation_id: &str) -> JaymiResult<Option<Conversation>> {
         let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
         memory.load_conversation(conversation_id)
     }
@@ -794,10 +780,7 @@ impl Application {
     }
 
     /// Create a first-class project through the Project Engine.
-    pub fn create_project(
-        &self,
-        request: &CreateProjectRequest,
-    ) -> JaymiResult<Project> {
+    pub fn create_project(&self, request: &CreateProjectRequest) -> JaymiResult<Project> {
         let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
         projects.create(request)
     }
@@ -805,10 +788,7 @@ impl Application {
     /// Open an existing project for `root`, or create one then open it.
     ///
     /// Reuses a project that already points at the same canonical directory.
-    pub fn open_project_from_path(
-        &self,
-        root: impl AsRef<Path>,
-    ) -> JaymiResult<ProjectContext> {
+    pub fn open_project_from_path(&self, root: impl AsRef<Path>) -> JaymiResult<ProjectContext> {
         let root = root.as_ref();
         if !root.is_dir() {
             return Err(JaymiError::new(format!(
@@ -909,10 +889,7 @@ impl Application {
     }
 
     /// Request one assembled ProjectContext from the Project Engine.
-    pub fn project_context(
-        &self,
-        project_id: Option<&str>,
-    ) -> JaymiResult<Option<ProjectContext>> {
+    pub fn project_context(&self, project_id: Option<&str>) -> JaymiResult<Option<ProjectContext>> {
         let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
         projects.project_context(project_id)
     }
@@ -1262,15 +1239,13 @@ impl Application {
 
     /// Refresh Project Explorer from the active project via Planner → Tool → Provider.
     pub fn refresh_coding_explorer(&self) -> JaymiResult<()> {
-        let root = self
-            .active_project_id()
-            .and_then(|id| {
-                self.container
-                    .resolve::<Arc<ProjectEngine>>()
-                    .ok()
-                    .and_then(|projects| projects.get(&id).ok().flatten())
-                    .and_then(|project| project.root_directory)
-            });
+        let root = self.active_project_id().and_then(|id| {
+            self.container
+                .resolve::<Arc<ProjectEngine>>()
+                .ok()
+                .and_then(|projects| projects.get(&id).ok().flatten())
+                .and_then(|project| project.root_directory)
+        });
 
         let Some(root) = root else {
             return self.with_coding_state(|coding| {
@@ -1374,10 +1349,7 @@ impl Application {
         let pending = self.with_coding_state(|coding| coding.explorer.pending.clone())?;
         match pending {
             ExplorerPending::None => Ok(()),
-            ExplorerPending::NewFile {
-                parent,
-                draft_name,
-            } => {
+            ExplorerPending::NewFile { parent, draft_name } => {
                 let name = draft_name.trim();
                 if name.is_empty() {
                     return Err(JaymiError::new("new file name must not be empty"));
@@ -1396,10 +1368,7 @@ impl Application {
                 }
                 Ok(())
             }
-            ExplorerPending::NewFolder {
-                parent,
-                draft_name,
-            } => {
+            ExplorerPending::NewFolder { parent, draft_name } => {
                 let name = draft_name.trim();
                 if name.is_empty() {
                     return Err(JaymiError::new("new folder name must not be empty"));
@@ -1460,15 +1429,14 @@ impl Application {
     }
 
     /// Reveal a path in the OS file manager (Finder on macOS).
+    #[allow(clippy::needless_return)]
     pub fn reveal_in_file_manager(&self, path: &str) -> JaymiResult<()> {
         #[cfg(target_os = "macos")]
         {
             std::process::Command::new("open")
                 .args(["-R", path])
                 .spawn()
-                .map_err(|error| {
-                    JaymiError::new(format!("failed to reveal in Finder: {error}"))
-                })?;
+                .map_err(|error| JaymiError::new(format!("failed to reveal in Finder: {error}")))?;
             return Ok(());
         }
         #[cfg(target_os = "windows")]
@@ -1483,9 +1451,7 @@ impl Application {
         }
         #[cfg(all(unix, not(target_os = "macos")))]
         {
-            let parent = Path::new(path)
-                .parent()
-                .unwrap_or_else(|| Path::new(path));
+            let parent = Path::new(path).parent().unwrap_or_else(|| Path::new(path));
             std::process::Command::new("xdg-open")
                 .arg(parent)
                 .spawn()
@@ -1556,9 +1522,9 @@ impl Application {
         if response.blocked {
             return Err(JaymiError::new(response.content));
         }
-        let document = response.document.ok_or_else(|| {
-            JaymiError::new(format!("read_file returned no document for {path}"))
-        })?;
+        let document = response
+            .document
+            .ok_or_else(|| JaymiError::new(format!("read_file returned no document for {path}")))?;
         Ok(document.text.clone())
     }
 
@@ -2101,6 +2067,7 @@ impl Application {
         self.lsp(request)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn coding_lsp_request(
         &self,
         operation: jaymi_core::LspOperation,
@@ -2115,11 +2082,7 @@ impl Application {
             .with_coding_state(|coding| coding.explorer.project_root.clone())?
             .map(PathBuf::from)
             .or_else(|| {
-                path.and_then(|value| {
-                    Path::new(value)
-                        .parent()
-                        .map(|parent| parent.to_path_buf())
-                })
+                path.and_then(|value| Path::new(value).parent().map(|parent| parent.to_path_buf()))
             })
             .ok_or_else(|| JaymiError::new("coding lsp has no workspace root"))?;
         let language = path.map(|value| {
@@ -2154,7 +2117,10 @@ impl Application {
                 message: diag.message.clone(),
                 path: Some(diag.path.clone()),
                 severity: diag.severity.clone(),
-                source: diag.source.clone().unwrap_or_else(|| "rust-analyzer".into()),
+                source: diag
+                    .source
+                    .clone()
+                    .unwrap_or_else(|| "rust-analyzer".into()),
                 line: Some(diag.range.start.line),
                 character: Some(diag.range.start.character),
                 end_line: Some(diag.range.end.line),
@@ -2165,7 +2131,7 @@ impl Application {
             if response
                 .lsp_diagnostics
                 .first()
-                .and_then(|diag| Some(diag.path.as_str()))
+                .map(|diag| diag.path.as_str())
                 .is_some()
             {
                 // Replace diagnostics for touched paths; keep others.
@@ -2174,9 +2140,11 @@ impl Application {
                     .iter()
                     .map(|diag| diag.path.clone())
                     .collect();
-                coding
-                    .diagnostics
-                    .retain(|item| item.path.as_ref().is_none_or(|path| !touched.contains(path)));
+                coding.diagnostics.retain(|item| {
+                    item.path
+                        .as_ref()
+                        .is_none_or(|path| !touched.contains(path))
+                });
                 coding.diagnostics.extend(diagnostics);
             } else if !diagnostics.is_empty() {
                 coding.diagnostics = diagnostics;
@@ -2187,9 +2155,7 @@ impl Application {
 
     /// Save the active editor tab, when any.
     pub fn save_active_coding_file(&self) -> JaymiResult<()> {
-        let path = self.with_coding_state(|coding| {
-            coding.active_tab_path().map(str::to_string)
-        })?;
+        let path = self.with_coding_state(|coding| coding.active_tab_path().map(str::to_string))?;
         let Some(path) = path else {
             return Err(JaymiError::new("no active editor tab to save"));
         };
@@ -2228,9 +2194,7 @@ impl Application {
     pub fn create_coding_terminal(&self, title: Option<String>) -> JaymiResult<()> {
         let cwd = self
             .with_coding_state(|coding| coding.explorer.project_root.clone())?
-            .ok_or_else(|| {
-                JaymiError::new("cannot create terminal — open a project first")
-            })?;
+            .ok_or_else(|| JaymiError::new("cannot create terminal — open a project first"))?;
 
         let response = self.create_terminal(&cwd, title)?;
         if response.blocked {
@@ -2613,16 +2577,13 @@ impl Application {
                 is_repository,
                 repo_root,
                 response.git_branch.clone(),
-                response
-                    .git_summary
-                    .clone()
-                    .unwrap_or_else(|| {
-                        if is_repository {
-                            "clean".into()
-                        } else {
-                            "not a git repository".into()
-                        }
-                    }),
+                response.git_summary.clone().unwrap_or_else(|| {
+                    if is_repository {
+                        "clean".into()
+                    } else {
+                        "not a git repository".into()
+                    }
+                }),
                 to_entries(&response.git_modified),
                 to_entries(&response.git_added),
                 to_entries(&response.git_deleted),
@@ -2659,7 +2620,9 @@ impl Application {
     ///
     /// Persists Coding editor UI state to the project, then discards in-memory
     /// capability runtime state with the workspace.
-    pub fn close_ui_workspace(&self) -> JaymiResult<Option<jaymi_capabilities::WorkspaceExpansion>> {
+    pub fn close_ui_workspace(
+        &self,
+    ) -> JaymiResult<Option<jaymi_capabilities::WorkspaceExpansion>> {
         let _ = self.persist_coding_editor_workspace();
         let mut experience = self
             .experience
@@ -2879,10 +2842,12 @@ impl Application {
             })
             .unwrap_or_default();
 
-        let workspace_error = coding.as_ref().and_then(|state| match &state.explorer.status {
-            ExplorerStatus::Error(message) => Some(message.clone()),
-            _ => None,
-        });
+        let workspace_error = coding
+            .as_ref()
+            .and_then(|state| match &state.explorer.status {
+                ExplorerStatus::Error(message) => Some(message.clone()),
+                _ => None,
+            });
         let git_error = coding
             .as_ref()
             .and_then(|state| state.git.as_ref())
@@ -2907,7 +2872,12 @@ impl Application {
         let (index_status, index_detail) = snapshot
             .as_ref()
             .and_then(|snapshot| snapshot.subsystem("Index Status"))
-            .map(|row| (Some(row.status.label().to_string()), Some(row.detail.clone())))
+            .map(|row| {
+                (
+                    Some(row.status.label().to_string()),
+                    Some(row.detail.clone()),
+                )
+            })
             .unwrap_or((None, None));
         let search_unhealthy = snapshot
             .as_ref()
@@ -2962,7 +2932,9 @@ impl Application {
     fn record_planner_activity(&self, response: &PlannerResponse, duration_ms: u64) {
         let activity = LastPlannerActivity {
             summary: response.content.clone(),
-            capability_id: response.capability.map(|capability| capability.id().to_string()),
+            capability_id: response
+                .capability
+                .map(|capability| capability.id().to_string()),
             tool_id: response.tool_id.clone(),
             provider_id: response.provider_id.clone(),
             blocked: response.blocked,
@@ -3026,13 +2998,15 @@ impl Application {
         let policies_health = policies.health_check();
         let permissions_health = permissions.health_check();
         let memory_report = memory.health_check();
-        let memory_status = memory.health().unwrap_or_else(|_| jaymi_memory::MemoryHealth {
-            initialized: memory_report.initialized,
-            healthy: false,
-            version: memory_report.version.clone(),
-            detail: "memory engine health unavailable".into(),
-            statistics: jaymi_memory::MemoryStats::default(),
-        });
+        let memory_status = memory
+            .health()
+            .unwrap_or_else(|_| jaymi_memory::MemoryHealth {
+                initialized: memory_report.initialized,
+                healthy: false,
+                version: memory_report.version.clone(),
+                detail: "memory engine health unavailable".into(),
+                statistics: jaymi_memory::MemoryStats::default(),
+            });
         let context_health = context_engine.health_check();
         let project_report = projects.health_check();
         let project_status = projects.health().unwrap_or_else(|_| ProjectHealth {
@@ -3060,9 +3034,7 @@ impl Application {
             .into_iter()
             .map(|capability| capability.id().to_string())
             .collect();
-        let discovery = planner
-            .discover_capability_status()
-            .unwrap_or_default();
+        let discovery = planner.discover_capability_status().unwrap_or_default();
         let available_capability_ids: Vec<String> = discovery
             .available
             .iter()
@@ -3081,11 +3053,7 @@ impl Application {
         let capability_inspector = planner
             .inspect_capabilities()
             .ok()
-            .map(|report| {
-                report.with_active_workspace(
-                    self.active_ui_workspace().ok().flatten(),
-                )
-            });
+            .map(|report| report.with_active_workspace(self.active_ui_workspace().ok().flatten()));
         let provider_ids: Vec<String> = providers
             .list()
             .unwrap_or_default()
@@ -3130,10 +3098,7 @@ impl Application {
         let subsystems = vec![
             SubsystemStatus::new(
                 "Planner",
-                OperationalStatus::from_health(
-                    planner_health.healthy,
-                    planner_health.initialized,
-                ),
+                OperationalStatus::from_health(planner_health.healthy, planner_health.initialized),
                 format!(
                     "initialized={} tools={} providers={}",
                     planner_health.initialized,
@@ -3171,11 +3136,7 @@ impl Application {
             SubsystemStatus::new(
                 "Logging",
                 OperationalStatus::from_health(logger_health.healthy, logger_health.initialized),
-                format!(
-                    "level={} · {}",
-                    logging_level,
-                    logger.log_path().display()
-                ),
+                format!("level={} · {}", logging_level, logger.log_path().display()),
             ),
             SubsystemStatus::new(
                 "Permissions",
@@ -3197,9 +3158,7 @@ impl Application {
                 {
                     let enforced: Vec<&str> = active_policies
                         .iter()
-                        .filter(|name| {
-                            *name == "Offline First" || *name == "Privacy Maximum"
-                        })
+                        .filter(|name| *name == "Offline First" || *name == "Privacy Maximum")
                         .map(String::as_str)
                         .collect();
                     if active_policies.is_empty() {
@@ -3303,8 +3262,6 @@ impl Application {
                 "Capabilities",
                 if capabilities.is_initialized() && !available_capability_ids.is_empty() {
                     OperationalStatus::Operational
-                } else if capabilities.is_initialized() && !capability_ids.is_empty() {
-                    OperationalStatus::Experimental
                 } else if capabilities.is_initialized() {
                     OperationalStatus::Experimental
                 } else {
@@ -3613,23 +3570,27 @@ impl Application {
                     .as_ref()
                     .map(|result| result.explanation.clone())
             }),
-            policy_allowed: response
-                .as_ref()
-                .and_then(|value| value.policy_evaluation.as_ref().map(|evaluation| evaluation.allowed)),
+            policy_allowed: response.as_ref().and_then(|value| {
+                value
+                    .policy_evaluation
+                    .as_ref()
+                    .map(|evaluation| evaluation.allowed)
+            }),
             policy_summary: response.as_ref().and_then(|value| {
                 value
                     .policy_evaluation
                     .as_ref()
                     .map(|evaluation| evaluation.summary())
             }),
-            request_blocked: response.as_ref().map(|value| value.blocked).unwrap_or(false),
+            request_blocked: response
+                .as_ref()
+                .map(|value| value.blocked)
+                .unwrap_or(false),
             listed_path: response
                 .as_ref()
                 .and_then(|value| value.listed_path.clone()),
             listing_summary: response.as_ref().and_then(|value| {
-                if value.document.is_none() && !value.blocked {
-                    Some(value.content.clone())
-                } else if value.blocked {
+                if value.document.is_none() || value.blocked {
                     Some(value.content.clone())
                 } else {
                     None
@@ -3813,7 +3774,10 @@ mod tests {
         );
         assert!(diagnostics.database_connected);
         assert_eq!(
-            diagnostics.database_path.as_ref().map(std::path::PathBuf::from),
+            diagnostics
+                .database_path
+                .as_ref()
+                .map(std::path::PathBuf::from),
             Some(data_dir.join("jaymi.db"))
         );
         assert_eq!(
@@ -3827,13 +3791,19 @@ mod tests {
         assert!(data_dir.join("jaymi.db").exists());
         assert!(diagnostics.logging_healthy);
         assert_eq!(
-            diagnostics.logging_path.as_ref().map(std::path::PathBuf::from),
+            diagnostics
+                .logging_path
+                .as_ref()
+                .map(std::path::PathBuf::from),
             Some(data_dir.join("logs").join("jaymi.log"))
         );
         assert!(data_dir.join("logs").join("jaymi.log").exists());
         assert!(data_dir.join("config.json").exists());
         assert_eq!(
-            diagnostics.config_path.as_ref().map(std::path::PathBuf::from),
+            diagnostics
+                .config_path
+                .as_ref()
+                .map(std::path::PathBuf::from),
             Some(data_dir.join("config.json"))
         );
         assert_eq!(diagnostics.config_log_level.as_deref(), Some("info"));

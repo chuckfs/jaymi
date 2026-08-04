@@ -50,10 +50,7 @@ fn capability_engine_registers_resolves_and_describes_metadata() {
         .expect("plan");
     assert_eq!(plan.steps.len(), 2);
     assert_eq!(plan.steps[0].availability, CapabilityAvailability::Ready);
-    assert_eq!(
-        plan.steps[1].availability,
-        CapabilityAvailability::Planned
-    );
+    assert_eq!(plan.steps[1].availability, CapabilityAvailability::Planned);
     assert!(!plan.is_ready());
     assert!(plan.summary().contains("incomplete"));
 
@@ -62,10 +59,7 @@ fn capability_engine_registers_resolves_and_describes_metadata() {
         .expect("ready plan");
     assert!(ready.is_ready());
     assert!(ready.summary().contains("executable") || ready.summary().contains("ready"));
-    assert_eq!(
-        ready.steps[0].availability,
-        CapabilityAvailability::Ready
-    );
+    assert_eq!(ready.steps[0].availability, CapabilityAvailability::Ready);
 
     // Unknown ids stay unknown; capabilities never execute work.
     let mut engine = CapabilityEngine::new();

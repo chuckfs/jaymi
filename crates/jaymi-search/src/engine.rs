@@ -268,6 +268,7 @@ impl SearchEngine {
         // Free-text / semantic / combined with body search uses FTS and optional
         // vector similarity. Content metadata filters remain an independent SQL
         // constraint and also contribute a metadata signal.
+        #[allow(clippy::unnecessary_unwrap)]
         if matches!(
             strategy,
             SearchStrategy::FreeText | SearchStrategy::Semantic | SearchStrategy::Combined
@@ -289,9 +290,7 @@ impl SearchEngine {
                 candidate_count = candidate_count.max(meta_map.len());
                 for hit in &mut hits {
                     if let Some(meta) = meta_map.get(&hit.item_id) {
-                        if let Some(scored) =
-                            self.score_metadata_hit(meta, request, strategy)?
-                        {
+                        if let Some(scored) = self.score_metadata_hit(meta, request, strategy)? {
                             let prior_reason = hit.match_reason.clone();
                             hit.merge_signals(&scored.signals);
                             if prior_reason != scored.match_reason {
@@ -350,7 +349,8 @@ impl SearchEngine {
             return Ok((hits, candidate_count));
         };
 
-        let meta_hits = api.search_metadata(&request.metadata, limit.saturating_mul(4).max(limit))?;
+        let meta_hits =
+            api.search_metadata(&request.metadata, limit.saturating_mul(4).max(limit))?;
         let candidate_count = meta_hits.len();
         let mut hits = Vec::new();
         for meta in meta_hits {
@@ -411,7 +411,11 @@ impl SearchEngine {
             .map(|value| value.trim().to_ascii_lowercase())
             .filter(|value| !value.is_empty())
         {
-            match meta.language.as_ref().map(|value| value.to_ascii_lowercase()) {
+            match meta
+                .language
+                .as_ref()
+                .map(|value| value.to_ascii_lowercase())
+            {
                 Some(have) if have == want => {
                     signals.metadata = signals.metadata.saturating_add(65);
                     if reasons.is_empty() {
@@ -447,11 +451,7 @@ impl SearchEngine {
             .map(|value| value.trim().to_ascii_lowercase())
             .filter(|value| !value.is_empty())
         {
-            if meta
-                .tags
-                .iter()
-                .any(|tag| tag.to_ascii_lowercase() == want)
-            {
+            if meta.tags.iter().any(|tag| tag.to_ascii_lowercase() == want) {
                 signals.metadata = signals.metadata.saturating_add(80);
                 if reasons.is_empty() {
                     primary = MatchReason::MetadataTag;
@@ -621,9 +621,8 @@ impl SearchEngine {
                             .unwrap_or(false)
                     } else {
                         item_key == folder_key
-                            || item_key.starts_with(
-                                &(folder_key.clone() + std::path::MAIN_SEPARATOR_STR),
-                            )
+                            || item_key
+                                .starts_with(&(folder_key.clone() + std::path::MAIN_SEPARATOR_STR))
                     };
                     if !in_folder {
                         continue;
@@ -717,7 +716,8 @@ impl SearchEngine {
                 }
                 _ => None,
             };
-            let fts_hits = api.search_full_text_in_prefix(query, path_prefix.as_deref(), fetch_limit)?;
+            let fts_hits =
+                api.search_full_text_in_prefix(query, path_prefix.as_deref(), fetch_limit)?;
             for content_hit in fts_hits {
                 let Some(ranked) = crate::content_rank::rank_content_match(
                     query,
@@ -899,9 +899,7 @@ impl SearchEngine {
             if !trimmed.is_empty()
                 && matches!(
                     strategy,
-                    SearchStrategy::FreeText
-                        | SearchStrategy::Semantic
-                        | SearchStrategy::Combined
+                    SearchStrategy::FreeText | SearchStrategy::Semantic | SearchStrategy::Combined
                 )
             {
                 query.name_contains = Some(trimmed.to_string());
@@ -1216,11 +1214,10 @@ impl SearchEngine {
             .runtime
             .lock()
             .map_err(|_| JaymiError::new("search engine stats lock poisoned"))?;
-        let average = if runtime.search_count == 0 {
-            0
-        } else {
-            runtime.total_duration_ms / runtime.search_count
-        };
+        let average = runtime
+            .total_duration_ms
+            .checked_div(runtime.search_count)
+            .unwrap_or(0);
         Ok(SearchStats {
             search_count: runtime.search_count,
             average_query_time_ms: average,

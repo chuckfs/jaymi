@@ -56,10 +56,7 @@ impl RotatingFileSink {
         }
 
         let file = open_append(path)?;
-        let len = file
-            .metadata()
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
+        let len = file.metadata().map(|metadata| metadata.len()).unwrap_or(0);
 
         Ok(Self {
             path: path.to_path_buf(),
@@ -95,10 +92,7 @@ impl RotatingFileSink {
         }
 
         let file = state.file.as_mut().ok_or_else(|| {
-            JaymiError::new(format!(
-                "log file is not open: {}",
-                self.path.display()
-            ))
+            JaymiError::new(format!("log file is not open: {}", self.path.display()))
         })?;
         file.write_all(bytes).map_err(|error| {
             JaymiError::new(format!(

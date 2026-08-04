@@ -6,9 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use jaymi::Application;
 use jaymi_core::UserRequest;
-use jaymi_memory::{
-    MemoryQuery, MemoryScope, ProjectMemoryKind, StoreProjectMemoryRequest,
-};
+use jaymi_memory::{MemoryQuery, MemoryScope, ProjectMemoryKind, StoreProjectMemoryRequest};
 use jaymi_planner::Planner;
 use jaymi_project_engine::CreateProjectRequest;
 
@@ -142,7 +140,9 @@ fn continue_working_on_jaymi_restores_project_context_with_isolation() {
     // Active project memory is retrieved automatically on later requests.
     let planner = app.container().resolve::<Planner>().expect("planner");
     let _ = planner
-        .handle(UserRequest::new("what about the planner orchestration token"))
+        .handle(UserRequest::new(
+            "what about the planner orchestration token",
+        ))
         .expect("follow-up");
     // Direct check that active project retrieve works after continue.
     let active = app

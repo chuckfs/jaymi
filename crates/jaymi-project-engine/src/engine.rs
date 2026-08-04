@@ -260,9 +260,7 @@ impl ProjectEngine {
                 .unwrap_or_else(|| format!("root={prefix}"));
 
             // Touch folder search so the index path is exercised for the project.
-            let _ = sources
-                .search
-                .search(&SearchRequest::folder(root, false));
+            let _ = sources.search.search(&SearchRequest::folder(root, false));
         } else {
             search_index.detail = "project has no root directory".into();
         }
@@ -543,7 +541,9 @@ impl ProjectEngineApi for ProjectEngine {
             return Err(JaymiError::new(format!("project not found: {id}")));
         };
         if project.status == ProjectStatus::Deleted {
-            return Err(JaymiError::new(format!("cannot open deleted project: {id}")));
+            return Err(JaymiError::new(format!(
+                "cannot open deleted project: {id}"
+            )));
         }
         let now = Self::now();
         project.last_opened_at = Some(now);
@@ -558,7 +558,11 @@ impl ProjectEngineApi for ProjectEngine {
         }
         jaymi_logging::info(
             "project",
-            format!("opened project id={} name={}", project.id.as_str(), project.name),
+            format!(
+                "opened project id={} name={}",
+                project.id.as_str(),
+                project.name
+            ),
         );
         self.assemble_context(project.id.as_str())
     }
@@ -750,7 +754,10 @@ impl Lifecycle for ProjectEngine {
             DEPENDENCIES,
         )
         .with_details(vec![
-            ("status".into(), if health.healthy { "ok" } else { "degraded" }.into()),
+            (
+                "status".into(),
+                if health.healthy { "ok" } else { "degraded" }.into(),
+            ),
             ("detail".into(), health.detail),
         ])
     }

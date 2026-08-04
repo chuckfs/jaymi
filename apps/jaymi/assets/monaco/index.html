@@ -11,7 +11,7 @@
       width: 100%;
       height: 100%;
       overflow: hidden;
-      background: #1e1e1e;
+      background: transparent;
     }
   </style>
 </head>
@@ -168,7 +168,7 @@
         editor = monaco.editor.create(document.getElementById("container"), {
           value: "",
           language: "plaintext",
-          theme: "vs-dark",
+          theme: "vs",
           automaticLayout: true,
           lineNumbers: "on",
           minimap: { enabled: true },
@@ -178,6 +178,10 @@
           fontFamily: "Menlo, Monaco, 'Courier New', monospace",
           renderWhitespace: "selection",
           scrollBeyondLastLine: false,
+          padding: { top: 4, bottom: 4 },
+          overviewRulerLanes: 0,
+          hideCursorInOverviewRuler: true,
+          overviewRulerBorder: false,
           find: {
             addExtraSpaceOnTop: false,
             autoFindInSelection: "never",
@@ -438,6 +442,25 @@
       window.__jaymiSetOptions = function (options) {
         options = options || {};
         applyEditorOptions(options.minimap, options.wordWrap, options.fontSize);
+      };
+
+      window.__jaymiSetTheme = function (name, definition) {
+        if (!monaco || !monaco.editor) {
+          return;
+        }
+        if (definition && typeof definition === "object") {
+          monaco.editor.defineTheme(name, definition);
+          var bg =
+            (definition.colors && definition.colors["editor.background"]) ||
+            "transparent";
+          document.documentElement.style.background = bg;
+          document.body.style.background = bg;
+          var container = document.getElementById("container");
+          if (container) {
+            container.style.background = bg;
+          }
+        }
+        monaco.editor.setTheme(name);
       };
 
       window.__jaymiSetMinimap = function (enabled) {

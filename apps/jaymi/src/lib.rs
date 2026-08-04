@@ -16,6 +16,7 @@ pub mod experience;
 pub mod monaco_host;
 mod problems;
 pub mod quick_open;
+pub mod theme;
 pub mod ui;
 
 pub use boot::Application;
@@ -26,3 +27,4 @@ pub use coding_workspace::{
 pub use command_dispatch::{dispatch_command, CommandDispatchEffect};
 pub use diagnostics::{DiagnosticsSnapshot, OperationalStatus, SubsystemStatus};
 pub use experience::{ConversationTurn, ExperienceSession};
+pub use theme::{Theme, ThemeMode};

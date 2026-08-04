@@ -44,7 +44,11 @@ fn image_metadata_enters_unified_content_pipeline() {
     assert!(image.color_profile.is_some());
     assert!(image.thumbnail_path.is_some());
     let thumb = PathBuf::from(image.thumbnail_path.as_ref().unwrap());
-    assert!(thumb.exists(), "thumbnail should exist at {}", thumb.display());
+    assert!(
+        thumb.exists(),
+        "thumbnail should exist at {}",
+        thumb.display()
+    );
     assert!(thumb.starts_with(data_dir.join("thumbnails")));
 
     let jpeg = match understanding

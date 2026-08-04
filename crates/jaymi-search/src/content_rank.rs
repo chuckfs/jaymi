@@ -25,9 +25,7 @@ pub struct ContentRank {
 impl ContentRank {
     /// Raw content contribution before hybrid normalization.
     pub fn raw_score(&self) -> u32 {
-        self.signals
-            .title
-            .saturating_add(self.signals.full_text)
+        self.signals.title.saturating_add(self.signals.full_text)
     }
 }
 
@@ -55,9 +53,7 @@ pub fn rank_content_match(
     let phrase = needle.as_str();
 
     let phrase_in_body = text_lower.find(phrase);
-    let phrase_in_title = title_lower
-        .as_ref()
-        .and_then(|title| title.find(phrase));
+    let phrase_in_title = title_lower.as_ref().and_then(|title| title.find(phrase));
 
     let frequency = count_occurrences(&text_lower, phrase);
     let title_token_hits = title_token_match_count(title_lower.as_deref(), phrase);
@@ -193,7 +189,7 @@ fn snippet_around(text: &str, byte_offset: usize, needle_chars: usize) -> Option
     let end = ceil_char_boundary(text, end_target);
     let mut snippet = text[start..end].trim().to_string();
     if start > 0 {
-        snippet.insert_str(0, "…");
+        snippet.insert(0, '…');
     }
     if end < text.len() {
         snippet.push('…');
@@ -270,13 +266,9 @@ mod tests {
 
     #[test]
     fn separates_title_and_full_text_signals() {
-        let ranked = rank_content_match(
-            "fungi",
-            Some("Fungi Notes"),
-            "Fungi grow everywhere.",
-            &[],
-        )
-        .unwrap();
+        let ranked =
+            rank_content_match("fungi", Some("Fungi Notes"), "Fungi grow everywhere.", &[])
+                .unwrap();
         assert!(ranked.signals.title > 0);
         assert!(ranked.signals.full_text > 0);
     }

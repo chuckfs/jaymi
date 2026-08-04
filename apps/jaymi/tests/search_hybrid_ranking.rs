@@ -67,10 +67,10 @@ fn hybrid_ranking_fuses_independent_strategies_consistently() {
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
-    stamp_modified(&knowledge, &best, now);
-    stamp_modified(&knowledge, &body_only, now - 7 * 24 * 3600);
-    stamp_modified(&knowledge, &name_only, now - 30 * 24 * 3600);
-    stamp_modified(&knowledge, &stale, now - 365 * 24 * 3600);
+    stamp_modified(knowledge.as_ref(), &best, now);
+    stamp_modified(knowledge.as_ref(), &body_only, now - 7 * 24 * 3600);
+    stamp_modified(knowledge.as_ref(), &name_only, now - 30 * 24 * 3600);
+    stamp_modified(knowledge.as_ref(), &stale, now - 365 * 24 * 3600);
 
     let engine = app
         .container()
@@ -91,7 +91,9 @@ fn hybrid_ranking_fuses_independent_strategies_consistently() {
             .hits
             .iter()
             .map(|hit| (
-                hit.path.file_name().map(|n| n.to_string_lossy().into_owned()),
+                hit.path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned()),
                 hit.score,
                 &hit.signals
             ))
@@ -145,7 +147,10 @@ fn hybrid_ranking_fuses_independent_strategies_consistently() {
         .container()
         .resolve::<Arc<jaymi_understanding::SqliteContentStore>>()
         .expect("content store");
-    let source_id = normalize_path(&best).unwrap().to_string_lossy().into_owned();
+    let source_id = normalize_path(&best)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
     let mut content = content_store
         .get_by_source_id(&source_id)
         .unwrap()
@@ -165,7 +170,22 @@ fn hybrid_ranking_fuses_independent_strategies_consistently() {
         })
         .expect("combined");
     assert_eq!(combined.strategy, SearchStrategy::Combined);
-    assert_eq!(combined.hits.len(), 1);
+    assert!(
+        !combined.hits.is_empty(),
+        "combined+tag should return the tagged document"
+    );
+    assert!(
+        combined
+            .hits
+            .iter()
+            .all(|hit| hit.path.ends_with("fungi_field_guide.md")),
+        "combined+tag should only return the tagged fungi guide, got {:?}",
+        combined
+            .hits
+            .iter()
+            .map(|hit| &hit.path)
+            .collect::<Vec<_>>()
+    );
     assert!(combined.hits[0].path.ends_with("fungi_field_guide.md"));
     assert!(combined.hits[0].signals.metadata > 0);
     assert!(combined.hits[0].signals.full_text > 0);

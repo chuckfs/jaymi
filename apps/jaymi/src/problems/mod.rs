@@ -53,10 +53,7 @@ impl ProblemsProvider for PlannerProblemsProvider {
             ProblemSeverity::Warning
         };
         vec![ProblemIssue::advisory(
-            "planner",
-            "Planner",
-            severity,
-            message,
+            "planner", "Planner", severity, message,
         )]
     }
 }
@@ -146,7 +143,10 @@ impl ProblemsProvider for SearchProblemsProvider {
                 format!("Search engine unhealthy: {detail}"),
             ));
         }
-        if matches!(ctx.index_status.as_deref(), Some("Disabled") | Some("Error")) {
+        if matches!(
+            ctx.index_status.as_deref(),
+            Some("Disabled") | Some("Error")
+        ) {
             let status = ctx.index_status.clone().unwrap_or_default();
             let detail = ctx.index_detail.clone().unwrap_or_default();
             issues.push(ProblemIssue::advisory(
@@ -224,7 +224,14 @@ mod tests {
         let ids: Vec<&str> = providers.iter().map(|provider| provider.id()).collect();
         assert_eq!(
             ids,
-            vec!["lsp", "planner", "workspace", "permissions", "search", "memory"]
+            vec![
+                "lsp",
+                "planner",
+                "workspace",
+                "permissions",
+                "search",
+                "memory"
+            ]
         );
     }
 
@@ -253,7 +260,9 @@ mod tests {
     #[test]
     fn planner_provider_emits_only_when_blocked() {
         let provider = PlannerProblemsProvider;
-        assert!(provider.collect(&ProblemsCollectContext::default()).is_empty());
+        assert!(provider
+            .collect(&ProblemsCollectContext::default())
+            .is_empty());
 
         let blocked = ProblemsCollectContext {
             planner_blocked: true,
@@ -270,7 +279,10 @@ mod tests {
             permission_denied: true,
             ..ProblemsCollectContext::default()
         };
-        assert_eq!(provider.collect(&denied)[0].severity, ProblemSeverity::Error);
+        assert_eq!(
+            provider.collect(&denied)[0].severity,
+            ProblemSeverity::Error
+        );
     }
 
     #[test]
@@ -283,14 +295,20 @@ mod tests {
         };
         let issues = provider.collect(&ctx);
         assert_eq!(issues.len(), 2);
-        assert!(issues.iter().any(|issue| issue.message.contains("explorer failed")));
-        assert!(issues.iter().any(|issue| issue.message.contains("git failed")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("explorer failed")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("git failed")));
     }
 
     #[test]
     fn permissions_provider_emits_only_when_denied() {
         let provider = PermissionsProblemsProvider;
-        assert!(provider.collect(&ProblemsCollectContext::default()).is_empty());
+        assert!(provider
+            .collect(&ProblemsCollectContext::default())
+            .is_empty());
         let ctx = ProblemsCollectContext {
             permission_denied: true,
             permission_decision: Some("Denied".into()),
@@ -313,15 +331,23 @@ mod tests {
         };
         let issues = provider.collect(&ctx);
         assert_eq!(issues.len(), 3);
-        assert!(issues.iter().any(|issue| issue.message.contains("no embeddings")));
-        assert!(issues.iter().any(|issue| issue.message.contains("Disabled")));
-        assert!(issues.iter().any(|issue| issue.message.contains("parse failed")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("no embeddings")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("Disabled")));
+        assert!(issues
+            .iter()
+            .any(|issue| issue.message.contains("parse failed")));
     }
 
     #[test]
     fn memory_provider_emits_only_when_unhealthy() {
         let provider = MemoryProblemsProvider;
-        assert!(provider.collect(&ProblemsCollectContext::default()).is_empty());
+        assert!(provider
+            .collect(&ProblemsCollectContext::default())
+            .is_empty());
         let ctx = ProblemsCollectContext {
             memory_unhealthy: true,
             memory_detail: Some("store unreachable".into()),

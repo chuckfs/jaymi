@@ -58,7 +58,9 @@ fn planner_composes_research_coding_creation_into_one_plan() {
 
     // Composition is planning only.
     assert!(first.tool_id.is_none());
-    assert!(first.content.contains("Composed 3 independent capabilities"));
+    assert!(first
+        .content
+        .contains("Composed 3 independent capabilities"));
     assert!(first.content.contains("search → code → generate_images"));
     assert!(!first.blocked);
 
@@ -88,22 +90,23 @@ fn direct_composition_api_keeps_capabilities_independent() {
     // Aggregated requirements span steps without merging capabilities.
     let tools = plan.required_tools();
     let permissions = plan.required_permissions();
-    assert!(tools.iter().any(|id| id.contains("search") || id == "editor"));
+    assert!(tools
+        .iter()
+        .any(|id| id.contains("search") || id == "editor"));
     assert!(permissions
         .iter()
         .any(|permission| permission.label() == "filesystem:read"));
-    assert!(permissions
-        .iter()
-        .any(|permission| permission.label() == "terminal:execute")
-        || permissions
+    assert!(
+        permissions
             .iter()
-            .any(|permission| permission.label() == "ai_providers:execute"));
+            .any(|permission| permission.label() == "terminal:execute")
+            || permissions
+                .iter()
+                .any(|permission| permission.label() == "ai_providers:execute")
+    );
 
     // Steps stay distinct objects — mutating one list must not alter another.
-    assert_ne!(
-        plan.steps[0].required_tools,
-        plan.steps[1].required_tools
-    );
+    assert_ne!(plan.steps[0].required_tools, plan.steps[1].required_tools);
     assert_ne!(
         plan.steps[1].required_permissions,
         plan.steps[2].required_permissions
@@ -117,7 +120,11 @@ fn plan_capabilities_accepts_custom_sequences() {
 
     let plan = app
         .plan_capabilities(
-            &[Capability::Discover, Capability::ReadDocuments, Capability::Code],
+            &[
+                Capability::Discover,
+                Capability::ReadDocuments,
+                Capability::Code,
+            ],
             Some("inventory then read then implement"),
         )
         .expect("custom compose");

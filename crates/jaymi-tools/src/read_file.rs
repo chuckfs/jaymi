@@ -163,22 +163,17 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unsupported_extension() {
+    fn unknown_extension_falls_back_to_plain_text() {
         let data = temp_dir("read-unsup-data");
         let dir = temp_dir("read-unsup-files");
         let path = dir.join("archive.bin");
         File::create(&path).unwrap();
 
         let (_knowledge, tool) = boot_tool(&data);
-        let error = tool.execute(&ToolInput::read_file(&path)).unwrap_err();
-        assert!(
-            error.message().contains("no parser")
-                || error.message().contains("cannot detect")
-                || error.message().contains("Unsupported")
-                || error.message().contains("bin"),
-            "{}",
-            error.message()
-        );
+        let output = tool.execute(&ToolInput::read_file(&path)).unwrap();
+        assert!(output.success);
+        assert_eq!(output.parser_id.as_deref(), Some("plain_text"));
+        assert!(output.document.is_some());
     }
 
     fn temp_dir(label: &str) -> std::path::PathBuf {

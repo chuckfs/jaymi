@@ -150,9 +150,15 @@ impl ExplorerState {
     /// Update the draft name for the active pending action.
     pub fn set_pending_draft(&mut self, draft_name: String) {
         match &mut self.pending {
-            ExplorerPending::NewFile { draft_name: draft, .. }
-            | ExplorerPending::NewFolder { draft_name: draft, .. }
-            | ExplorerPending::Rename { draft_name: draft, .. } => {
+            ExplorerPending::NewFile {
+                draft_name: draft, ..
+            }
+            | ExplorerPending::NewFolder {
+                draft_name: draft, ..
+            }
+            | ExplorerPending::Rename {
+                draft_name: draft, ..
+            } => {
                 *draft = draft_name;
             }
             ExplorerPending::None => {}
@@ -207,11 +213,7 @@ impl TerminalSessionState {
     }
 
     /// Create a new empty session with an explicit (or default) title.
-    pub fn with_title(
-        id: impl Into<String>,
-        title: Option<String>,
-        cwd: Option<String>,
-    ) -> Self {
+    pub fn with_title(id: impl Into<String>, title: Option<String>, cwd: Option<String>) -> Self {
         let id = id.into();
         let title = title
             .map(|value| value.trim().to_string())
@@ -361,6 +363,7 @@ pub struct GitStatusState {
 
 impl GitStatusState {
     /// Apply a refreshed status snapshot from the Git tool.
+    #[allow(clippy::too_many_arguments)]
     pub fn apply_snapshot(
         &mut self,
         is_repository: bool,
@@ -390,17 +393,19 @@ impl GitStatusState {
 /// Which bottom auxiliary panel is visible in the Coding shell (VS Code-style).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum CodingBottomTab {
-    /// Bottom panel collapsed — editor uses the full code height.
+    /// Bottom panel collapsed — tab strip remains (≈32px); editor fills the rest.
     #[default]
     Hidden,
     /// Integrated terminal.
     Terminal,
-    /// Git status / stage / commit.
-    Git,
-    /// Workspace + LSP problems (Coding Diagnostics).
-    Diagnostics,
+    /// Aggregated Problems (LSP / Planner / workspace / …).
+    Problems,
     /// Find in Files / project search + replace.
     Search,
+    /// Git status / stage / commit.
+    Git,
+    /// Workspace operational diagnostics (read-only status).
+    Diagnostics,
 }
 
 impl CodingBottomTab {
@@ -409,9 +414,37 @@ impl CodingBottomTab {
         match self {
             Self::Hidden => "",
             Self::Terminal => "Terminal",
-            Self::Git => "Git",
-            Self::Diagnostics => "Problems",
+            Self::Problems => "Problems",
             Self::Search => "Search",
+            Self::Git => "Git",
+            Self::Diagnostics => "Diagnostics",
+        }
+    }
+
+    /// Stable id for persistence.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Hidden => "hidden",
+            Self::Terminal => "terminal",
+            Self::Problems => "problems",
+            Self::Search => "search",
+            Self::Git => "git",
+            Self::Diagnostics => "diagnostics",
+        }
+    }
+
+    /// Parse a persisted tab id.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "hidden" | "" => Some(Self::Hidden),
+            "terminal" => Some(Self::Terminal),
+            "problems" => Some(Self::Problems),
+            // Legacy snapshot / command id used before Problems was split out.
+            "diagnostics-legacy" => Some(Self::Problems),
+            "search" => Some(Self::Search),
+            "git" => Some(Self::Git),
+            "diagnostics" => Some(Self::Diagnostics),
+            _ => None,
         }
     }
 }
@@ -461,25 +494,31 @@ pub struct SearchPanelState {
 }
 
 /// Default Project Explorer column width (points).
-pub const DEFAULT_EXPLORER_WIDTH: f32 = 200.0;
+pub const DEFAULT_EXPLORER_WIDTH: f32 = 260.0;
 /// Minimum Project Explorer column width.
-pub const MIN_EXPLORER_WIDTH: f32 = 140.0;
+pub const MIN_EXPLORER_WIDTH: f32 = 180.0;
 /// Maximum Project Explorer column width.
-pub const MAX_EXPLORER_WIDTH: f32 = 420.0;
-/// Default bottom auxiliary panel height (points).
+pub const MAX_EXPLORER_WIDTH: f32 = 400.0;
+/// Default bottom auxiliary panel height when expanded (points).
 pub const DEFAULT_BOTTOM_PANEL_HEIGHT: f32 = 180.0;
-/// Minimum bottom auxiliary panel height.
+/// Minimum bottom auxiliary panel height when expanded.
 pub const MIN_BOTTOM_PANEL_HEIGHT: f32 = 96.0;
 /// Maximum bottom auxiliary panel height.
 pub const MAX_BOTTOM_PANEL_HEIGHT: f32 = 420.0;
-/// Default Coding side-panel width (conversation ↔ workspace split).
-pub const DEFAULT_WORKSPACE_PANEL_WIDTH: f32 = 640.0;
-/// Minimum Coding side-panel width.
-pub const MIN_WORKSPACE_PANEL_WIDTH: f32 = 420.0;
-/// Absolute maximum Coding side-panel width (also clamped by conversation min).
-pub const MAX_WORKSPACE_PANEL_WIDTH: f32 = 900.0;
+/// Collapsed bottom chrome height (tab strip only).
+pub const COLLAPSED_BOTTOM_TAB_HEIGHT: f32 = 32.0;
+/// Default Coding side-panel width fallback when window size is unknown.
+pub const DEFAULT_WORKSPACE_PANEL_WIDTH: f32 = 770.0;
+/// Soft floor for Coding side-panel width (also clamped by conversation max 45%).
+pub const MIN_WORKSPACE_PANEL_WIDTH: f32 = 280.0;
+/// Absolute ceiling for Coding side-panel width (also clamped by conversation min).
+pub const MAX_WORKSPACE_PANEL_WIDTH: f32 = 1400.0;
 /// Minimum conversation (central) column width — Coding cannot steal past this.
-pub const MIN_CONVERSATION_WIDTH: f32 = 360.0;
+pub const MIN_CONVERSATION_WIDTH: f32 = 340.0;
+/// Default conversation fraction of the window (workspace takes the rest).
+pub const DEFAULT_CONVERSATION_FRACTION: f32 = 0.30;
+/// Maximum conversation fraction of the window.
+pub const MAX_CONVERSATION_FRACTION: f32 = 0.45;
 
 /// Temporary state for the Coding workspace.
 #[derive(Debug, Clone, PartialEq)]
@@ -662,6 +701,7 @@ impl CodingState {
         snapshot.explorer_width = Some(self.explorer_width);
         snapshot.bottom_panel_height = Some(self.bottom_panel_height);
         snapshot.workspace_panel_width = Some(self.workspace_panel_width);
+        snapshot.bottom_tab = Some(self.bottom_tab.as_str().to_string());
         snapshot
     }
 
@@ -669,9 +709,7 @@ impl CodingState {
     pub fn apply_editor_workspace_meta(&mut self, snapshot: &EditorWorkspaceSnapshot) {
         self.editor_settings = snapshot.settings.clone();
         self.editors.recently_opened = snapshot.recently_opened.clone();
-        self.editors
-            .recently_opened
-            .truncate(RECENTLY_OPENED_CAP);
+        self.editors.recently_opened.truncate(RECENTLY_OPENED_CAP);
         self.apply_shell_chrome_sizes(snapshot);
     }
 
@@ -693,6 +731,13 @@ impl CodingState {
         if let Some(width) = snapshot.workspace_panel_width {
             self.workspace_panel_width =
                 width.clamp(MIN_WORKSPACE_PANEL_WIDTH, MAX_WORKSPACE_PANEL_WIDTH);
+        }
+        if let Some(tab) = snapshot
+            .bottom_tab
+            .as_deref()
+            .and_then(CodingBottomTab::parse)
+        {
+            self.bottom_tab = tab;
         }
     }
 
@@ -882,10 +927,7 @@ pub fn is_editable_coding_extension(path: &str) -> bool {
 ///
 /// Entries should already exclude hidden names and `.git`. Directories are
 /// sorted before files; siblings are alphabetical.
-pub fn build_explorer_tree(
-    root: &str,
-    entries: &[(String, String, bool)],
-) -> Vec<ExplorerNode> {
+pub fn build_explorer_tree(root: &str, entries: &[(String, String, bool)]) -> Vec<ExplorerNode> {
     // entries: (absolute_path, name, is_dir)
     let root = root.trim_end_matches('/').trim_end_matches('\\');
     let mut by_parent: BTreeMap<String, Vec<(String, String, bool)>> = BTreeMap::new();
@@ -909,7 +951,10 @@ pub fn build_explorer_tree(
         children.sort_by(|left, right| match (left.2, right.2) {
             (true, false) => std::cmp::Ordering::Less,
             (false, true) => std::cmp::Ordering::Greater,
-            _ => left.1.to_ascii_lowercase().cmp(&right.1.to_ascii_lowercase()),
+            _ => left
+                .1
+                .to_ascii_lowercase()
+                .cmp(&right.1.to_ascii_lowercase()),
         });
         children
             .into_iter()
@@ -1003,6 +1048,7 @@ impl ResearchState {
 
 /// Independent runtime state for one expanded capability workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum CapabilityState {
     /// Coding / IDE temporary state.
     Coding(CodingState),
@@ -1320,17 +1366,20 @@ mod tests {
         state.set_explorer_width(260.0);
         state.set_bottom_panel_height(210.0);
         state.set_workspace_panel_width(720.0);
+        state.bottom_tab = CodingBottomTab::Search;
 
         let snapshot = state.editor_workspace_snapshot();
         assert_eq!(snapshot.explorer_width, Some(260.0));
         assert_eq!(snapshot.bottom_panel_height, Some(210.0));
         assert_eq!(snapshot.workspace_panel_width, Some(720.0));
+        assert_eq!(snapshot.bottom_tab.as_deref(), Some("search"));
 
         let mut restored = CodingState::default();
         restored.apply_editor_workspace_meta(&snapshot);
         assert_eq!(restored.explorer_width, 260.0);
         assert_eq!(restored.bottom_panel_height, 210.0);
         assert_eq!(restored.workspace_panel_width, 720.0);
+        assert_eq!(restored.bottom_tab, CodingBottomTab::Search);
 
         // Out-of-range persisted values are clamped on restore too.
         let mut out_of_range = snapshot.clone();
@@ -1340,10 +1389,31 @@ mod tests {
         let mut restored_clamped = CodingState::default();
         restored_clamped.apply_editor_workspace_structure(&out_of_range);
         assert_eq!(restored_clamped.explorer_width, MIN_EXPLORER_WIDTH);
-        assert_eq!(restored_clamped.bottom_panel_height, MIN_BOTTOM_PANEL_HEIGHT);
+        assert_eq!(
+            restored_clamped.bottom_panel_height,
+            MIN_BOTTOM_PANEL_HEIGHT
+        );
         assert_eq!(
             restored_clamped.workspace_panel_width,
             MAX_WORKSPACE_PANEL_WIDTH
+        );
+    }
+
+    #[test]
+    fn coding_bottom_tab_parse_roundtrips() {
+        for tab in [
+            CodingBottomTab::Hidden,
+            CodingBottomTab::Terminal,
+            CodingBottomTab::Problems,
+            CodingBottomTab::Search,
+            CodingBottomTab::Git,
+            CodingBottomTab::Diagnostics,
+        ] {
+            assert_eq!(CodingBottomTab::parse(tab.as_str()), Some(tab));
+        }
+        assert_eq!(
+            CodingBottomTab::parse("diagnostics-legacy"),
+            Some(CodingBottomTab::Problems)
         );
     }
 
@@ -1363,14 +1433,15 @@ mod tests {
     #[test]
     fn promote_summary_reads_research_and_creation_entries() {
         let mut research = CapabilityState::empty_for(WorkspaceKind::Research).unwrap();
-        research.research_mut().unwrap().notes.push(ResearchNoteState {
-            id: "n1".into(),
-            content: "Finding A".into(),
-        });
-        assert_eq!(
-            research.promote_summary("n1").as_deref(),
-            Some("Finding A")
-        );
+        research
+            .research_mut()
+            .unwrap()
+            .notes
+            .push(ResearchNoteState {
+                id: "n1".into(),
+                content: "Finding A".into(),
+            });
+        assert_eq!(research.promote_summary("n1").as_deref(), Some("Finding A"));
 
         let mut creation = CapabilityState::empty_for(WorkspaceKind::Creation).unwrap();
         creation

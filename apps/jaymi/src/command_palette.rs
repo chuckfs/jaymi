@@ -8,9 +8,10 @@ use eframe::egui;
 use jaymi_commands::{CommandDescriptor, CommandRegistry};
 
 /// Palette UI mode.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum CommandPaletteMode {
     /// Closed.
+    #[default]
     Closed,
     /// Filtering / picking a command.
     Commands {
@@ -28,12 +29,6 @@ pub enum CommandPaletteMode {
         /// User input.
         value: String,
     },
-}
-
-impl Default for CommandPaletteMode {
-    fn default() -> Self {
-        Self::Closed
-    }
 }
 
 /// Mutable Command Palette state owned by the desktop UI.
@@ -95,6 +90,7 @@ pub fn render_command_palette(
     ctx: &egui::Context,
     state: &mut CommandPaletteState,
     registry: &CommandRegistry,
+    overlay_scrim: egui::Color32,
 ) -> CommandPaletteOutcome {
     if !state.is_open() {
         return CommandPaletteOutcome::None;
@@ -109,8 +105,7 @@ pub fn render_command_palette(
         .fixed_pos(screen.min)
         .show(ctx, |ui| {
             let response = ui.allocate_response(screen.size(), egui::Sense::click());
-            ui.painter()
-                .rect_filled(screen, 0.0, egui::Color32::from_black_alpha(140));
+            ui.painter().rect_filled(screen, 0.0, overlay_scrim);
             if response.clicked() {
                 dismiss = true;
             }
@@ -163,11 +158,8 @@ pub fn render_command_palette(
                             .show(ui, |ui| {
                                 for (index, command) in commands.iter().enumerate() {
                                     let selected_row = index == *selected;
-                                    let label = format!(
-                                        "{} · {}",
-                                        command.category.label(),
-                                        command.title
-                                    );
+                                    let label =
+                                        format!("{} · {}", command.category.label(), command.title);
                                     let mut text = egui::RichText::new(label);
                                     if selected_row {
                                         text = text.strong();

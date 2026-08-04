@@ -115,14 +115,16 @@ fn project_knowledge_and_user_requests_traverse_the_planner() {
 
     // Inventory search and continue-project also traverse the Planner.
     let search = app
-        .search(jaymi_core::SearchRequest::free_text("unique-integrity-token-42"))
+        .search(jaymi_core::SearchRequest::free_text(
+            "unique-integrity-token-42",
+        ))
         .expect("inventory search");
-    assert!(!search.content.is_empty() || !search.entries.is_empty() || !search.citations.is_empty());
+    assert!(
+        !search.content.is_empty() || !search.entries.is_empty() || !search.citations.is_empty()
+    );
     assert_eq!(planner.handle_count(), handles_before + 4);
 
-    let continued = app
-        .continue_project("Integrity")
-        .expect("continue");
+    let continued = app.continue_project("Integrity").expect("continue");
     assert!(continued.project_context.is_some());
     assert_eq!(planner.handle_count(), handles_before + 5);
     assert_eq!(context.assemble_count(), assembles_before + 5);

@@ -101,8 +101,12 @@ fn split_vertical_creates_second_pane_with_independent_cursor() {
     assert_eq!((right_cursor.line, right_cursor.column), (1, 5));
 
     // Shared buffer content is still visible from both panes.
-    app.set_coding_tab_content_in_pane(&left_pane, &path_str, "fn main() { /* edited */ }\n".into())
-        .expect("edit from left pane");
+    app.set_coding_tab_content_in_pane(
+        &left_pane,
+        &path_str,
+        "fn main() { /* edited */ }\n".into(),
+    )
+    .expect("edit from left pane");
     let coding = app
         .capability_state()
         .unwrap()
@@ -189,7 +193,8 @@ fn move_tab_between_panes_then_close_pane() {
     // Closing the right pane drops tabs unique to it (VS Code "Close Split");
     // `b.rs` was cloned into the right pane at split time but is still open in
     // the surviving left pane, so its shared buffer must stay alive.
-    app.close_coding_editor_pane(&right_pane).expect("close pane");
+    app.close_coding_editor_pane(&right_pane)
+        .expect("close pane");
     let coding = app
         .capability_state()
         .unwrap()
@@ -198,7 +203,10 @@ fn move_tab_between_panes_then_close_pane() {
         .unwrap()
         .clone();
     assert_eq!(coding.editors.panes.len(), 1);
-    assert!(matches!(coding.editors.layout, EditorLayoutNode::Leaf { .. }));
+    assert!(matches!(
+        coding.editors.layout,
+        EditorLayoutNode::Leaf { .. }
+    ));
     assert!(coding.editors.session_by_path(&a_path).is_none());
     assert!(coding.editors.session_by_path(&b_path).is_some());
 
@@ -262,7 +270,10 @@ fn split_layout_persists_in_workspace_json_and_restores() {
             ..
         })
     ));
-    assert_eq!(snapshot.focused_pane.as_ref().map(|id| id.as_str()), Some(right_pane.as_str()));
+    assert_eq!(
+        snapshot.focused_pane.as_ref().map(|id| id.as_str()),
+        Some(right_pane.as_str())
+    );
 
     app.close_ui_workspace().expect("close").expect("was open");
     app.start_coding_project().expect("reopen coding");
@@ -274,7 +285,11 @@ fn split_layout_persists_in_workspace_json_and_restores() {
         .coding()
         .expect("coding kind")
         .clone();
-    assert_eq!(coding.editors.panes.len(), 2, "split layout must survive restore");
+    assert_eq!(
+        coding.editors.panes.len(),
+        2,
+        "split layout must survive restore"
+    );
     assert!(matches!(
         coding.editors.layout,
         EditorLayoutNode::Split {

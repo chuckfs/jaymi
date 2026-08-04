@@ -39,7 +39,11 @@ fn project_engine_is_sole_owner_of_project_identity() {
 
     assert_eq!(created.id.as_str(), "project:ownership");
     assert_eq!(
-        projects.get("project:ownership").expect("get").expect("found").name,
+        projects
+            .get("project:ownership")
+            .expect("get")
+            .expect("found")
+            .name,
         "Ownership"
     );
     assert_eq!(
@@ -84,10 +88,7 @@ fn project_engine_is_sole_owner_of_project_identity() {
             source: Some("test".into()),
         })
         .expect("store by project_id");
-    assert_eq!(
-        stored.project_id.as_deref(),
-        Some(created.id.as_str())
-    );
+    assert_eq!(stored.project_id.as_deref(), Some(created.id.as_str()));
 
     let restored = memory
         .restore_project_memories(created.id.as_str())
@@ -110,9 +111,7 @@ fn project_engine_is_sole_owner_of_project_identity() {
     assert!(other_only.is_empty());
 
     // Assembled ProjectContext is the only ProjectContext type (PE-owned).
-    let context = app
-        .open_project(created.id.as_str())
-        .expect("open");
+    let context = app.open_project(created.id.as_str()).expect("open");
     assert_eq!(context.project.id, created.id);
     assert_eq!(context.memories.project_id, created.id.as_str());
     assert_eq!(context.memories.name, "Ownership");
@@ -130,7 +129,10 @@ fn project_engine_is_sole_owner_of_project_identity() {
     // Deletion is owned by the Project Engine.
     app.delete_project("project:second").expect("delete second");
     assert_eq!(app.list_projects().expect("after delete").len(), 1);
-    assert!(projects.get("project:second").expect("get deleted").is_some());
+    assert!(projects
+        .get("project:second")
+        .expect("get deleted")
+        .is_some());
 
     let _ = fs::remove_dir_all(&data_dir);
     let _ = fs::remove_dir_all(&root);

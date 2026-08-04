@@ -80,18 +80,13 @@ pub struct PromotionSuggestQuery {
 /// Planner decision about whether to surface suggestions to the user.
 ///
 /// The Planner never auto-applies promotions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PromotionAskDecision {
     /// Ask the user whether to promote.
     AskUser,
     /// Keep suggestions available but do not interrupt.
+    #[default]
     Defer,
-}
-
-impl Default for PromotionAskDecision {
-    fn default() -> Self {
-        Self::Defer
-    }
 }
 
 impl PromotionAskDecision {

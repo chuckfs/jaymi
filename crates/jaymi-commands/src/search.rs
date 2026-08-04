@@ -53,7 +53,10 @@ fn score_text(haystack: &str, needle: &str) -> u32 {
         return 400;
     }
     // Token match: every needle word appears somewhere.
-    let tokens: Vec<_> = needle.split_whitespace().filter(|t| !t.is_empty()).collect();
+    let tokens: Vec<_> = needle
+        .split_whitespace()
+        .filter(|t| !t.is_empty())
+        .collect();
     if !tokens.is_empty() && tokens.iter().all(|token| hay.contains(token)) {
         return 500;
     }

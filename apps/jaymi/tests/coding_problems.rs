@@ -36,9 +36,19 @@ fn boot_registers_all_builtin_problem_providers() {
     let registry = app.problems_registry().expect("problems registry");
     let ids = registry.list_ids().expect("list ids");
 
-    let mut expected = vec!["lsp", "planner", "workspace", "permissions", "search", "memory"];
+    let mut expected = vec![
+        "lsp",
+        "planner",
+        "workspace",
+        "permissions",
+        "search",
+        "memory",
+    ];
     expected.sort();
-    assert_eq!(ids, expected, "boot must register every built-in Problems provider");
+    assert_eq!(
+        ids, expected,
+        "boot must register every built-in Problems provider"
+    );
 }
 
 #[test]

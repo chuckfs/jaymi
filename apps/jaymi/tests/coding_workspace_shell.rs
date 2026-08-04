@@ -87,12 +87,7 @@ fn coding_shell_reflects_state_and_clears_on_close() {
             },
         ];
         coding.explorer.expanded_paths = BTreeSet::from(["/tmp/project/src".into()]);
-        coding.upsert_tab(
-            "/tmp/project/src/lib.rs",
-            "lib.rs",
-            "fn x() {}".into(),
-            0.0,
-        );
+        coding.upsert_tab("/tmp/project/src/lib.rs", "lib.rs", "fn x() {}".into(), 0.0);
         coding.terminal_sessions.push(TerminalSessionState {
             id: "term-1".into(),
             title: "Terminal".into(),

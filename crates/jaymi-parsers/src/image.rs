@@ -50,9 +50,8 @@ impl FileParser for ImageParser {
             return Err(JaymiError::new("image file is empty"));
         }
 
-        let dyn_image = image::load_from_memory(bytes).map_err(|error| {
-            JaymiError::new(format!("failed to decode image: {error}"))
-        })?;
+        let dyn_image = image::load_from_memory(bytes)
+            .map_err(|error| JaymiError::new(format!("failed to decode image: {error}")))?;
 
         let width = dyn_image.width();
         let height = dyn_image.height();
@@ -97,7 +96,7 @@ fn detect_format(path: &Path, bytes: &[u8]) -> String {
     }
     path.extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| normalize_ext(ext))
+        .map(normalize_ext)
         .unwrap_or_else(|| "unknown".to_string())
 }
 
@@ -161,10 +160,7 @@ fn extract_exif(bytes: &[u8]) -> BTreeMap<String, String> {
         tags.insert("DateTime".to_string(), field.display_value().to_string());
     }
     if let Some(field) = reader.get_field(exif::Tag::ColorSpace, exif::In::PRIMARY) {
-        tags.insert(
-            "ColorSpace".to_string(),
-            field.display_value().to_string(),
-        );
+        tags.insert("ColorSpace".to_string(), field.display_value().to_string());
     }
     tags
 }

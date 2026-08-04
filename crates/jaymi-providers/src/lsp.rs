@@ -260,10 +260,9 @@ impl LspProvider {
             match &mut session.backend {
                 SessionBackend::Mock(mock) => {
                     mock.did_open(path, content);
-                    session.diagnostics.insert(
-                        path.to_path_buf(),
-                        mock.diagnostics_for(path, content),
-                    );
+                    session
+                        .diagnostics
+                        .insert(path.to_path_buf(), mock.diagnostics_for(path, content));
                 }
                 SessionBackend::Process(process) => {
                     process.notify(
@@ -294,11 +293,7 @@ impl LspProvider {
                     language: language.to_string(),
                 },
             );
-            let diagnostics = session
-                .diagnostics
-                .get(path)
-                .cloned()
-                .unwrap_or_default();
+            let diagnostics = session.diagnostics.get(path).cloned().unwrap_or_default();
             Ok(LspOperationResult {
                 operation: Some(LspOperation::DidOpen),
                 diagnostics,
@@ -319,10 +314,9 @@ impl LspProvider {
             match &mut session.backend {
                 SessionBackend::Mock(mock) => {
                     mock.did_change(path, content);
-                    session.diagnostics.insert(
-                        path.to_path_buf(),
-                        mock.diagnostics_for(path, content),
-                    );
+                    session
+                        .diagnostics
+                        .insert(path.to_path_buf(), mock.diagnostics_for(path, content));
                 }
                 SessionBackend::Process(process) => {
                     process.notify(
@@ -356,11 +350,7 @@ impl LspProvider {
                     },
                 );
             }
-            let diagnostics = session
-                .diagnostics
-                .get(path)
-                .cloned()
-                .unwrap_or_default();
+            let diagnostics = session.diagnostics.get(path).cloned().unwrap_or_default();
             Ok(LspOperationResult {
                 operation: Some(LspOperation::DidChange),
                 diagnostics,
@@ -471,11 +461,7 @@ impl LspProvider {
         })
     }
 
-    fn diagnostics(
-        &self,
-        root: &Path,
-        path: Option<&Path>,
-    ) -> JaymiResult<LspOperationResult> {
+    fn diagnostics(&self, root: &Path, path: Option<&Path>) -> JaymiResult<LspOperationResult> {
         self.with_session_mut(root, |session| {
             // Drain any pending publishDiagnostics from the process backend.
             if let SessionBackend::Process(process) = &mut session.backend {
@@ -710,7 +696,10 @@ impl MockSession {
     fn hover(&self, path: &Path, text: &str, line: u32, character: u32) -> Option<LspHover> {
         let word = word_at(text, line, character)?;
         Some(LspHover {
-            contents: format!("```rust\n(mock) {word}: _\n```\n\nHover from mock LSP for `{}`.", path.display()),
+            contents: format!(
+                "```rust\n(mock) {word}: _\n```\n\nHover from mock LSP for `{}`.",
+                path.display()
+            ),
             range: Some(word_range(text, line, character, &word)?),
         })
     }
@@ -750,7 +739,11 @@ impl MockSession {
             },
         ];
         if !prefix.is_empty() {
-            items.retain(|item| item.label.to_lowercase().starts_with(&prefix.to_lowercase()));
+            items.retain(|item| {
+                item.label
+                    .to_lowercase()
+                    .starts_with(&prefix.to_lowercase())
+            });
             if items.is_empty() {
                 items.push(LspCompletionItem {
                     label: prefix.clone(),
@@ -763,13 +756,7 @@ impl MockSession {
         items
     }
 
-    fn definition(
-        &self,
-        path: &Path,
-        text: &str,
-        line: u32,
-        character: u32,
-    ) -> Vec<LspLocation> {
+    fn definition(&self, path: &Path, text: &str, line: u32, character: u32) -> Vec<LspLocation> {
         let Some(word) = word_at(text, line, character) else {
             return Vec::new();
         };
@@ -814,10 +801,7 @@ impl MockSession {
                         .nth(col.saturating_sub(1))
                         .is_some_and(is_ident_char);
                 let after = col + word.len();
-                let after_ok = !line_text
-                    .chars()
-                    .nth(after)
-                    .is_some_and(is_ident_char);
+                let after_ok = !line_text.chars().nth(after).is_some_and(is_ident_char);
                 if before_ok && after_ok {
                     edits.push(LspTextEdit {
                         path: path.display().to_string(),
@@ -840,13 +824,7 @@ impl MockSession {
         edits
     }
 
-    fn references(
-        &self,
-        path: &Path,
-        text: &str,
-        line: u32,
-        character: u32,
-    ) -> Vec<LspLocation> {
+    fn references(&self, path: &Path, text: &str, line: u32, character: u32) -> Vec<LspLocation> {
         self.rename(path, text, line, character, "")
             .into_iter()
             .map(|edit| LspLocation {
@@ -863,6 +841,7 @@ struct ProcessSession {
     child: Child,
     stdin: ChildStdin,
     pending: Arc<Mutex<HashMap<i64, Option<Value>>>>,
+    #[allow(clippy::type_complexity)]
     diagnostics: Arc<Mutex<Vec<(String, Vec<LspDiagnostic>)>>>,
     next_id: Arc<AtomicI64>,
 }
@@ -880,7 +859,9 @@ impl ProcessSession {
             .stderr(Stdio::null())
             .spawn()
             .map_err(|error| {
-                JaymiError::new(format!("failed to spawn language server `{program}`: {error}"))
+                JaymiError::new(format!(
+                    "failed to spawn language server `{program}`: {error}"
+                ))
             })?;
         let stdin = child
             .stdin
@@ -987,9 +968,7 @@ impl ProcessSession {
                 }
             }
             if Instant::now() > deadline {
-                return Err(JaymiError::new(format!(
-                    "lsp request `{method}` timed out"
-                )));
+                return Err(JaymiError::new(format!("lsp request `{method}` timed out")));
             }
             thread::sleep(Duration::from_millis(20));
         }
@@ -1054,9 +1033,7 @@ fn spawn_backend(
         Err(error) => {
             jaymi_logging::warn(
                 "providers",
-                format!(
-                    "lsp process unavailable ({error}); falling back to mock language server"
-                ),
+                format!("lsp process unavailable ({error}); falling back to mock language server"),
             );
             Ok(SessionBackend::Mock(MockSession::new()))
         }
@@ -1068,20 +1045,19 @@ pub fn resolve_lsp_command() -> Vec<String> {
     if let Ok(raw) = std::env::var("JAYMI_LSP_COMMAND") {
         let trimmed = raw.trim();
         if !trimmed.is_empty() {
-            return trimmed
-                .split_whitespace()
-                .map(str::to_string)
-                .collect();
+            return trimmed.split_whitespace().map(str::to_string).collect();
         }
     }
     vec![DEFAULT_LSP_COMMAND.to_string()]
 }
 
 fn require_path(request: &LspRequest) -> JaymiResult<PathBuf> {
-    let path = request
-        .path
-        .as_ref()
-        .ok_or_else(|| JaymiError::new(format!("lsp {} requires a path", request.operation.as_str())))?;
+    let path = request.path.as_ref().ok_or_else(|| {
+        JaymiError::new(format!(
+            "lsp {} requires a path",
+            request.operation.as_str()
+        ))
+    })?;
     if path.as_os_str().is_empty() {
         return Err(JaymiError::new("lsp path must not be empty"));
     }
@@ -1089,9 +1065,9 @@ fn require_path(request: &LspRequest) -> JaymiResult<PathBuf> {
 }
 
 fn require_position(request: &LspRequest) -> JaymiResult<(u32, u32)> {
-    let line = request
-        .line
-        .ok_or_else(|| JaymiError::new(format!("lsp {} requires line", request.operation.as_str())))?;
+    let line = request.line.ok_or_else(|| {
+        JaymiError::new(format!("lsp {} requires line", request.operation.as_str()))
+    })?;
     let character = request.character.ok_or_else(|| {
         JaymiError::new(format!(
             "lsp {} requires character",
@@ -1282,9 +1258,7 @@ fn parse_workspace_edits(value: Value) -> Vec<LspTextEdit> {
     }
     if let Some(document_changes) = value.get("documentChanges").and_then(Value::as_array) {
         for change in document_changes {
-            let uri = change
-                .pointer("/textDocument/uri")
-                .and_then(Value::as_str);
+            let uri = change.pointer("/textDocument/uri").and_then(Value::as_str);
             let Some(uri) = uri else {
                 continue;
             };

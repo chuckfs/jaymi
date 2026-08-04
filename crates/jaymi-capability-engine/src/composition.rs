@@ -20,9 +20,7 @@ pub struct CapabilityComposition {
 impl CapabilityComposition {
     /// Build a composition from an ordered capability list.
     pub fn new(capabilities: impl IntoIterator<Item = Capability>) -> JaymiResult<Self> {
-        let capabilities = compose_capabilities(
-            &capabilities.into_iter().collect::<Vec<_>>(),
-        )?;
+        let capabilities = compose_capabilities(&capabilities.into_iter().collect::<Vec<_>>())?;
         Ok(Self {
             capabilities,
             goal: None,
@@ -136,7 +134,9 @@ mod tests {
             .with_goal("research then build then illustrate");
         assert_eq!(composition.primary(), Capability::Search);
         assert_eq!(composition.len(), 3);
-        assert!(composition.summary().contains("search → code → generate_images"));
+        assert!(composition
+            .summary()
+            .contains("search → code → generate_images"));
     }
 
     #[test]

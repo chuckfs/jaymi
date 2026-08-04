@@ -24,7 +24,7 @@ const DEPENDENCIES: &[&str] = &["configuration", "logging", "database", "discove
 const DEBOUNCE: Duration = Duration::from_millis(150);
 
 /// High-level watcher lifecycle for diagnostics.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum WatcherStatus {
     /// Indexing/watching disabled by configuration.
     Disabled,
@@ -33,6 +33,7 @@ pub enum WatcherStatus {
     /// Actively monitoring roots.
     Watching,
     /// Watcher stopped during shutdown.
+    #[default]
     Stopped,
     /// Watcher failed to start or encountered a fatal error.
     Error(String),
@@ -73,12 +74,6 @@ struct SharedState {
     dirty_roots: HashSet<PathBuf>,
     last_event: Option<String>,
     last_event_at: Option<i64>,
-}
-
-impl Default for WatcherStatus {
-    fn default() -> Self {
-        Self::Stopped
-    }
 }
 
 /// Background filesystem watcher bound to the discovery engine.
@@ -132,9 +127,10 @@ impl FilesystemWatcher {
 
     fn start_watching(&mut self) -> JaymiResult<()> {
         if !self.discovery.indexing_enabled() {
-            let mut state = self.state.lock().map_err(|_| {
-                JaymiError::new("filesystem watcher state lock poisoned")
-            })?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| JaymiError::new("filesystem watcher state lock poisoned"))?;
             state.status = WatcherStatus::Disabled;
             state.watched_directories.clear();
             return Ok(());
@@ -150,9 +146,10 @@ impl FilesystemWatcher {
             .collect();
 
         if roots.is_empty() {
-            let mut state = self.state.lock().map_err(|_| {
-                JaymiError::new("filesystem watcher state lock poisoned")
-            })?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| JaymiError::new("filesystem watcher state lock poisoned"))?;
             state.status = WatcherStatus::Idle;
             state.watched_directories.clear();
             jaymi_logging::info(
@@ -166,23 +163,23 @@ impl FilesystemWatcher {
         let mut watcher = notify::recommended_watcher(move |result| {
             let _ = tx.send(result);
         })
-        .map_err(|error| JaymiError::new(format!("failed to create filesystem watcher: {error}")))?;
+        .map_err(|error| {
+            JaymiError::new(format!("failed to create filesystem watcher: {error}"))
+        })?;
 
         for root in &roots {
             watcher
                 .watch(root, RecursiveMode::Recursive)
                 .map_err(|error| {
-                    JaymiError::new(format!(
-                        "failed to watch {}: {error}",
-                        root.display()
-                    ))
+                    JaymiError::new(format!("failed to watch {}: {error}", root.display()))
                 })?;
         }
 
         {
-            let mut state = self.state.lock().map_err(|_| {
-                JaymiError::new("filesystem watcher state lock poisoned")
-            })?;
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| JaymiError::new("filesystem watcher state lock poisoned"))?;
             state.status = WatcherStatus::Watching;
             state.watched_directories = roots.clone();
             state.dirty_roots.clear();
@@ -207,10 +204,7 @@ impl FilesystemWatcher {
                         last_event_at = Instant::now();
                     }
                     Ok(Err(error)) => {
-                        jaymi_logging::warn(
-                            "watcher",
-                            format!("filesystem watch error: {error}"),
-                        );
+                        jaymi_logging::warn("watcher", format!("filesystem watch error: {error}"));
                         if let Ok(mut guard) = state.lock() {
                             guard.last_event = Some(format!("error: {error}"));
                             guard.last_event_at = Some(unix_now());
@@ -296,8 +290,7 @@ impl Lifecycle for FilesystemWatcher {
 
     fn health_check(&self) -> HealthReport {
         let diagnostics = self.diagnostics();
-        let healthy = self.initialized
-            && !matches!(diagnostics.status, WatcherStatus::Error(_));
+        let healthy = self.initialized && !matches!(diagnostics.status, WatcherStatus::Error(_));
         HealthReport::new(
             NAME,
             self.initialized,
@@ -306,10 +299,7 @@ impl Lifecycle for FilesystemWatcher {
             DEPENDENCIES,
         )
         .with_details(vec![
-            (
-                "status".to_string(),
-                diagnostics.status.label().to_string(),
-            ),
+            ("status".to_string(), diagnostics.status.label().to_string()),
             (
                 "watched_directories".to_string(),
                 diagnostics.watched_directories.len().to_string(),

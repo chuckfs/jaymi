@@ -56,7 +56,9 @@ fn full_text_search_finds_words_phrases_and_sections() {
         .search(&SearchRequest::free_text("fungi"))
         .expect("word");
     assert!(
-        word.hits.iter().any(|hit| hit.path.ends_with("report_final_v7.md")),
+        word.hits
+            .iter()
+            .any(|hit| hit.path.ends_with("report_final_v7.md")),
         "expected content hit, got {:?}",
         word.hits
     );
@@ -78,14 +80,12 @@ fn full_text_search_finds_words_phrases_and_sections() {
         paper_hit.match_reason
     );
     assert_eq!(paper_hit.matching_section.as_deref(), Some("Habitat"));
-    assert!(
-        paper_hit
-            .snippet
-            .as_ref()
-            .unwrap()
-            .to_ascii_lowercase()
-            .contains("fungi")
-    );
+    assert!(paper_hit
+        .snippet
+        .as_ref()
+        .unwrap()
+        .to_ascii_lowercase()
+        .contains("fungi"));
 
     // Phrase / exact match.
     let phrase = engine
@@ -162,7 +162,10 @@ fn full_text_search_finds_words_phrases_and_sections() {
     assert_eq!(phrase.hits, again.hits);
 
     // Non-matching document must not appear.
-    assert!(!ranked.hits.iter().any(|hit| hit.path.ends_with("errands.md")));
+    assert!(!ranked
+        .hits
+        .iter()
+        .any(|hit| hit.path.ends_with("errands.md")));
 
     // Content Intelligence API surface.
     let api = app
@@ -170,7 +173,9 @@ fn full_text_search_finds_words_phrases_and_sections() {
         .resolve::<Arc<ContentIntelligenceApi>>()
         .expect("api");
     let api_hits = api.search_full_text("fungi", 10).expect("api fts");
-    assert!(api_hits.iter().any(|hit| hit.source_id.ends_with("report_final_v7.md")));
+    assert!(api_hits
+        .iter()
+        .any(|hit| hit.source_id.ends_with("report_final_v7.md")));
 
     // Planner path.
     let response = app

@@ -238,7 +238,10 @@ impl Lifecycle for Logger {
             ("log_path".to_string(), self.log_path.display().to_string()),
             ("log_dir".to_string(), self.log_dir.display().to_string()),
             ("writable".to_string(), writable.to_string()),
-            ("min_level".to_string(), format!("{:?}", self.min_level).to_lowercase()),
+            (
+                "min_level".to_string(),
+                format!("{:?}", self.min_level).to_lowercase(),
+            ),
         ])
     }
 
@@ -255,7 +258,12 @@ impl Lifecycle for Logger {
 
 fn default_data_dir() -> PathBuf {
     std::env::var_os("HOME")
-        .map(|home| PathBuf::from(home).join(".local").join("share").join("jaymi"))
+        .map(|home| {
+            PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("jaymi")
+        })
         .unwrap_or_else(|| PathBuf::from("./data"))
 }
 

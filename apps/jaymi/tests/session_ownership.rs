@@ -110,7 +110,8 @@ fn project_session_has_one_planner_orchestrated_lifecycle() {
     // set_active_project(None) also delegates to close (same lifecycle).
     app.open_project(beta.id.as_str()).expect("re-open beta");
     assert_eq!(planner.handle_count(), handles_before + 5);
-    app.set_active_project(None).expect("clear via set_active_project");
+    app.set_active_project(None)
+        .expect("clear via set_active_project");
     assert_eq!(planner.handle_count(), handles_before + 6);
     assert!(projects.active_project_id().is_none());
     assert!(memory.active_project_id().is_none());

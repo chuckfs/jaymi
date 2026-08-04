@@ -49,7 +49,9 @@ impl DiscoveryQueryKind {
         match self {
             Self::All => "all".to_string(),
             Self::ByExtension { extension } => format!("extension:{extension}"),
-            Self::ByFolder { immediate: true, .. } => "by_folder".to_string(),
+            Self::ByFolder {
+                immediate: true, ..
+            } => "by_folder".to_string(),
             Self::ByFolder {
                 immediate: false, ..
             } => "under_folder".to_string(),
@@ -310,10 +312,7 @@ impl UserRequest {
         let content = content.into();
         Self {
             content: format!("write {}", path.display()),
-            write_file: Some(WriteFileRequest {
-                path,
-                content,
-            }),
+            write_file: Some(WriteFileRequest { path, content }),
             ..Self::bare("")
         }
     }
@@ -488,7 +487,12 @@ impl UserRequest {
 
     /// Create a structured Git commit request.
     pub fn git_commit(repo_root: impl Into<PathBuf>, message: impl Into<String>) -> Self {
-        Self::git(repo_root, GitOperation::Commit, Vec::new(), Some(message.into()))
+        Self::git(
+            repo_root,
+            GitOperation::Commit,
+            Vec::new(),
+            Some(message.into()),
+        )
     }
 
     fn git(

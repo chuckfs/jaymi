@@ -8,9 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use jaymi::Application;
 use jaymi_core::SearchRequest;
 use jaymi_providers::{EmbeddingProvider, LOCAL_EMBEDDING_MODEL};
-use jaymi_search::{
-    EmbeddingQueue, MatchReason, SearchEngine, SearchEngineApi, SearchStrategy,
-};
+use jaymi_search::{EmbeddingQueue, MatchReason, SearchEngine, SearchEngineApi, SearchStrategy};
 use jaymi_understanding::UnderstandingEngine;
 
 #[test]
@@ -96,7 +94,10 @@ fn semantic_retrieval_finds_meaning_not_exact_words() {
         results
             .hits
             .iter()
-            .map(|hit| hit.path.file_name().map(|n| n.to_string_lossy().into_owned()))
+            .map(|hit| hit
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned()))
             .collect::<Vec<_>>()
     );
     assert!(

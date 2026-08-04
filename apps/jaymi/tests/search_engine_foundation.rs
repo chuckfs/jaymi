@@ -79,7 +79,10 @@ fn search_engine_strategies_are_deterministic_through_planner() {
         .search(SearchRequest::free_text("fungi"))
         .expect("planner search");
     assert_eq!(response.tool_id.as_deref(), Some("search_knowledge"));
-    assert!(response.entries.iter().any(|entry| entry.name.contains("fungi")));
+    assert!(response
+        .entries
+        .iter()
+        .any(|entry| entry.name.contains("fungi")));
     assert!(response.content.contains("search_knowledge"));
 
     let discover = app.discover_inventory().expect("discover");

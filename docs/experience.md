@@ -20,13 +20,18 @@ Jaymi defines primary workspace kinds. **Current:** conversation shell plus expa
 
 ### Conversation
 
-**Current:** default experience — general conversation, planning, memory, diagnostics.
+**Current:** default experience — general conversation, planning, memory. Empty state centers **Hi, I'm Jaymi** / **Ask anything, or open a Coding Workspace.**; after the first message it becomes a normal scrolling chat. Default width beside Coding is ~30% of the window (min 340px, max 45%). Colors (conversation, composer, accents, status) come from the shared application `Theme` (light / dark / system via `config.settings.theme`).
+
+### Theme
+
+**Current:** `apps/jaymi/src/theme.rs` owns a single `Theme` with tokens for background, surface, foreground, secondary_foreground, border, accent, selection, error, warning, and success. egui `Visuals` and Monaco (`jaymi-light` / `jaymi-dark`) are derived from the same tokens so Conversation, Explorer, Editor, Terminal, Git, Problems, Search, Diagnostics, toolbar, and status bar stay visually continuous.
 
 ### Coding Workspace
 
-**Current:** chat-forward side expansion (capped width beside conversation) with a VS Code-inspired shell bound to temporary `CodingState`:
+**Current:** chat-forward side expansion beside conversation with a docked IDE shell bound to temporary `CodingState` (Conversation | Editor | Explorer | Bottom Panel):
 
-- **Editor** fills the code space (Monaco via wry WebView overlay on the focused pane only; egui buffer fallback for every other pane; Save + ⌘S)
+- **Editor** hierarchy: Toolbar → Tabs → Monaco (full-bleed, no card) → Status Bar (Monaco via wry WebView overlay on the focused pane only; egui buffer fallback for every other pane; Save + ⌘S)
+  - Monaco uses **Jaymi Light** / **Jaymi Dark** themes generated from the central application [`Theme`](../apps/jaymi/src/theme.rs) — editor background, text, selections, and syntax colors match the surrounding shell (no stock VS Code `vs-dark` rectangle)
   - VS Code-style tabs: unlimited open sessions, dirty `*` indicator, close ✕, middle-click close
   - Preview tabs (italic): single-click a file in Explorer opens preview; double-click opens permanent
   - Scroll + cursor + folded regions restore when reactivating a session; recently-opened MRU per pane in `OpenEditors`
@@ -39,20 +44,20 @@ Jaymi defines primary workspace kinds. **Current:** conversation shell plus expa
   - Editor chrome (minimap, word wrap, font size) owned by workspace state
   - Persisted per project in `.jaymi/workspace.json`, including the full pane/layout tree and per-pane view state (paths + view/settings only — never buffer contents); restored automatically on Coding reopen / project switch
   - Pinning: TODO
-- **Resizable shell chrome**: the Explorer (drag the divider between editor and Explorer) and the bottom panel (Terminal / Git / Problems / Search, drag the divider above the tab strip) both resize by dragging, clamped to sane min/max widths and heights. Sizes are remembered per project in `.jaymi/workspace.json` alongside the editor layout, so they're exactly as you left them next time Coding reopens. The side-expansion panel itself keeps a minimum width for the conversation (it never lets Coding crowd out chat entirely) and animates smoothly open rather than snapping to size.
+- **Resizable shell chrome**: docked IDE panels — Editor, Explorer (right of the editor), and the bottom panel (Terminal / Problems / Search / Git / Diagnostics). Drag the Explorer↔Editor divider and the Editor↔Bottom divider to resize; sizes clamp to min/max and are remembered per project in `.jaymi/workspace.json` (including the active bottom tab). The conversation↔workspace divider defaults to ~30% conversation / 70% workspace, never shrinks conversation below 340px or above 45% of the window, and animates smoothly open rather than snapping.
 - **Command Palette** (⌘⇧P): searches all commands registered in `CommandRegistry` (never hardcoded). Built-ins include Open File/Folder, Search Files, Quick Open, Find in Files, panel toggles, Create File/Folder, Save, Close Editor/Workspace, open Coding/Research/Creative workspaces, Index Project, Search Knowledge/Memory, Run Planner. Plugins register additional commands on the same registry.
 - **Quick Open** (⌘P): a lighter, filename-only modal (same overlay shell as the Command Palette). Types a query, fuzzy-matches project filenames through `Application::project_search` (`SearchRequest::filename`), and opens the selected file in Monaco. Every keystroke re-runs the same Planner-mediated search used everywhere else — Quick Open never touches its own index.
-- **Explorer** interactive tree on the **right** of the editor (Planner → `list_project_tree`; reusable `ui::explorer` component)
+- **Explorer** interactive tree on the **right** of the Coding workspace (Planner → `list_project_tree`; reusable `ui::explorer` component)
   - Toggle via Command Palette (`Toggle Explorer`)
   - Single-click selects + preview-opens editable files; double-click opens permanent
   - Context menu: New File / New Folder / Rename / Delete / Reveal in Finder
-  - File/folder icons by type; create/rename drafts inline
+  - File/folder icons by type; create/rename drafts inline; current file highlighted
 - **Find in Files** (bottom "Search" tab, or Command Palette → `Find in Files` / `Search Files`): project-wide search + replace panel bound to `CodingState::search` (`SearchPanelState`)
   - Query + Replace boxes, toggles for Regex / Case Sensitive / Whole Word / Files only
   - "Search" runs `Application::run_coding_search_from_panel`, which always goes Planner → `search_knowledge` → Search Engine (no dedicated index — Quick Open, Search Files, and Find in Files all resolve through the same `SearchEngine`)
   - Results list one row per located match (`path:line:column` + one-line preview); clicking a row opens the file in Monaco and positions the cursor at the match via `set_coding_tab_cursor`
   - "Replace All" (disabled for Files only) rewrites every located match through `Application::replace_in_search_results` — open editor buffers are edited in place (left dirty for review), files with no open buffer are read/written straight through the Planner; it reuses the exact match semantics (`jaymi_search::locate_matches` / `replace_matches`) that produced the results, so Replace All never disagrees with what Find in Files reported
-- **Bottom tabs** toggle Terminal / Git / Problems / Search without leaving the editor (also via Command Palette)
+- **Bottom tabs** toggle Terminal / Problems / Search / Git / Diagnostics without leaving the editor (also via Command Palette for most panels). Collapsed chrome is a 32px tab strip; expanded default height is 180px and resizable.
 - Language Server (Rust Analyzer via Planner → `language_server`)
 - **Terminal** (PTY via Planner → `terminal` tool → `TerminalProvider` / `TerminalManager`): a tab strip of independent `TerminalSession`s, each its own persistent PTY shell rooted at the current project root
   - "+ New" spawns another session (`Application::create_coding_terminal`, cwd always the project root) and makes it active
@@ -67,8 +72,9 @@ Jaymi defines primary workspace kinds. **Current:** conversation shell plus expa
   - Each row shows Severity (error/warning/info/hint) · Source label (e.g. `rust-analyzer`, `Planner`, `Workspace`) · `file:line` (when known) · Message
   - Clicking a row with a path jumps to the file in Monaco and positions the cursor (`OpenProblem`, same jump path as Find in Files)
   - Header shows the live count (`N problem(s)`) plus a manual "Refresh" button (`ProblemsRefresh` → `Application::refresh_coding_problems`); refreshed automatically after LSP diagnostics apply and whenever the Coding Workspace (re)opens
-  - A one-line weak footer surfaces the first operational status section from `CodingDiagnosticsView` (Active project) for a lightweight developer signal — the full operational dashboard (Planner activity, Tool execution, Provider status, Indexing, Memory context, Permissions, Timing metrics) remains available on `Application::coding_diagnostics_view` for the developer dashboard
+  - Empty state: "No problems detected."
   - Monaco markers for the active file prefer `CodingState.problems` (filtered by path), falling back to the raw LSP working set (`CodingState.diagnostics`) when Problems hasn't been populated yet
+- **Diagnostics panel** (bottom "Diagnostics" tab): read-only workspace operational sections from `CodingDiagnosticsView` / `Application::coding_diagnostics_view` (Active project, Planner activity, Tool execution, Provider status, Indexing, Memory, Permissions, Timing). Empty state: "Workspace information."
 
 **Activation (UI):** conversation header **⋯** menu → **Open Project…** (folder picker; creates or reuses a project for that root, then opens Coding) or **Recent Projects**, or **Start Coding Project** (opens the Coding shell for the already-active project). That reuses the existing Coding shell and `CodingState` without creating a second conversation. Closing the workspace returns to the same chat. The Project Explorer empty state also offers **Open Project…**.
 

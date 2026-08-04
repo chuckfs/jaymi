@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use jaymi_capabilities::Capability;
 use jaymi_core::{JaymiError, JaymiResult, TerminalOperation};
-use jaymi_providers::{TerminalCommandResult, TerminalProvider, DEFAULT_TERMINAL_SESSION_ID, TERMINAL_PROVIDER_ID};
+use jaymi_providers::{
+    TerminalCommandResult, TerminalProvider, DEFAULT_TERMINAL_SESSION_ID, TERMINAL_PROVIDER_ID,
+};
 
 use crate::metadata::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
@@ -72,7 +74,11 @@ impl Tool for TerminalTool {
         match &input.path {
             Some(path) if !path.as_os_str().is_empty() => {}
             Some(_) => return Err(JaymiError::new("terminal cwd must not be empty")),
-            None => return Err(JaymiError::new("terminal tool requires a working directory")),
+            None => {
+                return Err(JaymiError::new(
+                    "terminal tool requires a working directory",
+                ))
+            }
         }
 
         let session_id_present = matches!(&input.session_id, Some(id) if !id.trim().is_empty());
@@ -88,21 +94,21 @@ impl Tool for TerminalTool {
                     )));
                 }
             }
-            TerminalOperation::Ensure | TerminalOperation::Run => {
-                match &input.session_id {
-                    Some(id) if !id.trim().is_empty() => {}
-                    Some(_) => {
-                        return Err(JaymiError::new("terminal session id must not be empty"))
-                    }
-                    None => return Err(JaymiError::new("terminal tool requires a session id")),
-                }
-            }
+            TerminalOperation::Ensure | TerminalOperation::Run => match &input.session_id {
+                Some(id) if !id.trim().is_empty() => {}
+                Some(_) => return Err(JaymiError::new("terminal session id must not be empty")),
+                None => return Err(JaymiError::new("terminal tool requires a session id")),
+            },
         }
 
         if matches!(operation, TerminalOperation::Rename) {
             match &input.title {
                 Some(title) if !title.trim().is_empty() => {}
-                _ => return Err(JaymiError::new("terminal rename requires a non-empty title")),
+                _ => {
+                    return Err(JaymiError::new(
+                        "terminal rename requires a non-empty title",
+                    ))
+                }
             }
         }
 
@@ -141,9 +147,9 @@ impl Tool for TerminalTool {
                     .ok_or_else(|| JaymiError::new("terminal command is required"))?;
                 self.terminal.run_command(session_id, cwd, command)?
             }
-            TerminalOperation::Create => self
-                .terminal
-                .create_session(cwd, input.title.as_deref())?,
+            TerminalOperation::Create => {
+                self.terminal.create_session(cwd, input.title.as_deref())?
+            }
             TerminalOperation::Rename => {
                 let title = input
                     .title
@@ -216,7 +222,10 @@ mod tests {
             ))
             .unwrap();
         assert!(output.success);
-        assert_eq!(output.session_id.as_deref(), Some(DEFAULT_TERMINAL_SESSION_ID));
+        assert_eq!(
+            output.session_id.as_deref(),
+            Some(DEFAULT_TERMINAL_SESSION_ID)
+        );
         assert_eq!(output.terminal_alive, Some(true));
         assert_eq!(output.terminal_title.as_deref(), Some("Terminal"));
         let text = format!(

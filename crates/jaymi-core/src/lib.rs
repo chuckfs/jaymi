@@ -22,9 +22,7 @@ pub mod search;
 pub mod state;
 
 pub use citation::{format_citations, Citation};
-pub use collection_names::{
-    is_known_collection_name, parse_collection_slug, COLLECTION_SLUGS,
-};
+pub use collection_names::{is_known_collection_name, parse_collection_slug, COLLECTION_SLUGS};
 pub use container::ServiceContainer;
 pub use document::{Document, DocumentMetadata, FileType};
 pub use error::JaymiError;

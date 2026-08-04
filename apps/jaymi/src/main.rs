@@ -14,9 +14,8 @@ fn main() -> JaymiResult<()> {
     let headless = args.iter().any(|arg| arg == "--headless");
     let command = parse_command(&args)?;
 
-    let mut app = Application::boot().map_err(|error| {
-        JaymiError::new(format!("Jaymi failed to start: {}", error.message()))
-    })?;
+    let mut app = Application::boot()
+        .map_err(|error| JaymiError::new(format!("Jaymi failed to start: {}", error.message())))?;
 
     if !app.state().is_ready() {
         return Err(JaymiError::new("Jaymi boot completed without Ready state"));
@@ -83,13 +82,8 @@ fn main() -> JaymiResult<()> {
                     );
                 }
             } else {
-                ui::run_diagnostics(
-                    app,
-                    path.display().to_string(),
-                    read_default,
-                    snapshot,
-                )
-                .map_err(|error| JaymiError::new(format!("desktop UI failed: {error}")))?;
+                ui::run_diagnostics(app, path.display().to_string(), read_default, snapshot)
+                    .map_err(|error| JaymiError::new(format!("desktop UI failed: {error}")))?;
                 return Ok(());
             }
         }

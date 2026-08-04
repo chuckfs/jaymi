@@ -98,9 +98,7 @@ mod tests {
         provider.initialize().unwrap();
         let tool = ListProjectTreeTool::new(Arc::new(provider));
 
-        let output = tool
-            .execute(&ToolInput::list_directory(&dir))
-            .unwrap();
+        let output = tool.execute(&ToolInput::list_directory(&dir)).unwrap();
         assert!(output.success);
         assert!(output
             .entries

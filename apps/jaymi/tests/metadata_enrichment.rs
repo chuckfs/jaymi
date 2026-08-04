@@ -75,7 +75,10 @@ fn enrichment_is_stored_for_every_supported_format() {
             &content.content_type,
             content.title.as_deref(),
         );
-        assert_eq!(again, content.enrichment, "deterministic mismatch for {name}");
+        assert_eq!(
+            again, content.enrichment,
+            "deterministic mismatch for {name}"
+        );
     }
 
     let md = understanding

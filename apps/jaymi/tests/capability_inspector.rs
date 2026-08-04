@@ -62,10 +62,7 @@ fn capability_inspector_reflects_registered_active_planned_and_requirements() {
     assert_eq!(code.workspace, Some(WorkspaceKind::Coding));
     assert!(code.required_tools.contains(&"editor".to_string()));
     assert!(code.required_tools.contains(&"terminal".to_string()));
-    assert!(code
-        .required_providers
-        .iter()
-        .any(|id| id == "filesystem"));
+    assert!(code.required_providers.iter().any(|id| id == "filesystem"));
     // Code is Experimental once Terminal tool/provider are registered.
     assert_eq!(code.availability, CapabilityAvailability::Experimental);
     assert!(code.fulfilling_tools.iter().any(|id| id == "terminal"));
@@ -106,7 +103,9 @@ fn diagnostics_include_capability_inspector_and_availability() {
     assert!(dashboard.contains("Capability Inspector"));
     assert!(dashboard.contains("Availability") || dashboard.contains("search"));
 
-    let caps = snapshot.subsystem("Capabilities").expect("capabilities row");
+    let caps = snapshot
+        .subsystem("Capabilities")
+        .expect("capabilities row");
     assert!(caps.detail.contains("registered="));
     assert!(caps.detail.contains("active="));
     assert!(caps.detail.contains("planned="));

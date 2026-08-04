@@ -14,8 +14,8 @@ use crate::context::{
     DEFAULT_PROJECT_LIMIT, DEFAULT_RECENT_LIMIT, DEFAULT_WORKING_LIMIT,
 };
 use crate::conversation::{
-    AppendMessageRequest, Conversation, ConversationAttachment, ConversationMeta,
-    ConversationMessage, ConversationReference, ConversationStatus, CreateConversationRequest,
+    AppendMessageRequest, Conversation, ConversationAttachment, ConversationMessage,
+    ConversationMeta, ConversationReference, ConversationStatus, CreateConversationRequest,
 };
 use crate::personal::{
     CreatePersonalMemoryRequest, PersonalContext, PersonalMemoryKind, UpdatePersonalMemoryRequest,
@@ -29,9 +29,7 @@ use crate::promotion::{
     is_upward_promotion, next_scope, score_promotion_candidate, suggestion_reason,
     PromoteMemoryRequest, PromotionSuggestQuery, PromotionSuggestion,
 };
-use crate::store::{
-    archive_from_request, record_from_store, MemoryStore, SqliteMemoryStore,
-};
+use crate::store::{archive_from_request, record_from_store, MemoryStore, SqliteMemoryStore};
 use crate::types::{
     ArchiveConversationRequest, ConversationArchive, MemoryQuery, MemoryRecord, MemoryScope,
     MemoryStatus, StoreMemoryRequest,
@@ -495,9 +493,7 @@ impl MemoryEngineApi for MemoryEngine {
                 .or_else(|| record.project_id.clone())
                 .filter(|value| !value.trim().is_empty());
             let Some(project_id) = project_id else {
-                return Err(JaymiError::new(
-                    "promoting to project requires project_id",
-                ));
+                return Err(JaymiError::new("promoting to project requires project_id"));
             };
             record.project_id = Some(project_id);
         }
@@ -614,7 +610,7 @@ impl MemoryEngineApi for MemoryEngine {
                 confidence: Some(70),
                 tags: vec!["archived_conversation".into()],
                 source: Some("conversation_archive".into()),
-                        kind: None,
+                kind: None,
                 metadata_json: None,
             })?;
             promoted_memory_id = Some(stored.id.as_str().to_string());
@@ -654,7 +650,10 @@ impl MemoryEngineApi for MemoryEngine {
                 "conversation already exists: {id}"
             )));
         }
-        let project_id = request.project_id.clone().or_else(|| self.active_project_id());
+        let project_id = request
+            .project_id
+            .clone()
+            .or_else(|| self.active_project_id());
         // project_id is a Project Engine reference — Memory does not validate identity.
         let meta = ConversationMeta {
             id: jaymi_core::EntityId::new(id),
@@ -675,9 +674,7 @@ impl MemoryEngineApi for MemoryEngine {
     fn append_message(&self, request: &AppendMessageRequest) -> JaymiResult<ConversationMessage> {
         self.ensure_ready()?;
         if request.conversation_id.trim().is_empty() {
-            return Err(JaymiError::new(
-                "append_message requires conversation_id",
-            ));
+            return Err(JaymiError::new("append_message requires conversation_id"));
         }
         let Some(meta) = self.store.get_conversation_meta(&request.conversation_id)? else {
             return Err(JaymiError::new(format!(
@@ -687,12 +684,12 @@ impl MemoryEngineApi for MemoryEngine {
         };
         let _ = meta;
         let created_at = request.created_at.unwrap_or_else(Self::now);
-        let sequence_no = self
-            .store
-            .next_message_sequence(&request.conversation_id)?;
+        let sequence_no = self.store.next_message_sequence(&request.conversation_id)?;
         let message_id = format!(
             "message:{}:{}:{}",
-            request.conversation_id, sequence_no, now_nanos()
+            request.conversation_id,
+            sequence_no,
+            now_nanos()
         );
         let message = ConversationMessage {
             id: jaymi_core::EntityId::new(message_id.clone()),
@@ -890,9 +887,7 @@ impl MemoryEngineApi for MemoryEngine {
     ) -> JaymiResult<MemoryRecord> {
         self.ensure_ready()?;
         if request.project_id.trim().is_empty() {
-            return Err(JaymiError::new(
-                "store_project_memory requires project_id",
-            ));
+            return Err(JaymiError::new("store_project_memory requires project_id"));
         }
         let mut tags = request.tags.clone();
         let kind_tag = format!("kind:{}", request.kind.as_str());
@@ -994,9 +989,7 @@ impl MemoryEngineApi for MemoryEngine {
         self.ensure_ready()?;
         let id = memory_id.trim();
         if id.is_empty() {
-            return Err(JaymiError::new(
-                "get_project_decision requires memory_id",
-            ));
+            return Err(JaymiError::new("get_project_decision requires memory_id"));
         }
         let Some(record) = self.store.get(id)? else {
             return Ok(None);
@@ -1088,8 +1081,8 @@ impl MemoryEngineApi for MemoryEngine {
                 .clone()
                 .or_else(|| Some("intentional_personal".into())),
             kind: Some(request.kind.as_str().to_string()),
-                metadata_json: None,
-            })?;
+            metadata_json: None,
+        })?;
         jaymi_logging::info(
             "memory",
             format!(
@@ -1107,9 +1100,7 @@ impl MemoryEngineApi for MemoryEngine {
     ) -> JaymiResult<MemoryRecord> {
         self.ensure_ready()?;
         if request.memory_id.trim().is_empty() {
-            return Err(JaymiError::new(
-                "update_personal_memory requires memory_id",
-            ));
+            return Err(JaymiError::new("update_personal_memory requires memory_id"));
         }
         let Some(mut record) = self.store.get(&request.memory_id)? else {
             return Err(JaymiError::new(format!(
@@ -1169,10 +1160,7 @@ impl MemoryEngineApi for MemoryEngine {
             )));
         }
         self.forget(memory_id)?;
-        jaymi_logging::info(
-            "memory",
-            format!("deleted personal memory id={memory_id}"),
-        );
+        jaymi_logging::info("memory", format!("deleted personal memory id={memory_id}"));
         Ok(())
     }
 
@@ -1185,11 +1173,7 @@ impl MemoryEngineApi for MemoryEngine {
         })?;
         let mut context = PersonalContext::default();
         for record in memories {
-            match record
-                .kind
-                .as_deref()
-                .and_then(PersonalMemoryKind::parse)
-            {
+            match record.kind.as_deref().and_then(PersonalMemoryKind::parse) {
                 Some(PersonalMemoryKind::PreferredName) => context.preferred_name.push(record),
                 Some(PersonalMemoryKind::WritingStyle) => context.writing_style.push(record),
                 Some(PersonalMemoryKind::CodeStyle) => context.code_style.push(record),
@@ -1230,9 +1214,7 @@ impl MemoryEngineApi for MemoryEngine {
             };
             format!(
                 "active={} conversations={} projects={} scopes=[{scopes}]",
-                statistics.active_total,
-                statistics.conversation_count,
-                statistics.project_count
+                statistics.active_total, statistics.conversation_count, statistics.project_count
             )
         };
         Ok(MemoryHealth {
@@ -1340,10 +1322,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(promoted.scope, MemoryScope::Conversation);
-        assert_eq!(
-            promoted.conversation_id.as_deref(),
-            Some("conv-promote")
-        );
+        assert_eq!(promoted.conversation_id.as_deref(), Some("conv-promote"));
 
         engine.forget(stored.id.as_str()).unwrap();
         let after = engine
@@ -1420,8 +1399,8 @@ mod tests {
             .create_conversation(&CreateConversationRequest {
                 conversation_id: Some("conv-a".into()),
                 title: Some("Planning".into()),
-                        project_id: None,
-        })
+                project_id: None,
+            })
             .unwrap();
         assert_eq!(meta.id.as_str(), "conv-a");
 
@@ -1481,7 +1460,7 @@ mod tests {
                 confidence: Some(90),
                 tags: vec![],
                 source: None,
-                        kind: None,
+                kind: None,
                 metadata_json: None,
             })
             .unwrap();
@@ -1549,9 +1528,7 @@ mod tests {
         assert_eq!(context.preferred_name.len(), 1);
         assert_eq!(context.preferred_name[0].content, "Chuck");
 
-        engine
-            .delete_personal_memory(created.id.as_str())
-            .unwrap();
+        engine.delete_personal_memory(created.id.as_str()).unwrap();
         let after = engine.personal_context().unwrap();
         assert!(after.preferred_name.is_empty());
     }
@@ -1563,9 +1540,7 @@ mod tests {
 
         // Project Engine owns identity — Memory only needs the project_id string.
         engine.set_active_project(Some("project:jaymi")).unwrap();
-        engine
-            .set_active_conversation(Some("conv-a"))
-            .unwrap();
+        engine.set_active_conversation(Some("conv-a")).unwrap();
 
         let kept = engine
             .store(&StoreMemoryRequest {
@@ -1625,7 +1600,10 @@ mod tests {
             .unwrap();
 
         assert!(assembled.len() <= 4);
-        assert!(assembled.records().iter().any(|record| record.id == kept.id));
+        assert!(assembled
+            .records()
+            .iter()
+            .any(|record| record.id == kept.id));
         assert!(assembled
             .records()
             .iter()

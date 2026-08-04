@@ -95,8 +95,8 @@ impl Tool for QueryInventoryTool {
                 message: Some(message),
                 listed_path: None,
                 project_knowledge: Vec::new(),
-                        ..Default::default()
-        });
+                ..Default::default()
+            });
         }
         let mut message = format!(
             "Found {rows} inventoried entries for {} via discover → query_inventory → search (strategy={} citations={})",
@@ -118,7 +118,7 @@ impl Tool for QueryInventoryTool {
             message: Some(message),
             listed_path: None,
             project_knowledge: Vec::new(),
-                    ..Default::default()
+            ..Default::default()
         })
     }
 }

@@ -95,12 +95,9 @@ impl Tool for GitTool {
             .git_operation
             .ok_or_else(|| JaymiError::new("git operation is required"))?;
 
-        let snapshot = self.git.execute(
-            repo,
-            operation,
-            &input.paths,
-            input.content.as_deref(),
-        )?;
+        let snapshot = self
+            .git
+            .execute(repo, operation, &input.paths, input.content.as_deref())?;
 
         Ok(ToolOutput::git_status(
             snapshot.repo_root,
@@ -112,11 +109,7 @@ impl Tool for GitTool {
             snapshot.deleted,
             snapshot.staged,
             snapshot.untracked,
-            format!(
-                "Git {} · {}",
-                operation.as_str(),
-                snapshot.summary
-            ),
+            format!("Git {} · {}", operation.as_str(), snapshot.summary),
         ))
     }
 }

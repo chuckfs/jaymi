@@ -9,6 +9,7 @@ use jaymi::Application;
 use jaymi_capabilities::{Capability, CapabilityEngine, CapabilityEngineApi};
 
 use jaymi_core::{JaymiResult, Lifecycle, UserRequest};
+use jaymi_memory_engine::{InMemoryMemoryStore, MemoryEngine, MemoryEngineApi};
 use jaymi_permissions::{
     PermissionAction, PermissionCategory, PermissionDecision, PermissionEngine, PermissionRequest,
     PermissionScope,
@@ -16,11 +17,10 @@ use jaymi_permissions::{
 use jaymi_planner::{Planner, PlannerDeps};
 use jaymi_policies::{ExecutionCandidate, PolicyEngine};
 use jaymi_providers::ProviderRegistry;
-use jaymi_memory_engine::{InMemoryMemoryStore, MemoryEngine, MemoryEngineApi};
 use jaymi_tools::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
-    PrivacyMode, Reliability, ResourceCost, ResultType, Tool, ToolInput, ToolMetadata, ToolOutput,
-    ToolOrchestrator, ToolRegistry,
+    PrivacyMode, Reliability, ResourceCost, ResultType, Tool, ToolInput, ToolMetadata,
+    ToolOrchestrator, ToolOutput, ToolRegistry,
 };
 
 #[test]

@@ -261,7 +261,12 @@ impl Lifecycle for Database {
 
 fn default_data_dir() -> PathBuf {
     std::env::var_os("HOME")
-        .map(|home| PathBuf::from(home).join(".local").join("share").join("jaymi"))
+        .map(|home| {
+            PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("jaymi")
+        })
         .unwrap_or_else(|| PathBuf::from("./data"))
 }
 

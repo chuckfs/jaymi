@@ -59,7 +59,8 @@ pub fn replace_matches(
     let replaced = if request.use_regex {
         re.replace_all(text, replacement).into_owned()
     } else {
-        re.replace_all(text, regex::NoExpand(replacement)).into_owned()
+        re.replace_all(text, regex::NoExpand(replacement))
+            .into_owned()
     };
     (replaced, count)
 }
@@ -105,7 +106,10 @@ fn span_to_located(text: &str, start: usize, end: usize) -> Option<LocatedMatch>
     let column = text[line_start..start].chars().count() as u32;
     let matched = &text[start..end];
     let end_line = line + matched.bytes().filter(|&b| b == b'\n').count() as u32;
-    let last_nl = matched.rfind('\n').map(|idx| start + idx + 1).unwrap_or(start);
+    let last_nl = matched
+        .rfind('\n')
+        .map(|idx| start + idx + 1)
+        .unwrap_or(start);
     let end_column = if end_line == line {
         column + matched.chars().count() as u32
     } else {
@@ -115,7 +119,9 @@ fn span_to_located(text: &str, start: usize, end: usize) -> Option<LocatedMatch>
         .find('\n')
         .map(|idx| line_start + idx)
         .unwrap_or(text.len());
-    let preview = text[line_start..line_end].trim_end_matches('\r').to_string();
+    let preview = text[line_start..line_end]
+        .trim_end_matches('\r')
+        .to_string();
     Some(LocatedMatch {
         line,
         column,

@@ -11,8 +11,8 @@
 
 #![forbid(unsafe_code)]
 
-mod conversation;
 mod context;
+mod conversation;
 mod engine;
 mod personal;
 mod project;
@@ -20,14 +20,14 @@ mod promotion;
 mod store;
 mod types;
 
-pub use conversation::{
-    AppendMessageRequest, Conversation, ConversationAttachment, ConversationAttachmentInput,
-    ConversationMeta, ConversationMessage, ConversationReference, ConversationReferenceInput,
-    ConversationStatus, CreateConversationRequest, MessageRole,
-};
 pub use context::{
     AssembleContextRequest, AssembledMemoryContext, MemoryRelevanceKind, RelevantMemory,
     DEFAULT_CONTEXT_LIMIT,
+};
+pub use conversation::{
+    AppendMessageRequest, Conversation, ConversationAttachment, ConversationAttachmentInput,
+    ConversationMessage, ConversationMeta, ConversationReference, ConversationReferenceInput,
+    ConversationStatus, CreateConversationRequest, MessageRole,
 };
 pub use engine::{MemoryEngine, MemoryEngineApi, MemoryHealth, MemoryStats};
 pub use personal::{

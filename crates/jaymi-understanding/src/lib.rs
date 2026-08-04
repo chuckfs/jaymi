@@ -193,7 +193,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_formats_are_tracked() {
+    fn unknown_extensions_fall_back_to_plain_text() {
         let data = temp_dir("understanding-unsup-data");
         let root = temp_dir("understanding-unsup-root");
         let path = root.join("archive.bin");
@@ -204,10 +204,15 @@ mod tests {
 
         let item = knowledge.get_by_path(&path).unwrap().unwrap();
         let outcome = engine.understand_item(&item).unwrap();
-        assert!(matches!(outcome, UnderstandOutcome::Unsupported(_)));
+        match outcome {
+            UnderstandOutcome::Parsed(content) | UnderstandOutcome::Cached(content) => {
+                assert_eq!(content.parser_used, "plain_text");
+            }
+            other => panic!("expected plain_text fallback, got {other:?}"),
+        }
         let stats = engine.stats().unwrap();
-        assert!(stats.unsupported_formats >= 1);
-        assert_eq!(stats.parsed_documents, 0);
+        assert_eq!(stats.parsed_documents, 1);
+        assert_eq!(stats.unsupported_formats, 0);
     }
 
     #[test]

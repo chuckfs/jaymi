@@ -13,7 +13,7 @@ use jaymi_database::{
 };
 
 use crate::conversation::{
-    Conversation, ConversationAttachment, ConversationMeta, ConversationMessage,
+    Conversation, ConversationAttachment, ConversationMessage, ConversationMeta,
     ConversationReference, ConversationStatus, MessageRole,
 };
 use crate::types::{
@@ -48,10 +48,8 @@ pub trait MemoryStore: Send + Sync {
     fn upsert_conversation_meta(&self, meta: &ConversationMeta) -> JaymiResult<()>;
 
     /// Load conversation metadata.
-    fn get_conversation_meta(
-        &self,
-        conversation_id: &str,
-    ) -> JaymiResult<Option<ConversationMeta>>;
+    fn get_conversation_meta(&self, conversation_id: &str)
+        -> JaymiResult<Option<ConversationMeta>>;
 
     /// Next sequence number for a conversation.
     fn next_message_sequence(&self, conversation_id: &str) -> JaymiResult<u64>;
@@ -108,7 +106,10 @@ impl InMemoryMemoryStore {
 
 impl MemoryStore for InMemoryMemoryStore {
     fn insert(&self, record: &MemoryRecord) -> JaymiResult<()> {
-        let mut state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| JaymiError::new("memory store lock"))?;
         state
             .memories
             .insert(record.id.as_str().to_string(), record.clone());
@@ -116,12 +117,18 @@ impl MemoryStore for InMemoryMemoryStore {
     }
 
     fn get(&self, memory_id: &str) -> JaymiResult<Option<MemoryRecord>> {
-        let state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| JaymiError::new("memory store lock"))?;
         Ok(state.memories.get(memory_id).cloned())
     }
 
     fn search(&self, query: &MemoryQuery) -> JaymiResult<Vec<MemoryRecord>> {
-        let state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| JaymiError::new("memory store lock"))?;
         let text = query
             .text
             .as_ref()
@@ -133,13 +140,17 @@ impl MemoryStore for InMemoryMemoryStore {
             .filter(|record| record.status != MemoryStatus::Forgotten)
             .filter(|record| {
                 if query.include_archived {
-                    record.status == MemoryStatus::Active
-                        || record.status == MemoryStatus::Archived
+                    record.status == MemoryStatus::Active || record.status == MemoryStatus::Archived
                 } else {
                     record.status == MemoryStatus::Active
                 }
             })
-            .filter(|record| query.scope.map(|scope| record.scope == scope).unwrap_or(true))
+            .filter(|record| {
+                query
+                    .scope
+                    .map(|scope| record.scope == scope)
+                    .unwrap_or(true)
+            })
             .filter(|record| {
                 query
                     .project_id
@@ -193,7 +204,10 @@ impl MemoryStore for InMemoryMemoryStore {
     }
 
     fn forget(&self, memory_id: &str, now: i64) -> JaymiResult<()> {
-        let mut state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| JaymiError::new("memory store lock"))?;
         let Some(record) = state.memories.get_mut(memory_id) else {
             return Err(JaymiError::new(format!(
                 "memory not found or already forgotten: {memory_id}"
@@ -211,7 +225,10 @@ impl MemoryStore for InMemoryMemoryStore {
     }
 
     fn archive_conversation(&self, archive: &ConversationArchive) -> JaymiResult<()> {
-        let mut state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| JaymiError::new("memory store lock"))?;
         state
             .archives
             .insert(archive.archive_id.clone(), archive.clone());
@@ -219,7 +236,10 @@ impl MemoryStore for InMemoryMemoryStore {
     }
 
     fn counts_by_scope(&self) -> JaymiResult<Vec<(MemoryScope, u64)>> {
-        let state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| JaymiError::new("memory store lock"))?;
         let mut counts: HashMap<MemoryScope, u64> = HashMap::new();
         for record in state.memories.values() {
             if record.status == MemoryStatus::Active {
@@ -232,7 +252,10 @@ impl MemoryStore for InMemoryMemoryStore {
     }
 
     fn upsert_conversation_meta(&self, meta: &ConversationMeta) -> JaymiResult<()> {
-        let mut state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| JaymiError::new("memory store lock"))?;
         state
             .conversations
             .insert(meta.id.as_str().to_string(), meta.clone());
@@ -243,12 +266,18 @@ impl MemoryStore for InMemoryMemoryStore {
         &self,
         conversation_id: &str,
     ) -> JaymiResult<Option<ConversationMeta>> {
-        let state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| JaymiError::new("memory store lock"))?;
         Ok(state.conversations.get(conversation_id).cloned())
     }
 
     fn next_message_sequence(&self, conversation_id: &str) -> JaymiResult<u64> {
-        let state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| JaymiError::new("memory store lock"))?;
         Ok(state
             .messages
             .get(conversation_id)
@@ -257,7 +286,10 @@ impl MemoryStore for InMemoryMemoryStore {
     }
 
     fn insert_conversation_message(&self, message: &ConversationMessage) -> JaymiResult<()> {
-        let mut state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
+        let mut state = self
+            .inner
+            .lock()
+            .map_err(|_| JaymiError::new("memory store lock"))?;
         if !state.conversations.contains_key(&message.conversation_id) {
             return Err(JaymiError::new(format!(
                 "conversation not found: {}",
@@ -277,7 +309,10 @@ impl MemoryStore for InMemoryMemoryStore {
     }
 
     fn load_conversation(&self, conversation_id: &str) -> JaymiResult<Option<Conversation>> {
-        let state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| JaymiError::new("memory store lock"))?;
         let Some(meta) = state.conversations.get(conversation_id).cloned() else {
             return Ok(None);
         };
@@ -290,12 +325,18 @@ impl MemoryStore for InMemoryMemoryStore {
     }
 
     fn conversation_count(&self) -> JaymiResult<u64> {
-        let state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| JaymiError::new("memory store lock"))?;
         Ok(state.conversations.len() as u64)
     }
 
     fn list_conversation_ids_for_project(&self, project_id: &str) -> JaymiResult<Vec<String>> {
-        let state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| JaymiError::new("memory store lock"))?;
         let mut metas: Vec<_> = state
             .conversations
             .values()
@@ -315,7 +356,10 @@ impl MemoryStore for InMemoryMemoryStore {
     }
 
     fn referenced_project_count(&self) -> JaymiResult<u64> {
-        let state = self.inner.lock().map_err(|_| JaymiError::new("memory store lock"))?;
+        let state = self
+            .inner
+            .lock()
+            .map_err(|_| JaymiError::new("memory store lock"))?;
         let mut ids = std::collections::BTreeSet::new();
         for record in state.memories.values() {
             if record.status == MemoryStatus::Active {
@@ -614,10 +658,7 @@ pub fn record_from_store(request: &StoreMemoryRequest, now: i64) -> JaymiResult<
         created_at: now,
         updated_at: now,
         archived_at: None,
-        metadata_json: request
-            .metadata_json
-            .clone()
-            .unwrap_or_else(|| "{}".into()),
+        metadata_json: request.metadata_json.clone().unwrap_or_else(|| "{}".into()),
     })
 }
 

@@ -87,9 +87,7 @@ fn open_switch_and_close_keep_one_active_project_and_persist_conversation() {
     })
     .expect("append");
 
-    let opened = app
-        .open_project(project_a.id.as_str())
-        .expect("open alpha");
+    let opened = app.open_project(project_a.id.as_str()).expect("open alpha");
     assert!(opened.is_open);
     assert_eq!(opened.project.id, project_a.id);
     assert_eq!(
@@ -154,13 +152,11 @@ fn open_switch_and_close_keep_one_active_project_and_persist_conversation() {
         Some(conversation.id.as_str()),
         "conversation must persist across project switch"
     );
-    assert!(
-        beta_context
-            .memories
-            .tasks
-            .iter()
-            .any(|record| record.content.contains("beta-memory-token"))
-    );
+    assert!(beta_context
+        .memories
+        .tasks
+        .iter()
+        .any(|record| record.content.contains("beta-memory-token")));
     assert!(
         !beta_context
             .memories

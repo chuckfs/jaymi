@@ -13,9 +13,7 @@ use std::path::{Path, PathBuf};
 
 use jaymi_core::{HealthReport, JaymiError, JaymiResult, Lifecycle};
 
-pub use settings::{
-    LogLevel, ProviderPreferences, Settings, Theme, CURRENT_SETTINGS_VERSION,
-};
+pub use settings::{LogLevel, ProviderPreferences, Settings, Theme, CURRENT_SETTINGS_VERSION};
 
 const NAME: &str = "configuration";
 const DEPENDENCIES: &[&str] = &[];
@@ -205,14 +203,23 @@ impl Lifecycle for Config {
             DEPENDENCIES,
         )
         .with_details(vec![
-            ("config_path".to_string(), self.config_path.display().to_string()),
+            (
+                "config_path".to_string(),
+                self.config_path.display().to_string(),
+            ),
             ("data_dir".to_string(), self.data_dir.clone()),
             (
                 "settings_version".to_string(),
                 self.settings.version.to_string(),
             ),
-            ("log_level".to_string(), self.settings.log_level.as_str().to_string()),
-            ("theme".to_string(), self.settings.theme.as_str().to_string()),
+            (
+                "log_level".to_string(),
+                self.settings.log_level.as_str().to_string(),
+            ),
+            (
+                "theme".to_string(),
+                self.settings.theme.as_str().to_string(),
+            ),
             (
                 "indexing_enabled".to_string(),
                 self.settings.indexing_enabled.to_string(),

@@ -45,9 +45,7 @@ impl QuickOpenState {
     /// Replace the result list from a fresh Quick Open search.
     pub fn set_results(&mut self, results: Vec<SearchResultEntry>) {
         self.results = results;
-        self.selected = self
-            .selected
-            .min(self.results.len().saturating_sub(1));
+        self.selected = self.selected.min(self.results.len().saturating_sub(1));
     }
 }
 
@@ -63,7 +61,11 @@ pub enum QuickOpenOutcome {
 }
 
 /// Render the Quick Open overlay and return any query change / open request.
-pub fn render_quick_open(ctx: &egui::Context, state: &mut QuickOpenState) -> QuickOpenOutcome {
+pub fn render_quick_open(
+    ctx: &egui::Context,
+    state: &mut QuickOpenState,
+    overlay_scrim: egui::Color32,
+) -> QuickOpenOutcome {
     if !state.open {
         return QuickOpenOutcome::None;
     }
@@ -77,8 +79,7 @@ pub fn render_quick_open(ctx: &egui::Context, state: &mut QuickOpenState) -> Qui
         .fixed_pos(screen.min)
         .show(ctx, |ui| {
             let response = ui.allocate_response(screen.size(), egui::Sense::click());
-            ui.painter()
-                .rect_filled(screen, 0.0, egui::Color32::from_black_alpha(140));
+            ui.painter().rect_filled(screen, 0.0, overlay_scrim);
             if response.clicked() {
                 dismiss = true;
             }
@@ -147,7 +148,8 @@ pub fn render_quick_open(ctx: &egui::Context, state: &mut QuickOpenState) -> Qui
                     state.selected = state.selected.saturating_sub(1);
                 }
                 if down {
-                    state.selected = (state.selected + 1).min(state.results.len().saturating_sub(1));
+                    state.selected =
+                        (state.selected + 1).min(state.results.len().saturating_sub(1));
                 }
                 if enter {
                     if let Some(result) = state.results.get(state.selected) {

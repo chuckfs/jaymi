@@ -351,24 +351,12 @@ impl CapabilityDiscoveryReport {
         let available_ids: Vec<_> = self
             .available
             .iter()
-            .map(|status| {
-                format!(
-                    "{}:{}",
-                    status.descriptor.id,
-                    status.availability.as_str()
-                )
-            })
+            .map(|status| format!("{}:{}", status.descriptor.id, status.availability.as_str()))
             .collect();
         let unavailable_ids: Vec<_> = self
             .unavailable
             .iter()
-            .map(|status| {
-                format!(
-                    "{}:{}",
-                    status.descriptor.id,
-                    status.availability.as_str()
-                )
-            })
+            .map(|status| format!("{}:{}", status.descriptor.id, status.availability.as_str()))
             .collect();
         format!(
             "executable={} [{}] · not_executable={} [{}] · planned={}",
@@ -421,13 +409,8 @@ pub(crate) fn assess_capability(
         }
     }
 
-    let availability = effective_availability(
-        catalog,
-        engine_ready,
-        registered,
-        tools_ok,
-        providers_ok,
-    );
+    let availability =
+        effective_availability(catalog, engine_ready, registered, tools_ok, providers_ok);
 
     CapabilityStatus {
         descriptor,

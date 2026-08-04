@@ -106,9 +106,9 @@ pub(crate) fn ensure_initialized(initialized: bool) -> JaymiResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::CapabilityEngine;
     use crate::CapabilityEngineApi;
     use jaymi_core::Lifecycle;
-    use crate::CapabilityEngine;
 
     #[test]
     fn register_requires_initialization() {

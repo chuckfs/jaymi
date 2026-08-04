@@ -37,10 +37,7 @@ impl ToolOrchestrator {
             .as_ref()
             .map(|value| value.display().to_string())
             .unwrap_or_else(|| "-".to_string());
-        jaymi_logging::info(
-            "tools",
-            format!("execute tool={tool_id} path={path}"),
-        );
+        jaymi_logging::info("tools", format!("execute tool={tool_id} path={path}"));
 
         let tool = self.registry.get(tool_id)?;
         if let Err(error) = tool.validate(&input) {

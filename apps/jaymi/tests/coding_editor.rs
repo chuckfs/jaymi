@@ -77,7 +77,10 @@ fn selecting_file_selects_only_open_opens_editor_tab_through_planner() {
         .coding()
         .unwrap()
         .clone();
-    assert_eq!(coding.explorer.selected_path.as_deref(), Some(main_path.as_str()));
+    assert_eq!(
+        coding.explorer.selected_path.as_deref(),
+        Some(main_path.as_str())
+    );
     assert!(
         coding.editors.is_empty(),
         "select_coding_path must not open files (UI Select opens preview)"
@@ -94,7 +97,10 @@ fn selecting_file_selects_only_open_opens_editor_tab_through_planner() {
         .clone();
     assert_eq!(coding.editors.len(), 1);
     assert_eq!(coding.active_tab_path(), Some(main_path.as_str()));
-    assert_eq!(coding.explorer.selected_path.as_deref(), Some(main_path.as_str()));
+    assert_eq!(
+        coding.explorer.selected_path.as_deref(),
+        Some(main_path.as_str())
+    );
     assert!(coding.editors.sessions()[0].content.contains("println"));
     assert!(!coding.editors.sessions()[0].dirty);
     assert!(!coding.editors.sessions()[0].preview);
@@ -135,7 +141,8 @@ fn preview_open_marks_preview_and_permanent_promotes() {
     assert_eq!(coding.editors.len(), 1);
     assert!(coding.editors.sessions()[0].preview);
 
-    app.open_coding_file_preview(&b_path).expect("preview b replaces a");
+    app.open_coding_file_preview(&b_path)
+        .expect("preview b replaces a");
     let coding = app
         .capability_state()
         .unwrap()
@@ -215,7 +222,10 @@ fn reopening_file_focuses_existing_tab_without_duplicate() {
         .clone();
     assert_eq!(coding.editors.len(), 2, "reopen must not duplicate tabs");
     assert_eq!(coding.active_tab_path(), Some(a_path.as_str()));
-    assert_eq!(coding.explorer.selected_path.as_deref(), Some(a_path.as_str()));
+    assert_eq!(
+        coding.explorer.selected_path.as_deref(),
+        Some(a_path.as_str())
+    );
 }
 
 #[test]
@@ -294,7 +304,12 @@ fn open_and_tree_exercise_planner_tool_provider_path() {
     let path = file.to_string_lossy().into_owned();
     let read = app.read_file(&path).expect("read through planner");
     assert_eq!(read.tool_id.as_deref(), Some(READ_FILE_TOOL_ID));
-    assert!(read.document.as_ref().unwrap().text.contains("hello editor"));
+    assert!(read
+        .document
+        .as_ref()
+        .unwrap()
+        .text
+        .contains("hello editor"));
 
     app.open_coding_file(&path).expect("open via coding API");
     let coding = app
@@ -305,11 +320,11 @@ fn open_and_tree_exercise_planner_tool_provider_path() {
         .unwrap()
         .clone();
     assert_eq!(coding.editors.len(), 1);
-    assert!(coding.editors.sessions()[0].content.contains("hello editor"));
+    assert!(coding.editors.sessions()[0]
+        .content
+        .contains("hello editor"));
     assert_eq!(
-        app.experience()
-            .unwrap()
-            .active_workspace_kind(),
+        app.experience().unwrap().active_workspace_kind(),
         Some(WorkspaceKind::Coding)
     );
 }
@@ -349,7 +364,10 @@ fn explorer_expansion_and_selection_persist_while_open() {
         .unwrap()
         .clone();
     assert!(coding.explorer.expanded_paths.contains(&src));
-    assert_eq!(coding.explorer.selected_path.as_deref(), Some(lib_path.as_str()));
+    assert_eq!(
+        coding.explorer.selected_path.as_deref(),
+        Some(lib_path.as_str())
+    );
     assert_eq!(coding.active_tab_path(), Some(lib_path.as_str()));
 }
 

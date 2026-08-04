@@ -228,7 +228,10 @@ impl ProblemsRegistry {
             .providers
             .read()
             .map_err(|_| JaymiError::new("problems registry lock poisoned"))?;
-        let mut ids: Vec<_> = guard.iter().map(|provider| provider.id().to_string()).collect();
+        let mut ids: Vec<_> = guard
+            .iter()
+            .map(|provider| provider.id().to_string())
+            .collect();
         ids.sort();
         Ok(ids)
     }
@@ -271,10 +274,7 @@ impl ProblemsRegistry {
 
     /// Number of registered providers.
     pub fn len(&self) -> usize {
-        self.providers
-            .read()
-            .map(|guard| guard.len())
-            .unwrap_or(0)
+        self.providers.read().map(|guard| guard.len()).unwrap_or(0)
     }
 
     /// Whether no providers are registered.

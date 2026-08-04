@@ -61,7 +61,10 @@ fn editor_workspace_survives_close_and_reopen_without_serializing_contents() {
     let workspace_path = JaymiProjectLayout::for_root(&root).workspace_json;
     let body = fs::read_to_string(&workspace_path).expect("read workspace.json");
     assert!(body.contains("main.rs"));
-    assert!(!body.contains("println"), "must not serialize buffer contents");
+    assert!(
+        !body.contains("println"),
+        "must not serialize buffer contents"
+    );
     assert!(body.contains("\"font_size\": 16"));
     assert!(body.contains("\"word_wrap\": true"));
 
@@ -82,7 +85,10 @@ fn editor_workspace_survives_close_and_reopen_without_serializing_contents() {
         .editors
         .session_by_path(&main_str)
         .expect("main session");
-    assert!(main.content.contains("println"), "content reloaded from disk");
+    assert!(
+        main.content.contains("println"),
+        "content reloaded from disk"
+    );
     assert_eq!(main.view.cursor.line, 1);
     assert_eq!(main.view.cursor.column, 4);
     assert_eq!(main.view.scroll_top, 24.0);
@@ -145,7 +151,8 @@ fn project_switch_restores_each_projects_editor_state() {
     app.persist_coding_editor_workspace().expect("persist b");
 
     // Back to A — should restore A's tab, not B's.
-    app.persist_coding_editor_workspace().expect("persist before switch");
+    app.persist_coding_editor_workspace()
+        .expect("persist before switch");
     let _ = app.open_project(project_a.id.as_str()).expect("reopen a");
     app.start_coding_project().expect("coding a again");
     let coding = app
@@ -169,11 +176,7 @@ fn project_switch_restores_each_projects_editor_state() {
     );
     assert!(coding.editors.session_by_path(&b_str).is_none());
     assert_eq!(
-        coding
-            .explorer
-            .project_root
-            .as_deref()
-            .map(|root| PathBuf::from(root)),
+        coding.explorer.project_root.as_deref().map(PathBuf::from),
         Some(root_a.canonicalize().unwrap_or(root_a))
     );
 }

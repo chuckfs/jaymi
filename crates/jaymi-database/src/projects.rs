@@ -117,9 +117,7 @@ impl Database {
                      ORDER BY COALESCE(last_opened_at, 0) DESC, updated_at DESC, name ASC",
                 )
                 .map_err(db_error)?;
-            let rows = stmt
-                .query_map([], map_project_row)
-                .map_err(db_error)?;
+            let rows = stmt.query_map([], map_project_row).map_err(db_error)?;
             let mut out = Vec::new();
             for row in rows {
                 out.push(row.map_err(db_error)?);
@@ -158,10 +156,7 @@ impl Database {
     }
 
     /// List conversation ids attached to a project (newest first).
-    pub fn list_conversation_ids_for_project(
-        &self,
-        project_id: &str,
-    ) -> JaymiResult<Vec<String>> {
+    pub fn list_conversation_ids_for_project(&self, project_id: &str) -> JaymiResult<Vec<String>> {
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(

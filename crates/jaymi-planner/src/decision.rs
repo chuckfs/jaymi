@@ -6,12 +6,11 @@
 use std::path::PathBuf;
 
 use jaymi_capabilities::Capability;
-use jaymi_core::{
-    DiscoveryQueryKind, GitOperation, SearchRequest, TerminalOperation, UserRequest,
-};
+use jaymi_core::{DiscoveryQueryKind, GitOperation, SearchRequest, TerminalOperation, UserRequest};
 
 /// Deterministic intents recognized by the Planner.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(clippy::large_enum_variant)]
 pub enum Intent {
     /// List the immediate contents of one directory.
     ListDirectory {
@@ -343,10 +342,7 @@ impl DecisionEngine {
     pub fn required_capabilities(&self, intent: &Intent) -> Vec<Capability> {
         match intent {
             Intent::PlanWork { capabilities, .. } => capabilities.clone(),
-            other => self
-                .required_capability(other)
-                .into_iter()
-                .collect(),
+            other => self.required_capability(other).into_iter().collect(),
         }
     }
 }
@@ -448,10 +444,7 @@ fn parse_discovery_kind(lower: &str, original: &str) -> Option<DiscoveryQueryKin
     {
         return Some(DiscoveryQueryKind::RecentlyModified);
     }
-    if lower == "recently created files"
-        || lower == "recently created"
-        || lower == "newest files"
-    {
+    if lower == "recently created files" || lower == "recently created" || lower == "newest files" {
         return Some(DiscoveryQueryKind::RecentlyCreated);
     }
     if lower == "largest files" || lower == "biggest files" {
@@ -618,10 +611,7 @@ fn parse_composed_capabilities(lower: &str) -> Option<Vec<Capability>> {
         "search then code then create",
         "search then code then generate_images",
     ];
-    if composition_phrases
-        .iter()
-        .any(|phrase| normalized == *phrase)
-    {
+    if composition_phrases.contains(&normalized) {
         return Some(jaymi_capabilities::research_coding_creation());
     }
 
@@ -638,11 +628,11 @@ fn parse_composed_capabilities(lower: &str) -> Option<Vec<Capability>> {
         }
     }
 
-    if normalized.contains(" then ")
-        || normalized.contains(" → ")
-        || normalized.contains(" -> ")
+    if normalized.contains(" then ") || normalized.contains(" → ") || normalized.contains(" -> ")
     {
-        let unified = normalized.replace(" → ", " then ").replace(" -> ", " then ");
+        let unified = normalized
+            .replace(" → ", " then ")
+            .replace(" -> ", " then ");
         if let Some(caps) = parse_capability_token_sequence(&unified) {
             if caps.len() > 1 {
                 return Some(caps);
@@ -848,7 +838,10 @@ mod tests {
                 limit: Some(10),
             }
         );
-        assert_eq!(engine.required_capability(&intent), Some(Capability::Search));
+        assert_eq!(
+            engine.required_capability(&intent),
+            Some(Capability::Search)
+        );
     }
 
     #[test]
@@ -899,9 +892,9 @@ mod tests {
             }
         );
         assert_eq!(
-            engine.required_capability(&engine.determine_intent(&UserRequest::new(
-                "Help me build an app."
-            ))),
+            engine.required_capability(
+                &engine.determine_intent(&UserRequest::new("Help me build an app."))
+            ),
             Some(Capability::Code)
         );
     }
@@ -909,9 +902,7 @@ mod tests {
     #[test]
     fn parses_research_coding_creation_composition() {
         let engine = DecisionEngine;
-        let intent = engine.determine_intent(&UserRequest::new(
-            "research then code then create",
-        ));
+        let intent = engine.determine_intent(&UserRequest::new("research then code then create"));
         assert_eq!(
             intent,
             Intent::PlanWork {
@@ -931,7 +922,10 @@ mod tests {
                 Capability::GenerateImages,
             ]
         );
-        assert_eq!(engine.required_capability(&intent), Some(Capability::Search));
+        assert_eq!(
+            engine.required_capability(&intent),
+            Some(Capability::Search)
+        );
     }
 
     #[test]

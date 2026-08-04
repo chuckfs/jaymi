@@ -64,7 +64,10 @@ pub fn format_citations(citations: &[Citation]) -> String {
     lines.push("Citations:".to_string());
     for (index, citation) in citations.iter().enumerate() {
         lines.push(format!("{}. {}", index + 1, citation.cite_line()));
-        lines.push(format!("   preview: {}", truncate_preview(&citation.preview, 160)));
+        lines.push(format!(
+            "   preview: {}",
+            truncate_preview(&citation.preview, 160)
+        ));
     }
     lines.join("\n")
 }

@@ -120,11 +120,7 @@ impl Tool for ManagePathTool {
                 self.filesystem.rename_path(path, &to)?;
                 Ok(ToolOutput {
                     success: true,
-                    message: Some(format!(
-                        "Renamed {} → {}",
-                        path.display(),
-                        to.display()
-                    )),
+                    message: Some(format!("Renamed {} → {}", path.display(), to.display())),
                     listed_path: Some(to),
                     ..Default::default()
                 })

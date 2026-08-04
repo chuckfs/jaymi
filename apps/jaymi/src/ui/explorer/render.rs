@@ -4,9 +4,7 @@ use std::collections::BTreeSet;
 
 use eframe::egui;
 
-use jaymi_capabilities::{
-    ExplorerNode, ExplorerPending, ExplorerState, ExplorerStatus,
-};
+use jaymi_capabilities::{ExplorerNode, ExplorerPending, ExplorerState, ExplorerStatus};
 
 use super::events::ExplorerEvent;
 use super::icons::{file_icon, folder_icon};
@@ -34,7 +32,7 @@ pub fn render_explorer(
             }
         }
         ExplorerStatus::Error(message) => {
-            ui.colored_label(egui::Color32::from_rgb(180, 60, 60), message);
+            ui.colored_label(ui.visuals().error_fg_color, message);
         }
         ExplorerStatus::Ready => {
             if let Some(root) = &state.project_root {

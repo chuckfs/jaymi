@@ -26,6 +26,6 @@ pub use engine::{ProjectEngine, ProjectEngineApi};
 pub use knowledge::{ProjectKnowledgeHit, ProjectKnowledgeKind, ProjectKnowledgeQuery};
 pub use store::{InMemoryProjectStore, ProjectStore, SqliteProjectStore};
 pub use types::{
-    slugify_project_name, CreateProjectRequest, Project, ProjectHealth, ProjectStats, ProjectStatus,
-    ProjectType,
+    slugify_project_name, CreateProjectRequest, Project, ProjectHealth, ProjectStats,
+    ProjectStatus, ProjectType,
 };

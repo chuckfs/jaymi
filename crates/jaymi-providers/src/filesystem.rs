@@ -197,7 +197,7 @@ impl FilesystemProvider {
         }
 
         fs::read(&path)
-            .map(|bytes| {
+            .inspect(|bytes| {
                 jaymi_logging::info(
                     "providers",
                     format!(
@@ -206,7 +206,6 @@ impl FilesystemProvider {
                         bytes.len()
                     ),
                 );
-                bytes
             })
             .map_err(|error| {
                 let message = format!("failed to read file {}: {error}", path.display());
@@ -294,7 +293,10 @@ impl FilesystemProvider {
             .map(|_| {
                 jaymi_logging::info(
                     "providers",
-                    format!("filesystem create_directory completed path={}", path.display()),
+                    format!(
+                        "filesystem create_directory completed path={}",
+                        path.display()
+                    ),
                 );
             })
             .map_err(|error| {
@@ -458,9 +460,9 @@ fn normalize_path_for_write(path: &Path) -> JaymiResult<PathBuf> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
             let parent = normalize_path(parent)?;
-            let name = path.file_name().ok_or_else(|| {
-                JaymiError::new(format!("invalid file path: {}", path.display()))
-            })?;
+            let name = path
+                .file_name()
+                .ok_or_else(|| JaymiError::new(format!("invalid file path: {}", path.display())))?;
             return Ok(parent.join(name));
         }
     }

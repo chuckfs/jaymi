@@ -23,7 +23,7 @@ fn expanded_parsers_normalize_all_supported_formats() {
     fs::write(root.join("note.docx"), fixtures::minimal_docx()).unwrap();
     fs::write(root.join("photo.png"), b"\x89PNG").unwrap();
     fs::write(root.join("broken.pdf"), fixtures::corrupt_pdf()).unwrap();
-    fs::write(root.join("archive.bin"), b"\x00\x01").unwrap();
+    fs::write(root.join("archive.zzzz"), b"\x00\x01").unwrap();
 
     let app = Application::boot_with_data_dir(&data_dir).expect("boot");
     app.index_root(&root).expect("index");
@@ -81,11 +81,18 @@ fn expanded_parsers_normalize_all_supported_formats() {
         }
     }
 
-    let unsupported = understanding
-        .understand_path(&root.join("archive.bin"))
+    // Unknown extensions fall back to the plain-text parser so Coding can open them.
+    let other = understanding
+        .understand_path(&root.join("archive.zzzz"))
         .unwrap()
         .unwrap();
-    assert!(matches!(unsupported, UnderstandOutcome::Unsupported(_)));
+    match other {
+        UnderstandOutcome::Parsed(content) | UnderstandOutcome::Cached(content) => {
+            assert_eq!(content.content_type, "plain_text");
+            assert_eq!(content.parser_used, "plain_text");
+        }
+        other => panic!("expected plain_text fallback, got {other:?}"),
+    }
 
     let failed = understanding
         .understand_path(&root.join("broken.pdf"))
@@ -103,13 +110,15 @@ fn expanded_parsers_normalize_all_supported_formats() {
         .container()
         .resolve::<Arc<SqliteContentStore>>()
         .expect("content");
-    assert_eq!(content.document_count().unwrap(), 5);
+    assert_eq!(content.document_count().unwrap(), 6);
 
     let stats = understanding.stats().unwrap();
-    assert_eq!(stats.parsed_documents, 5);
+    assert_eq!(stats.parsed_documents, 6);
     assert!(stats.failed_parses >= 1);
-    assert!(stats.unsupported_formats >= 1);
-    assert!(stats.parser_usage.iter().any(|(p, c)| p == "pdf" && *c == 1));
+    assert!(stats
+        .parser_usage
+        .iter()
+        .any(|(p, c)| p == "pdf" && *c == 1));
     assert!(stats
         .parser_usage
         .iter()
@@ -117,7 +126,7 @@ fn expanded_parsers_normalize_all_supported_formats() {
 
     let diag = app.diagnostics().expect("diagnostics after parse");
     let understanding_row = diag.subsystem("Understanding").unwrap();
-    assert!(understanding_row.detail.contains("parsed_documents=5"));
+    assert!(understanding_row.detail.contains("parsed_documents=6"));
     assert!(understanding_row.detail.contains("pdf=1"));
     assert!(understanding_row.detail.contains("docx=1"));
     let parser_row = diag.subsystem("Parser Registry").unwrap();

@@ -11,8 +11,8 @@
 #![forbid(unsafe_code)]
 
 pub mod decision;
-pub mod request_lifecycle;
 pub mod reasoning;
+pub mod request_lifecycle;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,15 +39,14 @@ use jaymi_permissions::{
     PermissionRequest, PermissionScope,
 };
 use jaymi_policies::{ExecutionCandidate, PolicyEngine, PolicyEvaluation};
-use jaymi_project_engine::{
-    Project, ProjectContext, ProjectEngineApi, ProjectKnowledgeHit,
-};
+use jaymi_project_engine::{Project, ProjectContext, ProjectEngineApi, ProjectKnowledgeHit};
 use jaymi_providers::ProviderRegistry;
 use jaymi_tools::{
-    InternetRequirement, PrivacyMode, ToolInput, ToolOrchestrator, ToolRegistry,
-    GIT_TOOL_ID, LANGUAGE_SERVER_TOOL_ID, LIST_PROJECT_TREE_TOOL_ID, MANAGE_PATH_TOOL_ID,
+    InternetRequirement, PrivacyMode, ToolInput, ToolOrchestrator, ToolRegistry, GIT_TOOL_ID,
+    LANGUAGE_SERVER_TOOL_ID, LIST_PROJECT_TREE_TOOL_ID, MANAGE_PATH_TOOL_ID,
     QUERY_INVENTORY_TOOL_ID, READ_FILE_TOOL_ID, SCAN_FILESYSTEM_TOOL_ID, SEARCH_FILES_TOOL_ID,
-    SEARCH_KNOWLEDGE_TOOL_ID, SEARCH_PROJECT_KNOWLEDGE_TOOL_ID, TERMINAL_TOOL_ID, WRITE_FILE_TOOL_ID,
+    SEARCH_KNOWLEDGE_TOOL_ID, SEARCH_PROJECT_KNOWLEDGE_TOOL_ID, TERMINAL_TOOL_ID,
+    WRITE_FILE_TOOL_ID,
 };
 use reasoning::ReasoningEngine;
 
@@ -249,10 +248,7 @@ impl Planner {
     ///
     /// Uses the live tool/provider inventory so availability reflects what is
     /// currently executable. Nothing is executed.
-    pub fn build_capability_plan(
-        &self,
-        capabilities: &[Capability],
-    ) -> JaymiResult<ExecutionPlan> {
+    pub fn build_capability_plan(&self, capabilities: &[Capability]) -> JaymiResult<ExecutionPlan> {
         let inventory = self.capability_inventory()?;
         self.capabilities.plan(capabilities, &inventory, None)
     }
@@ -511,7 +507,6 @@ impl Planner {
             &input,
             &resource,
             "Search project knowledge",
-
             PermissionCategory::Filesystem,
             PermissionAction::Read,
         )?;
@@ -620,10 +615,7 @@ impl Planner {
                     .directory
                     .as_ref()
                     .map(|path| path.display().to_string()),
-                request
-                    .file
-                    .as_ref()
-                    .map(|path| path.display().to_string())
+                request.file.as_ref().map(|path| path.display().to_string())
             ),
         );
 
@@ -699,11 +691,7 @@ impl Planner {
 
         // Planning answers "what would this take" without needing the
         // capability to be fulfillable today.
-        if let Intent::PlanWork {
-            capabilities,
-            goal,
-        } = &intent
-        {
+        if let Intent::PlanWork { capabilities, goal } = &intent {
             let mut response = self.handle_plan_work(capabilities, goal)?;
             if response.project_context.is_none() {
                 response.project_context = context.project.clone();
@@ -787,9 +775,7 @@ impl Planner {
                 }
                 self.handle_lsp(capability, request)
             }
-            Intent::DiscoverInventory { kind } => {
-                self.handle_discover_inventory(capability, kind)
-            }
+            Intent::DiscoverInventory { kind } => self.handle_discover_inventory(capability, kind),
             Intent::SearchKnowledge { request } => {
                 self.handle_search_knowledge(capability, self.scope_search_request(request))
             }
@@ -852,10 +838,9 @@ impl Planner {
                         .map(|result| result.decision.as_str())
                 ),
             ),
-            Err(error) => jaymi_logging::error(
-                "planner",
-                format!("request failed: {}", error.message()),
-            ),
+            Err(error) => {
+                jaymi_logging::error("planner", format!("request failed: {}", error.message()))
+            }
         }
 
         result
@@ -887,7 +872,6 @@ impl Planner {
             &input,
             &path,
             "List directory",
-
             PermissionCategory::Filesystem,
             PermissionAction::Read,
         )?;
@@ -935,7 +919,6 @@ impl Planner {
             &input,
             &path,
             "List project tree",
-
             PermissionCategory::Filesystem,
             PermissionAction::Read,
         )?;
@@ -984,7 +967,6 @@ impl Planner {
             &input,
             &path,
             "Read file",
-
             PermissionCategory::Filesystem,
             PermissionAction::Read,
         )?;
@@ -996,9 +978,9 @@ impl Planner {
         let output = self.orchestrator.execute(&tool_id, input)?;
         self.ensure_success(&output)?;
 
-        let document = output.document.ok_or_else(|| {
-            JaymiError::new("read tool succeeded without returning a document")
-        })?;
+        let document = output
+            .document
+            .ok_or_else(|| JaymiError::new("read tool succeeded without returning a document"))?;
         let provider_id = prepared.provider_id.clone();
         let content = format!(
             "Read {} ({}) via {} → {} → {} → {}",
@@ -1035,7 +1017,6 @@ impl Planner {
             &input,
             &path,
             "Write file",
-
             PermissionCategory::Filesystem,
             PermissionAction::Write,
         )?;
@@ -1104,7 +1085,11 @@ impl Planner {
         self.ensure_success(&output)?;
 
         let provider_id = prepared.provider_id.clone();
-        let listed = output.listed_path.clone().or(destination).or(Some(path.clone()));
+        let listed = output
+            .listed_path
+            .clone()
+            .or(destination)
+            .or(Some(path.clone()));
         let summary = output.message.unwrap_or_else(|| {
             format!(
                 "Managed path {} ({}) via {} → {} → {}",
@@ -1138,7 +1123,9 @@ impl Planner {
         title: Option<String>,
     ) -> JaymiResult<PlannerResponse> {
         let input = match operation {
-            TerminalOperation::Ensure => ToolInput::ensure_terminal(session_id.clone(), cwd.clone()),
+            TerminalOperation::Ensure => {
+                ToolInput::ensure_terminal(session_id.clone(), cwd.clone())
+            }
             TerminalOperation::Run => {
                 let command = command
                     .clone()
@@ -1340,7 +1327,6 @@ impl Planner {
             &input,
             &resource_path,
             "Query inventory",
-
             PermissionCategory::Filesystem,
             PermissionAction::Read,
         )?;
@@ -1392,7 +1378,6 @@ impl Planner {
             &input,
             &resource_path,
             "Search knowledge",
-
             PermissionCategory::Filesystem,
             PermissionAction::Read,
         )?;
@@ -1446,7 +1431,6 @@ impl Planner {
             &input,
             &resource_path,
             "Index filesystem",
-
             PermissionCategory::Filesystem,
             PermissionAction::Read,
         )?;
@@ -1476,6 +1460,7 @@ impl Planner {
     }
 
     /// Planner → Policy Engine → Permission Engine (tool selected, not yet run).
+    #[allow(clippy::too_many_arguments)]
     fn prepare_execution(
         &self,
         capability: Capability,
@@ -1789,8 +1774,8 @@ mod tests {
     use jaymi_project_engine::{InMemoryProjectStore, ProjectEngine};
     use jaymi_providers::{FilesystemProvider, Provider, FILESYSTEM_PROVIDER_ID};
     use jaymi_tools::{
-        EstimatedRuntime, ExecutionMode, GpuRequirements, MemoryUsage, Reliability, ResourceCost,
-        ResultType, Tool, ToolMetadata, ToolOutput, ReadFileTool, SearchFilesTool,
+        EstimatedRuntime, ExecutionMode, GpuRequirements, MemoryUsage, ReadFileTool, Reliability,
+        ResourceCost, ResultType, SearchFilesTool, Tool, ToolMetadata, ToolOutput,
     };
     use jaymi_understanding::{ContentIntelligenceApi, SqliteContentStore, UnderstandingEngine};
     use std::fs::{self, File};
@@ -1823,11 +1808,7 @@ mod tests {
 
     fn planner_with_tools<F>(register: F) -> Planner
     where
-        F: FnOnce(
-            &mut ToolRegistry,
-            Arc<FilesystemProvider>,
-            Arc<ContentIntelligenceApi>,
-        ),
+        F: FnOnce(&mut ToolRegistry, Arc<FilesystemProvider>, Arc<ContentIntelligenceApi>),
     {
         let mut capabilities = CapabilityEngine::new();
         capabilities.initialize().unwrap();
@@ -1966,7 +1947,9 @@ mod tests {
     fn planner_initializes_from_registries() {
         let planner = planner_with_search_and_read();
         assert!(planner.health_check().healthy);
-        assert!(planner.discover_capabilities().contains(&Capability::Search));
+        assert!(planner
+            .discover_capabilities()
+            .contains(&Capability::Search));
         assert!(planner
             .discover_capabilities()
             .contains(&Capability::ReadDocuments));
@@ -1982,13 +1965,14 @@ mod tests {
         fs::create_dir(dir.join("src")).unwrap();
 
         let planner = planner_with_search_and_read();
-        let response = planner
-            .handle(UserRequest::list_directory(&dir))
-            .unwrap();
+        let response = planner.handle(UserRequest::list_directory(&dir)).unwrap();
 
         assert_eq!(response.capability, Some(Capability::Search));
         assert_eq!(response.tool_id.as_deref(), Some("search_files"));
-        assert_eq!(response.provider_id.as_deref(), Some(FILESYSTEM_PROVIDER_ID));
+        assert_eq!(
+            response.provider_id.as_deref(),
+            Some(FILESYSTEM_PROVIDER_ID)
+        );
         assert!(!response.blocked);
         assert!(response.policy_evaluation.as_ref().unwrap().allowed);
         assert_eq!(

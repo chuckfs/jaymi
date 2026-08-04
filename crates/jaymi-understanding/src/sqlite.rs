@@ -92,7 +92,8 @@ impl SqliteContentStore {
             .search_content_fts_in_prefix(query, path_prefix, limit)?;
         let mut hits = Vec::with_capacity(rows.len());
         for row in rows {
-            let sections: Vec<Section> = serde_json::from_str(&row.sections_json).unwrap_or_default();
+            let sections: Vec<Section> =
+                serde_json::from_str(&row.sections_json).unwrap_or_default();
             hits.push(crate::api::ContentTextHit {
                 source_id: row.source_id,
                 title: row.title,

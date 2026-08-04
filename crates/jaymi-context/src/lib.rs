@@ -211,13 +211,12 @@ impl ContextEngine {
             included.push(ContextSource::PreviousConversation);
         }
 
-        let promotion_suggestions =
-            sources.memory.suggest_promotions(&PromotionSuggestQuery {
-                conversation_id: sources.memory.active_conversation_id(),
-                project_id: sources.memory.active_project_id(),
-                min_importance: None,
-                limit: Some(5),
-            })?;
+        let promotion_suggestions = sources.memory.suggest_promotions(&PromotionSuggestQuery {
+            conversation_id: sources.memory.active_conversation_id(),
+            project_id: sources.memory.active_project_id(),
+            min_importance: None,
+            limit: Some(5),
+        })?;
         let promotion_ask = PromotionAskDecision::from_suggestions(&promotion_suggestions);
         if !promotion_suggestions.is_empty() {
             included.push(ContextSource::PromotionSuggestions);
@@ -297,12 +296,8 @@ impl ContextEngine {
 
         Some(SearchContextHint {
             structured_query_pending: structured.is_some(),
-            query_preview: structured.and_then(|search| {
-                search
-                    .free_text
-                    .clone()
-                    .or_else(|| search.filename.clone())
-            }),
+            query_preview: structured
+                .and_then(|search| search.free_text.clone().or_else(|| search.filename.clone())),
             project_indexed_documents: project_indexed,
         })
     }
@@ -374,12 +369,12 @@ impl Lifecycle for ContextEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use jaymi_memory_engine::{InMemoryMemoryStore, MemoryEngine};
-    use jaymi_project_engine::{InMemoryProjectStore, ProjectEngine};
-    use jaymi_search::SearchEngine;
     use jaymi_core::Lifecycle;
     use jaymi_database::Database;
     use jaymi_knowledge::SqliteKnowledgeStore;
+    use jaymi_memory_engine::{InMemoryMemoryStore, MemoryEngine};
+    use jaymi_project_engine::{InMemoryProjectStore, ProjectEngine};
+    use jaymi_search::SearchEngine;
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};

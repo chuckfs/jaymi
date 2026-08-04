@@ -366,7 +366,10 @@ impl Database {
     }
 
     /// Query discovered items with optional filters.
-    pub fn query_discovered(&self, query: &DiscoveredQuery) -> JaymiResult<Vec<DiscoveredItemRecord>> {
+    pub fn query_discovered(
+        &self,
+        query: &DiscoveredQuery,
+    ) -> JaymiResult<Vec<DiscoveredItemRecord>> {
         self.with_connection(|conn| {
             let mut sql = format!("SELECT {SELECT_ITEM_COLUMNS} FROM discovered_items WHERE 1=1");
             let mut binds: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
@@ -416,9 +419,7 @@ impl Database {
                 DiscoverySort::RecentlyCreated => {
                     sql.push_str(" ORDER BY created DESC NULLS LAST, path ASC")
                 }
-                DiscoverySort::Largest => {
-                    sql.push_str(" ORDER BY size DESC, path ASC")
-                }
+                DiscoverySort::Largest => sql.push_str(" ORDER BY size DESC, path ASC"),
             }
 
             if let Some(limit) = query.limit {
@@ -590,9 +591,7 @@ fn map_discovered_row(row: &Row<'_>) -> rusqlite::Result<DiscoveredItemRecord> {
         last_indexed: row.get(10)?,
         last_modified: row.get(11)?,
         last_verified: row.get(12)?,
-        device_id: row
-            .get::<_, Option<i64>>(13)?
-            .map(|value| value as u64),
+        device_id: row.get::<_, Option<i64>>(13)?.map(|value| value as u64),
         inode: row.get::<_, Option<i64>>(14)?.map(|value| value as u64),
     })
 }

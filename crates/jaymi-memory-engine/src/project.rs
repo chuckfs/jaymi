@@ -256,8 +256,7 @@ pub fn project_decision_from_record(record: &MemoryRecord) -> Option<ProjectDeci
         return None;
     }
     let project_id = record.project_id.clone()?;
-    let meta: DecisionMetadata =
-        serde_json::from_str(&record.metadata_json).unwrap_or_default();
+    let meta: DecisionMetadata = serde_json::from_str(&record.metadata_json).unwrap_or_default();
     let mut related_conversations = meta.related_conversations;
     if let Some(conversation_id) = &record.conversation_id {
         if !related_conversations.iter().any(|id| id == conversation_id) {

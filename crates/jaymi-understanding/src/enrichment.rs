@@ -110,7 +110,9 @@ impl ContentEnrichment {
 type JaymiJsonResult = Result<String, String>;
 
 fn count_words(text: &str) -> u64 {
-    text.split_whitespace().filter(|token| !token.is_empty()).count() as u64
+    text.split_whitespace()
+        .filter(|token| !token.is_empty())
+        .count() as u64
 }
 
 fn estimate_reading_time_seconds(word_count: u64) -> u64 {
@@ -235,7 +237,12 @@ fn looks_like_generic_heading(line: &str) -> bool {
     }
     // ALL-CAPS short line of letters/spaces
     let letters = line.chars().filter(|ch| ch.is_alphabetic()).count();
-    if letters >= 3 && line.chars().filter(|ch| ch.is_alphabetic()).all(|ch| ch.is_uppercase()) {
+    if letters >= 3
+        && line
+            .chars()
+            .filter(|ch| ch.is_alphabetic())
+            .all(|ch| ch.is_uppercase())
+    {
         return true;
     }
     false
@@ -335,7 +342,10 @@ fn collect_markdown_links(text: &str, internal: &mut Vec<String>, external: &mut
 fn collect_bare_urls(text: &str, internal: &mut Vec<String>, external: &mut Vec<String>) {
     for token in text.split_whitespace() {
         let cleaned = token.trim_matches(|ch: char| {
-            matches!(ch, '.' | ',' | ';' | ':' | ')' | '(' | '[' | ']' | '"' | '\'')
+            matches!(
+                ch,
+                '.' | ',' | ';' | ':' | ')' | '(' | '[' | ']' | '"' | '\''
+            )
         });
         if cleaned.starts_with("http://")
             || cleaned.starts_with("https://")
@@ -403,8 +413,8 @@ fn detect_language(text: &str) -> Option<String> {
         (
             "fr",
             &[
-                "de", "la", "et", "le", "les", "des", "en", "un", "une", "du", "est", "que", "pour",
-                "dans", "qui", "pas", "sur", "par", "plus", "avec",
+                "de", "la", "et", "le", "les", "des", "en", "un", "une", "du", "est", "que",
+                "pour", "dans", "qui", "pas", "sur", "par", "plus", "avec",
             ],
         ),
         (
@@ -463,10 +473,7 @@ mod tests {
             vec!["https://jaymi.dev".to_string()]
         );
         assert!(enrichment.word_count > 0);
-        assert_eq!(
-            enrichment.character_count,
-            text.chars().count() as u64
-        );
+        assert_eq!(enrichment.character_count, text.chars().count() as u64);
         assert_eq!(
             enrichment.reading_time_seconds,
             estimate_reading_time_seconds(enrichment.word_count)

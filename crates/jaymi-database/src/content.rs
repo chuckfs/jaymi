@@ -238,11 +238,7 @@ impl Database {
     /// as exact phrase matches. Multi-word queries without quotes also use
     /// phrase MATCH so adjacency is preferred; callers may score term frequency
     /// in Rust for ranking.
-    pub fn search_content_fts(
-        &self,
-        query: &str,
-        limit: usize,
-    ) -> JaymiResult<Vec<ContentFtsHit>> {
+    pub fn search_content_fts(&self, query: &str, limit: usize) -> JaymiResult<Vec<ContentFtsHit>> {
         self.search_content_fts_in_prefix(query, None, limit)
     }
 
@@ -259,7 +255,7 @@ impl Database {
         let Some(match_query) = build_fts_match_query(query) else {
             return Ok(Vec::new());
         };
-        let limit = limit.max(1).min(10_000);
+        let limit = limit.clamp(1, 10_000);
         let mut hits = self.query_content_fts(&match_query, path_prefix, limit)?;
         if hits.is_empty() {
             if let Some(and_query) = build_fts_and_query(query) {
@@ -279,9 +275,7 @@ impl Database {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(|value| value.trim_end_matches('/').to_string());
-        let like_prefix = prefix
-            .as_ref()
-            .map(|value| format!("{value}/%"));
+        let like_prefix = prefix.as_ref().map(|value| format!("{value}/%"));
         self.with_connection(|conn| {
             let mut stmt = conn
                 .prepare(
@@ -329,7 +323,7 @@ impl Database {
         &self,
         query: &ContentMetadataQuery,
     ) -> JaymiResult<Vec<ContentMetadataHit>> {
-        let limit = query.limit.unwrap_or(100).max(1).min(10_000) as i64;
+        let limit = query.limit.unwrap_or(100).clamp(1, 10_000) as i64;
         let content_type = query
             .content_type
             .as_ref()
@@ -769,8 +763,7 @@ mod tests {
         biology.language = Some("en".into());
         biology.author = Some("Ada Lovelace".into());
         biology.tags_json = r#"["biology","research"]"#.into();
-        biology.headings_json =
-            r#"[{"level":1,"text":"Habitat","offset":0}]"#.into();
+        biology.headings_json = r#"[{"level":1,"text":"Habitat","offset":0}]"#.into();
         db.upsert_content(&biology).unwrap();
 
         let mut shopping = sample_record("/docs/b.md", "Errands", "Buy milk.\n");

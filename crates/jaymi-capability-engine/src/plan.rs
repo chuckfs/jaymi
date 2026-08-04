@@ -5,9 +5,7 @@
 //! here — the Planner decides whether and when to execute.
 
 use crate::descriptor::{capability_descriptor, CapabilityAvailability, CapabilityDescriptor};
-use crate::discovery::{
-    capability_requirements, CapabilityInventory, CapabilityRequirements,
-};
+use crate::discovery::{capability_requirements, CapabilityInventory, CapabilityRequirements};
 use crate::Capability;
 
 /// One permission needed before a capability plan may execute.
@@ -32,25 +30,21 @@ impl PermissionRequirement {
 }
 
 /// Built-in permission requirements for a capability.
-pub fn capability_permission_requirements(
-    capability: Capability,
-) -> Vec<PermissionRequirement> {
+pub fn capability_permission_requirements(capability: Capability) -> Vec<PermissionRequirement> {
     match capability {
         Capability::Chat => vec![],
-        Capability::Search | Capability::Discover | Capability::ReadDocuments => vec![
-            PermissionRequirement {
+        Capability::Search | Capability::Discover | Capability::ReadDocuments => {
+            vec![PermissionRequirement {
                 category: "filesystem",
                 action: "read",
                 reason: "read local files and knowledge",
-            },
-        ],
-        Capability::Index => vec![
-            PermissionRequirement {
-                category: "filesystem",
-                action: "read",
-                reason: "scan directories into the inventory",
-            },
-        ],
+            }]
+        }
+        Capability::Index => vec![PermissionRequirement {
+            category: "filesystem",
+            action: "read",
+            reason: "scan directories into the inventory",
+        }],
         Capability::Code => vec![
             PermissionRequirement {
                 category: "filesystem",
@@ -68,27 +62,23 @@ pub fn capability_permission_requirements(
                 reason: "run build and development commands",
             },
         ],
-        Capability::Vision | Capability::Ocr | Capability::Embeddings => vec![
-            PermissionRequirement {
+        Capability::Vision | Capability::Ocr | Capability::Embeddings => {
+            vec![PermissionRequirement {
                 category: "filesystem",
                 action: "read",
                 reason: "read local media or documents",
-            },
-        ],
-        Capability::GenerateImages => vec![
-            PermissionRequirement {
-                category: "ai_providers",
-                action: "execute",
-                reason: "invoke an image generation provider",
-            },
-        ],
-        Capability::BrowseTheWeb | Capability::Internet => vec![
-            PermissionRequirement {
-                category: "internet",
-                action: "network",
-                reason: "access remote network resources",
-            },
-        ],
+            }]
+        }
+        Capability::GenerateImages => vec![PermissionRequirement {
+            category: "ai_providers",
+            action: "execute",
+            reason: "invoke an image generation provider",
+        }],
+        Capability::BrowseTheWeb | Capability::Internet => vec![PermissionRequirement {
+            category: "internet",
+            action: "network",
+            reason: "access remote network resources",
+        }],
         Capability::OrganizeFiles | Capability::FileManagement => vec![
             PermissionRequirement {
                 category: "filesystem",
@@ -101,20 +91,16 @@ pub fn capability_permission_requirements(
                 reason: "move or rename files",
             },
         ],
-        Capability::ExecuteTerminalCommands => vec![
-            PermissionRequirement {
-                category: "terminal",
-                action: "execute",
-                reason: "run terminal commands",
-            },
-        ],
-        Capability::AutomateTasks | Capability::Automation => vec![
-            PermissionRequirement {
-                category: "system",
-                action: "execute",
-                reason: "coordinate automated work",
-            },
-        ],
+        Capability::ExecuteTerminalCommands => vec![PermissionRequirement {
+            category: "terminal",
+            action: "execute",
+            reason: "run terminal commands",
+        }],
+        Capability::AutomateTasks | Capability::Automation => vec![PermissionRequirement {
+            category: "system",
+            action: "execute",
+            reason: "coordinate automated work",
+        }],
     }
 }
 
@@ -146,9 +132,7 @@ pub struct CapabilityPlanStep {
 impl CapabilityPlanStep {
     /// True when the step is in an executable tier and inventory requirements are met.
     pub fn is_executable(&self) -> bool {
-        self.availability.is_executable_tier()
-            && self.tools_resolved
-            && self.providers_resolved
+        self.availability.is_executable_tier() && self.tools_resolved && self.providers_resolved
     }
 
     /// Short detail line for logs and responses.
@@ -228,8 +212,7 @@ impl ExecutionPlan {
         for step in &self.steps {
             for permission in &step.required_permissions {
                 if !out.iter().any(|existing: &PermissionRequirement| {
-                    existing.category == permission.category
-                        && existing.action == permission.action
+                    existing.category == permission.category && existing.action == permission.action
                 }) {
                     out.push(permission.clone());
                 }
@@ -308,8 +291,7 @@ pub fn build_plan_step(
     // Prefer live fulfillments; fall back to declared preferred ids so plans
     // remain deterministic even before tools/providers exist.
     let tools_resolved = !requirements.requires_tool || !inventory_tools.is_empty();
-    let providers_resolved =
-        !requirements.requires_provider || !inventory_providers.is_empty();
+    let providers_resolved = !requirements.requires_provider || !inventory_providers.is_empty();
     let required_tools = if inventory_tools.is_empty() {
         requirements
             .preferred_tools

@@ -84,7 +84,9 @@ pub struct EditorTab {
 }
 
 /// Stable identity for an editor pane (split leaf).
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct EditorPaneId(pub String);
 
 impl EditorPaneId {
@@ -355,7 +357,6 @@ impl EditorLayoutNode {
             Self::Split {
                 children, sizes, ..
             } => {
-                let before = children.len();
                 let mut keep = Vec::new();
                 let mut keep_sizes = Vec::new();
                 for (child, size) in children.drain(..).zip(sizes.drain(..)) {
@@ -386,7 +387,7 @@ impl EditorLayoutNode {
                 }
                 *children = keep;
                 *sizes = keep_sizes;
-                before != children.len() || true
+                true
             }
         }
     }
@@ -523,6 +524,9 @@ pub struct EditorWorkspaceSnapshot {
     /// Coding side-panel width (conversation ↔ workspace divider).
     #[serde(default)]
     pub workspace_panel_width: Option<f32>,
+    /// Active bottom panel tab id (`terminal`, `problems`, `search`, `git`, `diagnostics`, `hidden`).
+    #[serde(default)]
+    pub bottom_tab: Option<String>,
 }
 
 impl Default for EditorWorkspaceSnapshot {
@@ -539,6 +543,7 @@ impl Default for EditorWorkspaceSnapshot {
             explorer_width: None,
             bottom_panel_height: None,
             workspace_panel_width: None,
+            bottom_tab: None,
         }
     }
 }
@@ -747,10 +752,7 @@ impl OpenEditors {
         self.ensure_buffer(path, content);
         let pane_key = pane_id.0.clone();
         {
-            let pane = self
-                .panes
-                .get_mut(&pane_key)
-                .expect("pane must exist");
+            let pane = self.panes.get_mut(&pane_key).expect("pane must exist");
             if let Some(tab) = pane.tab_mut(path) {
                 tab.preview = false;
             } else {
@@ -785,10 +787,7 @@ impl OpenEditors {
         self.ensure_buffer(path, content);
         let pane_key = pane_id.0.clone();
         {
-            let pane = self
-                .panes
-                .get_mut(&pane_key)
-                .expect("pane must exist");
+            let pane = self.panes.get_mut(&pane_key).expect("pane must exist");
             if pane.tabs.iter().any(|tab| tab.path == path) {
                 pane.activate_path(path);
             } else {
@@ -877,10 +876,7 @@ impl OpenEditors {
                 direction,
                 sizes: vec![0.5, 0.5],
                 children: vec![
-                    std::mem::replace(
-                        &mut self.layout,
-                        EditorLayoutNode::leaf(pane_id.clone()),
-                    ),
+                    std::mem::replace(&mut self.layout, EditorLayoutNode::leaf(pane_id.clone())),
                     EditorLayoutNode::leaf(new_id.clone()),
                 ],
             };
@@ -898,9 +894,7 @@ impl OpenEditors {
         let _ = self.layout.remove_pane(pane_id);
         // If layout still references missing panes, rebuild as a flat split of remaining.
         let live = self.layout.pane_ids();
-        let missing = live
-            .iter()
-            .any(|id| !self.panes.contains_key(id.as_str()));
+        let missing = live.iter().any(|id| !self.panes.contains_key(id.as_str()));
         if missing || live.is_empty() {
             let ids: Vec<_> = self.panes.keys().cloned().map(EditorPaneId).collect();
             self.layout = match ids.as_slice() {
@@ -917,12 +911,7 @@ impl OpenEditors {
             };
         }
         if &self.focused_pane == pane_id {
-            self.focused_pane = self
-                .layout
-                .pane_ids()
-                .into_iter()
-                .next()
-                .expect("≥1 pane");
+            self.focused_pane = self.layout.pane_ids().into_iter().next().expect("≥1 pane");
         }
         self.sanitize();
         true
@@ -1139,9 +1128,7 @@ impl OpenEditors {
 
     /// Build a persistence snapshot (no buffer contents).
     pub fn snapshot(&self, settings: EditorSettings) -> EditorWorkspaceSnapshot {
-        let focused_path = self
-            .active_session()
-            .map(|session| session.path);
+        let focused_path = self.active_session().map(|session| session.path);
         let panes: Vec<PersistedEditorPane> = self
             .panes
             .values()
@@ -1185,6 +1172,7 @@ impl OpenEditors {
             explorer_width: None,
             bottom_panel_height: None,
             workspace_panel_width: None,
+            bottom_tab: None,
         }
     }
 

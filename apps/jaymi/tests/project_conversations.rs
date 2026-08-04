@@ -6,9 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use jaymi::Application;
 use jaymi_core::UserRequest;
-use jaymi_memory::{
-    AppendMessageRequest, CreateConversationRequest, MessageRole,
-};
+use jaymi_memory::{AppendMessageRequest, CreateConversationRequest, MessageRole};
 use jaymi_planner::Planner;
 use jaymi_project_engine::{CreateProjectRequest, ProjectType};
 
@@ -148,10 +146,13 @@ fn project_conversations_attach_load_and_resume_on_reopen() {
         .expect("continue");
     let restored = resumed.project_context.expect("context");
     assert_eq!(restored.project.id, project_a.id);
-    assert!(restored
-        .conversations
-        .iter()
-        .any(|entry| entry.conversation_id == conversation.id.as_str() && entry.message_count == 2));
+    assert!(
+        restored
+            .conversations
+            .iter()
+            .any(|entry| entry.conversation_id == conversation.id.as_str()
+                && entry.message_count == 2)
+    );
     assert_eq!(
         app.active_conversation_id().as_deref(),
         Some(conversation.id.as_str()),

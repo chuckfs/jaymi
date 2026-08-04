@@ -14,7 +14,7 @@ mod search;
 
 pub use descriptor::{CommandCategory, CommandDescriptor, CommandSource};
 pub use registry::CommandRegistry;
-pub use search::{filter_commands, command_score};
+pub use search::{command_score, filter_commands};
 
 /// Built-in command ids shipped with Jaymi (stable for plugins to depend on).
 pub mod ids {
@@ -111,8 +111,12 @@ pub fn builtin_descriptors() -> Vec<CommandDescriptor> {
             .with_keywords(["close", "tab", "editor"]),
         CommandDescriptor::builtin(CLOSE_WORKSPACE, "Close Workspace", CommandCategory::View)
             .with_keywords(["close", "workspace", "panel"]),
-        CommandDescriptor::builtin(OPEN_CODING, "Open Coding Workspace", CommandCategory::Workspace)
-            .with_keywords(["coding", "code", "ide"]),
+        CommandDescriptor::builtin(
+            OPEN_CODING,
+            "Open Coding Workspace",
+            CommandCategory::Workspace,
+        )
+        .with_keywords(["coding", "code", "ide"]),
         CommandDescriptor::builtin(
             OPEN_RESEARCH,
             "Open Research Workspace",
@@ -127,9 +131,13 @@ pub fn builtin_descriptors() -> Vec<CommandDescriptor> {
         .with_keywords(["creation", "creative", "canvas", "images"]),
         CommandDescriptor::builtin(INDEX_PROJECT, "Index Project", CommandCategory::Project)
             .with_keywords(["index", "scan", "project"]),
-        CommandDescriptor::builtin(SEARCH_KNOWLEDGE, "Search Knowledge", CommandCategory::Search)
-            .with_keywords(["knowledge", "project", "search"])
-            .with_argument_prompt("Search knowledge"),
+        CommandDescriptor::builtin(
+            SEARCH_KNOWLEDGE,
+            "Search Knowledge",
+            CommandCategory::Search,
+        )
+        .with_keywords(["knowledge", "project", "search"])
+        .with_argument_prompt("Search knowledge"),
         CommandDescriptor::builtin(SEARCH_MEMORY, "Search Memory", CommandCategory::Search)
             .with_keywords(["memory", "recall", "search"])
             .with_argument_prompt("Search memory"),

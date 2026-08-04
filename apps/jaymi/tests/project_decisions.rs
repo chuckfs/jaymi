@@ -121,22 +121,14 @@ fn project_decisions_persist_and_planner_retrieves_them() {
     assert_eq!(fetched.reasoning, stored.reasoning);
 
     // Re-open project — structured decision log is part of ProjectContext.
-    let context = app
-        .open_project(project_a.id.as_str())
-        .expect("open alpha");
+    let context = app.open_project(project_a.id.as_str()).expect("open alpha");
     assert_eq!(context.decisions.len(), 1);
     assert_eq!(context.decisions[0].title, "Planner owns orchestration");
     assert!(context.decisions[0]
         .reasoning
         .contains("whydidwechooseplanner99"));
-    assert_eq!(
-        context.decisions[0].related_files,
-        stored.related_files
-    );
-    assert!(context
-        .search_index
-        .detail
-        .contains("decisions=1"));
+    assert_eq!(context.decisions[0].related_files, stored.related_files);
+    assert!(context.search_index.detail.contains("decisions=1"));
 
     // Persistence across Application reboot.
     drop(app);
@@ -172,7 +164,9 @@ fn project_decisions_persist_and_planner_retrieves_them() {
     assert!(
         memory.records().iter().any(|record| {
             record.summary.contains("Planner owns orchestration")
-                || record.content.contains("All user goals route through the Planner")
+                || record
+                    .content
+                    .contains("All user goals route through the Planner")
                 || record.metadata_json.contains("whydidwechooseplanner99")
         }),
         "expected decision recalled in memory_context; records={:?}",
@@ -197,7 +191,8 @@ fn project_decisions_persist_and_planner_retrieves_them() {
         .search_project_knowledge(project_a.id.as_str(), "whydidwechooseplanner99", Some(20))
         .expect("search reasoning");
     assert!(
-        hits.iter().any(|hit| hit.detail.contains("whydidwechooseplanner99")),
+        hits.iter()
+            .any(|hit| hit.detail.contains("whydidwechooseplanner99")),
         "expected reasoning hit; got {hits:?}"
     );
     assert!(hits

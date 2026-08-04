@@ -52,14 +52,8 @@ fn planning_marks_planned_steps_without_unregistering() {
 
     assert_eq!(plan.steps.len(), 3);
     assert_eq!(plan.steps[0].availability, CapabilityAvailability::Ready);
-    assert_eq!(
-        plan.steps[1].availability,
-        CapabilityAvailability::Planned
-    );
-    assert_eq!(
-        plan.steps[2].availability,
-        CapabilityAvailability::Planned
-    );
+    assert_eq!(plan.steps[1].availability, CapabilityAvailability::Planned);
+    assert_eq!(plan.steps[2].availability, CapabilityAvailability::Planned);
     assert!(!plan.is_ready());
     assert!(!plan.is_executable());
     assert_eq!(plan.unavailable().len(), 2);
@@ -89,10 +83,7 @@ fn diagnostics_surface_availability_labels() {
         .iter()
         .any(|line| line.contains("chat") && line.contains("planned")));
 
-    let inspector = snapshot
-        .capability_inspector
-        .as_ref()
-        .expect("inspector");
+    let inspector = snapshot.capability_inspector.as_ref().expect("inspector");
     assert!(!inspector.planned.is_empty());
     let rendered = inspector.render();
     assert!(rendered.contains("planned"));

@@ -6,9 +6,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jaymi::Application;
-use jaymi_knowledge::{
-    KnowledgeQuery, KnowledgeStore, RecentKind, SqliteKnowledgeStore,
-};
+use jaymi_knowledge::{KnowledgeQuery, KnowledgeStore, RecentKind, SqliteKnowledgeStore};
 
 #[test]
 fn knowledge_api_is_single_interface_after_boot() {

@@ -405,7 +405,7 @@ mod tests {
         fs::File::create(root.join(".hidden")).unwrap();
 
         let engine = boot_engine(&data, root.clone());
-        let report = engine.scan(&[root.clone()]).unwrap();
+        let report = engine.scan(std::slice::from_ref(&root)).unwrap();
         assert!(report.files_seen >= 2);
         assert!(report.folders_seen >= 2);
         assert!(report.added >= 2);
@@ -443,12 +443,12 @@ mod tests {
 
         let engine = boot_engine(&data, root.clone());
 
-        let first = engine.scan(&[root.clone()]).unwrap();
+        let first = engine.scan(std::slice::from_ref(&root)).unwrap();
         assert!(first.added >= 1);
         assert_eq!(first.updated, 0);
         assert_eq!(first.removed, 0);
 
-        let second = engine.scan(&[root.clone()]).unwrap();
+        let second = engine.scan(std::slice::from_ref(&root)).unwrap();
         assert_eq!(second.added, 0);
         assert_eq!(second.updated, 0);
         assert_eq!(second.removed, 0);
@@ -457,12 +457,12 @@ mod tests {
         thread::sleep(StdDuration::from_millis(20));
         fs::write(root.join("a.txt"), "changed").unwrap();
         fs::write(root.join("b.txt"), "new").unwrap();
-        let third = engine.scan(&[root.clone()]).unwrap();
+        let third = engine.scan(std::slice::from_ref(&root)).unwrap();
         assert!(third.added >= 1);
         assert!(third.updated >= 1);
 
         fs::remove_file(root.join("b.txt")).unwrap();
-        let fourth = engine.scan(&[root.clone()]).unwrap();
+        let fourth = engine.scan(std::slice::from_ref(&root)).unwrap();
         assert!(fourth.removed >= 1);
     }
 
@@ -474,7 +474,7 @@ mod tests {
         fs::write(&original, "same-inode").unwrap();
 
         let engine = boot_engine(&data, root.clone());
-        engine.scan(&[root.clone()]).unwrap();
+        engine.scan(std::slice::from_ref(&root)).unwrap();
         let before = engine
             .knowledge()
             .get_by_path(&original)
@@ -484,7 +484,7 @@ mod tests {
 
         let renamed = root.join("new-name.txt");
         fs::rename(&original, &renamed).unwrap();
-        engine.scan(&[root.clone()]).unwrap();
+        engine.scan(std::slice::from_ref(&root)).unwrap();
 
         assert!(!engine.knowledge().exists(&original).unwrap());
         let after = engine

@@ -108,7 +108,7 @@ impl Tool for SearchKnowledgeTool {
             message: Some(message),
             listed_path: None,
             project_knowledge: Vec::new(),
-                    ..Default::default()
+            ..Default::default()
         })
     }
 }

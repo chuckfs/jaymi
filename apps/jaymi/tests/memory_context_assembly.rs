@@ -6,9 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use jaymi::Application;
 use jaymi_core::UserRequest;
-use jaymi_memory::{
-    AssembleContextRequest, MemoryRelevanceKind, MemoryScope, StoreMemoryRequest,
-};
+use jaymi_memory::{AssembleContextRequest, MemoryRelevanceKind, MemoryScope, StoreMemoryRequest};
 use jaymi_planner::Planner;
 use jaymi_project_engine::CreateProjectRequest;
 
@@ -53,8 +51,8 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
             tags: vec!["architecture".into()],
             source: Some("test".into()),
             kind: Some("architecture_decision".into()),
-                metadata_json: None,
-            })
+            metadata_json: None,
+        })
         .expect("jaymi project memory");
 
     let foreign = app
@@ -69,8 +67,8 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
             tags: vec![],
             source: None,
             kind: Some("task".into()),
-                metadata_json: None,
-            })
+            metadata_json: None,
+        })
         .expect("foreign project memory");
 
     let conversation = app
@@ -85,8 +83,8 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
             tags: vec![],
             source: None,
             kind: None,
-                metadata_json: None,
-            })
+            metadata_json: None,
+        })
         .expect("conversation memory");
 
     let other_conversation = app
@@ -101,8 +99,8 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
             tags: vec![],
             source: None,
             kind: None,
-                metadata_json: None,
-            })
+            metadata_json: None,
+        })
         .expect("other conversation memory");
 
     let working = app
@@ -117,8 +115,8 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
             tags: vec![],
             source: None,
             kind: None,
-                metadata_json: None,
-            })
+            metadata_json: None,
+        })
         .expect("working memory");
 
     let unrelated = app
@@ -133,8 +131,8 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
             tags: vec![],
             source: None,
             kind: None,
-                metadata_json: None,
-            })
+            metadata_json: None,
+        })
         .expect("unrelated working");
 
     // Flood the store with low-relevance noise; assembly must still honor limits.
@@ -178,16 +176,18 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
         .map(|item| item.record.id.as_str().to_string())
         .collect();
     assert!(ids.contains(&relevant_project.id.as_str().to_string()));
-    assert!(ids.contains(&conversation.id.as_str().to_string()) || ids.contains(&working.id.as_str().to_string()));
+    assert!(
+        ids.contains(&conversation.id.as_str().to_string())
+            || ids.contains(&working.id.as_str().to_string())
+    );
     assert!(!ids.contains(&foreign.id.as_str().to_string()));
     assert!(!ids.contains(&other_conversation.id.as_str().to_string()));
     assert!(
         !ids.contains(&unrelated.id.as_str().to_string())
-            || assembled
-                .memories
-                .iter()
-                .any(|item| item.reasons.contains(&MemoryRelevanceKind::RecentWork)
-                    && item.record.id == unrelated.id),
+            || assembled.memories.iter().any(|item| item
+                .reasons
+                .contains(&MemoryRelevanceKind::RecentWork)
+                && item.record.id == unrelated.id),
         "unrelated grocery note should not outrank request matches"
     );
 

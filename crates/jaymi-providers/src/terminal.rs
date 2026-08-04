@@ -137,10 +137,7 @@ impl TerminalManager {
             self.sessions.insert(session_id.to_string(), handle);
             jaymi_logging::info(
                 "providers",
-                format!(
-                    "terminal spawn session={session_id} cwd={}",
-                    cwd.display()
-                ),
+                format!("terminal spawn session={session_id} cwd={}", cwd.display()),
             );
         } else if let Some(title) = title.map(str::trim).filter(|value| !value.is_empty()) {
             if let Some(handle) = self.sessions.get_mut(session_id) {
@@ -162,12 +159,12 @@ impl TerminalManager {
         title: Option<&str>,
     ) -> JaymiResult<TerminalCommandResult> {
         self.next_index = self.next_index.saturating_add(1);
-        let session_id = if self.next_index == 1 && !self.sessions.contains_key(DEFAULT_TERMINAL_SESSION_ID)
-        {
-            DEFAULT_TERMINAL_SESSION_ID.to_string()
-        } else {
-            format!("terminal-{}", self.next_index)
-        };
+        let session_id =
+            if self.next_index == 1 && !self.sessions.contains_key(DEFAULT_TERMINAL_SESSION_ID) {
+                DEFAULT_TERMINAL_SESSION_ID.to_string()
+            } else {
+                format!("terminal-{}", self.next_index)
+            };
         let title = title
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -192,9 +189,10 @@ impl TerminalManager {
 
     /// Kill / close one session.
     pub fn kill(&mut self, session_id: &str) -> JaymiResult<TerminalCommandResult> {
-        let handle = self.sessions.remove(session_id).ok_or_else(|| {
-            JaymiError::new(format!("missing terminal session {session_id}"))
-        })?;
+        let handle = self
+            .sessions
+            .remove(session_id)
+            .ok_or_else(|| JaymiError::new(format!("missing terminal session {session_id}")))?;
         Ok(TerminalCommandResult {
             session_id: session_id.to_string(),
             title: handle.title,
@@ -236,9 +234,12 @@ impl TerminalManager {
 
         // Echo a unique marker so we know when the shell finished the command.
         let script = format!("{command}\necho {DONE_MARKER}$?\n");
-        handle.writer.write_all(script.as_bytes()).map_err(|error| {
-            JaymiError::new(format!("failed to write to terminal session: {error}"))
-        })?;
+        handle
+            .writer
+            .write_all(script.as_bytes())
+            .map_err(|error| {
+                JaymiError::new(format!("failed to write to terminal session: {error}"))
+            })?;
         handle.writer.flush().map_err(|error| {
             JaymiError::new(format!("failed to flush terminal session: {error}"))
         })?;
@@ -316,11 +317,7 @@ pub struct TerminalProvider {
 
 impl std::fmt::Debug for TerminalProvider {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let session_count = self
-            .manager
-            .lock()
-            .map(|guard| guard.len())
-            .unwrap_or(0);
+        let session_count = self.manager.lock().map(|guard| guard.len()).unwrap_or(0);
         f.debug_struct("TerminalProvider")
             .field("id", &self.identity.id)
             .field("initialized", &self.initialized)
@@ -579,7 +576,10 @@ fn normalize_cwd(path: &Path) -> JaymiResult<PathBuf> {
         path.to_path_buf()
     };
     let meta = std::fs::metadata(&path).map_err(|error| {
-        JaymiError::new(format!("cannot access terminal cwd {}: {error}", path.display()))
+        JaymiError::new(format!(
+            "cannot access terminal cwd {}: {error}",
+            path.display()
+        ))
     })?;
     if !meta.is_dir() {
         return Err(JaymiError::new(format!(
@@ -587,7 +587,7 @@ fn normalize_cwd(path: &Path) -> JaymiResult<PathBuf> {
             path.display()
         )));
     }
-    std::fs::canonicalize(&path).or_else(|_| Ok(path))
+    std::fs::canonicalize(&path).or(Ok(path))
 }
 
 fn default_shell() -> String {
@@ -687,7 +687,8 @@ mod tests {
             .run_command(DEFAULT_TERMINAL_SESSION_ID, &dir, "pwd")
             .unwrap();
         assert!(
-            pwd.output.contains(dir.file_name().unwrap().to_str().unwrap())
+            pwd.output
+                .contains(dir.file_name().unwrap().to_str().unwrap())
                 || pwd.scrollback.contains(&dir.display().to_string())
                 || pwd.output.contains(&dir.display().to_string()),
             "pwd output missing cwd: {}",

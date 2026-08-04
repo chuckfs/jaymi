@@ -37,9 +37,7 @@ impl ImageContent {
     /// Build image content from a parsed image document's metadata.
     pub fn from_document(document: &Document) -> JaymiResult<Self> {
         if document.file_type.id() != "image" {
-            return Err(JaymiError::new(
-                "ImageContent requires an image document",
-            ));
+            return Err(JaymiError::new("ImageContent requires an image document"));
         }
         let width = document
             .metadata
@@ -98,9 +96,8 @@ impl ImageContent {
         })?;
 
         let path = thumbnail_path_for(source_id, thumbnail_dir);
-        let dyn_image = image::load_from_memory(source_bytes).map_err(|error| {
-            JaymiError::new(format!("thumbnail decode failed: {error}"))
-        })?;
+        let dyn_image = image::load_from_memory(source_bytes)
+            .map_err(|error| JaymiError::new(format!("thumbnail decode failed: {error}")))?;
         let thumb = dyn_image.thumbnail(THUMBNAIL_MAX_EDGE, THUMBNAIL_MAX_EDGE);
         thumb
             .save_with_format(&path, image::ImageFormat::Jpeg)

@@ -64,7 +64,10 @@ impl SqliteKnowledgeStore {
         }
     }
 
-    pub(crate) fn query_untracked(&self, filter: KnowledgeQuery) -> JaymiResult<Vec<KnowledgeItem>> {
+    pub(crate) fn query_untracked(
+        &self,
+        filter: KnowledgeQuery,
+    ) -> JaymiResult<Vec<KnowledgeItem>> {
         let records = self.database.query_discovered(&to_db_query(&filter))?;
         Ok(records.into_iter().map(record_to_item).collect())
     }
@@ -84,10 +87,7 @@ impl KnowledgeStore for SqliteKnowledgeStore {
         self.ensure_initialized()?;
         let started = Instant::now();
         let key = normalize_path(path)?.to_string_lossy().into_owned();
-        let item = self
-            .database
-            .get_discovered_item(&key)?
-            .map(record_to_item);
+        let item = self.database.get_discovered_item(&key)?.map(record_to_item);
         self.record_query(
             "get_by_path".to_string(),
             u64::from(item.is_some()),
@@ -100,11 +100,7 @@ impl KnowledgeStore for SqliteKnowledgeStore {
         Ok(self.get_by_path(path)?.is_some())
     }
 
-    fn find_by_name(
-        &self,
-        name: &str,
-        limit: Option<usize>,
-    ) -> JaymiResult<Vec<KnowledgeItem>> {
+    fn find_by_name(&self, name: &str, limit: Option<usize>) -> JaymiResult<Vec<KnowledgeItem>> {
         self.query(KnowledgeQuery {
             name_contains: Some(name.to_string()),
             limit,

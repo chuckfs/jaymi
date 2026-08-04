@@ -69,7 +69,7 @@ pub fn dispatch_command(
             Ok(CommandDispatchEffect::None)
         }
         ids::TOGGLE_GIT => toggle_bottom_tab(app, CodingBottomTab::Git),
-        ids::TOGGLE_PROBLEMS => toggle_bottom_tab(app, CodingBottomTab::Diagnostics),
+        ids::TOGGLE_PROBLEMS => toggle_bottom_tab(app, CodingBottomTab::Problems),
         ids::CREATE_FILE => {
             ensure_coding(app)?;
             let parent = explorer_parent(app)?;
@@ -87,9 +87,8 @@ pub fn dispatch_command(
             Ok(CommandDispatchEffect::None)
         }
         ids::CLOSE_EDITOR => {
-            let path = app.with_coding_state(|coding| {
-                coding.active_tab_path().map(str::to_string)
-            })?;
+            let path =
+                app.with_coding_state(|coding| coding.active_tab_path().map(str::to_string))?;
             let Some(path) = path else {
                 return Err(JaymiError::new("no active editor tab"));
             };
@@ -167,7 +166,10 @@ fn ensure_coding(app: &Application) -> JaymiResult<()> {
     Ok(())
 }
 
-fn toggle_bottom_tab(app: &Application, tab: CodingBottomTab) -> JaymiResult<CommandDispatchEffect> {
+fn toggle_bottom_tab(
+    app: &Application,
+    tab: CodingBottomTab,
+) -> JaymiResult<CommandDispatchEffect> {
     ensure_coding(app)?;
     app.with_coding_state(|coding| {
         coding.bottom_tab = if coding.bottom_tab == tab {
@@ -181,10 +183,12 @@ fn toggle_bottom_tab(app: &Application, tab: CodingBottomTab) -> JaymiResult<Com
 
 fn active_terminal_id(app: &Application) -> JaymiResult<Option<String>> {
     app.with_coding_state(|coding| {
-        coding
-            .active_terminal_id
-            .clone()
-            .or_else(|| coding.terminal_sessions.first().map(|session| session.id.clone()))
+        coding.active_terminal_id.clone().or_else(|| {
+            coding
+                .terminal_sessions
+                .first()
+                .map(|session| session.id.clone())
+        })
     })
 }
 

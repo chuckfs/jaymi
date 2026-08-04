@@ -190,7 +190,7 @@ impl UnderstandingEngine {
             if let Err(error) = scheduler.schedule(&content.source_id) {
                 jaymi_logging::warn(
                     "understanding",
-                    &format!(
+                    format!(
                         "embedding schedule failed for {}: {}",
                         content.source_id,
                         error.message()
@@ -268,7 +268,7 @@ impl UnderstandingEngine {
             // Thumbnail failure should not drop metadata extraction.
             jaymi_logging::warn(
                 "understanding",
-                &format!("thumbnail generation failed: {}", error.message()),
+                format!("thumbnail generation failed: {}", error.message()),
             );
         }
     }
@@ -333,10 +333,7 @@ impl Lifecycle for UnderstandingEngine {
                 "enriched_documents".to_string(),
                 stats.enriched_documents.to_string(),
             ));
-            details.push((
-                "failed_parses".to_string(),
-                stats.failed_parses.to_string(),
-            ));
+            details.push(("failed_parses".to_string(), stats.failed_parses.to_string()));
             details.push((
                 "unsupported_formats".to_string(),
                 stats.unsupported_formats.to_string(),

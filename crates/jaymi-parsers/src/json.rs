@@ -34,9 +34,8 @@ impl FileParser for JsonParser {
             return Err(JaymiError::new("JSON file is empty"));
         }
 
-        let value: serde_json::Value = serde_json::from_str(trimmed).map_err(|error| {
-            JaymiError::new(format!("invalid JSON: {error}"))
-        })?;
+        let value: serde_json::Value = serde_json::from_str(trimmed)
+            .map_err(|error| JaymiError::new(format!("invalid JSON: {error}")))?;
 
         let kind = json_kind(&value);
         let title = extract_json_title(&value).or_else(|| title_from_path(path));
@@ -102,9 +101,7 @@ mod tests {
     #[test]
     fn parses_json_array() {
         let parser = JsonParser;
-        let document = parser
-            .parse(Path::new("items.json"), b"[1, 2, 3]")
-            .unwrap();
+        let document = parser.parse(Path::new("items.json"), b"[1, 2, 3]").unwrap();
         assert_eq!(document.metadata.get("json_kind"), Some("array"));
         assert_eq!(document.title.as_deref(), Some("items"));
     }

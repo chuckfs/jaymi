@@ -83,21 +83,39 @@ pub fn hits_to_citations(hits: &[SearchHit]) -> Vec<Citation> {
 /// Ensure every hit has a non-empty preview before leaving the Search Engine.
 pub fn ensure_hit_previews(hits: &mut [SearchHit]) {
     for hit in hits.iter_mut() {
-        if hit.preview.as_ref().map(|value| value.trim().is_empty()).unwrap_or(true) {
+        if hit
+            .preview
+            .as_ref()
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(true)
+        {
             hit.preview = Some(ensure_preview(hit));
         }
-        if hit.snippet.as_ref().map(|value| value.trim().is_empty()).unwrap_or(true) {
+        if hit
+            .snippet
+            .as_ref()
+            .map(|value| value.trim().is_empty())
+            .unwrap_or(true)
+        {
             hit.snippet = hit.preview.clone();
         }
     }
 }
 
 fn ensure_preview(hit: &SearchHit) -> String {
-    if let Some(snippet) = hit.snippet.as_ref().map(|value| value.trim()).filter(|v| !v.is_empty())
+    if let Some(snippet) = hit
+        .snippet
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|v| !v.is_empty())
     {
         return snippet.to_string();
     }
-    if let Some(preview) = hit.preview.as_ref().map(|value| value.trim()).filter(|v| !v.is_empty())
+    if let Some(preview) = hit
+        .preview
+        .as_ref()
+        .map(|value| value.trim())
+        .filter(|v| !v.is_empty())
     {
         return preview.to_string();
     }

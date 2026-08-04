@@ -67,10 +67,7 @@ fn planner_orchestrates_requests_engines_own_crud() {
             metadata_json: None,
         })
         .expect("store via memory engine");
-    assert_eq!(
-        stored.project_id.as_deref(),
-        Some(project.id.as_str())
-    );
+    assert_eq!(stored.project_id.as_deref(), Some(project.id.as_str()));
 
     app.open_project(project.id.as_str())
         .expect("open project session");

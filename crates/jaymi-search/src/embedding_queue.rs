@@ -109,11 +109,7 @@ impl EmbeddingQueue {
             running,
             detail: format!(
                 "model={} · indexed={} · queue={} · processed={} · failures={}",
-                model_id,
-                counts.indexed,
-                counts.queued,
-                runtime.processed,
-                runtime.failures
+                model_id, counts.indexed, counts.queued, runtime.processed, runtime.failures
             ),
             model_id,
             indexed_embeddings: counts.indexed,
@@ -168,13 +164,7 @@ impl Lifecycle for EmbeddingQueue {
 
     fn health_check(&self) -> HealthReport {
         let ok = self.initialized && self.shared.provider.embedding_status().available;
-        HealthReport::new(
-            NAME,
-            self.initialized,
-            ok,
-            self.version(),
-            DEPENDENCIES,
-        )
+        HealthReport::new(NAME, self.initialized, ok, self.version(), DEPENDENCIES)
     }
 
     fn shutdown(&mut self) -> JaymiResult<()> {
@@ -192,7 +182,10 @@ fn worker_loop(shared: Arc<Shared>) {
     while !shared.stop.load(Ordering::SeqCst) {
         match process_batch(&shared, BATCH_SIZE) {
             Ok(0) => {
-                let guard = shared.notify.lock().unwrap_or_else(|error| error.into_inner());
+                let guard = shared
+                    .notify
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
                 let (guard, _) = shared
                     .wake
                     .wait_timeout(guard, IDLE_WAIT)
@@ -203,7 +196,7 @@ fn worker_loop(shared: Arc<Shared>) {
             Err(error) => {
                 jaymi_logging::warn(
                     "embedding_queue",
-                    &format!("batch failed: {}", error.message()),
+                    format!("batch failed: {}", error.message()),
                 );
                 thread::sleep(IDLE_WAIT);
             }

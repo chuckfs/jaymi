@@ -83,10 +83,7 @@ fn project_knowledge_traverses_full_request_pipeline() {
         response.tool_id.as_deref(),
         Some(SEARCH_PROJECT_KNOWLEDGE_TOOL_ID)
     );
-    assert_eq!(
-        response.capability.map(|c| c.id()),
-        Some("search")
-    );
+    assert_eq!(response.capability.map(|c| c.id()), Some("search"));
     assert!(response.policy_evaluation.is_some());
     assert!(response
         .policy_evaluation

@@ -9,9 +9,7 @@ use jaymi_core::JaymiResult;
 
 use crate::collections::Collection;
 use crate::stats::{CollectionStats, InventoryStats};
-use crate::types::{
-    KnowledgeItem, KnowledgeQuery, PublishOutcome, RecentKind, ScanSummary,
-};
+use crate::types::{KnowledgeItem, KnowledgeQuery, PublishOutcome, RecentKind, ScanSummary};
 
 /// Stable internal API for Jaymi's indexed knowledge.
 pub trait KnowledgeStore: Send + Sync {
@@ -22,11 +20,7 @@ pub trait KnowledgeStore: Send + Sync {
     fn exists(&self, path: &Path) -> JaymiResult<bool>;
 
     /// Find items whose filename contains `name` (case-insensitive).
-    fn find_by_name(
-        &self,
-        name: &str,
-        limit: Option<usize>,
-    ) -> JaymiResult<Vec<KnowledgeItem>>;
+    fn find_by_name(&self, name: &str, limit: Option<usize>) -> JaymiResult<Vec<KnowledgeItem>>;
 
     /// General filtered query.
     fn query(&self, filter: KnowledgeQuery) -> JaymiResult<Vec<KnowledgeItem>>;

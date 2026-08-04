@@ -7,7 +7,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use jaymi::Application;
 use jaymi_database::{Database, CURRENT_SCHEMA_VERSION};
-use jaymi_understanding::{ContentStore, SqliteContentStore, UnderstandOutcome, UnderstandingEngine};
+use jaymi_understanding::{
+    ContentStore, SqliteContentStore, UnderstandOutcome, UnderstandingEngine,
+};
 
 #[test]
 fn content_pipeline_persists_normalized_content() {
@@ -59,11 +61,17 @@ fn content_pipeline_persists_normalized_content() {
         .understand_path(&root.join("readme.txt"))
         .unwrap()
         .unwrap();
-    let unsupported = understanding
+    // Unknown extensions fall back to plain-text so Coding can open them.
+    let other = understanding
         .understand_path(&root.join("archive.bin"))
         .unwrap()
         .unwrap();
-    assert!(matches!(unsupported, UnderstandOutcome::Unsupported(_)));
+    match other {
+        UnderstandOutcome::Parsed(content) | UnderstandOutcome::Cached(content) => {
+            assert_eq!(content.parser_used, "plain_text");
+        }
+        other => panic!("expected plain_text fallback, got {other:?}"),
+    }
     let failed = understanding
         .understand_path(&root.join("broken.pdf"))
         .unwrap()
@@ -80,7 +88,7 @@ fn content_pipeline_persists_normalized_content() {
         .container()
         .resolve::<Arc<SqliteContentStore>>()
         .expect("content");
-    assert_eq!(content.document_count().unwrap(), 3);
+    assert_eq!(content.document_count().unwrap(), 4);
 
     // Planner read prefers stored content after warm pipeline.
     let first = app.read_file(&md).expect("read");
@@ -89,16 +97,13 @@ fn content_pipeline_persists_normalized_content() {
 
     let second = app.read_file(&md).expect("reread");
     assert_eq!(
-        second
-            .document
-            .as_ref()
-            .map(|doc| doc.parser_id.as_str()),
+        second.document.as_ref().map(|doc| doc.parser_id.as_str()),
         Some("markdown")
     );
 
     let snapshot = app.diagnostics().expect("diagnostics");
     let row = snapshot.subsystem("Understanding").unwrap();
-    assert!(row.detail.contains("parsed_documents=3"));
+    assert!(row.detail.contains("parsed_documents=4"));
     assert!(row.detail.contains("enriched_documents="));
     assert!(row.detail.contains("parser_usage="));
     assert!(row.detail.contains("failed_parses="));

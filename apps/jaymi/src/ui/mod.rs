@@ -10,21 +10,21 @@ use eframe::egui;
 use crate::boot::Application;
 use crate::coding_workspace::{render_coding_shell, CodingShellEvent, MonacoEditorSurface};
 use crate::command_dispatch::{dispatch_command, CommandDispatchEffect};
-use crate::command_palette::{
-    render_command_palette, CommandPaletteOutcome, CommandPaletteState,
-};
+use crate::command_palette::{render_command_palette, CommandPaletteOutcome, CommandPaletteState};
 use crate::diagnostics::{DiagnosticsSnapshot, OperationalStatus};
 use crate::experience::ExperienceSession;
 use crate::monaco_host::{
     language_for_path, resolve_monaco_assets, MonacoDocument, MonacoHost, MonacoIpcMessage,
 };
 use crate::quick_open::{render_quick_open, QuickOpenOutcome, QuickOpenState};
+use crate::theme::Theme;
 use crate::ui::explorer::ExplorerEvent;
 use jaymi_capabilities::{
     EditorSettings, FoldedRegion, SplitDirection, WorkspaceKind, WorkspacePanel,
-    DEFAULT_WORKSPACE_PANEL_WIDTH, MAX_WORKSPACE_PANEL_WIDTH, MIN_CONVERSATION_WIDTH,
-    MIN_WORKSPACE_PANEL_WIDTH,
+    DEFAULT_CONVERSATION_FRACTION, DEFAULT_WORKSPACE_PANEL_WIDTH, MAX_CONVERSATION_FRACTION,
+    MAX_WORKSPACE_PANEL_WIDTH, MIN_CONVERSATION_WIDTH, MIN_WORKSPACE_PANEL_WIDTH,
 };
+use jaymi_config::{Config, Theme as ThemePreference};
 use jaymi_core::UserRequest;
 use jaymi_memory::MessageRole;
 
@@ -46,7 +46,19 @@ pub fn run_diagnostics(
     eframe::run_native(
         "Jaymi",
         options,
-        Box::new(move |_cc| {
+        Box::new(move |cc| {
+            let preference = app
+                .container()
+                .resolve::<Config>()
+                .map(|config| config.settings().theme)
+                .unwrap_or(ThemePreference::System);
+            let system_dark = cc
+                .egui_ctx
+                .system_theme()
+                .map(|theme| matches!(theme, egui::Theme::Dark))
+                .unwrap_or(false);
+            let theme = Theme::resolve(preference, system_dark);
+            theme.apply_egui(&cc.egui_ctx);
             Ok(Box::new(JaymiApp {
                 app,
                 snapshot: initial_snapshot,
@@ -64,6 +76,7 @@ pub fn run_diagnostics(
                 workspace_anim_start: None,
                 workspace_anim_from: MIN_WORKSPACE_PANEL_WIDTH,
                 workspace_anim_target: DEFAULT_WORKSPACE_PANEL_WIDTH,
+                theme,
             }))
         }),
     )
@@ -95,6 +108,8 @@ struct JaymiApp {
     workspace_anim_from: f32,
     /// Width the expand animation eases toward (the remembered/default width).
     workspace_anim_target: f32,
+    /// Active application theme (drives egui visuals + Monaco Jaymi themes).
+    theme: Theme,
 }
 
 /// Duration of the workspace expand-in animation.
@@ -106,17 +121,19 @@ fn ease_out_cubic(t: f32) -> f32 {
     1.0 - inv * inv * inv
 }
 
-fn status_color(status: OperationalStatus) -> egui::Color32 {
+fn status_color(theme: &Theme, status: OperationalStatus) -> egui::Color32 {
     match status {
-        OperationalStatus::Operational => egui::Color32::from_rgb(56, 142, 60),
-        OperationalStatus::Experimental => egui::Color32::from_rgb(194, 140, 0),
-        OperationalStatus::Stub => egui::Color32::from_rgb(120, 120, 120),
-        OperationalStatus::Disabled => egui::Color32::from_rgb(180, 60, 60),
+        OperationalStatus::Operational => theme.success,
+        OperationalStatus::Experimental => theme.warning,
+        OperationalStatus::Stub => theme.secondary_foreground,
+        OperationalStatus::Disabled => theme.error,
     }
 }
 
 impl eframe::App for JaymiApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.sync_theme(ctx);
+
         if let Ok(session) = self.app.experience() {
             self.experience = session;
         }
@@ -126,7 +143,10 @@ impl eframe::App for JaymiApp {
             let command = input.modifiers.command || input.modifiers.mac_cmd;
             let shift = input.modifiers.shift;
             let p_pressed = input.key_pressed(egui::Key::P);
-            (command && shift && p_pressed, command && !shift && p_pressed)
+            (
+                command && shift && p_pressed,
+                command && !shift && p_pressed,
+            )
         });
         if open_palette {
             self.command_palette.open();
@@ -159,10 +179,10 @@ impl eframe::App for JaymiApp {
                         self.run_quick_open_search();
                     }
                     ui.checkbox(&mut self.show_diagnostics, "Diagnostics");
-                    if self.experience.workspace_expanded() {
-                        if ui.button("Close workspace").clicked() {
-                            self.close_workspace();
-                        }
+                    if self.experience.workspace_expanded()
+                        && ui.button("Close workspace").clicked()
+                    {
+                        self.close_workspace();
                     }
                 });
             });
@@ -179,14 +199,23 @@ impl eframe::App for JaymiApp {
                 .unwrap_or(DEFAULT_WORKSPACE_PANEL_WIDTH);
 
             let (default_w, min_w, max_w) = if is_coding {
-                // Coding's remembered width is clamped so the conversation column
-                // never shrinks below MIN_CONVERSATION_WIDTH.
+                // Conversation defaults to ~30% of the window, never below
+                // MIN_CONVERSATION_WIDTH, and never above MAX_CONVERSATION_FRACTION.
                 let window_w = ctx.screen_rect().width();
-                let max_w = (window_w - MIN_CONVERSATION_WIDTH)
-                    .min(MAX_WORKSPACE_PANEL_WIDTH)
-                    .max(MIN_WORKSPACE_PANEL_WIDTH);
-                let default_w = remembered_coding_width.clamp(MIN_WORKSPACE_PANEL_WIDTH, max_w);
-                (default_w, MIN_WORKSPACE_PANEL_WIDTH, max_w)
+                let max_w =
+                    (window_w - MIN_CONVERSATION_WIDTH).clamp(0.0, MAX_WORKSPACE_PANEL_WIDTH);
+                let min_from_conversation_cap =
+                    (window_w * (1.0 - MAX_CONVERSATION_FRACTION)).max(0.0);
+                let min_w = min_from_conversation_cap
+                    .max(MIN_WORKSPACE_PANEL_WIDTH.min(max_w))
+                    .min(max_w);
+                let preferred = if remembered_coding_width > 0.0 {
+                    remembered_coding_width
+                } else {
+                    window_w * (1.0 - DEFAULT_CONVERSATION_FRACTION)
+                };
+                let default_w = preferred.clamp(min_w, max_w.max(min_w));
+                (default_w, min_w, max_w.max(min_w))
             } else {
                 (420.0, 320.0, 560.0)
             };
@@ -235,7 +264,9 @@ impl eframe::App for JaymiApp {
                 if (rendered_width - remembered_coding_width).abs() > 1.0 {
                     let updated = self
                         .app
-                        .with_coding_state(|coding| coding.set_workspace_panel_width(rendered_width))
+                        .with_coding_state(|coding| {
+                            coding.set_workspace_panel_width(rendered_width)
+                        })
                         .is_ok();
                     if updated {
                         // Avoid a disk write on every dragged frame — persist once
@@ -276,11 +307,17 @@ impl eframe::App for JaymiApp {
         });
 
         if let Ok(registry) = self.app.command_registry() {
-            let outcome = render_command_palette(ctx, &mut self.command_palette, registry.as_ref());
+            let outcome = render_command_palette(
+                ctx,
+                &mut self.command_palette,
+                registry.as_ref(),
+                self.theme.overlay_scrim,
+            );
             self.handle_command_palette_outcome(outcome);
         }
 
-        let quick_open_outcome = render_quick_open(ctx, &mut self.quick_open);
+        let quick_open_outcome =
+            render_quick_open(ctx, &mut self.quick_open, self.theme.overlay_scrim);
         self.handle_quick_open_outcome(quick_open_outcome);
 
         self.sync_monaco(ctx, frame, coding_open, monaco_surface.as_ref());
@@ -288,6 +325,28 @@ impl eframe::App for JaymiApp {
 }
 
 impl JaymiApp {
+    /// Resolve config + OS appearance into [`Theme`] and push to egui / Monaco.
+    fn sync_theme(&mut self, ctx: &egui::Context) {
+        let preference = self
+            .app
+            .container()
+            .resolve::<Config>()
+            .map(|config| config.settings().theme)
+            .unwrap_or(ThemePreference::System);
+        let system_dark = ctx
+            .system_theme()
+            .map(|theme| matches!(theme, egui::Theme::Dark))
+            .unwrap_or(self.theme.mode.is_dark());
+        let next = Theme::resolve(preference, system_dark);
+        if next != self.theme {
+            next.apply_egui(ctx);
+            if let Some(host) = self.monaco.as_mut() {
+                host.clear_theme_cache();
+            }
+            self.theme = next;
+        }
+    }
+
     fn handle_command_palette_outcome(&mut self, outcome: CommandPaletteOutcome) {
         let CommandPaletteOutcome::Run { id, argument } = outcome else {
             return;
@@ -361,9 +420,7 @@ impl JaymiApp {
     }
 
     fn palette_open_file(&mut self) {
-        let picked = rfd::FileDialog::new()
-            .set_title("Open File")
-            .pick_file();
+        let picked = rfd::FileDialog::new().set_title("Open File").pick_file();
         let Some(path) = picked else {
             return;
         };
@@ -416,14 +473,14 @@ impl JaymiApp {
             let height = ui.available_height().max(200.0);
             ui.add_space((height * 0.32).clamp(48.0, 180.0));
             ui.label(
-                egui::RichText::new("HI, I'm Jaymi")
+                egui::RichText::new("Hi, I'm Jaymi")
                     .size(42.0)
                     .strong()
                     .color(ui.visuals().strong_text_color()),
             );
             ui.add_space(10.0);
             ui.label(
-                egui::RichText::new("Ask anything, or open ⋯ → Open Project… / Start Coding Project.")
+                egui::RichText::new("Ask anything,\nor open a Coding Workspace.")
                     .size(15.0)
                     .color(ui.visuals().weak_text_color()),
             );
@@ -435,9 +492,9 @@ impl JaymiApp {
         let (label, fill, text_color, meta_color) = match role {
             MessageRole::User => (
                 "You",
-                egui::Color32::from_rgb(36, 99, 235),
-                egui::Color32::WHITE,
-                egui::Color32::from_rgb(200, 220, 255),
+                self.theme.accent,
+                self.theme.accent_foreground,
+                self.theme.selection,
             ),
             MessageRole::Assistant => (
                 "Jaymi",
@@ -464,7 +521,12 @@ impl JaymiApp {
                 .fill(fill)
                 .show(ui, |ui| {
                     ui.set_max_width(max_bubble);
-                    ui.label(egui::RichText::new(label).small().strong().color(meta_color));
+                    ui.label(
+                        egui::RichText::new(label)
+                            .small()
+                            .strong()
+                            .color(meta_color),
+                    );
                     ui.label(egui::RichText::new(content).color(text_color));
                 });
         });
@@ -472,7 +534,7 @@ impl JaymiApp {
 
     fn render_chat_composer(&mut self, ui: &mut egui::Ui) {
         if let Some(error) = &self.error {
-            ui.colored_label(egui::Color32::from_rgb(200, 80, 80), error);
+            ui.colored_label(self.theme.error, error);
             ui.add_space(6.0);
         }
 
@@ -497,7 +559,7 @@ impl JaymiApp {
                             [36.0, 36.0],
                             egui::Button::new(egui::RichText::new("↑").size(20.0).strong())
                                 .corner_radius(18.0)
-                                .fill(egui::Color32::from_rgb(36, 99, 235)),
+                                .fill(self.theme.accent),
                         )
                         .on_hover_text("Send");
 
@@ -641,7 +703,9 @@ impl JaymiApp {
                     pane,
                     path,
                     content,
-                } => self.app.set_coding_tab_content_in_pane(&pane, &path, content),
+                } => self
+                    .app
+                    .set_coding_tab_content_in_pane(&pane, &path, content),
                 CodingShellEvent::Scroll { pane, path, offset } => {
                     self.app.set_coding_tab_scroll_in_pane(&pane, &path, offset)
                 }
@@ -653,7 +717,11 @@ impl JaymiApp {
                 } => self
                     .app
                     .set_coding_tab_cursor_in_pane(&pane, &path, line, column),
-                CodingShellEvent::SetFolds { pane, path, regions } => {
+                CodingShellEvent::SetFolds {
+                    pane,
+                    path,
+                    regions,
+                } => {
                     let folds = regions
                         .into_iter()
                         .map(|(start_line, end_line)| FoldedRegion {
@@ -674,9 +742,15 @@ impl JaymiApp {
                 CodingShellEvent::SetFontSize(size) => {
                     self.update_editor_setting(|settings| settings.font_size = size.max(8))
                 }
-                CodingShellEvent::SetBottomTab(tab) => self.app.with_coding_state(|coding| {
-                    coding.bottom_tab = tab;
-                }),
+                CodingShellEvent::SetBottomTab(tab) => {
+                    let result = self.app.with_coding_state(|coding| {
+                        coding.bottom_tab = tab;
+                    });
+                    if result.is_ok() {
+                        let _ = self.app.persist_coding_editor_workspace();
+                    }
+                    result
+                }
                 CodingShellEvent::SplitVertical => self
                     .app
                     .split_coding_editor(SplitDirection::Vertical)
@@ -685,12 +759,8 @@ impl JaymiApp {
                     .app
                     .split_coding_editor(SplitDirection::Horizontal)
                     .map(|_| ()),
-                CodingShellEvent::ClosePane(pane_id) => {
-                    self.app.close_coding_editor_pane(&pane_id)
-                }
-                CodingShellEvent::FocusPane(pane_id) => {
-                    self.app.focus_coding_editor_pane(&pane_id)
-                }
+                CodingShellEvent::ClosePane(pane_id) => self.app.close_coding_editor_pane(&pane_id),
+                CodingShellEvent::FocusPane(pane_id) => self.app.focus_coding_editor_pane(&pane_id),
                 CodingShellEvent::MoveTab {
                     from_pane,
                     path,
@@ -801,17 +871,17 @@ impl JaymiApp {
                                     .with_whole_word(panel.whole_word)
                                     .with_regex(panel.use_regex);
                                 request.limit = Some(500);
-                                if let Ok(Some(root)) = self
-                                    .app
-                                    .with_coding_state(|coding| coding.explorer.project_root.clone())
-                                {
+                                if let Ok(Some(root)) = self.app.with_coding_state(|coding| {
+                                    coding.explorer.project_root.clone()
+                                }) {
                                     request.folder = Some(std::path::PathBuf::from(root));
                                 }
                                 self.app
                                     .replace_in_search_results(request, &panel.replace_text)
                                     .and_then(|count| {
                                         self.app.with_coding_state(|coding| {
-                                            coding.search.status = format!("Replaced {count} match(es)");
+                                            coding.search.status =
+                                                format!("Replaced {count} match(es)");
                                         })
                                     })
                                     .and_then(|_| self.app.run_coding_search_from_panel())
@@ -845,16 +915,15 @@ impl JaymiApp {
                     Ok(())
                 }
                 ExplorerEvent::ToggleExpand(path) => self.app.toggle_coding_expand(&path),
-                ExplorerEvent::Select { path, is_dir } => self
-                    .app
-                    .select_coding_path(&path, is_dir)
-                    .and_then(|_| {
+                ExplorerEvent::Select { path, is_dir } => {
+                    self.app.select_coding_path(&path, is_dir).and_then(|_| {
                         if is_dir {
                             Ok(())
                         } else {
                             self.app.open_coding_file_preview(&path)
                         }
-                    }),
+                    })
+                }
                 ExplorerEvent::Open(path) => self.app.open_coding_file(&path),
                 ExplorerEvent::BeginNewFile { parent } => self.app.begin_coding_new_file(&parent),
                 ExplorerEvent::BeginNewFolder { parent } => {
@@ -905,9 +974,7 @@ impl JaymiApp {
     }
 
     fn render_workspace(&mut self, ui: &mut egui::Ui) -> Option<MonacoEditorSurface> {
-        let Some(workspace) = self.experience.active_workspace().cloned() else {
-            return None;
-        };
+        let workspace = self.experience.active_workspace().cloned()?;
 
         if workspace.kind == WorkspaceKind::Coding {
             let coding = self
@@ -952,7 +1019,7 @@ impl JaymiApp {
                 ui.ctx().request_repaint();
             }
             if let Some(error) = &self.monaco_last_error {
-                ui.colored_label(egui::Color32::from_rgb(200, 80, 80), error);
+                ui.colored_label(self.theme.error, error);
             }
             ui.add_space(6.0);
             ui.horizontal(|ui| {
@@ -1103,7 +1170,8 @@ impl JaymiApp {
             self.handle_coding_events(events);
         }
         for (id, method, path, line, character, new_name) in lsp_requests {
-            let payload = self.handle_monaco_lsp(&method, &path, line, character, new_name.as_deref());
+            let payload =
+                self.handle_monaco_lsp(&method, &path, line, character, new_name.as_deref());
             if let Some(host) = &self.monaco {
                 let _ = host.resolve_lsp(id, &payload);
             }
@@ -1120,6 +1188,8 @@ impl JaymiApp {
         let screen_height = ctx.screen_rect().height();
         let zoom = ctx.pixels_per_point();
         let document = surface.map(|surface| self.monaco_document_from_state(surface));
+        let theme_id = self.theme.monaco_theme_id().to_string();
+        let definition = self.theme.monaco_definition_json();
         let Some(host) = self.monaco.as_mut() else {
             return;
         };
@@ -1130,6 +1200,9 @@ impl JaymiApp {
                 self.monaco_last_error = Some(error);
             }
         } else if let Err(error) = host.set_viewport(None, screen_height, zoom) {
+            self.monaco_last_error = Some(error);
+        }
+        if let Err(error) = host.set_theme(&theme_id, &definition) {
             self.monaco_last_error = Some(error);
         }
     }
@@ -1315,10 +1388,7 @@ impl JaymiApp {
             return;
         }
         self.prompt.clear();
-        match self
-            .app
-            .handle_with_workspace(UserRequest::new(prompt))
-        {
+        match self.app.handle_with_workspace(UserRequest::new(prompt)) {
             Ok(_) => {
                 self.error = None;
                 if let Ok(session) = self.app.experience() {
@@ -1360,7 +1430,7 @@ impl JaymiApp {
                 ui.end_row();
                 for row in &self.snapshot.subsystems {
                     ui.label(&row.name);
-                    ui.colored_label(status_color(row.status), row.status.label());
+                    ui.colored_label(status_color(&self.theme, row.status), row.status.label());
                     ui.label(&row.detail);
                     ui.end_row();
                 }

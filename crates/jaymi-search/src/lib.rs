@@ -110,14 +110,7 @@ mod tests {
         publish(&knowledge, &pdf, "biology_fungi.pdf", Some("pdf"), 4, false);
         publish(&knowledge, &md, "notes.md", Some("md"), 7, false);
         publish(&knowledge, &txt, "readme.txt", Some("txt"), 5, false);
-        publish(
-            &knowledge,
-            &docs,
-            "Documents",
-            None,
-            0,
-            true,
-        );
+        publish(&knowledge, &docs, "Documents", None, 0, true);
 
         // Filename
         let filename = engine
@@ -139,25 +132,17 @@ mod tests {
         assert_eq!(extension.hits[0].match_reason, MatchReason::Extension);
 
         // Folder
-        let folder = engine
-            .search(&SearchRequest::folder(&docs, true))
-            .unwrap();
+        let folder = engine.search(&SearchRequest::folder(&docs, true)).unwrap();
         assert_eq!(folder.strategy, SearchStrategy::Folder);
         assert!(folder.hits.iter().any(|hit| hit.title == "notes.md"));
-        let folder_again = engine
-            .search(&SearchRequest::folder(&docs, true))
-            .unwrap();
+        let folder_again = engine.search(&SearchRequest::folder(&docs, true)).unwrap();
         assert_eq!(folder.hits, folder_again.hits);
 
         // Free text
-        let free = engine
-            .search(&SearchRequest::free_text("fungi"))
-            .unwrap();
+        let free = engine.search(&SearchRequest::free_text("fungi")).unwrap();
         assert_eq!(free.strategy, SearchStrategy::FreeText);
         assert!(free.hits.iter().any(|hit| hit.title.contains("fungi")));
-        let free_again = engine
-            .search(&SearchRequest::free_text("fungi"))
-            .unwrap();
+        let free_again = engine.search(&SearchRequest::free_text("fungi")).unwrap();
         assert_eq!(free.hits, free_again.hits);
 
         // Metadata (largest)
@@ -197,7 +182,11 @@ mod tests {
 
     fn boot_engine_with_content(
         data: &std::path::Path,
-    ) -> (Arc<SqliteKnowledgeStore>, Arc<UnderstandingEngine>, SearchEngine) {
+    ) -> (
+        Arc<SqliteKnowledgeStore>,
+        Arc<UnderstandingEngine>,
+        SearchEngine,
+    ) {
         let mut db = Database::with_data_dir(data);
         db.initialize().unwrap();
         let db = Arc::new(db);
@@ -212,12 +201,8 @@ mod tests {
         let filesystem = Arc::new(filesystem);
         let parsers = Arc::new(default_registry().unwrap());
 
-        let mut understanding = UnderstandingEngine::new(
-            Arc::clone(&knowledge),
-            content_store,
-            filesystem,
-            parsers,
-        );
+        let mut understanding =
+            UnderstandingEngine::new(Arc::clone(&knowledge), content_store, filesystem, parsers);
         understanding.initialize().unwrap();
         let understanding = Arc::new(understanding);
         let content_api = Arc::new(ContentIntelligenceApi::new(Arc::clone(&understanding)));
@@ -262,10 +247,7 @@ mod tests {
         // filename_only must never expand into per-line hits.
         let filename_only = SearchRequest::free_text("find_the_needle").with_filename_only(true);
         let filename_results = engine.search(&filename_only).unwrap();
-        assert!(filename_results
-            .hits
-            .iter()
-            .all(|hit| hit.line.is_none()));
+        assert!(filename_results.hits.iter().all(|hit| hit.line.is_none()));
     }
 
     fn temp_dir(label: &str) -> PathBuf {

@@ -6,9 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use jaymi::Application;
 use jaymi_core::UserRequest;
-use jaymi_memory::{
-    CreateConversationRequest, ProjectMemoryKind, StoreProjectMemoryRequest,
-};
+use jaymi_memory::{CreateConversationRequest, ProjectMemoryKind, StoreProjectMemoryRequest};
 use jaymi_planner::Planner;
 use jaymi_project_engine::{CreateProjectRequest, ProjectType};
 
@@ -100,7 +98,7 @@ fn project_engine_assembles_one_project_context_for_planner() {
         .expect("continue");
     let restored = response.project_context.expect("project context");
     assert_eq!(restored.project.id, project.id);
-    assert!(restored.memories.architecture_decisions.len() >= 1);
+    assert!(!restored.memories.architecture_decisions.is_empty());
     assert!(response.content.contains("indexed_files="));
     assert!(response.content.contains("architecture="));
 }

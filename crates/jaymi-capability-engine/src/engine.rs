@@ -235,11 +235,7 @@ impl CapabilityEngineApi for CapabilityEngine {
 
     fn resolve(&self, id: &str) -> JaymiResult<Option<CapabilityDescriptor>> {
         self.ensure_ready()?;
-        self.with_registry(|registry| {
-            registry
-                .resolve(id)
-                .map(capability_descriptor)
-        })
+        self.with_registry(|registry| registry.resolve(id).map(capability_descriptor))
     }
 
     fn resolve_capability(
@@ -310,9 +306,7 @@ impl CapabilityEngineApi for CapabilityEngine {
     ) -> JaymiResult<ExecutionPlan> {
         self.ensure_ready()?;
         if capabilities.is_empty() {
-            return Err(JaymiError::new(
-                "plan requires at least one capability",
-            ));
+            return Err(JaymiError::new("plan requires at least one capability"));
         }
         let registered = self.list();
         let engine_ready = true;
@@ -324,11 +318,7 @@ impl CapabilityEngineApi for CapabilityEngine {
                 engine_ready,
                 inventory,
             );
-            steps.push(build_plan_step(
-                *capability,
-                status.availability,
-                inventory,
-            ));
+            steps.push(build_plan_step(*capability, status.availability, inventory));
         }
         let plan = ExecutionPlan {
             goal: goal.map(str::to_string),
@@ -347,8 +337,7 @@ impl CapabilityEngineApi for CapabilityEngine {
 
         for capability in Capability::all() {
             let is_registered = registered.contains(capability);
-            let status =
-                assess_capability(*capability, is_registered, engine_ready, inventory);
+            let status = assess_capability(*capability, is_registered, engine_ready, inventory);
             if status.is_available() {
                 available.push(status);
             } else {
@@ -374,12 +363,7 @@ impl CapabilityEngineApi for CapabilityEngine {
             return Ok(assess_capability(capability, false, false, inventory));
         }
         let registered = self.contains(capability);
-        Ok(assess_capability(
-            capability,
-            registered,
-            true,
-            inventory,
-        ))
+        Ok(assess_capability(capability, registered, true, inventory))
     }
 
     fn len(&self) -> usize {
@@ -452,9 +436,7 @@ impl Lifecycle for CapabilityEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        CapabilityBlocker, DiscoveredProvider, DiscoveredTool,
-    };
+    use crate::{CapabilityBlocker, DiscoveredProvider, DiscoveredTool};
 
     #[test]
     fn register_resolve_validate_and_plan() {
@@ -528,8 +510,7 @@ mod tests {
         assert!(plan
             .required_permissions()
             .iter()
-            .any(|permission| permission.category == "filesystem"
-                && permission.action == "read"));
+            .any(|permission| permission.category == "filesystem" && permission.action == "read"));
 
         let inventory = CapabilityInventory {
             tools: vec![
@@ -593,10 +574,7 @@ mod tests {
         assert_eq!(first.steps.len(), 1);
         let step = &first.steps[0];
         assert_eq!(step.capability, Capability::Code);
-        assert_eq!(
-            step.availability,
-            CapabilityAvailability::Unavailable
-        );
+        assert_eq!(step.availability, CapabilityAvailability::Unavailable);
         assert_eq!(
             step.required_tools,
             vec![

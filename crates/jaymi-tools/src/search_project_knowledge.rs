@@ -4,9 +4,7 @@ use std::sync::Arc;
 
 use jaymi_capabilities::Capability;
 use jaymi_core::{JaymiError, JaymiResult, ProjectKnowledgeRequest};
-use jaymi_project_engine::{
-    ProjectEngineApi, ProjectKnowledgeHit, ProjectKnowledgeQuery,
-};
+use jaymi_project_engine::{ProjectEngineApi, ProjectKnowledgeHit, ProjectKnowledgeQuery};
 use jaymi_providers::FILESYSTEM_PROVIDER_ID;
 
 use crate::metadata::{
@@ -119,6 +117,6 @@ fn project_knowledge_output(
         message: Some(message),
         listed_path: None,
         project_knowledge: hits,
-                ..Default::default()
-        }
+        ..Default::default()
+    }
 }

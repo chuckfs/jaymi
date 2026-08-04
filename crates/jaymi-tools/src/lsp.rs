@@ -65,13 +65,21 @@ impl Tool for LanguageServerTool {
             .as_ref()
             .ok_or_else(|| JaymiError::new("language_server tool requires an lsp request"))?;
         if request.workspace_root.as_os_str().is_empty() {
-            return Err(JaymiError::new("language_server workspace root must not be empty"));
+            return Err(JaymiError::new(
+                "language_server workspace root must not be empty",
+            ));
         }
         match request.operation {
             LspOperation::Ensure | LspOperation::Diagnostics => Ok(()),
             LspOperation::DidOpen | LspOperation::DidChange | LspOperation::DidClose => {
-                if request.path.as_ref().is_none_or(|path| path.as_os_str().is_empty()) {
-                    return Err(JaymiError::new("language_server document ops require a path"));
+                if request
+                    .path
+                    .as_ref()
+                    .is_none_or(|path| path.as_os_str().is_empty())
+                {
+                    return Err(JaymiError::new(
+                        "language_server document ops require a path",
+                    ));
                 }
                 Ok(())
             }
@@ -79,8 +87,14 @@ impl Tool for LanguageServerTool {
             | LspOperation::Completion
             | LspOperation::Definition
             | LspOperation::References => {
-                if request.path.as_ref().is_none_or(|path| path.as_os_str().is_empty()) {
-                    return Err(JaymiError::new("language_server position ops require a path"));
+                if request
+                    .path
+                    .as_ref()
+                    .is_none_or(|path| path.as_os_str().is_empty())
+                {
+                    return Err(JaymiError::new(
+                        "language_server position ops require a path",
+                    ));
                 }
                 if request.line.is_none() || request.character.is_none() {
                     return Err(JaymiError::new(
@@ -90,11 +104,17 @@ impl Tool for LanguageServerTool {
                 Ok(())
             }
             LspOperation::Rename => {
-                if request.path.as_ref().is_none_or(|path| path.as_os_str().is_empty()) {
+                if request
+                    .path
+                    .as_ref()
+                    .is_none_or(|path| path.as_os_str().is_empty())
+                {
                     return Err(JaymiError::new("language_server rename requires a path"));
                 }
                 if request.line.is_none() || request.character.is_none() {
-                    return Err(JaymiError::new("language_server rename requires line and character"));
+                    return Err(JaymiError::new(
+                        "language_server rename requires line and character",
+                    ));
                 }
                 if request
                     .new_name
@@ -123,7 +143,7 @@ impl Tool for LanguageServerTool {
 mod tests {
     use super::*;
     use jaymi_core::{LspOperation, LspRequest};
-    use jaymi_providers::{Provider, LspProvider};
+    use jaymi_providers::{LspProvider, Provider};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 

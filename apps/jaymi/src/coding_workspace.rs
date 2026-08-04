@@ -13,8 +13,9 @@ use eframe::egui;
 use jaymi_capabilities::{
     CodingBottomTab, CodingState, EditorLayoutNode, EditorPaneId, EditorSession, ExplorerNode,
     ExplorerStatus, ProblemIssue, ProblemSeverity, SplitDirection, TerminalSessionState,
-    WorkspaceExpansion, WorkspacePanel, DEFAULT_BOTTOM_PANEL_HEIGHT, DEFAULT_EXPLORER_WIDTH,
-    MAX_BOTTOM_PANEL_HEIGHT, MAX_EXPLORER_WIDTH, MIN_BOTTOM_PANEL_HEIGHT, MIN_EXPLORER_WIDTH,
+    WorkspaceExpansion, WorkspacePanel, COLLAPSED_BOTTOM_TAB_HEIGHT, DEFAULT_BOTTOM_PANEL_HEIGHT,
+    DEFAULT_EXPLORER_WIDTH, MAX_BOTTOM_PANEL_HEIGHT, MAX_EXPLORER_WIDTH, MIN_BOTTOM_PANEL_HEIGHT,
+    MIN_EXPLORER_WIDTH,
 };
 
 use crate::diagnostics::DiagnosticsSnapshot;
@@ -93,7 +94,11 @@ pub fn build_coding_diagnostics_view(
                         .or_else(|| coding.and_then(|state| state.explorer.project_root.clone()))
                         .unwrap_or_else(|| "—".into())
                 ),
-                format!("type={} · status={}", project.project_type.as_str(), project.status.as_str()),
+                format!(
+                    "type={} · status={}",
+                    project.project_type.as_str(),
+                    project.status.as_str()
+                ),
             ],
             None => vec![
                 "No active project".into(),
@@ -210,7 +215,11 @@ pub fn build_coding_diagnostics_view(
         lines: {
             let mut lines = Vec::new();
             if let Some(providers) = snapshot.subsystem("Providers") {
-                lines.push(format!("{} · {}", providers.status.label(), providers.detail));
+                lines.push(format!(
+                    "{} · {}",
+                    providers.status.label(),
+                    providers.detail
+                ));
             }
             lines.push(format!(
                 "ids={}",
@@ -405,9 +414,7 @@ fn truncate_summary(value: &str, max: usize) -> String {
 fn extract_metric(detail: &str, key: &str) -> Option<String> {
     let start = detail.find(key)? + key.len();
     let rest = &detail[start..];
-    let end = rest
-        .find(|ch: char| ch == ' ' || ch == ',')
-        .unwrap_or(rest.len());
+    let end = rest.find([' ', ',']).unwrap_or(rest.len());
     let value = rest[..end].trim();
     if value.is_empty() || value == "-" {
         None
@@ -512,10 +519,7 @@ pub enum CodingShellEvent {
     /// Update the draft input for a terminal session.
     TerminalInput { session_id: String, input: String },
     /// Run the current terminal draft (or an explicit command).
-    TerminalRun {
-        session_id: String,
-        command: String,
-    },
+    TerminalRun { session_id: String, command: String },
     /// Navigate terminal history (`-1` older, `+1` newer).
     TerminalHistory { session_id: String, direction: i8 },
     /// Persist terminal output scroll offset.
@@ -609,13 +613,14 @@ pub fn coding_panel_lines(
         WorkspacePanel::Editor => editor_lines(state),
         WorkspacePanel::Terminal => {
             if state.terminal_sessions.is_empty() {
-                vec!["No terminal sessions — open Coding to spawn a PTY.".to_string()]
+                vec!["No terminal running.".to_string()]
             } else {
                 state
                     .terminal_sessions
                     .iter()
                     .map(|session| {
-                        let active = state.active_terminal_id.as_deref() == Some(session.id.as_str());
+                        let active =
+                            state.active_terminal_id.as_deref() == Some(session.id.as_str());
                         format!(
                             "{}{} ({}) · cwd={} · last={} · history={}",
                             if active { "▶ " } else { "" },
@@ -696,7 +701,7 @@ pub fn coding_panel_lines(
                 }
                 lines
             }
-            None => vec!["Git not connected — open Coding on a repository.".to_string()],
+            None => vec!["No repository opened.".to_string()],
         },
         WorkspacePanel::Diagnostics => problems_summary_lines(state, diagnostics),
         _ => vec![panel.id().to_string()],
@@ -705,10 +710,13 @@ pub fn coding_panel_lines(
 
 /// Text summary of the aggregated Problems panel (severity/source/path/message),
 /// with an optional one-line operational footer from the Coding Diagnostics view.
-fn problems_summary_lines(state: &CodingState, diagnostics: Option<&CodingDiagnosticsView>) -> Vec<String> {
+fn problems_summary_lines(
+    state: &CodingState,
+    diagnostics: Option<&CodingDiagnosticsView>,
+) -> Vec<String> {
     let mut lines = Vec::new();
     if state.problems.is_empty() {
-        lines.push("No problems".to_string());
+        lines.push("No problems detected.".to_string());
     } else {
         lines.push(format!("{} problem(s)", state.problems.len()));
         for issue in &state.problems {
@@ -808,7 +816,7 @@ fn collect_explorer_lines(
 
 fn editor_lines(state: &CodingState) -> Vec<String> {
     if state.editors.is_empty() {
-        return vec!["No open files — select a file in Project Explorer.".to_string()];
+        return vec!["No open files — select a file in Explorer.".to_string()];
     }
     let mut lines = Vec::new();
     if state.editors.panes.len() > 1 {
@@ -844,22 +852,23 @@ fn editor_lines(state: &CodingState) -> Vec<String> {
 fn placeholder_for(panel: WorkspacePanel) -> &'static str {
     match panel {
         WorkspacePanel::ProjectExplorer => "No open project — use Open Project… to browse files.",
-        WorkspacePanel::Editor => "No open files — select a file in Project Explorer.",
-        WorkspacePanel::Terminal => "No terminal sessions — open Coding to spawn a PTY.",
-        WorkspacePanel::Git => "Git not connected — open Coding on a repository.",
-        WorkspacePanel::Diagnostics => "No workspace diagnostics.",
+        WorkspacePanel::Editor => "No open files — select a file in Explorer.",
+        WorkspacePanel::Terminal => "No terminal running.",
+        WorkspacePanel::Git => "No repository opened.",
+        WorkspacePanel::Diagnostics => "Workspace information.",
         _ => "panel",
     }
 }
 
 /// Render the Coding Workspace shell into the right-side expansion panel.
 ///
-/// Chat-forward layout (VS Code-inspired within the side expansion):
-/// - Editor fills the code space
-/// - Interactive Project Explorer sits to the **right** of the editor
-/// - Terminal / Git / Problems are bottom tabs (toggle to show)
+/// Docked IDE layout (conversation remains in the central column):
+/// - Editor fills remaining horizontal space
+/// - Explorer on the **right** of the Coding workspace
+/// - Bottom panel tabs (Terminal / Problems / Search / Git / Diagnostics)
 ///
 /// `render_explorer_col` draws the explorer (implemented by `ui::explorer`).
+#[allow(clippy::too_many_arguments)]
 pub fn render_coding_shell(
     ui: &mut egui::Ui,
     expansion: &WorkspaceExpansion,
@@ -873,25 +882,23 @@ pub fn render_coding_shell(
     *monaco_out = None;
     let _ = expansion;
 
+    // Top bar — light chrome: title + muted project path.
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Coding").strong().size(15.0));
+        ui.label(egui::RichText::new("Coding").strong().size(13.0));
         if let Some(root) = state.and_then(|coding| coding.explorer.project_root.as_deref()) {
-            ui.weak(truncate_path(root, 42));
+            ui.weak(truncate_path(root, 56));
+        }
+        if let Some(error) = open_error {
+            ui.colored_label(ui.visuals().error_fg_color, error);
         }
     });
-    if let Some(error) = open_error {
-        ui.colored_label(egui::Color32::from_rgb(200, 80, 80), error);
-    }
-    ui.add_space(SPACE_MD);
     ui.separator();
 
     let bottom_tab = state
         .map(|coding| coding.bottom_tab)
         .unwrap_or(CodingBottomTab::Hidden);
     let bottom_open = !matches!(bottom_tab, CodingBottomTab::Hidden);
-    let explorer_visible = state
-        .map(|coding| coding.explorer_visible)
-        .unwrap_or(true);
+    let explorer_visible = state.map(|coding| coding.explorer_visible).unwrap_or(true);
     let explorer_width = state
         .map(|coding| coding.explorer_width)
         .unwrap_or(DEFAULT_EXPLORER_WIDTH);
@@ -899,21 +906,27 @@ pub fn render_coding_shell(
         .map(|coding| coding.bottom_panel_height)
         .unwrap_or(DEFAULT_BOTTOM_PANEL_HEIGHT);
 
-    let tab_bar_h = 26.0_f32;
-    let bottom_h = if bottom_open { bottom_panel_height } else { 0.0 };
-    let chrome = SPACE_MD;
-    let main_h = (ui.available_height() - tab_bar_h - bottom_h - chrome).max(180.0);
+    let tab_bar_h = COLLAPSED_BOTTOM_TAB_HEIGHT;
+    let bottom_content_h = if bottom_open {
+        bottom_panel_height
+    } else {
+        0.0
+    };
+    let divider_h = if bottom_open { CHROME_DIVIDER } else { 0.0 };
+    let main_h = (ui.available_height() - tab_bar_h - divider_h - bottom_content_h).max(160.0);
     let editor_min_width = 220.0_f32;
     let explorer_w = if explorer_visible {
-        // Never let the explorer squeeze the editor below its minimum width.
         let max_allowed = (ui.available_width() - editor_min_width - CHROME_DIVIDER)
-            .max(MIN_EXPLORER_WIDTH)
-            .min(MAX_EXPLORER_WIDTH);
+            .clamp(MIN_EXPLORER_WIDTH, MAX_EXPLORER_WIDTH);
         explorer_width.clamp(MIN_EXPLORER_WIDTH, max_allowed)
     } else {
         0.0
     };
-    let gap = if explorer_visible { CHROME_DIVIDER } else { 0.0 };
+    let gap = if explorer_visible {
+        CHROME_DIVIDER
+    } else {
+        0.0
+    };
     let editor_w = (ui.available_width() - explorer_w - gap).max(editor_min_width);
 
     ui.horizontal(|ui| {
@@ -932,6 +945,7 @@ pub fn render_coding_shell(
             }
         });
 
+        // Explorer docks on the RIGHT of the editor.
         if explorer_visible {
             render_vertical_divider(ui, main_h, explorer_w, events);
 
@@ -940,14 +954,13 @@ pub fn render_coding_shell(
                 ui.set_max_width(explorer_w);
                 ui.set_min_height(main_h);
                 ui.set_max_height(main_h);
-                ui.label(egui::RichText::new("Explorer").strong().size(15.0));
-                ui.add_space(SPACE_SM);
+                ui.label(egui::RichText::new("Explorer").strong().size(12.0));
                 egui::ScrollArea::vertical()
                     .id_salt("coding_explorer_scroll")
-                    .max_height((main_h - 22.0).max(80.0))
+                    .max_height((main_h - 18.0).max(80.0))
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_min_width((explorer_w - 8.0).max(0.0));
+                        ui.set_min_width((explorer_w - 4.0).max(0.0));
                         if let Some(state) = state {
                             render_explorer_col(ui, state);
                         } else {
@@ -958,15 +971,16 @@ pub fn render_coding_shell(
         }
     });
 
-    ui.add_space(SPACE_MD);
-
+    // Bottom tab strip is always visible (collapsed height = tab strip only).
     ui.horizontal(|ui| {
         ui.set_min_height(tab_bar_h);
+        ui.set_max_height(tab_bar_h);
         for tab in [
             CodingBottomTab::Terminal,
+            CodingBottomTab::Problems,
+            CodingBottomTab::Search,
             CodingBottomTab::Git,
             CodingBottomTab::Diagnostics,
-            CodingBottomTab::Search,
         ] {
             let selected = bottom_tab == tab;
             let response = ui
@@ -999,36 +1013,37 @@ pub fn render_coding_shell(
         render_horizontal_divider(ui, bottom_panel_height, events);
         egui::ScrollArea::vertical()
             .id_salt("coding_bottom_scroll")
-            .max_height(bottom_h)
+            .max_height(bottom_content_h)
             .auto_shrink([false, false])
-            .show(ui, |ui| {
-                match bottom_tab {
-                    CodingBottomTab::Terminal => {
-                        if let Some(state) = state {
-                            render_terminal(ui, state, events);
-                        } else {
-                            ui.weak(placeholder_for(WorkspacePanel::Terminal));
-                        }
+            .show(ui, |ui| match bottom_tab {
+                CodingBottomTab::Terminal => {
+                    if let Some(state) = state {
+                        render_terminal(ui, state, events);
+                    } else {
+                        ui.weak(placeholder_for(WorkspacePanel::Terminal));
                     }
-                    CodingBottomTab::Git => {
-                        if let Some(state) = state {
-                            render_git(ui, state, events);
-                        } else {
-                            ui.weak(placeholder_for(WorkspacePanel::Git));
-                        }
-                    }
-                    CodingBottomTab::Diagnostics => {
-                        render_diagnostics_panel(ui, state, diagnostics, events);
-                    }
-                    CodingBottomTab::Search => {
-                        if let Some(state) = state {
-                            render_search_panel(ui, state, events);
-                        } else {
-                            ui.weak(placeholder_for(WorkspacePanel::Editor));
-                        }
-                    }
-                    CodingBottomTab::Hidden => {}
                 }
+                CodingBottomTab::Problems => {
+                    render_problems_panel(ui, state, events);
+                }
+                CodingBottomTab::Search => {
+                    if let Some(state) = state {
+                        render_search_panel(ui, state, events);
+                    } else {
+                        ui.weak("Search project...");
+                    }
+                }
+                CodingBottomTab::Git => {
+                    if let Some(state) = state {
+                        render_git(ui, state, events);
+                    } else {
+                        ui.weak(placeholder_for(WorkspacePanel::Git));
+                    }
+                }
+                CodingBottomTab::Diagnostics => {
+                    render_workspace_diagnostics_panel(ui, diagnostics);
+                }
+                CodingBottomTab::Hidden => {}
             });
     }
 }
@@ -1036,11 +1051,10 @@ pub fn render_coding_shell(
 /// Consistent spacing tokens for the Coding shell (replaces mixed 2/4/6/10 values).
 const SPACE_XS: f32 = 4.0;
 const SPACE_SM: f32 = 6.0;
-const SPACE_MD: f32 = 8.0;
 /// Width/height of the drag dividers between editor/explorer and above the bottom panel.
 const CHROME_DIVIDER: f32 = 6.0;
 
-/// Vertical drag divider between the editor and the Project Explorer column.
+/// Vertical drag divider between the Editor and the Explorer (right) column.
 /// Dragging left/right resizes the explorer; state updates every dragged frame,
 /// persistence is requested only once the drag is released.
 fn render_vertical_divider(
@@ -1121,7 +1135,10 @@ fn truncate_path(path: &str, max_chars: usize) -> String {
         return path.to_string();
     }
     let keep = max_chars.saturating_sub(1);
-    format!("…{}", chars[chars.len() - keep..].iter().collect::<String>())
+    format!(
+        "…{}",
+        chars[chars.len() - keep..].iter().collect::<String>()
+    )
 }
 
 /// Problems panel — clickable, aggregated issues from `CodingState.problems`.
@@ -1129,20 +1146,21 @@ fn truncate_path(path: &str, max_chars: usize) -> String {
 /// Built by [`crate::coding_workspace`] rendering aggregated
 /// [`jaymi_capabilities::ProblemsRegistry`] output only — this panel never
 /// talks to individual sources (LSP, Planner, Workspace, Permissions, Search,
-/// Memory) directly. A weak footer shows one line of operational status from
-/// the Coding Diagnostics view, when available, for a lightweight developer
-/// signal without displacing the issue list.
-fn render_diagnostics_panel(
+/// Memory) directly.
+fn render_problems_panel(
     ui: &mut egui::Ui,
     state: Option<&CodingState>,
-    diagnostics: Option<&CodingDiagnosticsView>,
     events: &mut Vec<CodingShellEvent>,
 ) {
     let count = state.map(|state| state.problems.len()).unwrap_or(0);
     ui.horizontal(|ui| {
         ui.strong(format!("{count} problem(s)"));
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button("Refresh").on_hover_text("Recompute Problems").clicked() {
+            if ui
+                .small_button("Refresh")
+                .on_hover_text("Recompute Problems")
+                .clicked()
+            {
                 events.push(CodingShellEvent::ProblemsRefresh);
             }
         });
@@ -1150,28 +1168,42 @@ fn render_diagnostics_panel(
     ui.add_space(SPACE_XS);
 
     let Some(state) = state else {
-        ui.weak(placeholder_for(WorkspacePanel::Diagnostics));
+        ui.weak("No problems detected.");
         return;
     };
 
     if state.problems.is_empty() {
-        ui.weak("No problems");
+        ui.weak("No problems detected.");
     } else {
         for issue in &state.problems {
             render_problem_row(ui, issue, events);
         }
     }
+}
 
-    if let Some(view) = diagnostics {
-        if let Some(section) = view.sections.first() {
-            ui.add_space(SPACE_SM);
-            ui.separator();
-            ui.weak(format!(
-                "{}: {}",
-                section.title,
-                section.lines.first().cloned().unwrap_or_default()
-            ));
+/// Workspace Diagnostics tab — read-only operational status sections.
+fn render_workspace_diagnostics_panel(
+    ui: &mut egui::Ui,
+    diagnostics: Option<&CodingDiagnosticsView>,
+) {
+    let Some(view) = diagnostics else {
+        ui.weak("Workspace information.");
+        return;
+    };
+    if view.sections.is_empty() {
+        ui.weak("Workspace information.");
+        return;
+    }
+    for section in &view.sections {
+        ui.strong(&section.title);
+        if section.lines.is_empty() {
+            ui.weak("—");
+        } else {
+            for line in &section.lines {
+                ui.label(line);
+            }
         }
+        ui.add_space(SPACE_SM);
     }
 }
 
@@ -1208,7 +1240,6 @@ fn render_problem_row(ui: &mut egui::Ui, issue: &ProblemIssue, events: &mut Vec<
     });
 }
 
-
 /// Drag-and-drop payload carried while dragging a tab between panes.
 #[derive(Debug, Clone, PartialEq)]
 struct TabDragPayload {
@@ -1235,10 +1266,10 @@ fn render_editor(
 ) {
     if state.editors.is_empty() {
         ui.vertical_centered(|ui| {
-            ui.add_space((available_height * 0.3).clamp(32.0, 96.0));
-            ui.label(egui::RichText::new("No open files").size(15.0));
+            ui.add_space((available_height * 0.28).clamp(24.0, 72.0));
+            ui.label(egui::RichText::new("No open files").size(14.0));
             ui.add_space(SPACE_XS);
-            ui.weak("Select a file in Explorer →");
+            ui.weak("Select a file in Explorer.");
         });
         return;
     }
@@ -1247,18 +1278,28 @@ fn render_editor(
         events.push(CodingShellEvent::SaveActive);
     }
 
-    let header_h = 26.0_f32;
+    // Hierarchy: Toolbar → Tabs → Editor → Status Bar (status lives per-pane).
+    let toolbar_h = 24.0_f32;
     ui.horizontal(|ui| {
-        ui.set_min_height(header_h);
-        if ui.button("Split ▥").on_hover_text("Split Right").clicked() {
+        ui.set_min_height(toolbar_h);
+        ui.set_max_height(toolbar_h);
+        if ui
+            .small_button("Split ▥")
+            .on_hover_text("Split Right")
+            .clicked()
+        {
             events.push(CodingShellEvent::SplitVertical);
         }
-        if ui.button("Split ▤").on_hover_text("Split Down").clicked() {
+        if ui
+            .small_button("Split ▤")
+            .on_hover_text("Split Down")
+            .clicked()
+        {
             events.push(CodingShellEvent::SplitHorizontal);
         }
         if state.editors.panes.len() > 1
             && ui
-                .button("Close Split")
+                .small_button("Close Split")
                 .on_hover_text("Close the focused pane")
                 .clicked()
         {
@@ -1288,7 +1329,7 @@ fn render_editor(
                 .active_session()
                 .is_some_and(|session| session.dirty);
             if ui
-                .add_enabled(can_save, egui::Button::new("Save"))
+                .add_enabled(can_save, egui::Button::new("Save").small())
                 .on_hover_text("Save active file (⌘S)")
                 .clicked()
             {
@@ -1298,8 +1339,16 @@ fn render_editor(
     });
     ui.separator();
 
-    let remaining = (available_height - header_h - 12.0).max(120.0);
-    render_layout_node(ui, &state.editors.layout, state, events, monaco_out, remaining, &[]);
+    let remaining = (available_height - toolbar_h - 4.0).max(120.0);
+    render_layout_node(
+        ui,
+        &state.editors.layout,
+        state,
+        events,
+        monaco_out,
+        remaining,
+        &[],
+    );
 }
 
 /// Render one node of the split layout tree (leaf pane or nested split).
@@ -1475,80 +1524,103 @@ fn render_pane(
         .active_session_in_pane(pane_id)
         .map(|session| session.path);
 
-    egui::Frame::new()
-        .stroke(if is_focused {
-            egui::Stroke::new(1.0, ui.visuals().selection.bg_fill)
-        } else {
-            egui::Stroke::new(1.0, ui.visuals().widgets.noninteractive.bg_stroke.color)
+    ui.set_min_height(height.max(20.0));
+    ui.set_max_height(height.max(20.0));
+    ui.set_min_width(ui.available_width());
+
+    // Focus cue: thin underline on the tab strip, not a boxed pane frame.
+    let strip_response = ui
+        .scope(|ui| {
+            egui::ScrollArea::horizontal()
+                .id_salt(("editor_tab_strip", &pane_str))
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if sessions.is_empty() {
+                            ui.weak("(empty pane)");
+                        }
+                        for session in &sessions {
+                            render_pane_tab(ui, &pane_str, &active_path, session, events);
+                        }
+                    });
+                });
         })
-        .inner_margin(3.0)
-        .show(ui, |ui| {
-            ui.set_min_height((height - 6.0).max(20.0));
-            ui.set_max_height((height - 6.0).max(20.0));
-            ui.set_min_width(ui.available_width());
+        .response;
 
-            let strip_response = ui
-                .scope(|ui| {
-                    egui::ScrollArea::horizontal()
-                        .id_salt(("editor_tab_strip", &pane_str))
-                        .auto_shrink([false, true])
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                if sessions.is_empty() {
-                                    ui.weak("(empty pane)");
-                                }
-                                for session in &sessions {
-                                    render_pane_tab(ui, &pane_str, &active_path, session, events);
-                                }
-                            });
-                        });
-                })
-                .response;
+    if is_focused {
+        let stroke = ui.visuals().selection.stroke;
+        ui.painter().line_segment(
+            [
+                strip_response.rect.left_bottom(),
+                strip_response.rect.right_bottom(),
+            ],
+            stroke,
+        );
+    }
 
-            // Drop target: releasing a dragged tab anywhere on this pane's
-            // strip moves it here (VS Code-style cross-split drag).
-            let drop = ui.interact(
-                strip_response.rect,
-                ui.id().with(("editor_pane_drop", &pane_str)),
-                egui::Sense::hover(),
+    // Drop target: releasing a dragged tab anywhere on this pane's
+    // strip moves it here (VS Code-style cross-split drag).
+    let drop = ui.interact(
+        strip_response.rect,
+        ui.id().with(("editor_pane_drop", &pane_str)),
+        egui::Sense::hover(),
+    );
+    if let Some(payload) = drop.dnd_release_payload::<TabDragPayload>() {
+        if payload.pane != pane_str {
+            events.push(CodingShellEvent::MoveTab {
+                from_pane: payload.pane.clone(),
+                path: payload.path.clone(),
+                to_pane: pane_str.clone(),
+                index: None,
+            });
+        }
+    }
+
+    let status_h = 22.0_f32;
+    let body_h = (height - strip_response.rect.height() - status_h - 2.0).max(40.0);
+
+    match active_path {
+        None => {
+            ui.allocate_ui_with_layout(
+                egui::vec2(ui.available_width(), body_h),
+                egui::Layout::top_down(egui::Align::Center),
+                |ui| {
+                    ui.add_space(16.0);
+                    ui.weak("No open tabs in this pane");
+                },
             );
-            if let Some(payload) = drop.dnd_release_payload::<TabDragPayload>() {
-                if payload.pane != pane_str {
-                    events.push(CodingShellEvent::MoveTab {
-                        from_pane: payload.pane.clone(),
-                        path: payload.path.clone(),
-                        to_pane: pane_str.clone(),
-                        index: None,
-                    });
-                }
-            }
-
             ui.separator();
-
-            match active_path {
-                None => {
-                    ui.vertical_centered(|ui| {
-                        ui.add_space(16.0);
-                        ui.weak("No open tabs in this pane");
-                    });
-                }
-                Some(path) => {
-                    if let Some(session) = sessions.into_iter().find(|session| session.path == path)
-                    {
-                        render_pane_body(
-                            ui,
-                            &pane_str,
-                            is_focused,
-                            &session,
-                            state,
-                            events,
-                            monaco_out,
-                            height,
-                        );
+            ui.horizontal(|ui| {
+                ui.set_min_height(status_h);
+                ui.weak("Ready");
+            });
+        }
+        Some(path) => {
+            if let Some(session) = sessions.into_iter().find(|session| session.path == path) {
+                render_pane_body(
+                    ui, &pane_str, is_focused, &session, state, events, monaco_out, body_h,
+                );
+                ui.separator();
+                ui.horizontal(|ui| {
+                    ui.set_min_height(status_h);
+                    let language = language_for_path(&session.path);
+                    ui.weak(format!(
+                        "{}  ·  Ln {}, Col {}  ·  {}",
+                        session.name,
+                        session.view.cursor.line + 1,
+                        session.view.cursor.column + 1,
+                        language
+                    ));
+                    if session.dirty {
+                        ui.weak("· modified");
                     }
-                }
+                    if session.preview {
+                        ui.weak("· preview");
+                    }
+                });
             }
-        });
+        }
+    }
 }
 
 /// Render one tab label (drag source, click to activate, close button).
@@ -1638,20 +1710,10 @@ fn render_pane_body(
         .map(|region| (region.start_line, region.end_line))
         .collect::<Vec<_>>();
     let language = language_for_path(&path).to_string();
-    let name = session.name.clone();
     let settings = state.editor_settings.clone();
 
-    ui.weak(format!(
-        "{} · {}{}",
-        name,
-        language,
-        if session.preview { " · preview" } else { "" }
-    ));
-    ui.add_space(SPACE_XS);
-
-    // Fill remaining code space; Monaco overlays this rect for the focused pane.
-    let chrome = 40.0_f32;
-    let editor_height = (available_height - chrome).max(80.0);
+    // Monaco fills available space — no per-file header chrome above the buffer.
+    let editor_height = available_height.max(80.0);
     let scroll = egui::ScrollArea::vertical()
         .id_salt(("editor_scroll", pane_str, &path))
         .max_height(editor_height)
@@ -1719,20 +1781,29 @@ fn render_terminal(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<Codi
             render_terminal_tab(ui, session, is_active, events);
             ui.add_space(SPACE_XS);
         }
-        if ui.button("+ New").on_hover_text("Open a new terminal").clicked() {
+        if ui
+            .button("+ New")
+            .on_hover_text("Open a new terminal")
+            .clicked()
+        {
             events.push(CodingShellEvent::TerminalCreate { title: None });
         }
     });
     ui.separator();
 
     if state.terminal_sessions.is_empty() {
-        ui.weak("No terminal sessions — open Coding to spawn a PTY.");
+        ui.weak("No terminal running.");
         return;
     }
 
     let active_session = active_id
         .as_deref()
-        .and_then(|id| state.terminal_sessions.iter().find(|session| session.id == id))
+        .and_then(|id| {
+            state
+                .terminal_sessions
+                .iter()
+                .find(|session| session.id == id)
+        })
         .or_else(|| state.terminal_sessions.first());
 
     if let Some(session) = active_session {
@@ -1791,10 +1862,18 @@ fn render_terminal_tab(
                         session_id: session.id.clone(),
                     });
                 }
-                if ui.small_button("✎").on_hover_text("Rename terminal").clicked() {
+                if ui
+                    .small_button("✎")
+                    .on_hover_text("Rename terminal")
+                    .clicked()
+                {
                     renaming = true;
                 }
-                if ui.small_button("×").on_hover_text("Close terminal").clicked() {
+                if ui
+                    .small_button("×")
+                    .on_hover_text("Close terminal")
+                    .clicked()
+                {
                     events.push(CodingShellEvent::TerminalKill {
                         session_id: session.id.clone(),
                     });
@@ -1813,10 +1892,7 @@ fn render_terminal_session(
 ) {
     ui.horizontal(|ui| {
         ui.strong(&session.title);
-        ui.weak(format!(
-            "cwd={}",
-            session.cwd.as_deref().unwrap_or("-")
-        ));
+        ui.weak(format!("cwd={}", session.cwd.as_deref().unwrap_or("-")));
     });
 
     let scroll = egui::ScrollArea::vertical()
@@ -1869,8 +1945,7 @@ fn render_terminal_session(
                 });
             }
         }
-        let submit = response.lost_focus()
-            && ui.input(|input| input.key_pressed(egui::Key::Enter))
+        let submit = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))
             || ui.button("Run").clicked();
         if submit {
             let command = if draft.trim().is_empty() {
@@ -1890,7 +1965,7 @@ fn render_terminal_session(
 
 fn render_git(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<CodingShellEvent>) {
     let Some(git) = &state.git else {
-        ui.weak("Git not connected — open Coding on a repository.");
+        ui.weak("No repository opened.");
         return;
     };
 
@@ -1913,13 +1988,13 @@ fn render_git(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<CodingShe
         ui.weak(root);
     }
     if let Some(error) = &git.last_error {
-        ui.colored_label(egui::Color32::from_rgb(180, 60, 60), error);
+        ui.colored_label(ui.visuals().error_fg_color, error);
     }
 
     if let Some(pending) = &git.pending_discard {
         ui.group(|ui| {
             ui.colored_label(
-                egui::Color32::from_rgb(160, 90, 20),
+                ui.visuals().warn_fg_color,
                 format!(
                     "Discard changes to {}? This cannot be undone.",
                     pending.join(", ")
@@ -1938,11 +2013,17 @@ fn render_git(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<CodingShe
     }
 
     if !git.is_repository {
-        ui.weak("Open a project that is a Git work tree, then Refresh.");
+        ui.weak("No repository opened.");
         return;
     }
 
-    render_git_section(ui, "Staged", &git.staged, GitSectionActions::Unstage, events);
+    render_git_section(
+        ui,
+        "Staged",
+        &git.staged,
+        GitSectionActions::Unstage,
+        events,
+    );
     render_git_section(
         ui,
         "Modified",
@@ -1950,13 +2031,7 @@ fn render_git(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<CodingShe
         GitSectionActions::StageAndDiscard,
         events,
     );
-    render_git_section(
-        ui,
-        "Added",
-        &git.added,
-        GitSectionActions::Unstage,
-        events,
-    );
+    render_git_section(ui, "Added", &git.added, GitSectionActions::Unstage, events);
     render_git_section(
         ui,
         "Deleted",
@@ -2058,7 +2133,7 @@ fn render_search_panel(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<
         let response = ui.add(
             egui::TextEdit::singleline(&mut query)
                 .desired_width(240.0)
-                .hint_text("Search"),
+                .hint_text("Search project..."),
         );
         if response.changed() {
             events.push(CodingShellEvent::UpdateSearchPanel {
@@ -2207,19 +2282,17 @@ mod tests {
         let state = CodingState {
             explorer: ExplorerState {
                 project_root: Some("/tmp/app".into()),
-                nodes: vec![
-                    ExplorerNode {
-                        name: "src".into(),
-                        path: "/tmp/app/src".into(),
-                        is_dir: true,
-                        children: vec![ExplorerNode {
-                            name: "main.rs".into(),
-                            path: "/tmp/app/src/main.rs".into(),
-                            is_dir: false,
-                            children: Vec::new(),
-                        }],
-                    },
-                ],
+                nodes: vec![ExplorerNode {
+                    name: "src".into(),
+                    path: "/tmp/app/src".into(),
+                    is_dir: true,
+                    children: vec![ExplorerNode {
+                        name: "main.rs".into(),
+                        path: "/tmp/app/src/main.rs".into(),
+                        is_dir: false,
+                        children: Vec::new(),
+                    }],
+                }],
                 expanded_paths: BTreeSet::from(["/tmp/app/src".into()]),
                 selected_path: Some("/tmp/app/src/main.rs".into()),
                 status: ExplorerStatus::Ready,

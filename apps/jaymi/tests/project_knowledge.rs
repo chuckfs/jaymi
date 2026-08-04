@@ -8,8 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use jaymi::Application;
 use jaymi_core::UserRequest;
 use jaymi_memory::{
-    CreateConversationRequest, MessageRole, ProjectMemoryKind, StoreProjectMemoryRequest,
-    AppendMessageRequest,
+    AppendMessageRequest, CreateConversationRequest, MessageRole, ProjectMemoryKind,
+    StoreProjectMemoryRequest,
 };
 use jaymi_planner::Planner;
 use jaymi_project_engine::{CreateProjectRequest, ProjectType};
@@ -120,9 +120,7 @@ fn project_knowledge_is_isolated_and_search_is_project_aware() {
     })
     .expect("append");
 
-    let context = app
-        .open_project(project_a.id.as_str())
-        .expect("open alpha");
+    let context = app.open_project(project_a.id.as_str()).expect("open alpha");
     assert!(
         context
             .indexed_files

@@ -19,7 +19,10 @@ fn coding_state_is_independent_and_cleared_on_close() {
     app.handle_with_workspace(UserRequest::new("Help me build an app."))
         .expect("coding request");
 
-    let state = app.capability_state().expect("state").expect("coding state");
+    let state = app
+        .capability_state()
+        .expect("state")
+        .expect("coding state");
     assert_eq!(state.workspace_kind(), WorkspaceKind::Coding);
     assert_eq!(state.entry_count(), 0);
 
@@ -152,9 +155,7 @@ fn promoted_entries_survive_workspace_close() {
     })
     .expect("mutate");
 
-    let summary = app
-        .promote_capability_entry("note-keep")
-        .expect("promote");
+    let summary = app.promote_capability_entry("note-keep").expect("promote");
     assert!(summary.contains("mycelium"));
 
     let experience = app.experience().expect("experience");

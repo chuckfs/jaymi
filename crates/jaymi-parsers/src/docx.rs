@@ -7,9 +7,7 @@ use jaymi_core::{Document, DocumentMetadata, FileType, JaymiError, JaymiResult};
 use zip::ZipArchive;
 
 use crate::parser::FileParser;
-use crate::util::{
-    build_document, insert_author, insert_page_count, title_from_path,
-};
+use crate::util::{build_document, insert_author, insert_page_count, title_from_path};
 
 /// Parser for DOCX documents.
 ///
@@ -41,9 +39,8 @@ impl FileParser for DocxParser {
             ));
         }
 
-        let mut archive = ZipArchive::new(Cursor::new(bytes)).map_err(|error| {
-            JaymiError::new(format!("failed to open DOCX archive: {error}"))
-        })?;
+        let mut archive = ZipArchive::new(Cursor::new(bytes))
+            .map_err(|error| JaymiError::new(format!("failed to open DOCX archive: {error}")))?;
 
         let document_xml = read_zip_entry(&mut archive, "word/document.xml").map_err(|error| {
             JaymiError::new(format!(
@@ -133,7 +130,14 @@ fn extract_docx_text(document_xml: &str) -> String {
     text.trim().to_string()
 }
 
-fn parse_core_properties(xml: &str) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
+fn parse_core_properties(
+    xml: &str,
+) -> (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+) {
     (
         extract_xml_tag(xml, "dc:title").or_else(|| extract_xml_tag(xml, "title")),
         extract_xml_tag(xml, "dc:creator").or_else(|| extract_xml_tag(xml, "creator")),
@@ -150,7 +154,9 @@ fn extract_xml_tag(xml: &str, tag: &str) -> Option<String> {
     let gt = after.find('>')?;
     let content_start = &after[gt + 1..];
     let end = content_start.find(&close)?;
-    let value = decode_xml_entities(&content_start[..end]).trim().to_string();
+    let value = decode_xml_entities(&content_start[..end])
+        .trim()
+        .to_string();
     if value.is_empty() {
         None
     } else {

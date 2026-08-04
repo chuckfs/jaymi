@@ -35,7 +35,10 @@ const COLLECTION_ALIASES: &[(&str, &[&str])] = &[
     ("pictures", &["picture", "pictures", "photos", "photo"]),
     ("music", &["music", "audio"]),
     ("movies", &["movie", "movies", "video", "videos"]),
-    ("applications", &["application", "applications", "apps", "programs"]),
+    (
+        "applications",
+        &["application", "applications", "apps", "programs"],
+    ),
 ];
 
 /// True when `name` refers to a known collection.

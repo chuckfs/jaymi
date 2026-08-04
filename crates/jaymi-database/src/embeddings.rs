@@ -283,7 +283,7 @@ pub fn vector_to_blob(values: &[f32]) -> Vec<u8> {
 
 /// Decode little-endian f32 vector bytes.
 pub fn blob_to_vector(blob: &[u8]) -> Option<Vec<f32>> {
-    if blob.len() % 4 != 0 {
+    if !blob.len().is_multiple_of(4) {
         return None;
     }
     let mut out = Vec::with_capacity(blob.len() / 4);
@@ -382,7 +382,10 @@ mod tests {
 
         let content = db.get_content_by_source_id("/tmp/a.md").unwrap().unwrap();
         assert!(content.plain_text.contains("Mushrooms"));
-        assert!(db.get_embedding_by_source_id("/tmp/a.md").unwrap().is_some());
+        assert!(db
+            .get_embedding_by_source_id("/tmp/a.md")
+            .unwrap()
+            .is_some());
 
         db.enqueue_embedding("/tmp/a.md", 10).unwrap();
         let counts = db.embedding_counts().unwrap();

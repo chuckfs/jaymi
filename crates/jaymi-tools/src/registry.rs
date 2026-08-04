@@ -89,7 +89,10 @@ impl ToolRegistry {
     }
 
     /// Find the first tool that advertises the given capability.
-    pub fn find_for_capability(&self, capability: Capability) -> JaymiResult<Option<Arc<dyn Tool>>> {
+    pub fn find_for_capability(
+        &self,
+        capability: Capability,
+    ) -> JaymiResult<Option<Arc<dyn Tool>>> {
         let guard = self
             .tools
             .read()
@@ -206,7 +209,9 @@ mod tests {
     #[test]
     fn register_metadata_after_init() {
         let mut registry = ToolRegistry::new();
-        assert!(registry.register_metadata(sample_metadata("search")).is_err());
+        assert!(registry
+            .register_metadata(sample_metadata("search"))
+            .is_err());
         registry.initialize().unwrap();
         registry
             .register_metadata(sample_metadata("search"))

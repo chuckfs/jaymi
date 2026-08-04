@@ -74,7 +74,8 @@ fn git_status_stage_unstage_and_commit_metadata() {
         .iter()
         .any(|entry| entry.path == "readme.md"));
 
-    app.coding_git_stage(&["readme.md".into()]).expect("sync state");
+    app.coding_git_stage(&["readme.md".into()])
+        .expect("sync state");
     let git = app
         .capability_state()
         .unwrap()
@@ -103,7 +104,8 @@ fn git_status_stage_unstage_and_commit_metadata() {
     assert!(!git.added.iter().any(|entry| entry.path == "readme.md"));
     assert!(git.untracked.iter().any(|entry| entry.path == "readme.md"));
 
-    app.coding_git_stage(&["readme.md".into()]).expect("restage");
+    app.coding_git_stage(&["readme.md".into()])
+        .expect("restage");
     app.set_coding_git_commit_message("add readme".into())
         .expect("message");
     app.coding_git_commit_active().expect("commit");
@@ -270,7 +272,10 @@ fn git_discard_requires_confirmation_then_restores() {
         Some(["tracked.txt".to_string()].as_slice())
     );
     // File still dirty until confirmed.
-    assert_eq!(fs::read_to_string(root.join("tracked.txt")).unwrap(), "v2\n");
+    assert_eq!(
+        fs::read_to_string(root.join("tracked.txt")).unwrap(),
+        "v2\n"
+    );
 
     app.coding_git_cancel_discard().expect("cancel");
     let git = app
@@ -283,12 +288,18 @@ fn git_discard_requires_confirmation_then_restores() {
         .clone()
         .expect("cancelled");
     assert!(git.pending_discard.is_none());
-    assert_eq!(fs::read_to_string(root.join("tracked.txt")).unwrap(), "v2\n");
+    assert_eq!(
+        fs::read_to_string(root.join("tracked.txt")).unwrap(),
+        "v2\n"
+    );
 
     app.coding_git_request_discard(&["tracked.txt".into()])
         .expect("request again");
     app.coding_git_confirm_discard(None).expect("confirm");
-    assert_eq!(fs::read_to_string(root.join("tracked.txt")).unwrap(), "v1\n");
+    assert_eq!(
+        fs::read_to_string(root.join("tracked.txt")).unwrap(),
+        "v1\n"
+    );
     let git = app
         .capability_state()
         .unwrap()
@@ -300,7 +311,10 @@ fn git_discard_requires_confirmation_then_restores() {
         .expect("git after discard");
     assert!(git.modified.is_empty());
     assert!(git.pending_discard.is_none());
-    assert!(!git.untracked.iter().any(|entry| entry.path == "tracked.txt"));
+    assert!(!git
+        .untracked
+        .iter()
+        .any(|entry| entry.path == "tracked.txt"));
 }
 
 fn init_repo(root: &std::path::Path) {
