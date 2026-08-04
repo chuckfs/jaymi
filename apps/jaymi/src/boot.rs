@@ -1668,13 +1668,13 @@ impl Application {
             return self.with_coding_state(|coding| {
                 coding.search.results.clear();
                 coding.search.status = "Type to search".to_string();
-                coding.bottom_tab = CodingBottomTab::Search;
+                coding.show_bottom_tab(CodingBottomTab::Search);
             });
         }
 
         self.with_coding_state(|coding| {
             coding.search.searching = true;
-            coding.bottom_tab = CodingBottomTab::Search;
+            coding.show_bottom_tab(CodingBottomTab::Search);
         })?;
 
         let root = self
@@ -2207,7 +2207,7 @@ impl Application {
         self.apply_terminal_response(&response)?;
         self.with_coding_state(|coding| {
             coding.active_terminal_id = Some(session_id.clone());
-            coding.bottom_tab = CodingBottomTab::Terminal;
+            coding.show_bottom_tab(CodingBottomTab::Terminal);
         })?;
         Ok(())
     }

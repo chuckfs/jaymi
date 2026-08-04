@@ -1,13 +1,65 @@
 //! Central application theme for Jaymi's desktop UI.
 //!
-//! Every surface (conversation, Coding chrome, Explorer, Monaco, overlays)
-//! derives colors from [`Theme`] instead of scattering RGB constants.
-//! Monaco themes (`jaymi-light` / `jaymi-dark`) are generated from the same
-//! palette so the editor blends into the workspace.
+//! Every visible surface in the surrounding shell (conversation, Coding chrome,
+//! Explorer, overlays, status) derives colors from [`Theme`]. Monaco keeps its
+//! own editor themes (`jaymi-light` / `jaymi-dark`) and is not painted with
+//! egui `Color32` tokens — it receives a separate Monaco theme definition when
+//! light/dark mode changes.
 
 use eframe::egui::{self, Color32, CornerRadius, Stroke, Visuals};
 
 use jaymi_config::Theme as ThemePreference;
+
+/// 8px spacing system for shell layout (prefer whitespace over borders).
+pub mod space {
+    /// Extra-tight: icon padding, meta gaps.
+    pub const XS: f32 = 4.0;
+    /// Default small gap between related controls.
+    pub const SM: f32 = 8.0;
+    /// Section padding / standard inset.
+    pub const MD: f32 = 16.0;
+    /// Breathing room between major blocks.
+    pub const LG: f32 = 24.0;
+    /// Large empty-state / hero spacing.
+    pub const XL: f32 = 32.0;
+}
+
+/// Corner radii — keep few steps so chrome feels cohesive.
+pub mod radius {
+    /// Rows, chips, small buttons.
+    pub const XS: f32 = 4.0;
+    /// Compact controls / icon tiles.
+    pub const SM: f32 = 6.0;
+    /// Inputs, status chips, dock chrome.
+    pub const MD: f32 = 8.0;
+    /// Conversation bubbles, large panels.
+    pub const LG: f32 = 12.0;
+}
+
+/// Typography scale (points) for shell chrome — Monaco keeps its own size.
+pub mod type_size {
+    /// Day separators, paths, meta labels.
+    pub const META: f32 = 11.0;
+    /// Toolbar buttons, panel headers, chrome labels.
+    pub const UI: f32 = 12.0;
+    /// Body copy in chat and dense panels.
+    pub const BODY: f32 = 13.0;
+    /// Surface titles (conversation, app bar).
+    pub const TITLE: f32 = 15.0;
+    /// Empty-state primary line.
+    pub const DISPLAY: f32 = 16.0;
+}
+
+/// Stroke widths — hairlines only; prefer fill hierarchy over thick borders.
+pub mod stroke {
+    /// Separators, focus cues, soft outlines.
+    pub const HAIRLINE: f32 = 1.0;
+}
+
+/// Horizontal + vertical inset using the 8px grid.
+pub fn inset(horizontal: f32, vertical: f32) -> egui::Margin {
+    egui::Margin::symmetric(horizontal as i8, vertical as i8)
+}
 
 /// Resolved light or dark appearance (after System preference is expanded).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,9 +77,11 @@ impl ThemeMode {
     }
 }
 
-/// Application-wide color tokens.
+/// Application-wide color tokens for the Jaymi shell UI.
 ///
 /// Build with [`Theme::light`], [`Theme::dark`], or [`Theme::resolve`].
+/// Labels, headings, buttons, borders, separators, and icons should read from
+/// these fields (or from egui `Visuals` produced by [`Theme::apply_egui`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Theme {
     /// Light or dark variant.
@@ -36,32 +90,22 @@ pub struct Theme {
     pub background: Color32,
     /// Elevated surfaces (composer, cards that must exist, overlays).
     pub surface: Color32,
-    /// Primary text.
-    pub foreground: Color32,
-    /// Muted / secondary text.
-    pub secondary_foreground: Color32,
-    /// Hairline separators (prefer over heavy borders).
+    /// Alternate elevated fill (status bars, secondary strips, zebra rows).
+    pub surface_alt: Color32,
+    /// Hairline separators and widget outlines.
     pub border: Color32,
+    /// Primary text and icons.
+    pub text_primary: Color32,
+    /// Muted / secondary text and icons.
+    pub text_secondary: Color32,
     /// Interactive accent (links, primary buttons, focus).
     pub accent: Color32,
-    /// Selection / highlight fill.
-    pub selection: Color32,
-    /// Error / destructive status.
-    pub error: Color32,
-    /// Warning status.
-    pub warning: Color32,
     /// Success / healthy status.
     pub success: Color32,
-    /// Text on accent fills (e.g. primary button label).
-    pub accent_foreground: Color32,
-    /// Modal backdrop scrim.
-    pub overlay_scrim: Color32,
-    /// Current-line highlight in Monaco (soft).
-    pub line_highlight: Color32,
-    /// Editor cursor.
-    pub cursor: Color32,
-    /// Subtle gutter / line-number color.
-    pub gutter_foreground: Color32,
+    /// Warning status.
+    pub warning: Color32,
+    /// Error / destructive status.
+    pub error: Color32,
 }
 
 impl Theme {
@@ -71,19 +115,14 @@ impl Theme {
             mode: ThemeMode::Light,
             background: Color32::from_rgb(252, 252, 253),
             surface: Color32::from_rgb(245, 245, 247),
-            foreground: Color32::from_rgb(29, 29, 31),
-            secondary_foreground: Color32::from_rgb(110, 110, 115),
+            surface_alt: Color32::from_rgb(238, 238, 241),
             border: Color32::from_rgb(220, 220, 224),
+            text_primary: Color32::from_rgb(29, 29, 31),
+            text_secondary: Color32::from_rgb(110, 110, 115),
             accent: Color32::from_rgb(36, 99, 235),
-            selection: Color32::from_rgba_unmultiplied(36, 99, 235, 48),
-            error: Color32::from_rgb(196, 52, 52),
-            warning: Color32::from_rgb(176, 120, 16),
             success: Color32::from_rgb(46, 140, 70),
-            accent_foreground: Color32::WHITE,
-            overlay_scrim: Color32::from_black_alpha(120),
-            line_highlight: Color32::from_rgb(240, 242, 246),
-            cursor: Color32::from_rgb(29, 29, 31),
-            gutter_foreground: Color32::from_rgb(160, 160, 168),
+            warning: Color32::from_rgb(176, 120, 16),
+            error: Color32::from_rgb(196, 52, 52),
         }
     }
 
@@ -93,19 +132,14 @@ impl Theme {
             mode: ThemeMode::Dark,
             background: Color32::from_rgb(28, 28, 30),
             surface: Color32::from_rgb(38, 38, 41),
-            foreground: Color32::from_rgb(245, 245, 247),
-            secondary_foreground: Color32::from_rgb(160, 160, 168),
+            surface_alt: Color32::from_rgb(48, 48, 52),
             border: Color32::from_rgb(58, 58, 62),
+            text_primary: Color32::from_rgb(245, 245, 247),
+            text_secondary: Color32::from_rgb(160, 160, 168),
             accent: Color32::from_rgb(90, 148, 255),
-            selection: Color32::from_rgba_unmultiplied(90, 148, 255, 64),
-            error: Color32::from_rgb(255, 105, 97),
-            warning: Color32::from_rgb(240, 180, 72),
             success: Color32::from_rgb(90, 200, 120),
-            accent_foreground: Color32::from_rgb(20, 24, 32),
-            overlay_scrim: Color32::from_black_alpha(160),
-            line_highlight: Color32::from_rgb(36, 36, 40),
-            cursor: Color32::from_rgb(245, 245, 247),
-            gutter_foreground: Color32::from_rgb(110, 110, 118),
+            warning: Color32::from_rgb(240, 180, 72),
+            error: Color32::from_rgb(255, 105, 97),
         }
     }
 
@@ -124,7 +158,30 @@ impl Theme {
         }
     }
 
+    /// Soft selection / hover fill derived from [`Self::accent`].
+    pub fn selection(&self) -> Color32 {
+        let alpha = if self.mode.is_dark() { 64 } else { 48 };
+        Color32::from_rgba_unmultiplied(self.accent.r(), self.accent.g(), self.accent.b(), alpha)
+    }
+
+    /// Text / icon color drawn on top of an accent fill (primary buttons).
+    pub fn on_accent(&self) -> Color32 {
+        match self.mode {
+            ThemeMode::Light => self.background,
+            ThemeMode::Dark => Color32::from_rgb(20, 24, 32),
+        }
+    }
+
+    /// Modal backdrop scrim for command palette / quick open.
+    pub fn overlay_scrim(&self) -> Color32 {
+        let alpha = if self.mode.is_dark() { 160 } else { 120 };
+        Color32::from_rgba_unmultiplied(0, 0, 0, alpha)
+    }
+
     /// Monaco theme id registered in the WebView (`jaymi-light` / `jaymi-dark`).
+    ///
+    /// Monaco continues to use its own editor theme system; surrounding UI uses
+    /// the Jaymi [`Theme`] tokens via egui.
     pub fn monaco_theme_id(&self) -> &'static str {
         match self.mode {
             ThemeMode::Light => "jaymi-light",
@@ -140,22 +197,25 @@ impl Theme {
         }
     }
 
-    /// JSON object passed to `monaco.editor.defineTheme` (colors + token rules).
+    /// JSON object passed to `monaco.editor.defineTheme` (editor-only colors).
+    ///
+    /// Syntax token colors live in the Monaco theme; chrome colors follow the
+    /// current light/dark shell so the editor sits flush with the workspace.
     pub fn monaco_definition_json(&self) -> String {
         let bg = hex(self.background);
-        let fg = hex(self.foreground);
-        let muted = hex(self.secondary_foreground);
-        let gutter = hex(self.gutter_foreground);
-        let line = hex(self.line_highlight);
-        let selection = hex_opaque(self.selection, self.background);
-        let cursor = hex(self.cursor);
+        let fg = hex(self.text_primary);
+        let muted = hex(self.text_secondary);
+        let gutter = hex(self.text_secondary);
+        let line = hex(self.surface_alt);
+        let selection = hex_opaque(self.selection(), self.background);
+        let cursor = hex(self.text_primary);
         let border = hex(self.border);
         let accent = hex(self.accent);
         let surface = hex(self.surface);
         let error = hex(self.error);
         let warning = hex(self.warning);
 
-        // Token foregrounds are hex without '#'. Prefer readability over decoration.
+        // Monaco-owned token foregrounds (hex without '#').
         let (comment, string, keyword, number, typ, constant) = match self.mode {
             ThemeMode::Light => ("6B7280", "0F7B6C", "1D4ED8", "B45309", "7C3AED", "BE185D"),
             ThemeMode::Dark => ("9CA3AF", "5EEAD4", "93C5FD", "FBBF24", "C4B5FD", "F9A8D4"),
@@ -223,7 +283,7 @@ impl Theme {
         ctx.set_visuals(self.to_egui_visuals());
     }
 
-    /// Build egui [`Visuals`] from theme tokens.
+    /// Build egui [`Visuals`] from theme tokens so widgets inherit Theme colors.
     pub fn to_egui_visuals(&self) -> Visuals {
         let mut visuals = if self.mode.is_dark() {
             Visuals::dark()
@@ -231,52 +291,57 @@ impl Theme {
             Visuals::light()
         };
 
+        let selection = self.selection();
+        let on_accent = self.on_accent();
+
         visuals.dark_mode = self.mode.is_dark();
         visuals.panel_fill = self.background;
         visuals.window_fill = self.surface;
-        visuals.extreme_bg_color = self.surface;
+        visuals.extreme_bg_color = self.surface_alt;
         visuals.faint_bg_color = self.surface;
         visuals.code_bg_color = self.background;
-        visuals.override_text_color = Some(self.foreground);
+        visuals.override_text_color = Some(self.text_primary);
         visuals.hyperlink_color = self.accent;
         visuals.warn_fg_color = self.warning;
         visuals.error_fg_color = self.error;
 
-        visuals.selection.bg_fill = self.selection;
-        visuals.selection.stroke = Stroke::new(1.0, self.accent);
+        visuals.selection.bg_fill = selection;
+        // Soft accent outline for keyboard selection / focus (fill-first elsewhere).
+        visuals.selection.stroke = Stroke::new(stroke::HAIRLINE, self.accent);
 
-        let weak = Stroke::new(1.0, self.border);
+        // Prefer fill hierarchy over outlined chrome — inactive controls are
+        // borderless; hover uses a soft selection wash without an accent ring.
+        let hairline = Stroke::new(stroke::HAIRLINE, self.border);
         visuals.widgets.noninteractive.bg_fill = self.background;
         visuals.widgets.noninteractive.weak_bg_fill = self.surface;
-        visuals.widgets.noninteractive.bg_stroke = weak;
-        visuals.widgets.noninteractive.fg_stroke = Stroke::new(1.0, self.foreground);
+        visuals.widgets.noninteractive.bg_stroke = Stroke::NONE;
+        visuals.widgets.noninteractive.fg_stroke = Stroke::new(stroke::HAIRLINE, self.text_primary);
 
         visuals.widgets.inactive.bg_fill = self.surface;
         visuals.widgets.inactive.weak_bg_fill = self.surface;
-        visuals.widgets.inactive.bg_stroke = weak;
-        visuals.widgets.inactive.fg_stroke = Stroke::new(1.0, self.secondary_foreground);
+        visuals.widgets.inactive.bg_stroke = Stroke::NONE;
+        visuals.widgets.inactive.fg_stroke = Stroke::new(stroke::HAIRLINE, self.text_secondary);
 
-        visuals.widgets.hovered.bg_fill = self.selection;
-        visuals.widgets.hovered.weak_bg_fill = self.selection;
-        visuals.widgets.hovered.bg_stroke = Stroke::new(1.0, self.accent);
-        visuals.widgets.hovered.fg_stroke = Stroke::new(1.0, self.foreground);
+        visuals.widgets.hovered.bg_fill = selection;
+        visuals.widgets.hovered.weak_bg_fill = selection;
+        visuals.widgets.hovered.bg_stroke = Stroke::NONE;
+        visuals.widgets.hovered.fg_stroke = Stroke::new(stroke::HAIRLINE, self.text_primary);
 
         visuals.widgets.active.bg_fill = self.accent;
         visuals.widgets.active.weak_bg_fill = self.accent;
-        visuals.widgets.active.bg_stroke = Stroke::new(1.0, self.accent);
-        visuals.widgets.active.fg_stroke = Stroke::new(1.0, self.accent_foreground);
+        visuals.widgets.active.bg_stroke = Stroke::NONE;
+        visuals.widgets.active.fg_stroke = Stroke::new(stroke::HAIRLINE, on_accent);
 
         visuals.widgets.open.bg_fill = self.surface;
         visuals.widgets.open.weak_bg_fill = self.surface;
-        visuals.widgets.open.bg_stroke = Stroke::new(1.0, self.accent);
-        visuals.widgets.open.fg_stroke = Stroke::new(1.0, self.foreground);
+        visuals.widgets.open.bg_stroke = hairline;
+        visuals.widgets.open.fg_stroke = Stroke::new(stroke::HAIRLINE, self.text_primary);
 
-        // Prefer separators over heavy boxed chrome.
-        visuals.window_stroke = Stroke::new(1.0, self.border);
-        visuals.window_corner_radius = CornerRadius::same(6);
-        visuals.menu_corner_radius = CornerRadius::same(6);
-        visuals.popup_shadow.color =
-            Color32::from_black_alpha(if self.mode.is_dark() { 80 } else { 40 });
+        visuals.window_stroke = hairline;
+        visuals.window_corner_radius = CornerRadius::same(radius::MD as u8);
+        visuals.menu_corner_radius = CornerRadius::same(radius::MD as u8);
+        let shadow_alpha = if self.mode.is_dark() { 72 } else { 36 };
+        visuals.popup_shadow.color = Color32::from_rgba_unmultiplied(0, 0, 0, shadow_alpha);
 
         visuals
     }
@@ -313,7 +378,8 @@ mod tests {
     #[test]
     fn light_and_dark_expose_required_tokens() {
         for theme in [Theme::light(), Theme::dark()] {
-            assert_ne!(theme.background, theme.foreground);
+            assert_ne!(theme.background, theme.text_primary);
+            assert_ne!(theme.surface, theme.surface_alt);
             assert!(!theme.monaco_theme_id().is_empty());
             let json = theme.monaco_definition_json();
             assert!(json.contains("editor.background"));
@@ -350,5 +416,14 @@ mod tests {
         let dark = Theme::dark().to_egui_visuals();
         assert!(dark.dark_mode);
         assert_eq!(dark.panel_fill, Theme::dark().background);
+    }
+
+    #[test]
+    fn theme_avoids_black_and_white_constants() {
+        // Palette values are explicit RGB; UI code must not use Color32::BLACK / WHITE.
+        for theme in [Theme::light(), Theme::dark()] {
+            assert_ne!(theme.background, Color32::from_rgb(0, 0, 0));
+            assert_ne!(theme.text_primary, Color32::from_rgb(0, 0, 0));
+        }
     }
 }

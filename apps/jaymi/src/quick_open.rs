@@ -9,6 +9,8 @@ use eframe::egui;
 
 use jaymi_capabilities::SearchResultEntry;
 
+use crate::theme::{space, type_size};
+
 /// Quick Open modal state owned by the desktop UI.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct QuickOpenState {
@@ -16,6 +18,7 @@ pub struct QuickOpenState {
     query: String,
     selected: usize,
     results: Vec<SearchResultEntry>,
+    error: Option<String>,
 }
 
 impl QuickOpenState {
@@ -30,6 +33,7 @@ impl QuickOpenState {
         self.query.clear();
         self.selected = 0;
         self.results.clear();
+        self.error = None;
     }
 
     /// Close the modal.
@@ -46,6 +50,16 @@ impl QuickOpenState {
     pub fn set_results(&mut self, results: Vec<SearchResultEntry>) {
         self.results = results;
         self.selected = self.selected.min(self.results.len().saturating_sub(1));
+    }
+
+    /// Clear a previous search error.
+    pub fn clear_error(&mut self) {
+        self.error = None;
+    }
+
+    /// Surface a search failure distinctly from an empty result set.
+    pub fn set_error(&mut self, message: String) {
+        self.error = Some(message);
     }
 }
 
@@ -114,15 +128,22 @@ pub fn render_quick_open(
                     outcome = QuickOpenOutcome::QueryChanged(state.query.clone());
                 }
             });
-            ui.add_space(6.0);
+            ui.add_space(space::SM);
             ui.separator();
+            ui.add_space(space::XS);
 
-            if state.results.is_empty() {
-                ui.weak(if state.query.trim().is_empty() {
-                    "Type to search project files"
-                } else {
-                    "No matching files"
-                });
+            if let Some(error) = &state.error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
+            } else if state.results.is_empty() {
+                ui.label(
+                    egui::RichText::new(if state.query.trim().is_empty() {
+                        "Type to search project files"
+                    } else {
+                        "No matching files"
+                    })
+                    .size(type_size::UI)
+                    .color(ui.visuals().weak_text_color()),
+                );
             } else {
                 state.selected = state.selected.min(state.results.len().saturating_sub(1));
                 egui::ScrollArea::vertical()

@@ -43,4 +43,6 @@ pub enum ExplorerEvent {
     Delete(String),
     /// Reveal a path in the OS file manager (Finder on macOS).
     Reveal(String),
+    /// Reload the project tree after an error or stale view.
+    Refresh,
 }

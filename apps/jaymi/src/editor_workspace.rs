@@ -94,6 +94,7 @@ mod tests {
             bottom_panel_height: Some(220.0),
             workspace_panel_width: Some(700.0),
             bottom_tab: Some("terminal".into()),
+            last_bottom_tab: Some("terminal".into()),
         };
         save_editor_workspace(&root, &snapshot).expect("save");
         let loaded = load_editor_workspace(&root)
@@ -108,6 +109,7 @@ mod tests {
         assert_eq!(loaded.bottom_panel_height, Some(220.0));
         assert_eq!(loaded.workspace_panel_width, Some(700.0));
         assert_eq!(loaded.bottom_tab.as_deref(), Some("terminal"));
+        assert_eq!(loaded.last_bottom_tab.as_deref(), Some("terminal"));
         let body = fs::read_to_string(JaymiProjectLayout::for_root(&root).workspace_json).unwrap();
         assert!(!body.contains("fn main"));
         let _ = fs::remove_dir_all(&root);

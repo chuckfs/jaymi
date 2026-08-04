@@ -4,6 +4,8 @@
 //! by capabilities. Closing a workspace never destroys the conversation, and
 //! capability runtime state disappears with the workspace unless promoted.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use jaymi_capabilities::{
     CapabilityState, CodingState, CreationState, ResearchState, WorkspaceExpansion, WorkspaceKind,
     WorkspacePanel,
@@ -19,24 +21,35 @@ pub struct ConversationTurn {
     pub role: MessageRole,
     /// Message text.
     pub content: String,
+    /// Unix seconds when the turn was created (for separators / timestamps).
+    pub created_at: i64,
 }
 
 impl ConversationTurn {
-    /// Create a user turn.
+    /// Create a user turn stamped with the current time.
     pub fn user(content: impl Into<String>) -> Self {
         Self {
             role: MessageRole::User,
             content: content.into(),
+            created_at: unix_now(),
         }
     }
 
-    /// Create an assistant turn.
+    /// Create an assistant turn stamped with the current time.
     pub fn assistant(content: impl Into<String>) -> Self {
         Self {
             role: MessageRole::Assistant,
             content: content.into(),
+            created_at: unix_now(),
         }
     }
+}
+
+fn unix_now() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Session experience: one conversation plus an optional expanded workspace.
@@ -73,6 +86,26 @@ impl ExperienceSession {
     /// Immutable conversation transcript.
     pub fn conversation(&self) -> &[ConversationTurn] {
         &self.conversation
+    }
+
+    /// Display title for the conversation surface.
+    ///
+    /// Prefers the first user message (truncated); falls back to "Conversation".
+    pub fn conversation_title(&self) -> String {
+        self.conversation
+            .iter()
+            .find(|turn| matches!(turn.role, MessageRole::User))
+            .map(|turn| {
+                let trimmed = turn.content.trim();
+                let chars: Vec<char> = trimmed.chars().collect();
+                if chars.len() <= 42 {
+                    trimmed.to_string()
+                } else {
+                    format!("{}…", chars.into_iter().take(41).collect::<String>())
+                }
+            })
+            .filter(|title| !title.is_empty())
+            .unwrap_or_else(|| "Conversation".to_string())
     }
 
     /// Append a conversation turn (never cleared by workspace close).
@@ -254,9 +287,11 @@ impl ExperienceSession {
     pub fn load_messages(&mut self, messages: &[ConversationMessage]) {
         self.conversation.clear();
         for message in messages {
-            let role = message.role;
-            let content = message.content.clone();
-            self.conversation.push(ConversationTurn { role, content });
+            self.conversation.push(ConversationTurn {
+                role: message.role,
+                content: message.content.clone(),
+                created_at: message.created_at,
+            });
         }
     }
 }

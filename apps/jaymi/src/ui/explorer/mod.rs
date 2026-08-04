@@ -8,7 +8,7 @@ mod icons;
 mod render;
 
 pub use events::ExplorerEvent;
-pub use icons::{file_icon, folder_icon};
+pub use icons::{disclosure_icon, file_icon, folder_icon};
 pub use render::render_explorer;
 
 #[cfg(test)]
@@ -38,7 +38,9 @@ mod tests {
         };
         assert_ne!(file_icon(&rust), file_icon(&unknown));
         assert_ne!(file_icon(&ts), file_icon(&rust));
-        assert_eq!(folder_icon(false), "▸📁");
-        assert_eq!(folder_icon(true), "▾📂");
+        assert_eq!(folder_icon(false), "📁");
+        assert_eq!(folder_icon(true), "📂");
+        assert_eq!(disclosure_icon(false), "▸");
+        assert_eq!(disclosure_icon(true), "▾");
     }
 }

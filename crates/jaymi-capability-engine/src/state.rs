@@ -390,10 +390,10 @@ impl GitStatusState {
     }
 }
 
-/// Which bottom auxiliary panel is visible in the Coding shell (VS Code-style).
+/// Which bottom dock page is visible in the Coding shell (VS Code-style).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum CodingBottomTab {
-    /// Bottom panel collapsed — tab strip remains (≈32px); editor fills the rest.
+    /// Dock fully collapsed (no chrome). Last page is kept in [`CodingState::last_bottom_tab`].
     #[default]
     Hidden,
     /// Integrated terminal.
@@ -406,6 +406,8 @@ pub enum CodingBottomTab {
     Git,
     /// Workspace operational diagnostics (read-only status).
     Diagnostics,
+    /// Build / tool output stream (placeholder page for future providers).
+    Output,
 }
 
 impl CodingBottomTab {
@@ -418,6 +420,7 @@ impl CodingBottomTab {
             Self::Search => "Search",
             Self::Git => "Git",
             Self::Diagnostics => "Diagnostics",
+            Self::Output => "Output",
         }
     }
 
@@ -430,6 +433,7 @@ impl CodingBottomTab {
             Self::Search => "search",
             Self::Git => "git",
             Self::Diagnostics => "diagnostics",
+            Self::Output => "output",
         }
     }
 
@@ -444,8 +448,26 @@ impl CodingBottomTab {
             "search" => Some(Self::Search),
             "git" => Some(Self::Git),
             "diagnostics" => Some(Self::Diagnostics),
+            "output" => Some(Self::Output),
             _ => None,
         }
+    }
+
+    /// Visible dock pages (excludes [`Self::Hidden`]).
+    pub fn pages() -> &'static [Self] {
+        &[
+            Self::Terminal,
+            Self::Problems,
+            Self::Search,
+            Self::Git,
+            Self::Diagnostics,
+            Self::Output,
+        ]
+    }
+
+    /// Whether this value is a visible dock page.
+    pub fn is_page(self) -> bool {
+        !matches!(self, Self::Hidden)
     }
 }
 
@@ -505,7 +527,7 @@ pub const DEFAULT_BOTTOM_PANEL_HEIGHT: f32 = 180.0;
 pub const MIN_BOTTOM_PANEL_HEIGHT: f32 = 96.0;
 /// Maximum bottom auxiliary panel height.
 pub const MAX_BOTTOM_PANEL_HEIGHT: f32 = 420.0;
-/// Collapsed bottom chrome height (tab strip only).
+/// Height of the dock tab bar when the bottom dock is open (fully collapses when Hidden).
 pub const COLLAPSED_BOTTOM_TAB_HEIGHT: f32 = 32.0;
 /// Default Coding side-panel width fallback when window size is unknown.
 pub const DEFAULT_WORKSPACE_PANEL_WIDTH: f32 = 770.0;
@@ -547,8 +569,10 @@ pub struct CodingState {
     pub diagnostics: Vec<DiagnosticState>,
     /// Aggregated Problems panel issues from [`crate::ProblemsRegistry`].
     pub problems: Vec<crate::ProblemIssue>,
-    /// Bottom auxiliary panel tab (Terminal / Git / Problems / Search), or hidden.
+    /// Active bottom dock page, or [`CodingBottomTab::Hidden`] when collapsed.
     pub bottom_tab: CodingBottomTab,
+    /// Last visible dock page — restored when reopening a fully collapsed dock.
+    pub last_bottom_tab: CodingBottomTab,
     /// Find in Files / project search panel state.
     pub search: SearchPanelState,
 }
@@ -568,7 +592,8 @@ impl Default for CodingState {
             git: None,
             diagnostics: Vec::new(),
             problems: Vec::new(),
-            bottom_tab: CodingBottomTab::default(),
+            bottom_tab: CodingBottomTab::Hidden,
+            last_bottom_tab: CodingBottomTab::Terminal,
             search: SearchPanelState::default(),
         }
     }
@@ -702,6 +727,7 @@ impl CodingState {
         snapshot.bottom_panel_height = Some(self.bottom_panel_height);
         snapshot.workspace_panel_width = Some(self.workspace_panel_width);
         snapshot.bottom_tab = Some(self.bottom_tab.as_str().to_string());
+        snapshot.last_bottom_tab = Some(self.last_bottom_tab.as_str().to_string());
         snapshot
     }
 
@@ -738,6 +764,69 @@ impl CodingState {
             .and_then(CodingBottomTab::parse)
         {
             self.bottom_tab = tab;
+            if tab.is_page() {
+                self.last_bottom_tab = tab;
+            }
+        }
+        if let Some(tab) = snapshot
+            .last_bottom_tab
+            .as_deref()
+            .and_then(CodingBottomTab::parse)
+            .filter(|tab| tab.is_page())
+        {
+            self.last_bottom_tab = tab;
+        }
+    }
+
+    /// Show a dock page (opens the dock if collapsed).
+    pub fn show_bottom_tab(&mut self, tab: CodingBottomTab) {
+        if !tab.is_page() {
+            self.hide_bottom_dock();
+            return;
+        }
+        self.last_bottom_tab = tab;
+        self.bottom_tab = tab;
+    }
+
+    /// Fully collapse the bottom dock (preserves [`Self::last_bottom_tab`]).
+    pub fn hide_bottom_dock(&mut self) {
+        if self.bottom_tab.is_page() {
+            self.last_bottom_tab = self.bottom_tab;
+        }
+        self.bottom_tab = CodingBottomTab::Hidden;
+    }
+
+    /// Toggle a specific dock page (same page again collapses the dock).
+    pub fn toggle_bottom_tab(&mut self, tab: CodingBottomTab) {
+        if !tab.is_page() {
+            return;
+        }
+        if self.bottom_tab == tab {
+            self.hide_bottom_dock();
+        } else {
+            self.show_bottom_tab(tab);
+        }
+    }
+
+    /// Reopen the dock on the last visible page (no-op if already open).
+    pub fn reopen_bottom_dock(&mut self) {
+        if self.bottom_tab.is_page() {
+            return;
+        }
+        let tab = if self.last_bottom_tab.is_page() {
+            self.last_bottom_tab
+        } else {
+            CodingBottomTab::Terminal
+        };
+        self.show_bottom_tab(tab);
+    }
+
+    /// Toggle dock visibility — collapse if open, restore last page if closed.
+    pub fn toggle_bottom_dock(&mut self) {
+        if self.bottom_tab.is_page() {
+            self.hide_bottom_dock();
+        } else {
+            self.reopen_bottom_dock();
         }
     }
 
@@ -1366,19 +1455,27 @@ mod tests {
         state.set_explorer_width(260.0);
         state.set_bottom_panel_height(210.0);
         state.set_workspace_panel_width(720.0);
-        state.bottom_tab = CodingBottomTab::Search;
+        state.show_bottom_tab(CodingBottomTab::Search);
 
         let snapshot = state.editor_workspace_snapshot();
         assert_eq!(snapshot.explorer_width, Some(260.0));
         assert_eq!(snapshot.bottom_panel_height, Some(210.0));
         assert_eq!(snapshot.workspace_panel_width, Some(720.0));
         assert_eq!(snapshot.bottom_tab.as_deref(), Some("search"));
+        assert_eq!(snapshot.last_bottom_tab.as_deref(), Some("search"));
 
         let mut restored = CodingState::default();
         restored.apply_editor_workspace_meta(&snapshot);
         assert_eq!(restored.explorer_width, 260.0);
         assert_eq!(restored.bottom_panel_height, 210.0);
         assert_eq!(restored.workspace_panel_width, 720.0);
+        assert_eq!(restored.bottom_tab, CodingBottomTab::Search);
+        assert_eq!(restored.last_bottom_tab, CodingBottomTab::Search);
+
+        restored.hide_bottom_dock();
+        assert_eq!(restored.bottom_tab, CodingBottomTab::Hidden);
+        assert_eq!(restored.last_bottom_tab, CodingBottomTab::Search);
+        restored.reopen_bottom_dock();
         assert_eq!(restored.bottom_tab, CodingBottomTab::Search);
 
         // Out-of-range persisted values are clamped on restore too.
@@ -1408,6 +1505,7 @@ mod tests {
             CodingBottomTab::Search,
             CodingBottomTab::Git,
             CodingBottomTab::Diagnostics,
+            CodingBottomTab::Output,
         ] {
             assert_eq!(CodingBottomTab::parse(tab.as_str()), Some(tab));
         }

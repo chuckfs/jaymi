@@ -1,13 +1,15 @@
 //! Coding Workspace shell — Project Explorer + Monaco Editor + Terminal + Git + Diagnostics.
 //!
 //! Conversation stays in the central panel. This module renders the right-side
-//! Coding expansion. UI only renders [`CodingState`]; filesystem, terminal, and
-//! git access go through Application → Planner → Tool → Provider.
+//! Coding expansion as an IDE region layout (`TopBottomPanel` / `SidePanel` /
+//! `CentralPanel` via `show_inside`). UI only renders [`CodingState`]; filesystem,
+//! terminal, and git access go through Application → Planner → Tool → Provider.
 //!
 //! The editor body is a Monaco WebView overlay. Buffer text lives in
 //! [`CodingState`] so content survives UI remounts / hot reloads.
 //!
 //! The Diagnostics panel is read-only operational status for development.
+//! The Output dock page is a placeholder for future build / tool streams.
 
 use eframe::egui;
 use jaymi_capabilities::{
@@ -21,6 +23,7 @@ use jaymi_capabilities::{
 use crate::diagnostics::DiagnosticsSnapshot;
 use crate::experience::ExperienceSession;
 use crate::monaco_host::{language_for_path, MonacoDocument, MonacoViewport};
+use crate::theme::{inset, radius, space, stroke, type_size, Theme};
 use jaymi_project_engine::Project;
 
 /// Surface describing where Monaco should be positioned this frame.
@@ -482,6 +485,12 @@ pub enum CodingShellEvent {
     SaveActive,
     /// Save a specific open tab.
     SaveTab(String),
+    /// Open the Command Palette (⌘⇧P).
+    OpenCommandPalette,
+    /// Open Find in Files (bottom Search dock).
+    OpenSearch,
+    /// Open the workspace Diagnostics dock page.
+    OpenSettings,
     /// Toggle Monaco minimap (workspace-owned setting).
     SetMinimap(bool),
     /// Toggle word wrap (workspace-owned setting).
@@ -514,8 +523,11 @@ pub enum CodingShellEvent {
     /// Resize the bottom auxiliary panel height (drag divider above the panel).
     /// `commit` is true once on drag release, telling the caller to persist to disk.
     SetBottomPanelHeight { height: f32, commit: bool },
-    /// Show / hide a bottom auxiliary panel (Terminal, Git, Problems).
+    /// Show / hide / switch a bottom dock page (Terminal, Git, Problems, …).
+    /// [`CodingBottomTab::Hidden`] fully collapses the dock.
     SetBottomTab(CodingBottomTab),
+    /// Toggle the bottom dock open/closed (restores last page when reopening).
+    ToggleBottomDock,
     /// Update the draft input for a terminal session.
     TerminalInput { session_id: String, input: String },
     /// Run the current terminal draft (or an explicit command).
@@ -854,7 +866,7 @@ fn placeholder_for(panel: WorkspacePanel) -> &'static str {
         WorkspacePanel::ProjectExplorer => "No open project — use Open Project… to browse files.",
         WorkspacePanel::Editor => "No open files — select a file in Explorer.",
         WorkspacePanel::Terminal => "No terminal running.",
-        WorkspacePanel::Git => "No repository opened.",
+        WorkspacePanel::Git => "Open a project that contains a Git repository.",
         WorkspacePanel::Diagnostics => "Workspace information.",
         _ => "panel",
     }
@@ -862,15 +874,19 @@ fn placeholder_for(panel: WorkspacePanel) -> &'static str {
 
 /// Render the Coding Workspace shell into the right-side expansion panel.
 ///
-/// Docked IDE layout (conversation remains in the central column):
-/// - Editor fills remaining horizontal space
-/// - Explorer on the **right** of the Coding workspace
-/// - Bottom panel tabs (Terminal / Problems / Search / Git / Diagnostics)
+/// True IDE region layout via egui panels (`show_inside`), not nested Groups:
+/// - [`TopBottomPanel`] top — workspace toolbar
+/// - [`TopBottomPanel`] bottom — dock (Terminal / Problems / Search / Git / Diagnostics / Output)
+/// - [`SidePanel`] right — Explorer (resizable)
+/// - [`CentralPanel`] — Editor (fills remaining space)
+/// - Optional left sidebar is reserved for a future Activity/Outline strip
 ///
 /// `render_explorer_col` draws the explorer (implemented by `ui::explorer`).
+/// Chrome colors come from [`Theme`]; Monaco uses its own editor theme separately.
 #[allow(clippy::too_many_arguments)]
 pub fn render_coding_shell(
     ui: &mut egui::Ui,
+    theme: &Theme,
     expansion: &WorkspaceExpansion,
     state: Option<&CodingState>,
     diagnostics: Option<&CodingDiagnosticsView>,
@@ -882,118 +898,374 @@ pub fn render_coding_shell(
     *monaco_out = None;
     let _ = expansion;
 
-    // Top bar — light chrome: title + muted project path.
-    ui.horizontal(|ui| {
-        ui.label(egui::RichText::new("Coding").strong().size(13.0));
-        if let Some(root) = state.and_then(|coding| coding.explorer.project_root.as_deref()) {
-            ui.weak(truncate_path(root, 56));
-        }
-        if let Some(error) = open_error {
-            ui.colored_label(ui.visuals().error_fg_color, error);
-        }
-    });
-    ui.separator();
-
-    let bottom_tab = state
-        .map(|coding| coding.bottom_tab)
-        .unwrap_or(CodingBottomTab::Hidden);
-    let bottom_open = !matches!(bottom_tab, CodingBottomTab::Hidden);
     let explorer_visible = state.map(|coding| coding.explorer_visible).unwrap_or(true);
     let explorer_width = state
         .map(|coding| coding.explorer_width)
         .unwrap_or(DEFAULT_EXPLORER_WIDTH);
+
+    // --- Top Toolbar (outermost) -------------------------------------------
+    // ~42pt — between VS Code title bar and native macOS toolbars.
+    egui::TopBottomPanel::top("coding_toolbar")
+        .exact_height(CODING_TOOLBAR_HEIGHT)
+        .show_separator_line(true)
+        .frame(region_frame(
+            theme,
+            egui::Margin::symmetric(TOOLBAR_PAD_X as i8, 0),
+        ))
+        .show_inside(ui, |ui| {
+            render_coding_toolbar(ui, theme, state, open_error, events);
+        });
+
+    // --- Bottom Dock (VS Code-style) ---------------------------------------
+    // Fully collapsed when Hidden — no tab strip chrome. Open dock is a single
+    // resizable region: tab bar + one active page that fills the remaining area.
+    // Panel data lives in CodingState so tab switches preserve Terminal / Search /
+    // Git / Problems state without remounting providers.
+    let bottom_tab = state
+        .map(|coding| coding.bottom_tab)
+        .unwrap_or(CodingBottomTab::Hidden);
+    let bottom_open = bottom_tab.is_page();
     let bottom_panel_height = state
         .map(|coding| coding.bottom_panel_height)
         .unwrap_or(DEFAULT_BOTTOM_PANEL_HEIGHT);
 
-    let tab_bar_h = COLLAPSED_BOTTOM_TAB_HEIGHT;
-    let bottom_content_h = if bottom_open {
-        bottom_panel_height
-    } else {
-        0.0
-    };
-    let divider_h = if bottom_open { CHROME_DIVIDER } else { 0.0 };
-    let main_h = (ui.available_height() - tab_bar_h - divider_h - bottom_content_h).max(160.0);
-    let editor_min_width = 220.0_f32;
-    let explorer_w = if explorer_visible {
-        let max_allowed = (ui.available_width() - editor_min_width - CHROME_DIVIDER)
-            .clamp(MIN_EXPLORER_WIDTH, MAX_EXPLORER_WIDTH);
-        explorer_width.clamp(MIN_EXPLORER_WIDTH, max_allowed)
-    } else {
-        0.0
-    };
-    let gap = if explorer_visible {
-        CHROME_DIVIDER
-    } else {
-        0.0
-    };
-    let editor_w = (ui.available_width() - explorer_w - gap).max(editor_min_width);
+    if bottom_open {
+        let tab_bar_h = DOCK_TAB_BAR_HEIGHT;
+        let dock_height = tab_bar_h + bottom_panel_height;
+        let bottom_response = egui::TopBottomPanel::bottom("coding_dock")
+            .default_height(dock_height)
+            .height_range(
+                (tab_bar_h + MIN_BOTTOM_PANEL_HEIGHT)..=(tab_bar_h + MAX_BOTTOM_PANEL_HEIGHT),
+            )
+            .resizable(true)
+            .show_separator_line(true)
+            .frame(region_frame(theme, egui::Margin::ZERO))
+            .show_inside(ui, |ui| {
+                egui::Frame::new()
+                    .fill(theme.surface_alt)
+                    .inner_margin(inset(space::SM, 0.0))
+                    .show(ui, |ui| {
+                        render_bottom_dock_tabs(ui, theme, bottom_tab, events);
+                    });
+                ui.painter().hline(
+                    ui.max_rect().x_range(),
+                    ui.cursor().top(),
+                    egui::Stroke::new(stroke::HAIRLINE, theme.border),
+                );
 
-    ui.horizontal(|ui| {
-        ui.set_min_height(main_h);
-        ui.set_max_height(main_h);
+                let content_h = ui.available_height().max(MIN_BOTTOM_PANEL_HEIGHT);
+                ui.allocate_ui_with_layout(
+                    egui::vec2(ui.available_width(), content_h),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        ui.set_min_height(content_h);
+                        ui.set_max_height(content_h);
+                        egui::Frame::new()
+                            .inner_margin(inset(space::MD, space::SM))
+                            .show(ui, |ui| {
+                                // Each dock page owns scrolling / layout so state
+                                // survives tab switches (panels stay mounted in CodingState).
+                                render_bottom_dock_page(
+                                    ui,
+                                    theme,
+                                    bottom_tab,
+                                    state,
+                                    diagnostics,
+                                    events,
+                                );
+                            });
+                    },
+                );
+            });
 
-        ui.vertical(|ui| {
-            ui.set_min_width(editor_w);
-            ui.set_max_width(editor_w);
-            ui.set_min_height(main_h);
-            ui.set_max_height(main_h);
-            if let Some(state) = state {
-                render_editor(ui, state, events, monaco_out, main_h);
-            } else {
-                ui.weak(placeholder_for(WorkspacePanel::Editor));
-            }
-        });
+        let rendered_h = bottom_response.response.rect.height();
+        let content_h =
+            (rendered_h - tab_bar_h).clamp(MIN_BOTTOM_PANEL_HEIGHT, MAX_BOTTOM_PANEL_HEIGHT);
+        if (content_h - bottom_panel_height).abs() > 1.0 {
+            let commit = !ui.ctx().input(|input| input.pointer.primary_down());
+            events.push(CodingShellEvent::SetBottomPanelHeight {
+                height: content_h,
+                commit,
+            });
+        }
+    }
 
-        // Explorer docks on the RIGHT of the editor.
-        if explorer_visible {
-            render_vertical_divider(ui, main_h, explorer_w, events);
+    // --- Optional Left Sidebar (future Activity / Outline strip) -----------
+    // Reserved: `SidePanel::left("coding_sidebar").show_inside(...)` when needed.
 
-            ui.vertical(|ui| {
-                ui.set_min_width(explorer_w);
-                ui.set_max_width(explorer_w);
-                ui.set_min_height(main_h);
-                ui.set_max_height(main_h);
-                ui.label(egui::RichText::new("Explorer").strong().size(12.0));
+    // --- Right Explorer ----------------------------------------------------
+    if explorer_visible {
+        let explorer_response = egui::SidePanel::right("coding_explorer")
+            .default_width(explorer_width)
+            .width_range(MIN_EXPLORER_WIDTH..=MAX_EXPLORER_WIDTH)
+            .resizable(true)
+            .show_separator_line(true)
+            .frame(region_frame(theme, inset(space::SM, space::SM)))
+            .show_inside(ui, |ui| {
+                ui.label(
+                    egui::RichText::new("Explorer")
+                        .strong()
+                        .size(type_size::UI)
+                        .color(theme.text_primary),
+                );
+                ui.add_space(space::SM);
                 egui::ScrollArea::vertical()
                     .id_salt("coding_explorer_scroll")
-                    .max_height((main_h - 18.0).max(80.0))
+                    .animated(true)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        ui.set_min_width((explorer_w - 4.0).max(0.0));
+                        // Keep tree painting inside the panel bounds.
+                        ui.set_max_width(ui.available_width());
                         if let Some(state) = state {
                             render_explorer_col(ui, state);
                         } else {
-                            ui.weak(placeholder_for(WorkspacePanel::ProjectExplorer));
+                            ui.label(
+                                egui::RichText::new(placeholder_for(
+                                    WorkspacePanel::ProjectExplorer,
+                                ))
+                                .color(theme.text_secondary),
+                            );
                         }
                     });
             });
-        }
-    });
 
-    // Bottom tab strip is always visible (collapsed height = tab strip only).
+        let rendered_w = explorer_response.response.rect.width();
+        if (rendered_w - explorer_width).abs() > 1.0 {
+            let commit = !ui.ctx().input(|input| input.pointer.primary_down());
+            events.push(CodingShellEvent::SetExplorerWidth {
+                width: rendered_w.clamp(MIN_EXPLORER_WIDTH, MAX_EXPLORER_WIDTH),
+                commit,
+            });
+        }
+    }
+
+    // --- Center Editor (always last) ---------------------------------------
+    egui::CentralPanel::default()
+        .frame(region_frame(theme, inset(space::SM, space::XS)))
+        .show_inside(ui, |ui| {
+            let available_height = ui.available_height();
+            if let Some(state) = state {
+                render_editor(ui, theme, state, events, monaco_out, available_height);
+            } else {
+                ui.vertical_centered(|ui| {
+                    ui.add_space((available_height * 0.28).clamp(24.0, 72.0));
+                    ui.label(
+                        egui::RichText::new(placeholder_for(WorkspacePanel::Editor))
+                            .color(theme.text_secondary),
+                    );
+                });
+            }
+        });
+}
+
+/// Flat region chrome — fill + margin only (no nested card Frames).
+fn region_frame(theme: &Theme, margin: egui::Margin) -> egui::Frame {
+    egui::Frame::new()
+        .fill(theme.background)
+        .inner_margin(margin)
+        .stroke(egui::Stroke::NONE)
+}
+
+/// Coding Workspace title toolbar — Jaymi identity with VS Code / Zed / Xcode clarity.
+///
+/// Layout: `[icon · title · project · path]  ……  [save · search · ⌘P · settings]`
+/// The middle stretch is intentionally empty (reserved for breadcrumbs later).
+fn render_coding_toolbar(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    state: Option<&CodingState>,
+    open_error: Option<&str>,
+    events: &mut Vec<CodingShellEvent>,
+) {
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), CODING_TOOLBAR_HEIGHT),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_height(CODING_TOOLBAR_HEIGHT);
+            ui.set_max_height(CODING_TOOLBAR_HEIGHT);
+
+            // —— Left: identity ————————————————————————————————
+            coding_workspace_icon(ui, theme);
+            ui.add_space(TOOLBAR_GAP);
+
+            ui.label(
+                egui::RichText::new("Coding")
+                    .strong()
+                    .size(type_size::BODY)
+                    .color(theme.text_primary),
+            );
+
+            if let Some(root) = state.and_then(|coding| coding.explorer.project_root.as_deref()) {
+                let project_name = project_name_from_root(root);
+                ui.add_space(TOOLBAR_GAP);
+                ui.label(
+                    egui::RichText::new(project_name)
+                        .size(type_size::BODY)
+                        .color(theme.text_primary),
+                );
+                ui.add_space(TOOLBAR_GAP);
+                // Cap path width so the center band stays free for breadcrumbs.
+                let path_max = (ui.available_width() * 0.38)
+                    .clamp(72.0, 360.0)
+                    .min((ui.available_width() - TOOLBAR_RIGHT_RESERVE).max(0.0));
+                if path_max > 40.0 {
+                    ui.add_sized(
+                        egui::vec2(path_max, 20.0),
+                        egui::Label::new(
+                            egui::RichText::new(root)
+                                .size(type_size::UI)
+                                .color(theme.text_secondary),
+                        )
+                        .truncate()
+                        .sense(egui::Sense::hover()),
+                    )
+                    .on_hover_text(root);
+                }
+            }
+
+            if let Some(error) = open_error {
+                ui.add_space(TOOLBAR_GAP);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(error)
+                            .size(type_size::UI)
+                            .color(theme.error),
+                    )
+                    .truncate(),
+                );
+            }
+
+            // —— Center: reserved (breadcrumbs / navigation) ————
+            // —— Right: save · panel · search · ⌘⇧P ——————————————
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .add(toolbar_button(theme, "⌘⇧P"))
+                    .on_hover_text("Command Palette (⌘⇧P)")
+                    .clicked()
+                {
+                    events.push(CodingShellEvent::OpenCommandPalette);
+                }
+                ui.add_space(TOOLBAR_ACTION_GAP);
+                if ui
+                    .add(toolbar_button(theme, "Search"))
+                    .on_hover_text("Find in Files (⌘⇧F)")
+                    .clicked()
+                {
+                    events.push(CodingShellEvent::OpenSearch);
+                }
+                ui.add_space(TOOLBAR_ACTION_GAP);
+                let dock_open = state
+                    .map(|coding| coding.bottom_tab.is_page())
+                    .unwrap_or(false);
+                let panel_label = if dock_open {
+                    "Hide Panel"
+                } else {
+                    "Show Panel"
+                };
+                let panel_tip = if dock_open {
+                    "Collapse the bottom dock"
+                } else {
+                    "Reopen the bottom dock on the last page"
+                };
+                if ui
+                    .add(toolbar_button(theme, panel_label))
+                    .on_hover_text(panel_tip)
+                    .clicked()
+                {
+                    events.push(CodingShellEvent::ToggleBottomDock);
+                }
+                ui.add_space(TOOLBAR_GAP);
+                render_save_status(ui, theme, state);
+            });
+        },
+    );
+}
+
+/// Compact Coding glyph — accent tile with monospaced braces (no emoji).
+fn coding_workspace_icon(ui: &mut egui::Ui, theme: &Theme) {
+    let size = egui::vec2(24.0, 24.0);
+    let (rect, _response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius::same(radius::SM as u8),
+        theme.accent,
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "{}",
+        egui::FontId::monospace(type_size::META),
+        theme.on_accent(),
+    );
+}
+
+fn render_save_status(ui: &mut egui::Ui, theme: &Theme, state: Option<&CodingState>) {
+    let Some(session) = state.and_then(|coding| coding.editors.active_session()) else {
+        return;
+    };
+    if session.dirty {
+        ui.label(
+            egui::RichText::new("● Unsaved")
+                .size(type_size::UI)
+                .color(theme.warning),
+        )
+        .on_hover_text("Active file has unsaved changes (⌘S to save)");
+    } else {
+        ui.label(
+            egui::RichText::new("Saved")
+                .size(type_size::UI)
+                .color(theme.text_secondary),
+        )
+        .on_hover_text("Active file is saved");
+    }
+}
+
+fn project_name_from_root(root: &str) -> String {
+    std::path::Path::new(root)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .unwrap_or(root)
+        .to_string()
+}
+
+fn toolbar_button(theme: &Theme, label: &str) -> egui::Button<'static> {
+    egui::Button::new(
+        egui::RichText::new(label.to_owned())
+            .size(type_size::UI)
+            .color(theme.text_primary),
+    )
+    .frame(false)
+    .min_size(egui::vec2(28.0, 24.0))
+}
+
+/// Bottom dock tab strip — one page visible; active tab is highlighted.
+fn render_bottom_dock_tabs(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    bottom_tab: CodingBottomTab,
+    events: &mut Vec<CodingShellEvent>,
+) {
     ui.horizontal(|ui| {
-        ui.set_min_height(tab_bar_h);
-        ui.set_max_height(tab_bar_h);
-        for tab in [
-            CodingBottomTab::Terminal,
-            CodingBottomTab::Problems,
-            CodingBottomTab::Search,
-            CodingBottomTab::Git,
-            CodingBottomTab::Diagnostics,
-        ] {
+        ui.set_min_height(DOCK_TAB_BAR_HEIGHT - 4.0);
+        for &tab in CodingBottomTab::pages() {
             let selected = bottom_tab == tab;
+            let label = egui::RichText::new(tab.label()).color(if selected {
+                theme.text_primary
+            } else {
+                theme.text_secondary
+            });
             let response = ui
-                .selectable_label(selected, tab.label())
+                .selectable_label(selected, label)
                 .on_hover_text(format!("Show {} panel", tab.label()));
             if selected {
-                let stroke = ui.visuals().selection.stroke;
                 ui.painter().line_segment(
                     [response.rect.left_bottom(), response.rect.right_bottom()],
-                    stroke,
+                    egui::Stroke::new(stroke::HAIRLINE, theme.accent),
                 );
             }
             if response.clicked() {
+                // Clicking the active tab collapses the dock completely.
                 let next = if selected {
                     CodingBottomTab::Hidden
                 } else {
@@ -1003,131 +1275,97 @@ pub fn render_coding_shell(
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if bottom_open && ui.small_button("▾").on_hover_text("Hide panel").clicked() {
+            if ui.small_button("▾").on_hover_text("Hide Panel").clicked() {
                 events.push(CodingShellEvent::SetBottomTab(CodingBottomTab::Hidden));
             }
         });
     });
-
-    if bottom_open {
-        render_horizontal_divider(ui, bottom_panel_height, events);
-        egui::ScrollArea::vertical()
-            .id_salt("coding_bottom_scroll")
-            .max_height(bottom_content_h)
-            .auto_shrink([false, false])
-            .show(ui, |ui| match bottom_tab {
-                CodingBottomTab::Terminal => {
-                    if let Some(state) = state {
-                        render_terminal(ui, state, events);
-                    } else {
-                        ui.weak(placeholder_for(WorkspacePanel::Terminal));
-                    }
-                }
-                CodingBottomTab::Problems => {
-                    render_problems_panel(ui, state, events);
-                }
-                CodingBottomTab::Search => {
-                    if let Some(state) = state {
-                        render_search_panel(ui, state, events);
-                    } else {
-                        ui.weak("Search project...");
-                    }
-                }
-                CodingBottomTab::Git => {
-                    if let Some(state) = state {
-                        render_git(ui, state, events);
-                    } else {
-                        ui.weak(placeholder_for(WorkspacePanel::Git));
-                    }
-                }
-                CodingBottomTab::Diagnostics => {
-                    render_workspace_diagnostics_panel(ui, diagnostics);
-                }
-                CodingBottomTab::Hidden => {}
-            });
-    }
 }
 
-/// Consistent spacing tokens for the Coding shell (replaces mixed 2/4/6/10 values).
-const SPACE_XS: f32 = 4.0;
-const SPACE_SM: f32 = 6.0;
-/// Width/height of the drag dividers between editor/explorer and above the bottom panel.
-const CHROME_DIVIDER: f32 = 6.0;
-
-/// Vertical drag divider between the Editor and the Explorer (right) column.
-/// Dragging left/right resizes the explorer; state updates every dragged frame,
-/// persistence is requested only once the drag is released.
-fn render_vertical_divider(
+/// Active dock page body. Each page fills the dock content area; state is owned
+/// by [`CodingState`] so switching tabs does not reset Terminal / Search / Git.
+fn render_bottom_dock_page(
     ui: &mut egui::Ui,
-    height: f32,
-    explorer_width: f32,
+    theme: &Theme,
+    bottom_tab: CodingBottomTab,
+    state: Option<&CodingState>,
+    diagnostics: Option<&CodingDiagnosticsView>,
     events: &mut Vec<CodingShellEvent>,
 ) {
-    let (rect, response) =
-        ui.allocate_exact_size(egui::vec2(CHROME_DIVIDER, height), egui::Sense::drag());
-    let color = if response.dragged() || response.hovered() {
-        ui.visuals().selection.bg_fill
-    } else {
-        ui.visuals().widgets.noninteractive.bg_stroke.color
-    };
-    ui.painter().rect_filled(rect, 0.0, color);
-    let response = response.on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
-    if response.dragged() {
-        let delta = response.drag_delta().x;
-        if delta.abs() > f32::EPSILON {
-            // Divider sits to the left of Explorer: dragging right shrinks it.
-            let width = (explorer_width - delta).clamp(MIN_EXPLORER_WIDTH, MAX_EXPLORER_WIDTH);
-            events.push(CodingShellEvent::SetExplorerWidth {
-                width,
-                commit: false,
-            });
+    match bottom_tab {
+        CodingBottomTab::Terminal => {
+            if let Some(state) = state {
+                render_terminal(ui, theme, state, events);
+            } else {
+                ui.label(
+                    egui::RichText::new(placeholder_for(WorkspacePanel::Terminal))
+                        .color(theme.text_secondary),
+                );
+            }
         }
-    }
-    if response.drag_stopped() {
-        events.push(CodingShellEvent::SetExplorerWidth {
-            width: explorer_width,
-            commit: true,
-        });
+        CodingBottomTab::Problems => {
+            render_problems_panel(ui, theme, state, events);
+        }
+        CodingBottomTab::Search => {
+            if let Some(state) = state {
+                render_search_panel(ui, theme, state, events);
+            } else {
+                ui.label(egui::RichText::new("Search project files…").color(theme.text_secondary));
+            }
+        }
+        CodingBottomTab::Git => {
+            if let Some(state) = state {
+                render_git(ui, theme, state, events);
+            } else {
+                ui.label(
+                    egui::RichText::new(placeholder_for(WorkspacePanel::Git))
+                        .color(theme.text_secondary),
+                );
+            }
+        }
+        CodingBottomTab::Diagnostics => {
+            render_workspace_diagnostics_panel(ui, theme, diagnostics);
+        }
+        CodingBottomTab::Output => {
+            render_output_panel(ui, theme);
+        }
+        CodingBottomTab::Hidden => {}
     }
 }
 
-/// Horizontal drag divider above the bottom auxiliary panel content.
-/// Dragging up/down resizes the panel; same drag/commit split as the explorer divider.
-fn render_horizontal_divider(
-    ui: &mut egui::Ui,
-    bottom_panel_height: f32,
-    events: &mut Vec<CodingShellEvent>,
-) {
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), CHROME_DIVIDER),
-        egui::Sense::drag(),
-    );
-    let color = if response.dragged() || response.hovered() {
-        ui.visuals().selection.bg_fill
-    } else {
-        ui.visuals().widgets.noninteractive.bg_stroke.color
-    };
-    ui.painter().rect_filled(rect, 0.0, color);
-    let response = response.on_hover_cursor(egui::CursorIcon::ResizeVertical);
-    if response.dragged() {
-        let delta = response.drag_delta().y;
-        if delta.abs() > f32::EPSILON {
-            // Divider sits above the panel: dragging up (negative delta) grows it.
-            let height = (bottom_panel_height - delta)
-                .clamp(MIN_BOTTOM_PANEL_HEIGHT, MAX_BOTTOM_PANEL_HEIGHT);
-            events.push(CodingShellEvent::SetBottomPanelHeight {
-                height,
-                commit: false,
-            });
-        }
-    }
-    if response.drag_stopped() {
-        events.push(CodingShellEvent::SetBottomPanelHeight {
-            height: bottom_panel_height,
-            commit: true,
+/// Output dock page — placeholder surface for future build / tool streams.
+fn render_output_panel(ui: &mut egui::Ui, theme: &Theme) {
+    egui::ScrollArea::vertical()
+        .id_salt("coding_dock_output")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new("Output")
+                    .strong()
+                    .size(type_size::UI)
+                    .color(theme.text_primary),
+            );
+            ui.add_space(space::XS);
+            ui.label(
+                egui::RichText::new("No output yet. Build and tool streams will appear here.")
+                    .size(type_size::BODY)
+                    .color(theme.text_secondary),
+            );
         });
-    }
 }
+
+/// Coding workspace title toolbar height (5 × 8px).
+const CODING_TOOLBAR_HEIGHT: f32 = 40.0;
+/// Dock tab strip height when the bottom dock is open.
+const DOCK_TAB_BAR_HEIGHT: f32 = COLLAPSED_BOTTOM_TAB_HEIGHT;
+/// Horizontal padding inside the toolbar frame.
+const TOOLBAR_PAD_X: f32 = space::MD;
+/// Gap between left-side identity elements.
+const TOOLBAR_GAP: f32 = space::SM;
+/// Gap between right-side action buttons.
+const TOOLBAR_ACTION_GAP: f32 = space::SM;
+/// Space reserved for the right action cluster when sizing the path.
+const TOOLBAR_RIGHT_RESERVE: f32 = 300.0;
 
 fn truncate_path(path: &str, max_chars: usize) -> String {
     let chars: Vec<char> = path.chars().collect();
@@ -1149,12 +1387,20 @@ fn truncate_path(path: &str, max_chars: usize) -> String {
 /// Memory) directly.
 fn render_problems_panel(
     ui: &mut egui::Ui,
+    theme: &Theme,
     state: Option<&CodingState>,
     events: &mut Vec<CodingShellEvent>,
 ) {
     let count = state.map(|state| state.problems.len()).unwrap_or(0);
     ui.horizontal(|ui| {
-        ui.strong(format!("{count} problem(s)"));
+        ui.label(
+            egui::RichText::new(format!(
+                "{count} problem{}",
+                if count == 1 { "" } else { "s" }
+            ))
+            .strong()
+            .color(theme.text_primary),
+        );
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
                 .small_button("Refresh")
@@ -1165,18 +1411,18 @@ fn render_problems_panel(
             }
         });
     });
-    ui.add_space(SPACE_XS);
+    ui.add_space(space::XS);
 
     let Some(state) = state else {
-        ui.weak("No problems detected.");
+        ui.label(egui::RichText::new("No problems detected.").color(theme.text_secondary));
         return;
     };
 
     if state.problems.is_empty() {
-        ui.weak("No problems detected.");
+        ui.label(egui::RichText::new("No problems detected.").color(theme.text_secondary));
     } else {
         for issue in &state.problems {
-            render_problem_row(ui, issue, events);
+            render_problem_row(ui, theme, issue, events);
         }
     }
 }
@@ -1184,26 +1430,31 @@ fn render_problems_panel(
 /// Workspace Diagnostics tab — read-only operational status sections.
 fn render_workspace_diagnostics_panel(
     ui: &mut egui::Ui,
+    theme: &Theme,
     diagnostics: Option<&CodingDiagnosticsView>,
 ) {
     let Some(view) = diagnostics else {
-        ui.weak("Workspace information.");
+        ui.label(egui::RichText::new("Workspace information.").color(theme.text_secondary));
         return;
     };
     if view.sections.is_empty() {
-        ui.weak("Workspace information.");
+        ui.label(egui::RichText::new("Workspace information.").color(theme.text_secondary));
         return;
     }
     for section in &view.sections {
-        ui.strong(&section.title);
+        ui.label(
+            egui::RichText::new(&section.title)
+                .strong()
+                .color(theme.text_primary),
+        );
         if section.lines.is_empty() {
-            ui.weak("—");
+            ui.label(egui::RichText::new("—").color(theme.text_secondary));
         } else {
             for line in &section.lines {
-                ui.label(line);
+                ui.label(egui::RichText::new(line).color(theme.text_primary));
             }
         }
-        ui.add_space(SPACE_SM);
+        ui.add_space(space::SM);
     }
 }
 
@@ -1217,11 +1468,28 @@ fn severity_icon(severity: ProblemSeverity) -> &'static str {
     }
 }
 
+fn severity_color(theme: &Theme, severity: ProblemSeverity) -> egui::Color32 {
+    match severity {
+        ProblemSeverity::Error => theme.error,
+        ProblemSeverity::Warning => theme.warning,
+        ProblemSeverity::Info => theme.accent,
+        ProblemSeverity::Hint => theme.text_secondary,
+    }
+}
+
 /// One clickable Problems row: severity · source_label · file:line · message.
-fn render_problem_row(ui: &mut egui::Ui, issue: &ProblemIssue, events: &mut Vec<CodingShellEvent>) {
+fn render_problem_row(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    issue: &ProblemIssue,
+    events: &mut Vec<CodingShellEvent>,
+) {
     ui.horizontal_wrapped(|ui| {
-        ui.label(severity_icon(issue.severity));
-        ui.weak(&issue.source_label);
+        ui.colored_label(
+            severity_color(theme, issue.severity),
+            severity_icon(issue.severity),
+        );
+        ui.label(egui::RichText::new(&issue.source_label).color(theme.text_secondary));
         let text = match problem_location(issue) {
             Some(location) => format!("{location} · {}", issue.message),
             None => issue.message.clone(),
@@ -1235,7 +1503,7 @@ fn render_problem_row(ui: &mut egui::Ui, issue: &ProblemIssue, events: &mut Vec<
                 });
             }
         } else {
-            ui.label(text);
+            ui.label(egui::RichText::new(text).color(theme.text_primary));
         }
     });
 }
@@ -1259,6 +1527,7 @@ const MIN_SPLIT_FRACTION: f32 = 0.08;
 /// can render without juggling several WebViews.
 fn render_editor(
     ui: &mut egui::Ui,
+    theme: &Theme,
     state: &CodingState,
     events: &mut Vec<CodingShellEvent>,
     monaco_out: &mut Option<MonacoEditorSurface>,
@@ -1266,10 +1535,18 @@ fn render_editor(
 ) {
     if state.editors.is_empty() {
         ui.vertical_centered(|ui| {
-            ui.add_space((available_height * 0.28).clamp(24.0, 72.0));
-            ui.label(egui::RichText::new("No open files").size(14.0));
-            ui.add_space(SPACE_XS);
-            ui.weak("Select a file in Explorer.");
+            ui.add_space((available_height * 0.28).clamp(space::LG, space::XL * 2.0 + space::SM));
+            ui.label(
+                egui::RichText::new("No open files")
+                    .size(type_size::BODY)
+                    .color(theme.text_primary),
+            );
+            ui.add_space(space::XS);
+            ui.label(
+                egui::RichText::new("Select a file in Explorer.")
+                    .size(type_size::UI)
+                    .color(theme.text_secondary),
+            );
         });
         return;
     }
@@ -1278,75 +1555,16 @@ fn render_editor(
         events.push(CodingShellEvent::SaveActive);
     }
 
-    // Hierarchy: Toolbar → Tabs → Editor → Status Bar (status lives per-pane).
-    let toolbar_h = 24.0_f32;
-    ui.horizontal(|ui| {
-        ui.set_min_height(toolbar_h);
-        ui.set_max_height(toolbar_h);
-        if ui
-            .small_button("Split ▥")
-            .on_hover_text("Split Right")
-            .clicked()
-        {
-            events.push(CodingShellEvent::SplitVertical);
-        }
-        if ui
-            .small_button("Split ▤")
-            .on_hover_text("Split Down")
-            .clicked()
-        {
-            events.push(CodingShellEvent::SplitHorizontal);
-        }
-        if state.editors.panes.len() > 1
-            && ui
-                .small_button("Close Split")
-                .on_hover_text("Close the focused pane")
-                .clicked()
-        {
-            events.push(CodingShellEvent::ClosePane(
-                state.editors.focused_pane.as_str().to_string(),
-            ));
-        }
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let mut minimap_enabled = state.editor_settings.minimap;
-            if ui
-                .checkbox(&mut minimap_enabled, "Minimap")
-                .on_hover_text("Toggle Monaco minimap")
-                .changed()
-            {
-                events.push(CodingShellEvent::SetMinimap(minimap_enabled));
-            }
-            let mut wrap = state.editor_settings.word_wrap;
-            if ui
-                .checkbox(&mut wrap, "Wrap")
-                .on_hover_text("Toggle word wrap")
-                .changed()
-            {
-                events.push(CodingShellEvent::SetWordWrap(wrap));
-            }
-            let can_save = state
-                .editors
-                .active_session()
-                .is_some_and(|session| session.dirty);
-            if ui
-                .add_enabled(can_save, egui::Button::new("Save").small())
-                .on_hover_text("Save active file (⌘S)")
-                .clicked()
-            {
-                events.push(CodingShellEvent::SaveActive);
-            }
-        });
-    });
-    ui.separator();
-
-    let remaining = (available_height - toolbar_h - 4.0).max(120.0);
+    // Hierarchy: Tabs → Editor → Status Bar (workspace chrome owns the title toolbar).
+    // Split / minimap / wrap remain available via the Command Palette.
     render_layout_node(
         ui,
+        theme,
         &state.editors.layout,
         state,
         events,
         monaco_out,
-        remaining,
+        available_height,
         &[],
     );
 }
@@ -1355,6 +1573,7 @@ fn render_editor(
 #[allow(clippy::too_many_arguments)]
 fn render_layout_node(
     ui: &mut egui::Ui,
+    theme: &Theme,
     node: &EditorLayoutNode,
     state: &CodingState,
     events: &mut Vec<CodingShellEvent>,
@@ -1364,7 +1583,7 @@ fn render_layout_node(
 ) {
     match node {
         EditorLayoutNode::Leaf { pane } => {
-            render_pane(ui, pane, state, events, monaco_out, height);
+            render_pane(ui, theme, pane, state, events, monaco_out, height);
         }
         EditorLayoutNode::Split {
             direction,
@@ -1374,6 +1593,7 @@ fn render_layout_node(
             let side_by_side = matches!(direction, SplitDirection::Vertical);
             render_split(
                 ui,
+                theme,
                 children,
                 sizes,
                 state,
@@ -1391,6 +1611,7 @@ fn render_layout_node(
 #[allow(clippy::too_many_arguments)]
 fn render_split(
     ui: &mut egui::Ui,
+    theme: &Theme,
     children: &[EditorLayoutNode],
     sizes: &[f32],
     state: &CodingState,
@@ -1438,6 +1659,7 @@ fn render_split(
                     child_path.push(index);
                     render_layout_node(
                         ui,
+                        theme,
                         child,
                         state,
                         events,
@@ -1456,9 +1678,9 @@ fn render_split(
                 };
                 let (rect, response) = ui.allocate_exact_size(divider_size, egui::Sense::drag());
                 let color = if response.dragged() || response.hovered() {
-                    ui.visuals().selection.bg_fill
+                    theme.selection()
                 } else {
-                    ui.visuals().widgets.noninteractive.bg_stroke.color
+                    theme.border
                 };
                 ui.painter().rect_filled(rect, 0.0, color);
                 let response = response.on_hover_cursor(if side_by_side {
@@ -1510,6 +1732,7 @@ fn render_split(
 /// Render a single editor pane: tab strip (drag source + drop target) and body.
 fn render_pane(
     ui: &mut egui::Ui,
+    theme: &Theme,
     pane_id: &EditorPaneId,
     state: &CodingState,
     events: &mut Vec<CodingShellEvent>,
@@ -1537,10 +1760,12 @@ fn render_pane(
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         if sessions.is_empty() {
-                            ui.weak("(empty pane)");
+                            ui.label(
+                                egui::RichText::new("(empty pane)").color(theme.text_secondary),
+                            );
                         }
                         for session in &sessions {
-                            render_pane_tab(ui, &pane_str, &active_path, session, events);
+                            render_pane_tab(ui, theme, &pane_str, &active_path, session, events);
                         }
                     });
                 });
@@ -1548,13 +1773,12 @@ fn render_pane(
         .response;
 
     if is_focused {
-        let stroke = ui.visuals().selection.stroke;
         ui.painter().line_segment(
             [
                 strip_response.rect.left_bottom(),
                 strip_response.rect.right_bottom(),
             ],
-            stroke,
+            egui::Stroke::new(stroke::HAIRLINE, theme.accent),
         );
     }
 
@@ -1576,8 +1800,8 @@ fn render_pane(
         }
     }
 
-    let status_h = 22.0_f32;
-    let body_h = (height - strip_response.rect.height() - status_h - 2.0).max(40.0);
+    let status_h = 24.0_f32;
+    let body_h = (height - strip_response.rect.height() - status_h - stroke::HAIRLINE).max(40.0);
 
     match active_path {
         None => {
@@ -1585,14 +1809,20 @@ fn render_pane(
                 egui::vec2(ui.available_width(), body_h),
                 egui::Layout::top_down(egui::Align::Center),
                 |ui| {
-                    ui.add_space(16.0);
-                    ui.weak("No open tabs in this pane");
+                    ui.add_space(space::MD);
+                    ui.label(
+                        egui::RichText::new("No open tabs in this pane")
+                            .size(type_size::BODY)
+                            .color(theme.text_secondary),
+                    );
                 },
             );
-            ui.separator();
-            ui.horizontal(|ui| {
-                ui.set_min_height(status_h);
-                ui.weak("Ready");
+            render_editor_status_bar(ui, theme, status_h, |ui| {
+                ui.label(
+                    egui::RichText::new("Ready")
+                        .size(type_size::META)
+                        .color(theme.text_secondary),
+                );
             });
         }
         Some(path) => {
@@ -1600,22 +1830,32 @@ fn render_pane(
                 render_pane_body(
                     ui, &pane_str, is_focused, &session, state, events, monaco_out, body_h,
                 );
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.set_min_height(status_h);
+                render_editor_status_bar(ui, theme, status_h, |ui| {
                     let language = language_for_path(&session.path);
-                    ui.weak(format!(
-                        "{}  ·  Ln {}, Col {}  ·  {}",
-                        session.name,
-                        session.view.cursor.line + 1,
-                        session.view.cursor.column + 1,
-                        language
-                    ));
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "{}  ·  Ln {}, Col {}  ·  {}",
+                            session.name,
+                            session.view.cursor.line + 1,
+                            session.view.cursor.column + 1,
+                            language
+                        ))
+                        .size(type_size::META)
+                        .color(theme.text_secondary),
+                    );
                     if session.dirty {
-                        ui.weak("· modified");
+                        ui.label(
+                            egui::RichText::new("· modified")
+                                .size(type_size::META)
+                                .color(theme.warning),
+                        );
                     }
                     if session.preview {
-                        ui.weak("· preview");
+                        ui.label(
+                            egui::RichText::new("· preview")
+                                .size(type_size::META)
+                                .color(theme.text_secondary),
+                        );
                     }
                 });
             }
@@ -1623,9 +1863,32 @@ fn render_pane(
     }
 }
 
+fn render_editor_status_bar(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    height: f32,
+    add_contents: impl FnOnce(&mut egui::Ui),
+) {
+    ui.painter().hline(
+        ui.max_rect().x_range(),
+        ui.cursor().top(),
+        egui::Stroke::new(stroke::HAIRLINE, theme.border),
+    );
+    egui::Frame::new()
+        .fill(theme.surface_alt)
+        .inner_margin(inset(space::SM, 0.0))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.set_min_height(height);
+                add_contents(ui);
+            });
+        });
+}
+
 /// Render one tab label (drag source, click to activate, close button).
 fn render_pane_tab(
     ui: &mut egui::Ui,
+    theme: &Theme,
     pane_str: &str,
     active_path: &Option<String>,
     session: &EditorSession,
@@ -1636,9 +1899,13 @@ fn render_pane_tab(
     if session.dirty {
         label.push('*');
     }
-    let mut text = egui::RichText::new(&label);
+    let mut text = egui::RichText::new(&label).color(if active {
+        theme.text_primary
+    } else {
+        theme.text_secondary
+    });
     if session.preview {
-        text = text.italics().weak();
+        text = text.italics();
     }
     if active {
         text = text.strong();
@@ -1649,13 +1916,12 @@ fn render_pane_tab(
             .selectable(false),
     );
     if active {
-        let stroke = ui.visuals().selection.stroke;
         ui.painter().line_segment(
             [
                 tab_response.rect.left_bottom(),
                 tab_response.rect.right_bottom(),
             ],
-            stroke,
+            egui::Stroke::new(1.0, theme.accent),
         );
     }
     tab_response.dnd_set_drag_payload(TabDragPayload {
@@ -1713,13 +1979,54 @@ fn render_pane_body(
     let settings = state.editor_settings.clone();
 
     // Monaco fills available space — no per-file header chrome above the buffer.
+    // Allocate a *stable* pane rect first. Never bind the WebView to the TextEdit
+    // content rect (`scroll.inner`): that grows with the document and jumps on
+    // scroll, which makes the overlay flash / shoot to the top of the window.
     let editor_height = available_height.max(80.0);
+    let desired = egui::vec2(ui.available_width(), editor_height);
+    let (pane_rect, pane_response) =
+        ui.allocate_exact_size(desired, egui::Sense::click().union(egui::Sense::hover()));
+
+    if !is_focused && (pane_response.clicked() || pane_response.gained_focus()) {
+        events.push(CodingShellEvent::FocusPane(pane_str.to_string()));
+    }
+
+    if is_focused {
+        // Focused pane: Monaco owns the buffer. Skip the full-document TextEdit so
+        // it cannot expand the layout or drag the native WebView bounds.
+        let rect = pane_rect
+            .intersect(ui.clip_rect())
+            .intersect(ui.ctx().screen_rect());
+        if rect.width() >= 2.0 && rect.height() >= 2.0 {
+            *monaco_out = Some(MonacoEditorSurface {
+                viewport: MonacoViewport { rect },
+                document: MonacoDocument {
+                    path,
+                    content,
+                    language,
+                    scroll_top: scroll_offset,
+                    cursor_line,
+                    cursor_column,
+                    folded_regions,
+                    minimap: settings.minimap,
+                    word_wrap: settings.word_wrap,
+                    font_size: settings.font_size,
+                },
+            });
+        }
+        return;
+    }
+
+    // Unfocused panes: egui TextEdit fallback, clipped to the reserved pane.
+    let mut child = ui.new_child(egui::UiBuilder::new().max_rect(pane_rect));
+    child.set_clip_rect(pane_rect.intersect(ui.clip_rect()));
+    child.set_max_size(pane_rect.size());
     let scroll = egui::ScrollArea::vertical()
         .id_salt(("editor_scroll", pane_str, &path))
-        .max_height(editor_height)
+        .max_height(pane_rect.height())
         .auto_shrink([false, false])
         .vertical_scroll_offset(scroll_offset)
-        .show(ui, |ui| {
+        .show(&mut child, |ui| {
             let response = ui.add(
                 egui::TextEdit::multiline(&mut content)
                     .id_salt(("editor_body", pane_str, &path))
@@ -1735,51 +2042,34 @@ fn render_pane_body(
                     content: content.clone(),
                 });
             }
-            if !is_focused && (response.clicked() || response.gained_focus()) {
+            if response.clicked() || response.gained_focus() {
                 events.push(CodingShellEvent::FocusPane(pane_str.to_string()));
             }
-            response.rect
         });
 
     let new_offset = scroll.state.offset.y;
     if (new_offset - scroll_offset).abs() > f32::EPSILON {
         events.push(CodingShellEvent::Scroll {
             pane: pane_str.to_string(),
-            path: path.clone(),
+            path,
             offset: new_offset,
         });
     }
-
-    if !is_focused {
-        return;
-    }
-
-    let rect = scroll.inner;
-    *monaco_out = Some(MonacoEditorSurface {
-        viewport: MonacoViewport { rect },
-        document: MonacoDocument {
-            path,
-            content,
-            language,
-            scroll_top: scroll_offset,
-            cursor_line,
-            cursor_column,
-            folded_regions,
-            minimap: settings.minimap,
-            word_wrap: settings.word_wrap,
-            font_size: settings.font_size,
-        },
-    });
 }
 
-fn render_terminal(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<CodingShellEvent>) {
+fn render_terminal(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    state: &CodingState,
+    events: &mut Vec<CodingShellEvent>,
+) {
     let active_id = state.active_terminal_id.clone();
 
     ui.horizontal_wrapped(|ui| {
         for session in &state.terminal_sessions {
             let is_active = active_id.as_deref() == Some(session.id.as_str());
-            render_terminal_tab(ui, session, is_active, events);
-            ui.add_space(SPACE_XS);
+            render_terminal_tab(ui, theme, session, is_active, events);
+            ui.add_space(space::XS);
         }
         if ui
             .button("+ New")
@@ -1792,7 +2082,7 @@ fn render_terminal(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<Codi
     ui.separator();
 
     if state.terminal_sessions.is_empty() {
-        ui.weak("No terminal running.");
+        ui.label(egui::RichText::new("No terminal running.").color(theme.text_secondary));
         return;
     }
 
@@ -1807,13 +2097,14 @@ fn render_terminal(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<Codi
         .or_else(|| state.terminal_sessions.first());
 
     if let Some(session) = active_session {
-        render_terminal_session(ui, session, events);
+        render_terminal_session(ui, theme, session, events);
     }
 }
 
 /// One tab in the terminal tab strip: select / inline rename / close.
 fn render_terminal_tab(
     ui: &mut egui::Ui,
+    theme: &Theme,
     session: &TerminalSessionState,
     is_active: bool,
     events: &mut Vec<CodingShellEvent>,
@@ -1823,77 +2114,104 @@ fn render_terminal_tab(
         .data(|data| data.get_temp::<bool>(renaming_id))
         .unwrap_or(false);
 
-    egui::Frame::group(ui.style()).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            if renaming {
-                let draft_id = ui.id().with(("terminal_rename_draft", &session.id));
-                let mut draft = ui
-                    .data(|data| data.get_temp::<String>(draft_id))
-                    .unwrap_or_else(|| session.title.clone());
-                let response = ui.add(
-                    egui::TextEdit::singleline(&mut draft)
-                        .id_salt(("terminal_rename_input", &session.id))
-                        .desired_width(96.0),
-                );
-                response.request_focus();
-                if response.changed() {
-                    ui.data_mut(|data| data.insert_temp(draft_id, draft.clone()));
-                }
-                let confirmed =
-                    response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                let cancelled = ui.input(|input| input.key_pressed(egui::Key::Escape));
-                if confirmed {
-                    let title = draft.trim();
-                    if !title.is_empty() && title != session.title {
-                        events.push(CodingShellEvent::TerminalRename {
+    egui::Frame::new()
+        .inner_margin(inset(space::SM, space::XS))
+        .fill(if is_active {
+            theme.selection()
+        } else {
+            egui::Color32::TRANSPARENT
+        })
+        .corner_radius(radius::XS)
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                if renaming {
+                    let draft_id = ui.id().with(("terminal_rename_draft", &session.id));
+                    let mut draft = ui
+                        .data(|data| data.get_temp::<String>(draft_id))
+                        .unwrap_or_else(|| session.title.clone());
+                    let response = ui.add(
+                        egui::TextEdit::singleline(&mut draft)
+                            .id_salt(("terminal_rename_input", &session.id))
+                            .desired_width(96.0),
+                    );
+                    response.request_focus();
+                    if response.changed() {
+                        ui.data_mut(|data| data.insert_temp(draft_id, draft.clone()));
+                    }
+                    let confirmed = response.lost_focus()
+                        && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                    let cancelled = ui.input(|input| input.key_pressed(egui::Key::Escape));
+                    if confirmed {
+                        let title = draft.trim();
+                        if !title.is_empty() && title != session.title {
+                            events.push(CodingShellEvent::TerminalRename {
+                                session_id: session.id.clone(),
+                                title: title.to_string(),
+                            });
+                        }
+                        renaming = false;
+                        ui.data_mut(|data| data.remove::<String>(draft_id));
+                    } else if cancelled || (response.lost_focus() && !confirmed) {
+                        renaming = false;
+                        ui.data_mut(|data| data.remove::<String>(draft_id));
+                    }
+                } else {
+                    let label = egui::RichText::new(&session.title).color(if is_active {
+                        theme.text_primary
+                    } else {
+                        theme.text_secondary
+                    });
+                    if ui.selectable_label(is_active, label).clicked() {
+                        events.push(CodingShellEvent::TerminalSelect {
                             session_id: session.id.clone(),
-                            title: title.to_string(),
                         });
                     }
-                    renaming = false;
-                    ui.data_mut(|data| data.remove::<String>(draft_id));
-                } else if cancelled || (response.lost_focus() && !confirmed) {
-                    renaming = false;
-                    ui.data_mut(|data| data.remove::<String>(draft_id));
+                    if ui
+                        .small_button("✎")
+                        .on_hover_text("Rename terminal")
+                        .clicked()
+                    {
+                        renaming = true;
+                    }
+                    if ui
+                        .small_button("×")
+                        .on_hover_text("Close terminal")
+                        .clicked()
+                    {
+                        events.push(CodingShellEvent::TerminalKill {
+                            session_id: session.id.clone(),
+                        });
+                    }
                 }
-            } else {
-                if ui.selectable_label(is_active, &session.title).clicked() {
-                    events.push(CodingShellEvent::TerminalSelect {
-                        session_id: session.id.clone(),
-                    });
-                }
-                if ui
-                    .small_button("✎")
-                    .on_hover_text("Rename terminal")
-                    .clicked()
-                {
-                    renaming = true;
-                }
-                if ui
-                    .small_button("×")
-                    .on_hover_text("Close terminal")
-                    .clicked()
-                {
-                    events.push(CodingShellEvent::TerminalKill {
-                        session_id: session.id.clone(),
-                    });
-                }
-            }
+            });
         });
-    });
 
     ui.data_mut(|data| data.insert_temp(renaming_id, renaming));
 }
 
 fn render_terminal_session(
     ui: &mut egui::Ui,
+    theme: &Theme,
     session: &TerminalSessionState,
     events: &mut Vec<CodingShellEvent>,
 ) {
     ui.horizontal(|ui| {
-        ui.strong(&session.title);
-        ui.weak(format!("cwd={}", session.cwd.as_deref().unwrap_or("-")));
+        ui.label(
+            egui::RichText::new(&session.title)
+                .strong()
+                .size(type_size::UI)
+                .color(theme.text_primary),
+        );
+        if let Some(cwd) = session.cwd.as_deref().filter(|value| !value.is_empty()) {
+            ui.label(
+                egui::RichText::new(truncate_path(cwd, 48))
+                    .size(type_size::META)
+                    .color(theme.text_secondary),
+            )
+            .on_hover_text(cwd);
+        }
     });
+    ui.add_space(space::XS);
 
     let scroll = egui::ScrollArea::vertical()
         .id_salt(("terminal_scroll", &session.id))
@@ -1903,9 +2221,13 @@ fn render_terminal_session(
         .stick_to_bottom(true)
         .show(ui, |ui| {
             ui.add(
-                egui::Label::new(egui::RichText::new(&session.output).monospace())
-                    .wrap()
-                    .selectable(true),
+                egui::Label::new(
+                    egui::RichText::new(&session.output)
+                        .monospace()
+                        .color(theme.text_primary),
+                )
+                .wrap()
+                .selectable(true),
             );
         });
     let new_offset = scroll.state.offset.y;
@@ -1963,38 +2285,54 @@ fn render_terminal_session(
     });
 }
 
-fn render_git(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<CodingShellEvent>) {
+fn render_git(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    state: &CodingState,
+    events: &mut Vec<CodingShellEvent>,
+) {
     let Some(git) = &state.git else {
-        ui.weak("No repository opened.");
+        ui.label(
+            egui::RichText::new("Open a project that contains a Git repository.")
+                .color(theme.text_secondary),
+        );
         return;
     };
 
     ui.horizontal(|ui| {
         if git.is_repository {
-            ui.strong(format!(
-                "branch {}",
-                git.branch.as_deref().unwrap_or("(unknown)")
-            ));
-            ui.weak(&git.summary);
+            ui.label(
+                egui::RichText::new(format!(
+                    "branch {}",
+                    git.branch.as_deref().unwrap_or("(unknown)")
+                ))
+                .strong()
+                .color(theme.text_primary),
+            );
+            ui.label(egui::RichText::new(&git.summary).color(theme.text_secondary));
         } else {
-            ui.strong("Not a Git repository");
-            ui.weak(&git.summary);
+            ui.label(
+                egui::RichText::new("Not a Git repository")
+                    .strong()
+                    .color(theme.text_primary),
+            );
+            ui.label(egui::RichText::new(&git.summary).color(theme.text_secondary));
         }
         if ui.small_button("Refresh").clicked() {
             events.push(CodingShellEvent::GitRefresh);
         }
     });
     if let Some(root) = &git.repo_root {
-        ui.weak(root);
+        ui.label(egui::RichText::new(root).color(theme.text_secondary));
     }
     if let Some(error) = &git.last_error {
-        ui.colored_label(ui.visuals().error_fg_color, error);
+        ui.colored_label(theme.error, error);
     }
 
     if let Some(pending) = &git.pending_discard {
         ui.group(|ui| {
             ui.colored_label(
-                ui.visuals().warn_fg_color,
+                theme.warning,
                 format!(
                     "Discard changes to {}? This cannot be undone.",
                     pending.join(", ")
@@ -2013,12 +2351,16 @@ fn render_git(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<CodingShe
     }
 
     if !git.is_repository {
-        ui.weak("No repository opened.");
+        ui.label(
+            egui::RichText::new("This project folder is not a Git repository.")
+                .color(theme.text_secondary),
+        );
         return;
     }
 
     render_git_section(
         ui,
+        theme,
         "Staged",
         &git.staged,
         GitSectionActions::Unstage,
@@ -2026,14 +2368,23 @@ fn render_git(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<CodingShe
     );
     render_git_section(
         ui,
+        theme,
         "Modified",
         &git.modified,
         GitSectionActions::StageAndDiscard,
         events,
     );
-    render_git_section(ui, "Added", &git.added, GitSectionActions::Unstage, events);
     render_git_section(
         ui,
+        theme,
+        "Added",
+        &git.added,
+        GitSectionActions::Unstage,
+        events,
+    );
+    render_git_section(
+        ui,
+        theme,
         "Deleted",
         &git.deleted,
         GitSectionActions::StageAndDiscard,
@@ -2041,6 +2392,7 @@ fn render_git(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<CodingShe
     );
     render_git_section(
         ui,
+        theme,
         "Untracked",
         &git.untracked,
         GitSectionActions::StageAndDiscard,
@@ -2076,20 +2428,30 @@ enum GitSectionActions {
 
 fn render_git_section(
     ui: &mut egui::Ui,
+    theme: &Theme,
     title: &str,
     entries: &[jaymi_capabilities::GitFileEntry],
     actions: GitSectionActions,
     events: &mut Vec<CodingShellEvent>,
 ) {
-    ui.add_space(4.0);
-    ui.strong(format!("{title} ({})", entries.len()));
+    ui.add_space(space::XS);
+    ui.label(
+        egui::RichText::new(format!("{title} ({})", entries.len()))
+            .strong()
+            .size(type_size::UI)
+            .color(theme.text_primary),
+    );
     if entries.is_empty() {
-        ui.weak("(none)");
+        ui.label(egui::RichText::new("(none)").color(theme.text_secondary));
         return;
     }
     for entry in entries {
         ui.horizontal(|ui| {
-            ui.monospace(format!("{:>2} {}", entry.status, entry.path));
+            ui.label(
+                egui::RichText::new(format!("{:>2} {}", entry.status, entry.path))
+                    .monospace()
+                    .color(theme.text_primary),
+            );
             match actions {
                 GitSectionActions::Unstage => {
                     if ui
@@ -2125,7 +2487,12 @@ fn render_git_section(
 }
 
 /// Find in Files / project search + replace panel.
-fn render_search_panel(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<CodingShellEvent>) {
+fn render_search_panel(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    state: &CodingState,
+    events: &mut Vec<CodingShellEvent>,
+) {
     let panel = &state.search;
 
     ui.horizontal(|ui| {
@@ -2133,7 +2500,7 @@ fn render_search_panel(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<
         let response = ui.add(
             egui::TextEdit::singleline(&mut query)
                 .desired_width(240.0)
-                .hint_text("Search project..."),
+                .hint_text("Search project files…"),
         );
         if response.changed() {
             events.push(CodingShellEvent::UpdateSearchPanel {
@@ -2231,16 +2598,16 @@ fn render_search_panel(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<
     });
 
     if !panel.status.is_empty() {
-        ui.weak(&panel.status);
+        ui.label(egui::RichText::new(&panel.status).color(theme.text_secondary));
     }
 
     ui.separator();
     if !panel.searching && panel.results.is_empty() {
-        ui.add_space(SPACE_XS);
+        ui.add_space(space::XS);
         if panel.query.trim().is_empty() {
-            ui.weak("Type to search");
+            ui.label(egui::RichText::new("Type to search").color(theme.text_secondary));
         } else {
-            ui.weak("No results");
+            ui.label(egui::RichText::new("No results").color(theme.text_secondary));
         }
         return;
     }
@@ -2259,8 +2626,10 @@ fn render_search_panel(ui: &mut egui::Ui, state: &CodingState, events: &mut Vec<
                 });
             }
         });
-        ui.weak(truncate_path(&result.preview, 120));
-        ui.add_space(SPACE_XS);
+        ui.label(
+            egui::RichText::new(truncate_path(&result.preview, 120)).color(theme.text_secondary),
+        );
+        ui.add_space(space::XS);
     }
 }
 

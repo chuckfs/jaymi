@@ -42,6 +42,14 @@ pub mod ids {
     pub const TOGGLE_GIT: &str = "jaymi.workbench.toggleGit";
     /// Show or hide the Problems panel.
     pub const TOGGLE_PROBLEMS: &str = "jaymi.workbench.toggleProblems";
+    /// Show or hide the Search (Find in Files) panel.
+    pub const TOGGLE_SEARCH: &str = "jaymi.workbench.toggleSearch";
+    /// Show or hide the Diagnostics panel.
+    pub const TOGGLE_DIAGNOSTICS: &str = "jaymi.workbench.toggleDiagnostics";
+    /// Show or hide the Output panel.
+    pub const TOGGLE_OUTPUT: &str = "jaymi.workbench.toggleOutput";
+    /// Toggle the entire bottom dock (collapse / reopen last page).
+    pub const TOGGLE_PANEL: &str = "jaymi.workbench.togglePanel";
     /// Create a new file in the explorer.
     pub const CREATE_FILE: &str = "jaymi.explorer.createFile";
     /// Create a new folder in the explorer.
@@ -74,7 +82,7 @@ pub fn builtin_descriptors() -> Vec<CommandDescriptor> {
     vec![
         CommandDescriptor::builtin(OPEN_FILE, "Open File", CommandCategory::File)
             .with_keywords(["open", "file", "edit"]),
-        CommandDescriptor::builtin(OPEN_FOLDER, "Open Folder", CommandCategory::File)
+        CommandDescriptor::builtin(OPEN_FOLDER, "Open Project", CommandCategory::File)
             .with_keywords(["open", "folder", "project", "directory"]),
         CommandDescriptor::builtin(SEARCH_FILES, "Search Files", CommandCategory::Search)
             .with_keywords(["find", "file", "fuzzy", "quick open"])
@@ -100,6 +108,18 @@ pub fn builtin_descriptors() -> Vec<CommandDescriptor> {
             .with_keywords(["git", "source control", "scm"]),
         CommandDescriptor::builtin(TOGGLE_PROBLEMS, "Toggle Problems", CommandCategory::View)
             .with_keywords(["problems", "diagnostics", "errors"]),
+        CommandDescriptor::builtin(TOGGLE_SEARCH, "Toggle Search", CommandCategory::View)
+            .with_keywords(["search", "find", "files", "panel"]),
+        CommandDescriptor::builtin(
+            TOGGLE_DIAGNOSTICS,
+            "Toggle Diagnostics",
+            CommandCategory::View,
+        )
+        .with_keywords(["diagnostics", "status", "workspace", "panel"]),
+        CommandDescriptor::builtin(TOGGLE_OUTPUT, "Toggle Output", CommandCategory::View)
+            .with_keywords(["output", "build", "logs", "panel"]),
+        CommandDescriptor::builtin(TOGGLE_PANEL, "Toggle Panel", CommandCategory::View)
+            .with_keywords(["panel", "dock", "bottom", "terminal"]),
         CommandDescriptor::builtin(CREATE_FILE, "Create File", CommandCategory::File)
             .with_keywords(["new", "file", "create"]),
         CommandDescriptor::builtin(CREATE_FOLDER, "Create Folder", CommandCategory::File)
@@ -111,21 +131,17 @@ pub fn builtin_descriptors() -> Vec<CommandDescriptor> {
             .with_keywords(["close", "tab", "editor"]),
         CommandDescriptor::builtin(CLOSE_WORKSPACE, "Close Workspace", CommandCategory::View)
             .with_keywords(["close", "workspace", "panel"]),
-        CommandDescriptor::builtin(
-            OPEN_CODING,
-            "Open Coding Workspace",
-            CommandCategory::Workspace,
-        )
-        .with_keywords(["coding", "code", "ide"]),
+        CommandDescriptor::builtin(OPEN_CODING, "Open Coding", CommandCategory::Workspace)
+            .with_keywords(["coding", "code", "ide", "project"]),
         CommandDescriptor::builtin(
             OPEN_RESEARCH,
-            "Open Research Workspace",
+            "Open Research Workspace (soon)",
             CommandCategory::Workspace,
         )
         .with_keywords(["research", "notes", "sources"]),
         CommandDescriptor::builtin(
             OPEN_CREATIVE,
-            "Open Creative Workspace",
+            "Open Creation Workspace (soon)",
             CommandCategory::Workspace,
         )
         .with_keywords(["creation", "creative", "canvas", "images"]),

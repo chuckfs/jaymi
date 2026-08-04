@@ -145,8 +145,9 @@ pub fn render_command_palette(
                             *selected = 0;
                         }
                     });
-                    ui.add_space(6.0);
+                    ui.add_space(crate::theme::space::SM);
                     ui.separator();
+                    ui.add_space(crate::theme::space::XS);
 
                     let commands = registry.search(query).unwrap_or_default();
                     if commands.is_empty() {
@@ -158,17 +159,22 @@ pub fn render_command_palette(
                             .show(ui, |ui| {
                                 for (index, command) in commands.iter().enumerate() {
                                     let selected_row = index == *selected;
-                                    let label =
-                                        format!("{} · {}", command.category.label(), command.title);
+                                    let binding = command.keybinding.as_deref().unwrap_or("");
+                                    let label = if binding.is_empty() {
+                                        format!("{} · {}", command.category.label(), command.title)
+                                    } else {
+                                        format!(
+                                            "{} · {}    {}",
+                                            command.category.label(),
+                                            command.title,
+                                            binding
+                                        )
+                                    };
                                     let mut text = egui::RichText::new(label);
                                     if selected_row {
                                         text = text.strong();
                                     }
-                                    let response = ui.selectable_label(selected_row, text);
-                                    if let Some(hint) = &command.keybinding {
-                                        response.clone().on_hover_text(hint);
-                                    }
-                                    if response.clicked() {
+                                    if ui.selectable_label(selected_row, text).clicked() {
                                         outcome = CommandPaletteOutcome::Run {
                                             id: command.id.clone(),
                                             argument: None,
@@ -203,7 +209,7 @@ pub fn render_command_palette(
                 } => {
                     ui.label(egui::RichText::new(command.title.clone()).strong());
                     ui.weak(prompt.as_str());
-                    ui.add_space(4.0);
+                    ui.add_space(crate::theme::space::XS);
                     let response = ui.add(
                         egui::TextEdit::singleline(value)
                             .hint_text(prompt.as_str())

@@ -27,4 +27,4 @@ pub use coding_workspace::{
 pub use command_dispatch::{dispatch_command, CommandDispatchEffect};
 pub use diagnostics::{DiagnosticsSnapshot, OperationalStatus, SubsystemStatus};
 pub use experience::{ConversationTurn, ExperienceSession};
-pub use theme::{Theme, ThemeMode};
+pub use theme::{inset, radius, space, stroke, type_size, Theme, ThemeMode};

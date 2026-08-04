@@ -524,9 +524,12 @@ pub struct EditorWorkspaceSnapshot {
     /// Coding side-panel width (conversation ↔ workspace divider).
     #[serde(default)]
     pub workspace_panel_width: Option<f32>,
-    /// Active bottom panel tab id (`terminal`, `problems`, `search`, `git`, `diagnostics`, `hidden`).
+    /// Active bottom panel tab id (`terminal`, `problems`, `search`, `git`, `diagnostics`, `output`, `hidden`).
     #[serde(default)]
     pub bottom_tab: Option<String>,
+    /// Last visible bottom dock page (restored when reopening a collapsed dock).
+    #[serde(default)]
+    pub last_bottom_tab: Option<String>,
 }
 
 impl Default for EditorWorkspaceSnapshot {
@@ -544,6 +547,7 @@ impl Default for EditorWorkspaceSnapshot {
             bottom_panel_height: None,
             workspace_panel_width: None,
             bottom_tab: None,
+            last_bottom_tab: None,
         }
     }
 }
@@ -1173,6 +1177,7 @@ impl OpenEditors {
             bottom_panel_height: None,
             workspace_panel_width: None,
             bottom_tab: None,
+            last_bottom_tab: None,
         }
     }
 

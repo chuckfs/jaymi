@@ -32,7 +32,7 @@ pub fn dispatch_command(
                 })?;
             }
             app.with_coding_state(|coding| {
-                coding.bottom_tab = CodingBottomTab::Search;
+                coding.show_bottom_tab(CodingBottomTab::Search);
             })?;
             Ok(CommandDispatchEffect::None)
         }
@@ -70,6 +70,14 @@ pub fn dispatch_command(
         }
         ids::TOGGLE_GIT => toggle_bottom_tab(app, CodingBottomTab::Git),
         ids::TOGGLE_PROBLEMS => toggle_bottom_tab(app, CodingBottomTab::Problems),
+        ids::TOGGLE_SEARCH => toggle_bottom_tab(app, CodingBottomTab::Search),
+        ids::TOGGLE_DIAGNOSTICS => toggle_bottom_tab(app, CodingBottomTab::Diagnostics),
+        ids::TOGGLE_OUTPUT => toggle_bottom_tab(app, CodingBottomTab::Output),
+        ids::TOGGLE_PANEL => {
+            ensure_coding(app)?;
+            app.with_coding_state(|coding| coding.toggle_bottom_dock())?;
+            Ok(CommandDispatchEffect::None)
+        }
         ids::CREATE_FILE => {
             ensure_coding(app)?;
             let parent = explorer_parent(app)?;
@@ -171,13 +179,7 @@ fn toggle_bottom_tab(
     tab: CodingBottomTab,
 ) -> JaymiResult<CommandDispatchEffect> {
     ensure_coding(app)?;
-    app.with_coding_state(|coding| {
-        coding.bottom_tab = if coding.bottom_tab == tab {
-            CodingBottomTab::Hidden
-        } else {
-            tab
-        };
-    })?;
+    app.with_coding_state(|coding| coding.toggle_bottom_tab(tab))?;
     Ok(CommandDispatchEffect::None)
 }
 

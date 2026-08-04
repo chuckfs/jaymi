@@ -115,6 +115,8 @@ pub struct MonacoHost {
     last_pushed: Option<MonacoDocument>,
     /// Last Monaco theme id pushed (`jaymi-light` / `jaymi-dark`).
     last_theme_id: Option<String>,
+    /// Last Logical bounds applied (x, y from bottom, w, h) — skip redundant set_bounds.
+    last_bounds: Option<(f64, f64, f64, f64)>,
     assets_dir: PathBuf,
 }
 
@@ -159,6 +161,7 @@ impl MonacoHost {
             ready: false,
             last_pushed: None,
             last_theme_id: None,
+            last_bounds: None,
             assets_dir,
         })
     }
@@ -193,38 +196,62 @@ impl MonacoHost {
     /// coordinates are also points — do not multiply by `pixels_per_point` or
     /// Retina displays place the WebView off-screen (double-scaled).
     pub fn set_viewport(
-        &self,
+        &mut self,
         viewport: Option<MonacoViewport>,
         screen_height: f32,
         _zoom: f32,
     ) -> Result<(), String> {
         match viewport {
-            None => self
-                .webview
-                .set_visible(false)
-                .map_err(|error| format!("hide monaco: {error}")),
+            None => {
+                self.last_bounds = None;
+                self.webview
+                    .set_visible(false)
+                    .map_err(|error| format!("hide monaco: {error}"))
+            }
             Some(viewport) => {
                 // Keep the child WebView hidden until Monaco finishes loading so
                 // a blank overlay cannot steal clicks from Project Explorer.
                 if !self.ready {
+                    self.last_bounds = None;
                     return self
                         .webview
                         .set_visible(false)
                         .map_err(|error| format!("hide monaco: {error}"));
                 }
                 let rect = viewport.rect;
-                self.webview
-                    .set_bounds(Rect {
-                        position: Position::Logical(LogicalPosition::new(
-                            f64::from(rect.min.x),
-                            f64::from(screen_height - rect.max.y),
-                        )),
-                        size: Size::Logical(LogicalSize::new(
-                            f64::from(rect.width().max(1.0)),
-                            f64::from(rect.height().max(1.0)),
-                        )),
-                    })
-                    .map_err(|error| format!("bounds monaco: {error}"))?;
+                if !rect.min.x.is_finite()
+                    || !rect.min.y.is_finite()
+                    || !rect.max.x.is_finite()
+                    || !rect.max.y.is_finite()
+                    || rect.width() < 2.0
+                    || rect.height() < 2.0
+                {
+                    self.last_bounds = None;
+                    return self
+                        .webview
+                        .set_visible(false)
+                        .map_err(|error| format!("hide monaco: {error}"));
+                }
+                let x = f64::from(rect.min.x);
+                let y = f64::from(screen_height - rect.max.y);
+                let w = f64::from(rect.width());
+                let h = f64::from(rect.height());
+                let next = (x, y, w, h);
+                let bounds_changed = self.last_bounds.is_none_or(|prev| {
+                    (prev.0 - next.0).abs() > 0.5
+                        || (prev.1 - next.1).abs() > 0.5
+                        || (prev.2 - next.2).abs() > 0.5
+                        || (prev.3 - next.3).abs() > 0.5
+                });
+                if bounds_changed {
+                    self.webview
+                        .set_bounds(Rect {
+                            position: Position::Logical(LogicalPosition::new(x, y)),
+                            size: Size::Logical(LogicalSize::new(w, h)),
+                        })
+                        .map_err(|error| format!("bounds monaco: {error}"))?;
+                    self.last_bounds = Some(next);
+                }
                 self.webview
                     .set_visible(true)
                     .map_err(|error| format!("show monaco: {error}"))

@@ -1,4 +1,4 @@
-//! egui rendering for the Project Explorer.
+//! egui rendering for the Project Explorer — VS Code / Zed-style file tree.
 
 use std::collections::BTreeSet;
 
@@ -7,41 +7,81 @@ use eframe::egui;
 use jaymi_capabilities::{ExplorerNode, ExplorerPending, ExplorerState, ExplorerStatus};
 
 use super::events::ExplorerEvent;
-use super::icons::{file_icon, folder_icon};
+use super::icons::{disclosure_icon, file_icon, folder_icon};
+use crate::theme::{radius, space, type_size, Theme};
+
+/// Row height for a consistent IDE tree rhythm (3 × 8px).
+const ROW_HEIGHT: f32 = 24.0;
+/// Indent per directory depth (2 × 8px).
+const INDENT_PER_LEVEL: f32 = 16.0;
+/// Fixed column for the disclosure chevron.
+const CHEVRON_COL: f32 = 16.0;
+/// Fixed column for the file/folder icon.
+const ICON_COL: f32 = 16.0;
+/// Gap between icon column and file name.
+const ICON_NAME_GAP: f32 = space::SM;
+/// Trailing space reserved for the dirty marker.
+const DIRTY_COL: f32 = 16.0;
+/// Corner radius for row hover / selection fills.
+const ROW_RADIUS: f32 = radius::XS;
 
 /// Render the Project Explorer into `ui`, appending interaction events.
 ///
-/// `active_file` is the editor's active tab path (highlight + auto-expand cue).
+/// `active_file` is the editor's active tab path (open-file cue).
+/// `dirty_paths` are open editor buffers with unsaved changes.
 pub fn render_explorer(
     ui: &mut egui::Ui,
+    theme: &Theme,
     state: &ExplorerState,
     active_file: Option<&str>,
+    dirty_paths: &BTreeSet<String>,
     events: &mut Vec<ExplorerEvent>,
 ) {
+    // Clip all explorer chrome to the panel so long names never spill out.
+    let clip = ui.clip_rect();
+    ui.set_clip_rect(clip);
+
     match &state.status {
         ExplorerStatus::Idle => {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.weak("Loading project tree…");
+                ui.label(egui::RichText::new("Loading project tree…").color(theme.text_secondary));
             });
         }
         ExplorerStatus::NoProject => {
-            ui.weak("No open project");
+            ui.label(egui::RichText::new("No open project").color(theme.text_secondary));
             if ui.button("Open Project…").clicked() {
                 events.push(ExplorerEvent::OpenProject);
             }
         }
         ExplorerStatus::Error(message) => {
-            ui.colored_label(ui.visuals().error_fg_color, message);
+            ui.colored_label(theme.error, message);
+            ui.add_space(space::SM);
+            if ui
+                .button("Retry")
+                .on_hover_text("Reload project tree")
+                .clicked()
+            {
+                events.push(ExplorerEvent::Refresh);
+            }
         }
         ExplorerStatus::Ready => {
             if let Some(root) = &state.project_root {
-                ui.weak(truncate_middle(root, 36));
-                ui.add_space(4.0);
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(root)
+                            .size(type_size::META)
+                            .color(theme.text_secondary),
+                    )
+                    .truncate()
+                    .sense(egui::Sense::hover()),
+                )
+                .on_hover_text(root);
+                ui.add_space(space::SM);
             }
-            render_pending_banner(ui, state, events);
+            render_pending_banner(ui, theme, state, events);
             if state.nodes.is_empty() && matches!(state.pending, ExplorerPending::None) {
-                ui.weak("(empty project)");
+                ui.label(egui::RichText::new("This folder is empty.").color(theme.text_secondary));
                 if let Some(root) = &state.project_root {
                     ui.horizontal(|ui| {
                         if ui.small_button("New File").clicked() {
@@ -57,10 +97,16 @@ pub fn render_explorer(
                     });
                 }
             } else {
-                render_nodes(ui, &state.nodes, state, active_file, events);
-                // Keyboard navigation only while there is no inline create/rename
-                // draft in progress and no other widget (search box, terminal
-                // input, rename field, …) holds keyboard focus.
+                render_nodes(
+                    ui,
+                    theme,
+                    &state.nodes,
+                    state,
+                    active_file,
+                    dirty_paths,
+                    0,
+                    events,
+                );
                 if matches!(state.pending, ExplorerPending::None) {
                     let mut flat = Vec::new();
                     flatten_visible(&state.nodes, &state.expanded_paths, &mut flat);
@@ -88,8 +134,7 @@ fn flatten_visible<'a>(
 
 /// ArrowUp/Down move selection among visible rows; ArrowRight/Left expand and
 /// collapse directories; Enter opens a file or toggles a directory. Skipped
-/// whenever another widget (search box, rename draft, terminal input, …)
-/// holds keyboard focus, so navigation never steals keystrokes from typing.
+/// whenever another widget holds keyboard focus.
 fn handle_keyboard_navigation(
     ui: &egui::Ui,
     state: &ExplorerState,
@@ -147,6 +192,7 @@ fn handle_keyboard_navigation(
 
 fn render_pending_banner(
     ui: &mut egui::Ui,
+    theme: &Theme,
     state: &ExplorerState,
     events: &mut Vec<ExplorerEvent>,
 ) {
@@ -154,12 +200,13 @@ fn render_pending_banner(
         return;
     };
     ui.horizontal(|ui| {
-        ui.label(label);
+        ui.label(egui::RichText::new(label).color(theme.text_primary));
         let mut name = draft.to_string();
         let response = ui.add(
             egui::TextEdit::singleline(&mut name)
                 .desired_width(120.0)
-                .hint_text("name"),
+                .hint_text("name")
+                .text_color(theme.text_primary),
         );
         if response.changed() {
             events.push(ExplorerEvent::PendingNameChanged(name.clone()));
@@ -178,7 +225,7 @@ fn render_pending_banner(
             events.push(ExplorerEvent::CancelPending);
         }
     });
-    ui.add_space(4.0);
+    ui.add_space(space::SM);
 }
 
 fn pending_label_and_draft(pending: &ExplorerPending) -> Option<(&'static str, &str)> {
@@ -190,121 +237,225 @@ fn pending_label_and_draft(pending: &ExplorerPending) -> Option<(&'static str, &
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_nodes(
     ui: &mut egui::Ui,
+    theme: &Theme,
     nodes: &[ExplorerNode],
     state: &ExplorerState,
     active_file: Option<&str>,
+    dirty_paths: &BTreeSet<String>,
+    depth: usize,
     events: &mut Vec<ExplorerEvent>,
 ) {
     for node in nodes {
-        render_node_row(ui, node, state, active_file, events);
+        render_node_row(
+            ui,
+            theme,
+            node,
+            state,
+            active_file,
+            dirty_paths,
+            depth,
+            events,
+        );
         let expanded = node.is_dir && state.expanded_paths.contains(&node.path);
         if expanded {
-            ui.indent(format!("explorer_{}", node.path), |ui| {
-                render_nodes(ui, &node.children, state, active_file, events);
-                if let ExplorerPending::NewFile { parent, .. }
-                | ExplorerPending::NewFolder { parent, .. } = &state.pending
-                {
-                    if parent == &node.path {
-                        // Pending banner is global; keep tree readable.
-                    }
-                }
-            });
+            render_nodes(
+                ui,
+                theme,
+                &node.children,
+                state,
+                active_file,
+                dirty_paths,
+                depth + 1,
+                events,
+            );
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_node_row(
     ui: &mut egui::Ui,
+    theme: &Theme,
     node: &ExplorerNode,
     state: &ExplorerState,
     active_file: Option<&str>,
+    dirty_paths: &BTreeSet<String>,
+    depth: usize,
     events: &mut Vec<ExplorerEvent>,
 ) {
     let is_active = active_file == Some(node.path.as_str());
     let is_selected = state.selected_path.as_deref() == Some(node.path.as_str());
     let expanded = state.expanded_paths.contains(&node.path);
-    let highlighted = is_selected || is_active;
+    let is_dirty = !node.is_dir && dirty_paths.contains(&node.path);
 
-    ui.horizontal(|ui| {
-        let label = if node.is_dir {
-            format!("{} {}", folder_icon(expanded), node.name)
+    let desired_size = egui::vec2(ui.available_width(), ROW_HEIGHT);
+    let (rect, response) = ui.allocate_exact_size(
+        desired_size,
+        egui::Sense::click().union(egui::Sense::hover()),
+    );
+
+    if ui.is_rect_visible(rect) {
+        // Layered highlights: selection > open file / hover.
+        let bg_fill = if is_selected {
+            theme.selection()
+        } else if is_active || response.hovered() {
+            theme.surface_alt
         } else {
-            format!("{} {}", file_icon(node), node.name)
+            egui::Color32::TRANSPARENT
+        };
+        if bg_fill != egui::Color32::TRANSPARENT {
+            ui.painter()
+                .rect_filled(rect, egui::CornerRadius::same(ROW_RADIUS as u8), bg_fill);
+        }
+
+        // Open-in-editor cue: thin accent bar on the leading edge (no focus ring).
+        if is_selected || is_active {
+            let bar = egui::Rect::from_min_size(
+                rect.left_top() + egui::vec2(1.0, space::XS),
+                egui::vec2(2.0, rect.height() - space::SM),
+            );
+            ui.painter().rect_filled(
+                bar,
+                egui::CornerRadius::same(1),
+                if is_selected {
+                    theme.accent
+                } else {
+                    theme.text_secondary
+                },
+            );
+        }
+
+        let font_id = egui::FontId::proportional(type_size::BODY);
+        let text_color = if is_selected {
+            theme.text_primary
+        } else if is_dirty {
+            theme.warning
+        } else {
+            theme.text_primary
         };
 
-        let row_height = ui.spacing().interact_size.y;
-        let desired_size = egui::vec2(ui.available_width(), row_height);
-        let (rect, response) = ui.allocate_exact_size(desired_size, egui::Sense::click());
+        let indent = depth as f32 * INDENT_PER_LEVEL;
+        let mut x = rect.left() + space::XS + indent;
 
-        if ui.is_rect_visible(rect) {
-            // Hover feedback for unselected rows; selection keeps its own fill
-            // regardless of hover so the "current" row always stays legible.
-            let bg_fill = if highlighted {
-                ui.visuals().selection.bg_fill
-            } else if response.hovered() {
-                ui.visuals().widgets.hovered.bg_fill
-            } else {
-                egui::Color32::TRANSPARENT
-            };
-            ui.painter().rect_filled(rect, 3.0, bg_fill);
+        // Disclosure column (directories only; spacer for files keeps icons aligned).
+        let chevron = if node.is_dir {
+            disclosure_icon(expanded)
+        } else {
+            " "
+        };
+        ui.painter().text(
+            egui::pos2(x + CHEVRON_COL * 0.5, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            chevron,
+            font_id.clone(),
+            theme.text_secondary,
+        );
+        x += CHEVRON_COL;
 
-            let text_color = if highlighted {
-                ui.visuals().selection.stroke.color
-            } else {
-                ui.visuals().text_color()
-            };
-            let font_id = egui::TextStyle::Button.resolve(ui.style());
+        // File / folder icon column.
+        let icon = if node.is_dir {
+            folder_icon(expanded)
+        } else {
+            file_icon(node)
+        };
+        ui.painter().text(
+            egui::pos2(x + ICON_COL * 0.5, rect.center().y),
+            egui::Align2::CENTER_CENTER,
+            icon,
+            font_id.clone(),
+            theme.text_primary,
+        );
+        x += ICON_COL + ICON_NAME_GAP;
+
+        // Name — truncate so it never escapes the row / panel.
+        let dirty_reserve = if is_dirty { DIRTY_COL } else { 0.0 };
+        let name_max = (rect.right() - x - dirty_reserve - space::XS).max(12.0);
+        let display_name = truncate_to_width(ui, &node.name, &font_id, name_max);
+        ui.painter().text(
+            egui::pos2(x, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            display_name,
+            font_id.clone(),
+            text_color,
+        );
+
+        if is_dirty {
             ui.painter().text(
-                rect.left_center() + egui::vec2(4.0, 0.0),
-                egui::Align2::LEFT_CENTER,
-                &label,
+                egui::pos2(rect.right() - space::SM, rect.center().y),
+                egui::Align2::RIGHT_CENTER,
+                "●",
                 font_id,
-                text_color,
+                theme.warning,
             );
-
-            // Focus ring: a visible stroke around the selected/active row so
-            // keyboard navigation (ArrowUp/Down) is easy to track visually.
-            if highlighted {
-                ui.painter().rect_stroke(
-                    rect,
-                    3.0,
-                    ui.visuals().selection.stroke,
-                    egui::StrokeKind::Inside,
-                );
-            }
         }
+    }
 
-        if response.clicked() {
+    response.clone().on_hover_text(&node.path);
+
+    if response.clicked() {
+        events.push(ExplorerEvent::Select {
+            path: node.path.clone(),
+            is_dir: node.is_dir,
+        });
+        if node.is_dir {
+            events.push(ExplorerEvent::ToggleExpand(node.path.clone()));
+        }
+    }
+    if response.double_clicked() {
+        if node.is_dir {
             events.push(ExplorerEvent::Select {
                 path: node.path.clone(),
-                is_dir: node.is_dir,
+                is_dir: true,
             });
-            if node.is_dir {
-                events.push(ExplorerEvent::ToggleExpand(node.path.clone()));
-            }
+            // Single-click already toggled; double-click keeps expand semantics.
+        } else {
+            events.push(ExplorerEvent::Open(node.path.clone()));
         }
-        if response.double_clicked() {
-            if node.is_dir {
-                events.push(ExplorerEvent::Select {
-                    path: node.path.clone(),
-                    is_dir: true,
-                });
-                events.push(ExplorerEvent::ToggleExpand(node.path.clone()));
-            } else {
-                events.push(ExplorerEvent::Open(node.path.clone()));
-            }
-        }
+    }
 
-        response.context_menu(|ui| {
-            render_context_menu(ui, node, state, events);
-        });
+    response.context_menu(|ui| {
+        render_context_menu(ui, theme, node, state, events);
     });
+}
+
+/// Ellipsize `name` so its painted width stays within `max_width`.
+fn truncate_to_width(ui: &egui::Ui, name: &str, font_id: &egui::FontId, max_width: f32) -> String {
+    let fits = |text: &str| {
+        ui.fonts(|fonts| {
+            fonts
+                .layout_no_wrap(text.to_owned(), font_id.clone(), egui::Color32::TRANSPARENT)
+                .size()
+                .x
+        }) <= max_width
+    };
+    if fits(name) {
+        return name.to_string();
+    }
+    let chars: Vec<char> = name.chars().collect();
+    if chars.is_empty() {
+        return String::new();
+    }
+    let mut lo = 0usize;
+    let mut hi = chars.len();
+    while lo + 1 < hi {
+        let mid = (lo + hi) / 2;
+        let candidate: String = chars[..mid].iter().collect::<String>() + "…";
+        if fits(&candidate) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let keep = lo.max(1).min(chars.len());
+    chars[..keep].iter().collect::<String>() + "…"
 }
 
 fn render_context_menu(
     ui: &mut egui::Ui,
+    _theme: &Theme,
     node: &ExplorerNode,
     state: &ExplorerState,
     events: &mut Vec<ExplorerEvent>,
@@ -355,18 +506,4 @@ fn render_context_menu(
         events.push(ExplorerEvent::Reveal(node.path.clone()));
         ui.close_menu();
     }
-
-    // TODO: drag-and-drop reordering / move within the tree.
-    let _ = state;
-}
-
-fn truncate_middle(value: &str, max_chars: usize) -> String {
-    let chars: Vec<char> = value.chars().collect();
-    if chars.len() <= max_chars {
-        return value.to_string();
-    }
-    let keep = max_chars.saturating_sub(1) / 2;
-    let start: String = chars.iter().take(keep).collect();
-    let end: String = chars.iter().rev().take(keep).cloned().rev().collect();
-    format!("{start}…{end}")
 }
