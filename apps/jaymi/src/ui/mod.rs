@@ -973,9 +973,17 @@ impl JaymiApp {
             .unwrap_or_default()
             .into_iter()
             .map(|project| {
-                let label = match project.root_directory.as_ref() {
-                    Some(root) => format!("{} - {}", project.name, root.display()),
-                    None => project.name.clone(),
+                let label = if !project.name.trim().is_empty() {
+                    project.name.clone()
+                } else {
+                    project
+                        .root_directory
+                        .as_ref()
+                        .and_then(|root| {
+                            root.file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                        })
+                        .unwrap_or_else(|| project.id.to_string())
                 };
                 (project.id.to_string(), label)
             })

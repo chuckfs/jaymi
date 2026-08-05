@@ -1,8 +1,8 @@
 //! Left navigation rail — Projects, Knowledge, Media, Conversations.
 //!
 //! ChatGPT-style: Projects and Conversations expand inline inside the rail
-//! (no floating popups). Open Project + recents nest under Projects, above
-//! Knowledge. Conversations expands upward from the bottom of the rail.
+//! (no floating popups). Order is Projects → Knowledge → Media → Conversations,
+//! with Developer Diagnostics pinned at the bottom.
 
 use eframe::egui;
 
@@ -28,7 +28,7 @@ pub enum NavTab {
     Knowledge,
     /// Media library stub.
     Media,
-    /// Conversations section (expandable, pinned at bottom).
+    /// Conversations section (expandable, under Media).
     #[default]
     Conversations,
 }
@@ -95,7 +95,7 @@ pub fn render_nav_rail(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut
     ui.vertical(|ui| {
         ui.add_space(space::XS);
 
-        // —— Top stack: Projects (collapsible) → Knowledge → Media ——
+        // Projects → Knowledge → Media → Conversations (top-down collapses).
         let projects_resp = section_row(
             ui,
             ctx.theme,
@@ -156,29 +156,27 @@ pub fn render_nav_rail(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut
             );
         }
 
-        // —— Bottom: Conversations (collapsible upward) + diagnostics ——
-        // bottom-up paint order: footer (bottommost) → row → body (above row).
+        let conversations_resp = section_row(
+            ui,
+            ctx.theme,
+            NavTab::Conversations.label(),
+            ctx.tab == NavTab::Conversations,
+            Some(conversations_open),
+        );
+        if conversations_resp.clicked() {
+            conversations_open = !conversations_open;
+            if conversations_open {
+                projects_open = false;
+            }
+            events.push(NavRailEvent::SelectTab(NavTab::Conversations));
+        }
+        if conversations_open {
+            render_conversations_section(ui, ctx, events);
+        }
+
+        // Diagnostics stay at the bottom of the rail.
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             render_footer(ui, ctx, events);
-
-            let conversations_resp = section_row(
-                ui,
-                ctx.theme,
-                NavTab::Conversations.label(),
-                ctx.tab == NavTab::Conversations,
-                Some(conversations_open),
-            );
-            if conversations_resp.clicked() {
-                conversations_open = !conversations_open;
-                if conversations_open {
-                    projects_open = false;
-                }
-                events.push(NavRailEvent::SelectTab(NavTab::Conversations));
-            }
-
-            if conversations_open {
-                render_conversations_section(ui, ctx, events);
-            }
         });
     });
 
@@ -288,21 +286,25 @@ fn render_conversations_section(
     ctx: &NavRailContext<'_>,
     events: &mut Vec<NavRailEvent>,
 ) {
-    // Drawn after the Conversations row in bottom-up layout → appears above it.
     ui.add_space(space::XS);
-    nest_label(ui, ctx.theme, "Recent chats");
+
+    if !ctx.has_project {
+        if nest_action(ui, ctx.theme, "+", "Open Project").clicked() {
+            events.push(NavRailEvent::OpenProject);
+        }
+        nest_hint(ui, ctx.theme, "Open a project to see its chats.");
+        ui.add_space(space::SM);
+        return;
+    }
+
+    nest_label(ui, ctx.theme, "Recent");
 
     egui::ScrollArea::vertical()
         .id_salt("jaymi_nav_conversations_recent")
         .max_height(220.0)
         .auto_shrink([false, true])
         .show(ui, |ui| {
-            if !ctx.has_project {
-                nest_hint(ui, ctx.theme, "Open a project to see its chats.");
-                if nest_action(ui, ctx.theme, "+", "Open Project").clicked() {
-                    events.push(NavRailEvent::OpenProject);
-                }
-            } else if ctx.conversations.is_empty() {
+            if ctx.conversations.is_empty() {
                 nest_hint(
                     ui,
                     ctx.theme,
