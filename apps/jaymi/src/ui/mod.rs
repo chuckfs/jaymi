@@ -717,7 +717,7 @@ impl JaymiApp {
             egui::Layout::top_down(egui::Align::Center),
             |ui| {
                 // True vertical center of the conversation surface.
-                let block_height = 220.0;
+                let block_height = 140.0;
                 let top = ((ui.available_height() - block_height) * 0.5).max(space::XL);
                 ui.add_space(top);
 
@@ -734,24 +734,6 @@ impl JaymiApp {
                         .size(type_size::BODY + 2.0)
                         .color(self.theme.text_secondary),
                 );
-                ui.add_space(space::LG + space::SM);
-                if ui
-                    .add(
-                        egui::Button::new(
-                            egui::RichText::new("Open Project")
-                                .size(type_size::UI)
-                                .color(self.theme.on_accent()),
-                        )
-                        .fill(self.theme.accent)
-                        .corner_radius(radius::MD)
-                        .min_size(egui::vec2(156.0, 38.0))
-                        .stroke(egui::Stroke::NONE),
-                    )
-                    .on_hover_text("Choose a folder to open in Coding")
-                    .clicked()
-                {
-                    self.open_project_folder();
-                }
             },
         );
     }
@@ -1421,7 +1403,8 @@ impl JaymiApp {
                         if is_dir {
                             Ok(())
                         } else {
-                            self.app.open_coding_file_preview(&path)
+                            // Open as a permanent tab so each file stays switchable.
+                            self.app.open_coding_file(&path)
                         }
                     })
                 }
@@ -1615,6 +1598,9 @@ impl JaymiApp {
                     });
                 }
                 MonacoIpcMessage::Scroll { path, offset } => {
+                    if let Some(host) = self.monaco.as_mut() {
+                        host.note_external_scroll(&path, offset);
+                    }
                     events.push(CodingShellEvent::Scroll {
                         pane: focused_pane.clone(),
                         path,
@@ -1622,6 +1608,9 @@ impl JaymiApp {
                     });
                 }
                 MonacoIpcMessage::Cursor { path, line, column } => {
+                    if let Some(host) = self.monaco.as_mut() {
+                        host.note_external_cursor(&path, line, column);
+                    }
                     events.push(CodingShellEvent::SetCursor {
                         pane: focused_pane.clone(),
                         path,
@@ -1630,6 +1619,9 @@ impl JaymiApp {
                     });
                 }
                 MonacoIpcMessage::Folds { path, regions } => {
+                    if let Some(host) = self.monaco.as_mut() {
+                        host.note_external_folds(&path, &regions);
+                    }
                     events.push(CodingShellEvent::SetFolds {
                         pane: focused_pane.clone(),
                         path,

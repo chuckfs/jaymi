@@ -362,8 +362,10 @@ fn nest_hint(ui: &mut egui::Ui, theme: &Theme, text: &str) {
 }
 
 fn nest_action(ui: &mut egui::Ui, theme: &Theme, leading: &str, label: &str) -> egui::Response {
-    let (rect, response) =
+    let (rect, mut response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), NEST_H), egui::Sense::click());
+    response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+
     if response.hovered() {
         ui.painter().rect_filled(
             rect,
@@ -372,39 +374,38 @@ fn nest_action(ui: &mut egui::Ui, theme: &Theme, leading: &str, label: &str) -> 
         );
     }
 
-    let mut row = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect.shrink2(egui::vec2(space::MD, 0.0)))
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    let inner = rect.shrink2(egui::vec2(space::MD, 0.0));
+    let chip = egui::Rect::from_center_size(
+        egui::pos2(inner.left() + 10.0, inner.center().y),
+        egui::vec2(20.0, 20.0),
     );
-    row.spacing_mut().item_spacing.x = space::SM;
-
-    let chip = egui::vec2(20.0, 20.0);
-    let (chip_rect, _) = row.allocate_exact_size(chip, egui::Sense::hover());
-    row.painter().rect_filled(
-        chip_rect,
+    ui.painter().rect_filled(
+        chip,
         egui::CornerRadius::same(radius::SM as u8),
         theme.selection(),
     );
-    row.painter().text(
-        chip_rect.center(),
+    ui.painter().text(
+        chip.center(),
         egui::Align2::CENTER_CENTER,
         leading,
         egui::FontId::proportional(type_size::META),
         theme.accent,
     );
-    row.label(
-        egui::RichText::new(label)
-            .size(type_size::UI)
-            .color(theme.accent),
+    ui.painter().text(
+        egui::pos2(chip.right() + space::SM, inner.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(type_size::UI),
+        theme.accent,
     );
 
     response
 }
 
 fn nest_item(ui: &mut egui::Ui, theme: &Theme, label: &str, selected: bool) -> egui::Response {
-    let (rect, response) =
+    let (rect, mut response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), NEST_H), egui::Sense::click());
+    response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
     let hovered = response.hovered();
     let bg = if selected {
@@ -419,19 +420,17 @@ fn nest_item(ui: &mut egui::Ui, theme: &Theme, label: &str, selected: bool) -> e
             .rect_filled(rect, egui::CornerRadius::same(radius::SM as u8), bg);
     }
 
-    let mut row = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect.shrink2(egui::vec2(space::MD + space::XS, 0.0)))
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
-    );
-    row.label(
-        egui::RichText::new(truncate_middle(label, 42))
-            .size(type_size::UI)
-            .color(if selected || hovered {
-                theme.text_primary
-            } else {
-                theme.text_secondary
-            }),
+    let text_color = if selected || hovered {
+        theme.text_primary
+    } else {
+        theme.text_secondary
+    };
+    ui.painter().text(
+        egui::pos2(rect.left() + space::MD + space::XS, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        truncate_middle(label, 42),
+        egui::FontId::proportional(type_size::UI),
+        text_color,
     );
 
     response

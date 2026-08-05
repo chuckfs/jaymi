@@ -340,7 +340,7 @@
         });
 
         editor.onDidScrollChange(function (event) {
-          if (!currentPath) {
+          if (applyingExternal || !currentPath) {
             return;
           }
           if (scrollTimer) {
@@ -415,21 +415,31 @@
         if (model) {
           monaco.editor.setModelLanguage(model, language || "plaintext");
           if (model.getValue() !== content) {
+            // Preserve scroll across external buffer updates for the same file.
+            const preservedScroll = pathChanged ? null : editor.getScrollTop();
             model.setValue(content || "");
+            if (preservedScroll !== null) {
+              editor.setScrollTop(preservedScroll);
+            }
           }
         }
         applyEditorOptions(minimap, wordWrap, fontSize);
-        if (typeof scrollTop === "number") {
-          editor.setScrollTop(scrollTop);
-        }
-        if (pathChanged || typeof cursorLine === "number") {
-          const line = (typeof cursorLine === "number" ? cursorLine : 0) + 1;
-          const column = (typeof cursorColumn === "number" ? cursorColumn : 0) + 1;
-          editor.setPosition({ lineNumber: line, column: column });
-          editor.revealPositionInCenterIfOutsideViewport({
-            lineNumber: line,
-            column: column,
-          });
+        // Only restore scroll/cursor when switching tabs (or first load). Echoing
+        // view state after Monaco's own scroll IPC snaps the viewport back to the
+        // cursor — usually the top of the file.
+        if (pathChanged) {
+          if (typeof scrollTop === "number") {
+            editor.setScrollTop(scrollTop);
+          }
+          if (typeof cursorLine === "number") {
+            const line = cursorLine + 1;
+            const column = (typeof cursorColumn === "number" ? cursorColumn : 0) + 1;
+            editor.setPosition({ lineNumber: line, column: column });
+            editor.revealPositionInCenterIfOutsideViewport({
+              lineNumber: line,
+              column: column,
+            });
+          }
         }
         applyingExternal = false;
         if (folds && folds.length) {

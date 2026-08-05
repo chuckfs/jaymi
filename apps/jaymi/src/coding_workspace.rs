@@ -1130,6 +1130,7 @@ fn render_workspace_tab_strip(
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = space::XS;
                         ui.set_min_height(EDITOR_TAB_STRIP_HEIGHT);
                         if sessions.is_empty() {
                             ui.label(
@@ -1848,6 +1849,7 @@ fn render_pane(
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = space::XS;
                             if sessions.is_empty() {
                                 ui.label(
                                     egui::RichText::new("(empty pane)").color(theme.text_secondary),
@@ -1981,7 +1983,7 @@ fn render_editor_status_bar(
         });
 }
 
-/// Render one tab label (drag source, click to activate, close button).
+/// Render one editor tab: click to activate, middle-click / hover ✕ to close.
 fn render_pane_tab(
     ui: &mut egui::Ui,
     theme: &Theme,
@@ -1995,53 +1997,107 @@ fn render_pane_tab(
     if session.dirty {
         label.push('*');
     }
-    let mut text = egui::RichText::new(&label).color(if active {
+
+    let close_w = 18.0;
+    let pad_x = space::SM;
+    let measure = ui.fonts(|f| {
+        f.layout_no_wrap(
+            label.clone(),
+            egui::FontId::proportional(type_size::UI),
+            theme.text_primary,
+        )
+    });
+    // Reserve close-button width so the tab doesn't jump when ✕ appears on hover.
+    let tab_w = (pad_x + measure.size().x + space::XS + close_w + pad_x).max(72.0);
+    let tab_h = EDITOR_TAB_STRIP_HEIGHT - 2.0;
+
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(tab_w, tab_h), egui::Sense::click_and_drag());
+
+    let close_rect = egui::Rect::from_center_size(
+        egui::pos2(rect.right() - pad_x - close_w * 0.5, rect.center().y),
+        egui::vec2(close_w, close_w),
+    );
+    let close_id = ui.id().with(("tab_close", pane_str, session.path.as_str()));
+    let close_response = ui.interact(close_rect, close_id, egui::Sense::click());
+    let hovered = response.hovered() || close_response.hovered();
+    let show_close = hovered;
+
+    let bg = if active {
+        theme.surface
+    } else if hovered {
+        theme.surface_alt
+    } else {
+        egui::Color32::TRANSPARENT
+    };
+    if bg != egui::Color32::TRANSPARENT {
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(radius::SM as u8), bg);
+    }
+    if active {
+        ui.painter().line_segment(
+            [rect.left_bottom(), rect.right_bottom()],
+            egui::Stroke::new(1.5, theme.accent),
+        );
+    }
+
+    let text_color = if active || hovered {
         theme.text_primary
     } else {
         theme.text_secondary
-    });
-    if session.preview {
-        text = text.italics();
-    }
-    if active {
-        text = text.strong();
-    }
-    let tab_response = ui.add(
-        egui::Label::new(text)
-            .sense(egui::Sense::click_and_drag())
-            .selectable(false),
-    );
-    if active {
-        ui.painter().line_segment(
-            [
-                tab_response.rect.left_bottom(),
-                tab_response.rect.right_bottom(),
-            ],
-            egui::Stroke::new(1.0, theme.accent),
+    };
+    let galley = ui.fonts(|f| {
+        let mut job = egui::text::LayoutJob::default();
+        job.append(
+            &label,
+            0.0,
+            egui::TextFormat {
+                font_id: egui::FontId::proportional(type_size::UI),
+                color: text_color,
+                italics: session.preview,
+                ..Default::default()
+            },
         );
+        f.layout_job(job)
+    });
+    let text_pos = egui::pos2(rect.left() + pad_x, rect.center().y - galley.size().y * 0.5);
+    ui.painter().galley(text_pos, galley, text_color);
+
+    if show_close {
+        let close_hovered = close_response.hovered();
+        if close_hovered {
+            ui.painter().rect_filled(
+                close_rect,
+                egui::CornerRadius::same(radius::SM as u8),
+                theme.selection(),
+            );
+        }
+        ui.painter().text(
+            close_rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "×",
+            egui::FontId::proportional(type_size::BODY),
+            if close_hovered {
+                theme.text_primary
+            } else {
+                theme.text_secondary
+            },
+        );
+        close_response.clone().on_hover_text("Close tab");
     }
-    tab_response.dnd_set_drag_payload(TabDragPayload {
+
+    response.dnd_set_drag_payload(TabDragPayload {
         pane: pane_str.to_string(),
         path: session.path.clone(),
     });
-    if tab_response.clicked() {
+
+    if close_response.clicked() || response.middle_clicked() {
+        events.push(CodingShellEvent::CloseTab {
+            pane: pane_str.to_string(),
+            path: session.path.clone(),
+        });
+    } else if response.clicked() {
         events.push(CodingShellEvent::ActivateTab {
-            pane: pane_str.to_string(),
-            path: session.path.clone(),
-        });
-    }
-    if tab_response.middle_clicked() {
-        events.push(CodingShellEvent::CloseTab {
-            pane: pane_str.to_string(),
-            path: session.path.clone(),
-        });
-    }
-    if ui
-        .small_button(format!("x##close_{}_{}", pane_str, session.path))
-        .on_hover_text("Close tab")
-        .clicked()
-    {
-        events.push(CodingShellEvent::CloseTab {
             pane: pane_str.to_string(),
             path: session.path.clone(),
         });

@@ -265,12 +265,27 @@ impl MonacoHost {
     }
 
     /// Push CodingState buffer into Monaco when the document identity/content changes.
+    ///
+    /// Scroll and cursor are owned by Monaco while a tab stays open — re-pushing them
+    /// on every IPC echo calls `revealPosition` and snaps the viewport back to the
+    /// cursor (often the top of the file). View-only diffs update `last_pushed` only.
     pub fn sync_document(&mut self, document: &MonacoDocument) -> Result<(), String> {
         if !self.ready {
             return Ok(());
         }
-        if self.last_pushed.as_ref() == Some(document) {
-            return Ok(());
+        if let Some(previous) = &self.last_pushed {
+            let same_buffer = previous.path == document.path
+                && previous.content == document.content
+                && previous.language == document.language
+                && previous.minimap == document.minimap
+                && previous.word_wrap == document.word_wrap
+                && previous.font_size == document.font_size
+                && previous.folded_regions == document.folded_regions;
+            if same_buffer {
+                // Scroll / cursor drifted via Monaco IPC — do not echo back.
+                self.last_pushed = Some(document.clone());
+                return Ok(());
+            }
         }
 
         let folds_json = serde_json::to_string(
@@ -366,6 +381,34 @@ impl MonacoHost {
         if let Some(previous) = &mut self.last_pushed {
             if previous.path == path {
                 previous.content = content.to_string();
+            }
+        }
+    }
+
+    /// Record Monaco-owned scroll so the next sync does not echo it back.
+    pub fn note_external_scroll(&mut self, path: &str, scroll_top: f32) {
+        if let Some(previous) = &mut self.last_pushed {
+            if previous.path == path {
+                previous.scroll_top = scroll_top;
+            }
+        }
+    }
+
+    /// Record Monaco-owned cursor so the next sync does not echo it back.
+    pub fn note_external_cursor(&mut self, path: &str, line: u32, column: u32) {
+        if let Some(previous) = &mut self.last_pushed {
+            if previous.path == path {
+                previous.cursor_line = line;
+                previous.cursor_column = column;
+            }
+        }
+    }
+
+    /// Record Monaco-owned folds so the next sync does not echo them back.
+    pub fn note_external_folds(&mut self, path: &str, regions: &[(u32, u32)]) {
+        if let Some(previous) = &mut self.last_pushed {
+            if previous.path == path {
+                previous.folded_regions = regions.to_vec();
             }
         }
     }
