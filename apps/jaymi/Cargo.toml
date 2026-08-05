@@ -43,6 +43,9 @@ jaymi-search = { workspace = true }
 jaymi-tools = { workspace = true }
 jaymi-understanding = { workspace = true }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSColor", "NSColorSpace"] }
+
 [dev-dependencies]
 jaymi-capabilities = { workspace = true }
 jaymi-commands = { workspace = true }

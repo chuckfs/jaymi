@@ -2275,6 +2275,7 @@ dependencies = [
  "jaymi-search",
  "jaymi-tools",
  "jaymi-understanding",
+ "objc2-app-kit 0.3.2",
  "rfd",
  "serde",
  "serde_json",

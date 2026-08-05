@@ -7,7 +7,7 @@ use eframe::egui;
 use jaymi_capabilities::{ExplorerNode, ExplorerPending, ExplorerState, ExplorerStatus};
 
 use super::events::ExplorerEvent;
-use super::icons::{disclosure_icon, file_icon, folder_icon};
+use super::icons::{paint_disclosure, paint_file, paint_folder};
 use crate::theme::{radius, space, type_size, Theme};
 
 /// Row height for a consistent IDE tree rhythm (3 × 8px).
@@ -50,7 +50,7 @@ pub fn render_explorer(
         }
         ExplorerStatus::NoProject => {
             ui.label(egui::RichText::new("No open project").color(theme.text_secondary));
-            if ui.button("Open Project…").clicked() {
+            if ui.button("Open Project").clicked() {
                 events.push(ExplorerEvent::OpenProject);
             }
         }
@@ -341,33 +341,23 @@ fn render_node_row(
         let mut x = rect.left() + space::XS + indent;
 
         // Disclosure column (directories only; spacer for files keeps icons aligned).
-        let chevron = if node.is_dir {
-            disclosure_icon(expanded)
-        } else {
-            " "
-        };
-        ui.painter().text(
-            egui::pos2(x + CHEVRON_COL * 0.5, rect.center().y),
-            egui::Align2::CENTER_CENTER,
-            chevron,
-            font_id.clone(),
-            theme.text_secondary,
-        );
+        if node.is_dir {
+            paint_disclosure(
+                ui.painter(),
+                egui::pos2(x + CHEVRON_COL * 0.5, rect.center().y),
+                expanded,
+                theme.text_secondary,
+            );
+        }
         x += CHEVRON_COL;
 
-        // File / folder icon column.
-        let icon = if node.is_dir {
-            folder_icon(expanded)
+        // File / folder icon column — painted shapes (no Unicode tofu).
+        let icon_center = egui::pos2(x + ICON_COL * 0.5, rect.center().y);
+        if node.is_dir {
+            paint_folder(ui.painter(), icon_center, expanded, theme);
         } else {
-            file_icon(node)
-        };
-        ui.painter().text(
-            egui::pos2(x + ICON_COL * 0.5, rect.center().y),
-            egui::Align2::CENTER_CENTER,
-            icon,
-            font_id.clone(),
-            theme.text_primary,
-        );
+            paint_file(ui.painter(), icon_center, theme, node);
+        }
         x += ICON_COL + ICON_NAME_GAP;
 
         // Name — truncate so it never escapes the row / panel.
@@ -383,11 +373,9 @@ fn render_node_row(
         );
 
         if is_dirty {
-            ui.painter().text(
+            ui.painter().circle_filled(
                 egui::pos2(rect.right() - space::SM, rect.center().y),
-                egui::Align2::RIGHT_CENTER,
-                "●",
-                font_id,
+                2.5,
                 theme.warning,
             );
         }

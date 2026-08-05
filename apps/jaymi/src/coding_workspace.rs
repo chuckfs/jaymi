@@ -487,8 +487,12 @@ pub enum CodingShellEvent {
     SaveTab(String),
     /// Open the Command Palette (⌘⇧P).
     OpenCommandPalette,
+    /// Open Quick Open (⌘P).
+    OpenQuickOpen,
     /// Open Find in Files (bottom Search dock).
     OpenSearch,
+    /// Close the Coding workspace (conversation stays open).
+    CloseWorkspace,
     /// Open the workspace Diagnostics dock page.
     OpenSettings,
     /// Toggle Monaco minimap (workspace-owned setting).
@@ -802,19 +806,19 @@ fn collect_explorer_lines(
 ) {
     let indent = "  ".repeat(depth);
     for node in nodes {
-        let icon = if node.is_dir { "📁" } else { "📄" };
+        let icon = if node.is_dir { "[dir]" } else { "[file]" };
         let highlight = if state.active_tab_path() == Some(node.path.as_str())
             || state.explorer.selected_path.as_deref() == Some(node.path.as_str())
         {
-            "▸ "
+            "> "
         } else {
             "  "
         };
         let expand = if node.is_dir {
             if state.explorer.expanded_paths.contains(&node.path) {
-                "▾ "
+                "v "
             } else {
-                "▸ "
+                "> "
             }
         } else {
             "  "
@@ -874,12 +878,23 @@ fn placeholder_for(panel: WorkspacePanel) -> &'static str {
 
 /// Render the Coding Workspace shell into the right-side expansion panel.
 ///
-/// True IDE region layout via egui panels (`show_inside`), not nested Groups:
+/// Layout (Monaco as centerpiece):
+/// ```text
+/// ┌───────────────────────────────┐
+/// │ Toolbar                        │
+/// ├───────────────────────────────┤
+/// │ Tabs                           │
+/// ├──────────────────────┬────────┤
+/// │      Monaco          │Explorer│
+/// ├──────────────────────┴────────┤
+/// │ Terminal / Problems / Git      │
+/// └───────────────────────────────┘
+/// ```
 /// - [`TopBottomPanel`] top — workspace toolbar
-/// - [`TopBottomPanel`] bottom — dock (Terminal / Problems / Search / Git / Diagnostics / Output)
-/// - [`SidePanel`] right — Explorer (resizable)
-/// - [`CentralPanel`] — Editor (fills remaining space)
-/// - Optional left sidebar is reserved for a future Activity/Outline strip
+/// - [`TopBottomPanel`] top — editor tabs (focused pane; full width)
+/// - [`TopBottomPanel`] bottom — dock (Terminal / Problems / Search / Git / …)
+/// - [`SidePanel`] right — Explorer (beside Monaco only)
+/// - [`CentralPanel`] — Monaco / editor body (full-bleed)
 ///
 /// `render_explorer_col` draws the explorer (implemented by `ui::explorer`).
 /// Chrome colors come from [`Theme`]; Monaco uses its own editor theme separately.
@@ -902,9 +917,11 @@ pub fn render_coding_shell(
     let explorer_width = state
         .map(|coding| coding.explorer_width)
         .unwrap_or(DEFAULT_EXPLORER_WIDTH);
+    let single_pane = state
+        .map(|coding| matches!(coding.editors.layout, EditorLayoutNode::Leaf { .. }))
+        .unwrap_or(true);
 
-    // --- Top Toolbar (outermost) -------------------------------------------
-    // ~42pt — between VS Code title bar and native macOS toolbars.
+    // --- Top Toolbar -------------------------------------------------------
     egui::TopBottomPanel::top("coding_toolbar")
         .exact_height(CODING_TOOLBAR_HEIGHT)
         .show_separator_line(true)
@@ -916,11 +933,23 @@ pub fn render_coding_shell(
             render_coding_toolbar(ui, theme, state, open_error, events);
         });
 
-    // --- Bottom Dock (VS Code-style) ---------------------------------------
-    // Fully collapsed when Hidden — no tab strip chrome. Open dock is a single
-    // resizable region: tab bar + one active page that fills the remaining area.
-    // Panel data lives in CodingState so tab switches preserve Terminal / Search /
-    // Git / Problems state without remounting providers.
+    // --- Editor tabs (full width, above Monaco | Explorer) -----------------
+    // Single-pane: hoist tabs here so Monaco is the uninterrupted centerpiece.
+    // Multi-pane splits keep per-pane tab strips inside the editor column.
+    if single_pane {
+        egui::TopBottomPanel::top("coding_editor_tabs")
+            .exact_height(EDITOR_TAB_STRIP_HEIGHT)
+            .show_separator_line(true)
+            .frame(region_frame(
+                theme,
+                egui::Margin::symmetric(space::SM as i8, 0),
+            ))
+            .show_inside(ui, |ui| {
+                render_workspace_tab_strip(ui, theme, state, events);
+            });
+    }
+
+    // --- Bottom Dock (full width under Monaco + Explorer) ------------------
     let bottom_tab = state
         .map(|coding| coding.bottom_tab)
         .unwrap_or(CodingBottomTab::Hidden);
@@ -963,8 +992,6 @@ pub fn render_coding_shell(
                         egui::Frame::new()
                             .inner_margin(inset(space::MD, space::SM))
                             .show(ui, |ui| {
-                                // Each dock page owns scrolling / layout so state
-                                // survives tab switches (panels stay mounted in CodingState).
                                 render_bottom_dock_page(
                                     ui,
                                     theme,
@@ -990,10 +1017,7 @@ pub fn render_coding_shell(
         }
     }
 
-    // --- Optional Left Sidebar (future Activity / Outline strip) -----------
-    // Reserved: `SidePanel::left("coding_sidebar").show_inside(...)` when needed.
-
-    // --- Right Explorer ----------------------------------------------------
+    // --- Right Explorer (beside Monaco only) -------------------------------
     if explorer_visible {
         let explorer_response = egui::SidePanel::right("coding_explorer")
             .default_width(explorer_width)
@@ -1014,7 +1038,6 @@ pub fn render_coding_shell(
                     .animated(true)
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
-                        // Keep tree painting inside the panel bounds.
                         ui.set_max_width(ui.available_width());
                         if let Some(state) = state {
                             render_explorer_col(ui, state);
@@ -1039,13 +1062,21 @@ pub fn render_coding_shell(
         }
     }
 
-    // --- Center Editor (always last) ---------------------------------------
+    // --- Center: Monaco / editor body (full-bleed centerpiece) -------------
     egui::CentralPanel::default()
-        .frame(region_frame(theme, inset(space::SM, space::XS)))
+        .frame(region_frame(theme, egui::Margin::ZERO))
         .show_inside(ui, |ui| {
             let available_height = ui.available_height();
             if let Some(state) = state {
-                render_editor(ui, theme, state, events, monaco_out, available_height);
+                render_editor(
+                    ui,
+                    theme,
+                    state,
+                    events,
+                    monaco_out,
+                    available_height,
+                    !single_pane, // per-pane tabs only when split
+                );
             } else {
                 ui.vertical_centered(|ui| {
                     ui.add_space((available_height * 0.28).clamp(24.0, 72.0));
@@ -1058,6 +1089,88 @@ pub fn render_coding_shell(
         });
 }
 
+/// Full-width tab strip for the focused editor pane (single-pane layout).
+fn render_workspace_tab_strip(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    state: Option<&CodingState>,
+    events: &mut Vec<CodingShellEvent>,
+) {
+    ui.set_min_height(EDITOR_TAB_STRIP_HEIGHT);
+    ui.set_max_height(EDITOR_TAB_STRIP_HEIGHT);
+    let Some(state) = state else {
+        ui.label(
+            egui::RichText::new("No open files")
+                .size(type_size::UI)
+                .color(theme.text_secondary),
+        );
+        return;
+    };
+    if state.editors.is_empty() {
+        ui.label(
+            egui::RichText::new("No open files")
+                .size(type_size::UI)
+                .color(theme.text_secondary),
+        );
+        return;
+    }
+
+    let pane_id = state.editors.focused_pane.clone();
+    let pane_str = pane_id.as_str().to_string();
+    let sessions = state.editors.sessions_in_pane(&pane_id);
+    let active_path = state
+        .editors
+        .active_session_in_pane(&pane_id)
+        .map(|session| session.path);
+
+    let strip_response = ui
+        .scope(|ui| {
+            egui::ScrollArea::horizontal()
+                .id_salt("coding_workspace_tab_strip")
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.set_min_height(EDITOR_TAB_STRIP_HEIGHT);
+                        if sessions.is_empty() {
+                            ui.label(
+                                egui::RichText::new("Select a file in Explorer")
+                                    .size(type_size::UI)
+                                    .color(theme.text_secondary),
+                            );
+                        }
+                        for session in &sessions {
+                            render_pane_tab(ui, theme, &pane_str, &active_path, session, events);
+                        }
+                    });
+                });
+        })
+        .response;
+
+    ui.painter().line_segment(
+        [
+            strip_response.rect.left_bottom(),
+            strip_response.rect.right_bottom(),
+        ],
+        egui::Stroke::new(stroke::HAIRLINE, theme.accent),
+    );
+
+    let drop = ui.interact(
+        strip_response.rect,
+        ui.id().with("coding_workspace_tab_drop"),
+        egui::Sense::hover(),
+    );
+    if let Some(payload) = drop.dnd_release_payload::<TabDragPayload>() {
+        if payload.pane != pane_str {
+            events.push(CodingShellEvent::MoveTab {
+                from_pane: payload.pane.clone(),
+                path: payload.path.clone(),
+                to_pane: pane_str,
+                index: None,
+            });
+        }
+    }
+}
+
 /// Flat region chrome — fill + margin only (no nested card Frames).
 fn region_frame(theme: &Theme, margin: egui::Margin) -> egui::Frame {
     egui::Frame::new()
@@ -1066,10 +1179,10 @@ fn region_frame(theme: &Theme, margin: egui::Margin) -> egui::Frame {
         .stroke(egui::Stroke::NONE)
 }
 
-/// Coding Workspace title toolbar — Jaymi identity with VS Code / Zed / Xcode clarity.
+/// Coding Workspace title toolbar — quiet identity + discoverability.
 ///
-/// Layout: `[icon · title · project · path]  ……  [save · search · ⌘P · settings]`
-/// The middle stretch is intentionally empty (reserved for breadcrumbs later).
+/// Layout: `[icon · Coding · project/path]  ……  [Search · ⌘P]`
+/// Panel, Save, Close, and ⌘⇧P live in the Command Palette.
 fn render_coding_toolbar(
     ui: &mut egui::Ui,
     theme: &Theme,
@@ -1084,7 +1197,6 @@ fn render_coding_toolbar(
             ui.set_min_height(CODING_TOOLBAR_HEIGHT);
             ui.set_max_height(CODING_TOOLBAR_HEIGHT);
 
-            // —— Left: identity ————————————————————————————————
             coding_workspace_icon(ui, theme);
             ui.add_space(TOOLBAR_GAP);
 
@@ -1097,22 +1209,20 @@ fn render_coding_toolbar(
 
             if let Some(root) = state.and_then(|coding| coding.explorer.project_root.as_deref()) {
                 let project_name = project_name_from_root(root);
+                let location = if root.ends_with(&project_name) || root.ends_with('/') {
+                    format!("{project_name}/")
+                } else {
+                    format!("{project_name}  ·  {root}")
+                };
                 ui.add_space(TOOLBAR_GAP);
-                ui.label(
-                    egui::RichText::new(project_name)
-                        .size(type_size::BODY)
-                        .color(theme.text_primary),
-                );
-                ui.add_space(TOOLBAR_GAP);
-                // Cap path width so the center band stays free for breadcrumbs.
-                let path_max = (ui.available_width() * 0.38)
-                    .clamp(72.0, 360.0)
-                    .min((ui.available_width() - TOOLBAR_RIGHT_RESERVE).max(0.0));
+                let path_max = (ui.available_width() - TOOLBAR_RIGHT_RESERVE)
+                    .clamp(80.0, 520.0)
+                    .max(0.0);
                 if path_max > 40.0 {
                     ui.add_sized(
                         egui::vec2(path_max, 20.0),
                         egui::Label::new(
-                            egui::RichText::new(root)
+                            egui::RichText::new(location)
                                 .size(type_size::UI)
                                 .color(theme.text_secondary),
                         )
@@ -1135,47 +1245,22 @@ fn render_coding_toolbar(
                 );
             }
 
-            // —— Center: reserved (breadcrumbs / navigation) ————
-            // —— Right: save · panel · search · ⌘⇧P ——————————————
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .add(toolbar_button(theme, "⌘⇧P"))
-                    .on_hover_text("Command Palette (⌘⇧P)")
+                    .add(toolbar_button(theme, "⌘P"))
+                    .on_hover_text("Quick Open (⌘P)")
                     .clicked()
                 {
-                    events.push(CodingShellEvent::OpenCommandPalette);
+                    events.push(CodingShellEvent::OpenQuickOpen);
                 }
                 ui.add_space(TOOLBAR_ACTION_GAP);
                 if ui
                     .add(toolbar_button(theme, "Search"))
-                    .on_hover_text("Find in Files (⌘⇧F)")
+                    .on_hover_text("Find in Files (⌘⇧F) · more commands via ⌘⇧P")
                     .clicked()
                 {
                     events.push(CodingShellEvent::OpenSearch);
                 }
-                ui.add_space(TOOLBAR_ACTION_GAP);
-                let dock_open = state
-                    .map(|coding| coding.bottom_tab.is_page())
-                    .unwrap_or(false);
-                let panel_label = if dock_open {
-                    "Hide Panel"
-                } else {
-                    "Show Panel"
-                };
-                let panel_tip = if dock_open {
-                    "Collapse the bottom dock"
-                } else {
-                    "Reopen the bottom dock on the last page"
-                };
-                if ui
-                    .add(toolbar_button(theme, panel_label))
-                    .on_hover_text(panel_tip)
-                    .clicked()
-                {
-                    events.push(CodingShellEvent::ToggleBottomDock);
-                }
-                ui.add_space(TOOLBAR_GAP);
-                render_save_status(ui, theme, state);
             });
         },
     );
@@ -1197,27 +1282,6 @@ fn coding_workspace_icon(ui: &mut egui::Ui, theme: &Theme) {
         egui::FontId::monospace(type_size::META),
         theme.on_accent(),
     );
-}
-
-fn render_save_status(ui: &mut egui::Ui, theme: &Theme, state: Option<&CodingState>) {
-    let Some(session) = state.and_then(|coding| coding.editors.active_session()) else {
-        return;
-    };
-    if session.dirty {
-        ui.label(
-            egui::RichText::new("● Unsaved")
-                .size(type_size::UI)
-                .color(theme.warning),
-        )
-        .on_hover_text("Active file has unsaved changes (⌘S to save)");
-    } else {
-        ui.label(
-            egui::RichText::new("Saved")
-                .size(type_size::UI)
-                .color(theme.text_secondary),
-        )
-        .on_hover_text("Active file is saved");
-    }
 }
 
 fn project_name_from_root(root: &str) -> String {
@@ -1275,7 +1339,11 @@ fn render_bottom_dock_tabs(
             }
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.small_button("▾").on_hover_text("Hide Panel").clicked() {
+            if ui
+                .small_button("Hide")
+                .on_hover_text("Hide Panel")
+                .clicked()
+            {
                 events.push(CodingShellEvent::SetBottomTab(CodingBottomTab::Hidden));
             }
         });
@@ -1356,6 +1424,8 @@ fn render_output_panel(ui: &mut egui::Ui, theme: &Theme) {
 
 /// Coding workspace title toolbar height (5 × 8px).
 const CODING_TOOLBAR_HEIGHT: f32 = 40.0;
+/// Full-width editor tab strip under the toolbar.
+const EDITOR_TAB_STRIP_HEIGHT: f32 = 32.0;
 /// Dock tab strip height when the bottom dock is open.
 const DOCK_TAB_BAR_HEIGHT: f32 = COLLAPSED_BOTTOM_TAB_HEIGHT;
 /// Horizontal padding inside the toolbar frame.
@@ -1365,7 +1435,7 @@ const TOOLBAR_GAP: f32 = space::SM;
 /// Gap between right-side action buttons.
 const TOOLBAR_ACTION_GAP: f32 = space::SM;
 /// Space reserved for the right action cluster when sizing the path.
-const TOOLBAR_RIGHT_RESERVE: f32 = 300.0;
+const TOOLBAR_RIGHT_RESERVE: f32 = 140.0;
 
 fn truncate_path(path: &str, max_chars: usize) -> String {
     let chars: Vec<char> = path.chars().collect();
@@ -1532,6 +1602,7 @@ fn render_editor(
     events: &mut Vec<CodingShellEvent>,
     monaco_out: &mut Option<MonacoEditorSurface>,
     available_height: f32,
+    show_pane_tabs: bool,
 ) {
     if state.editors.is_empty() {
         ui.vertical_centered(|ui| {
@@ -1555,8 +1626,8 @@ fn render_editor(
         events.push(CodingShellEvent::SaveActive);
     }
 
-    // Hierarchy: Tabs → Editor → Status Bar (workspace chrome owns the title toolbar).
-    // Split / minimap / wrap remain available via the Command Palette.
+    // Hierarchy: (optional per-pane Tabs) → Monaco → Status Bar.
+    // Single-pane tabs live in the workspace strip above this column.
     render_layout_node(
         ui,
         theme,
@@ -1566,6 +1637,7 @@ fn render_editor(
         monaco_out,
         available_height,
         &[],
+        show_pane_tabs,
     );
 }
 
@@ -1580,10 +1652,20 @@ fn render_layout_node(
     monaco_out: &mut Option<MonacoEditorSurface>,
     height: f32,
     node_path: &[usize],
+    show_pane_tabs: bool,
 ) {
     match node {
         EditorLayoutNode::Leaf { pane } => {
-            render_pane(ui, theme, pane, state, events, monaco_out, height);
+            render_pane(
+                ui,
+                theme,
+                pane,
+                state,
+                events,
+                monaco_out,
+                height,
+                show_pane_tabs,
+            );
         }
         EditorLayoutNode::Split {
             direction,
@@ -1602,6 +1684,7 @@ fn render_layout_node(
                 height,
                 node_path,
                 side_by_side,
+                show_pane_tabs,
             );
         }
     }
@@ -1620,6 +1703,7 @@ fn render_split(
     height: f32,
     node_path: &[usize],
     side_by_side: bool,
+    show_pane_tabs: bool,
 ) {
     if children.is_empty() {
         return;
@@ -1666,6 +1750,7 @@ fn render_split(
                         monaco_out,
                         child_height,
                         &child_path,
+                        show_pane_tabs,
                     );
                 },
             );
@@ -1729,7 +1814,8 @@ fn render_split(
     }
 }
 
-/// Render a single editor pane: tab strip (drag source + drop target) and body.
+/// Render a single editor pane: optional tab strip + Monaco/body + status.
+#[allow(clippy::too_many_arguments)]
 fn render_pane(
     ui: &mut egui::Ui,
     theme: &Theme,
@@ -1738,6 +1824,7 @@ fn render_pane(
     events: &mut Vec<CodingShellEvent>,
     monaco_out: &mut Option<MonacoEditorSurface>,
     height: f32,
+    show_tabs: bool,
 ) {
     let pane_str = pane_id.as_str().to_string();
     let is_focused = state.editors.focused_pane == *pane_id;
@@ -1751,57 +1838,66 @@ fn render_pane(
     ui.set_max_height(height.max(20.0));
     ui.set_min_width(ui.available_width());
 
-    // Focus cue: thin underline on the tab strip, not a boxed pane frame.
-    let strip_response = ui
-        .scope(|ui| {
-            egui::ScrollArea::horizontal()
-                .id_salt(("editor_tab_strip", &pane_str))
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        if sessions.is_empty() {
-                            ui.label(
-                                egui::RichText::new("(empty pane)").color(theme.text_secondary),
-                            );
-                        }
-                        for session in &sessions {
-                            render_pane_tab(ui, theme, &pane_str, &active_path, session, events);
-                        }
+    let mut strip_height = 0.0_f32;
+    if show_tabs {
+        // Per-pane tabs only when the editor is split into multiple panes.
+        let strip_response = ui
+            .scope(|ui| {
+                egui::ScrollArea::horizontal()
+                    .id_salt(("editor_tab_strip", &pane_str))
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            if sessions.is_empty() {
+                                ui.label(
+                                    egui::RichText::new("(empty pane)").color(theme.text_secondary),
+                                );
+                            }
+                            for session in &sessions {
+                                render_pane_tab(
+                                    ui,
+                                    theme,
+                                    &pane_str,
+                                    &active_path,
+                                    session,
+                                    events,
+                                );
+                            }
+                        });
                     });
-                });
-        })
-        .response;
+            })
+            .response;
+        strip_height = strip_response.rect.height();
 
-    if is_focused {
-        ui.painter().line_segment(
-            [
-                strip_response.rect.left_bottom(),
-                strip_response.rect.right_bottom(),
-            ],
-            egui::Stroke::new(stroke::HAIRLINE, theme.accent),
+        if is_focused {
+            ui.painter().line_segment(
+                [
+                    strip_response.rect.left_bottom(),
+                    strip_response.rect.right_bottom(),
+                ],
+                egui::Stroke::new(stroke::HAIRLINE, theme.accent),
+            );
+        }
+
+        let drop = ui.interact(
+            strip_response.rect,
+            ui.id().with(("editor_pane_drop", &pane_str)),
+            egui::Sense::hover(),
         );
-    }
-
-    // Drop target: releasing a dragged tab anywhere on this pane's
-    // strip moves it here (VS Code-style cross-split drag).
-    let drop = ui.interact(
-        strip_response.rect,
-        ui.id().with(("editor_pane_drop", &pane_str)),
-        egui::Sense::hover(),
-    );
-    if let Some(payload) = drop.dnd_release_payload::<TabDragPayload>() {
-        if payload.pane != pane_str {
-            events.push(CodingShellEvent::MoveTab {
-                from_pane: payload.pane.clone(),
-                path: payload.path.clone(),
-                to_pane: pane_str.clone(),
-                index: None,
-            });
+        if let Some(payload) = drop.dnd_release_payload::<TabDragPayload>() {
+            if payload.pane != pane_str {
+                events.push(CodingShellEvent::MoveTab {
+                    from_pane: payload.pane.clone(),
+                    path: payload.path.clone(),
+                    to_pane: pane_str.clone(),
+                    index: None,
+                });
+            }
         }
     }
 
-    let status_h = 24.0_f32;
-    let body_h = (height - strip_response.rect.height() - status_h - stroke::HAIRLINE).max(40.0);
+    let status_h = 22.0_f32;
+    let body_h = (height - strip_height - status_h - stroke::HAIRLINE).max(40.0);
 
     match active_path {
         None => {
@@ -1941,7 +2037,7 @@ fn render_pane_tab(
         });
     }
     if ui
-        .small_button(format!("✕##close_{}_{}", pane_str, session.path))
+        .small_button(format!("x##close_{}_{}", pane_str, session.path))
         .on_hover_text("Close tab")
         .clicked()
     {
@@ -2167,14 +2263,14 @@ fn render_terminal_tab(
                         });
                     }
                     if ui
-                        .small_button("✎")
+                        .small_button("Rename")
                         .on_hover_text("Rename terminal")
                         .clicked()
                     {
                         renaming = true;
                     }
                     if ui
-                        .small_button("×")
+                        .small_button("Close")
                         .on_hover_text("Close terminal")
                         .clicked()
                     {

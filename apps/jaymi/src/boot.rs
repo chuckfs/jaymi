@@ -66,7 +66,7 @@ use crate::coding_workspace::{
 };
 use crate::diagnostics::DiagnosticsSnapshot;
 use crate::editor_workspace::{load_editor_workspace, save_editor_workspace};
-use crate::experience::ExperienceSession;
+use crate::experience::{ConversationTurn, ExperienceSession};
 
 /// Owns the process service container and application state.
 pub struct Application {
@@ -938,6 +938,32 @@ impl Application {
     pub fn set_active_conversation(&self, conversation_id: Option<&str>) -> JaymiResult<()> {
         let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
         memory.set_active_conversation(conversation_id)
+    }
+
+    /// Load a persisted conversation into the live experience session.
+    ///
+    /// Replaces the in-memory transcript and binds `conversation_id`. Does not
+    /// close or clear an expanded Coding workspace.
+    pub fn switch_to_conversation(&self, conversation_id: &str) -> JaymiResult<()> {
+        let loaded = self
+            .load_conversation(conversation_id)?
+            .ok_or_else(|| JaymiError::new(format!("conversation not found: {conversation_id}")))?;
+        self.set_active_conversation(Some(conversation_id))?;
+        let turns = loaded
+            .messages
+            .into_iter()
+            .map(|message| ConversationTurn {
+                role: message.role,
+                content: message.content,
+                created_at: message.created_at,
+            })
+            .collect();
+        let mut experience = self
+            .experience
+            .lock()
+            .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+        experience.replace_transcript(Some(conversation_id.to_string()), turns);
+        Ok(())
     }
 
     /// Store categorized project memory through the Memory Engine.

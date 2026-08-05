@@ -83,6 +83,18 @@ impl ExperienceSession {
         self.conversation_id = conversation_id;
     }
 
+    /// Replace the in-memory transcript without touching the workspace.
+    ///
+    /// Used when switching between persisted conversations from the History rail.
+    pub fn replace_transcript(
+        &mut self,
+        conversation_id: Option<String>,
+        turns: Vec<ConversationTurn>,
+    ) {
+        self.conversation_id = conversation_id;
+        self.conversation = turns;
+    }
+
     /// Immutable conversation transcript.
     pub fn conversation(&self) -> &[ConversationTurn] {
         &self.conversation

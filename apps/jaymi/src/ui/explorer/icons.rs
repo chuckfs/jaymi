@@ -1,109 +1,112 @@
-//! Extension-based icons for explorer rows.
+//! Explorer icons — painted shapes (no Unicode tofu / □ placeholders).
 //!
-//! Monochrome glyphs (no emoji) so the tree stays quiet in Light and Dark themes.
-//! Disclosure chevrons are separate from folder glyphs so columns stay aligned.
+//! One coherent system: chevrons, folder tiles, and file marks drawn with the
+//! egui painter so Light and Dark themes stay consistent without icon fonts.
 
+use eframe::egui;
+
+use crate::theme::Theme;
 use jaymi_capabilities::ExplorerNode;
 
-/// Collapse / expand chevron for directories (fixed visual width).
-pub fn disclosure_icon(expanded: bool) -> &'static str {
-    if expanded {
-        "▾"
+/// Paint a disclosure chevron for directories.
+pub fn paint_disclosure(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    expanded: bool,
+    color: egui::Color32,
+) {
+    let size = 4.5;
+    let points = if expanded {
+        [
+            center + egui::vec2(-size, -size * 0.4),
+            center + egui::vec2(size, -size * 0.4),
+            center + egui::vec2(0.0, size * 0.7),
+        ]
     } else {
-        "▸"
-    }
+        [
+            center + egui::vec2(-size * 0.4, -size),
+            center + egui::vec2(size * 0.7, 0.0),
+            center + egui::vec2(-size * 0.4, size),
+        ]
+    };
+    painter.add(egui::Shape::convex_polygon(
+        points.to_vec(),
+        color,
+        egui::Stroke::NONE,
+    ));
 }
 
-/// Folder glyph (no disclosure arrow — that is [`disclosure_icon`]).
-pub fn folder_icon(expanded: bool) -> &'static str {
+/// Paint a folder tile (filled when expanded).
+pub fn paint_folder(painter: &egui::Painter, center: egui::Pos2, expanded: bool, theme: &Theme) {
+    let w = 10.0;
+    let h = 8.0;
+    let rect = egui::Rect::from_center_size(center + egui::vec2(0.0, 0.5), egui::vec2(w, h));
+    let tab = egui::Rect::from_min_size(
+        rect.left_top() + egui::vec2(0.0, -2.0),
+        egui::vec2(4.0, 2.5),
+    );
     if expanded {
-        "▣"
+        painter.rect_filled(rect, egui::CornerRadius::same(1), theme.text_secondary);
+        painter.rect_filled(tab, egui::CornerRadius::same(1), theme.text_secondary);
     } else {
-        "◻"
+        painter.rect_stroke(
+            rect,
+            egui::CornerRadius::same(1),
+            egui::Stroke::new(1.0, theme.text_secondary),
+            egui::StrokeKind::Outside,
+        );
+        painter.rect_filled(tab, egui::CornerRadius::same(1), theme.text_secondary);
     }
 }
 
-/// File glyph based on basename / extension.
-pub fn file_icon(node: &ExplorerNode) -> &'static str {
-    icon_for_name(&node.name)
+/// Paint a simple file mark (small document).
+pub fn paint_file(painter: &egui::Painter, center: egui::Pos2, theme: &Theme, node: &ExplorerNode) {
+    let w = 8.0;
+    let h = 10.0;
+    let rect = egui::Rect::from_center_size(center, egui::vec2(w, h));
+    let color = file_accent(theme, node);
+    painter.rect_stroke(
+        rect,
+        egui::CornerRadius::same(1),
+        egui::Stroke::new(1.0, color),
+        egui::StrokeKind::Outside,
+    );
+    // Folded corner cue.
+    let fold = egui::pos2(rect.right() - 3.0, rect.top());
+    painter.line_segment(
+        [fold, egui::pos2(rect.right(), rect.top() + 3.0)],
+        egui::Stroke::new(1.0, color),
+    );
 }
 
-fn icon_for_name(name: &str) -> &'static str {
-    let lower = name.to_ascii_lowercase();
-    if let Some(icon) = special_basename_icon(&lower) {
-        return icon;
-    }
+fn file_accent(theme: &Theme, node: &ExplorerNode) -> egui::Color32 {
+    let lower = node.name.to_ascii_lowercase();
     let ext = std::path::Path::new(&lower)
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or("");
-    extension_icon(ext)
-}
-
-fn special_basename_icon(name: &str) -> Option<&'static str> {
-    const SPECIAL: &[(&str, &str)] = &[
-        ("dockerfile", "◇"),
-        ("makefile", "⚙"),
-        ("gnumakefile", "⚙"),
-        ("cmakelists.txt", "⚙"),
-        ("cargo.toml", "▣"),
-        ("cargo.lock", "▣"),
-        ("package.json", "▣"),
-        ("readme", "¶"),
-        ("readme.md", "¶"),
-        ("license", "§"),
-        ("licence", "§"),
-    ];
-    SPECIAL
-        .iter()
-        .find(|(key, _)| *key == name)
-        .map(|(_, icon)| *icon)
-}
-
-fn extension_icon(ext: &str) -> &'static str {
-    const GROUPS: &[(&[&str], &str)] = &[
-        (&["rs"], "◆"),
-        (&["ts", "tsx", "mts", "cts", "js", "jsx", "mjs", "cjs"], "◆"),
-        (
-            &["py", "go", "java", "kt", "kts", "rb", "php", "swift", "cs"],
-            "◆",
-        ),
-        (&["c", "h", "cc", "cpp", "cxx", "hpp", "hxx"], "◆"),
-        (&["html", "htm", "css", "scss", "less"], "◇"),
-        (&["json", "jsonc"], "{}"),
-        (&["toml", "yaml", "yml", "ini", "cfg", "conf", "env"], "⚙"),
-        (&["md", "markdown", "txt", "rst"], "¶"),
-        (&["sh", "bash", "zsh", "fish", "ps1"], ">_"),
-        (&["sql"], "▦"),
-        (&["svg", "png", "jpg", "jpeg", "gif", "webp"], "▣"),
-        (&["lock"], "▪"),
-    ];
-    for (exts, icon) in GROUPS {
-        if exts.contains(&ext) {
-            return icon;
-        }
+    match ext {
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" => theme.accent,
+        "md" | "txt" | "rst" => theme.text_secondary,
+        "json" | "toml" | "yaml" | "yml" => theme.warning,
+        _ => theme.text_secondary,
     }
-    "·"
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jaymi_capabilities::ExplorerNode;
 
     #[test]
-    fn known_extensions_resolve() {
-        assert_eq!(icon_for_name("lib.rs"), "◆");
-        assert_eq!(icon_for_name("App.tsx"), "◆");
-        assert_eq!(icon_for_name("Cargo.toml"), "▣");
-        assert_eq!(icon_for_name("notes.md"), "¶");
-        assert_eq!(icon_for_name("mystery.zzz"), "·");
-    }
-
-    #[test]
-    fn disclosure_is_separate_from_folder() {
-        assert_eq!(disclosure_icon(false), "▸");
-        assert_eq!(disclosure_icon(true), "▾");
-        assert_eq!(folder_icon(false), "◻");
-        assert_eq!(folder_icon(true), "▣");
+    fn file_accent_prefers_code_extensions() {
+        let theme = Theme::light();
+        let node = ExplorerNode {
+            name: "lib.rs".into(),
+            path: "/tmp/lib.rs".into(),
+            is_dir: false,
+            children: Vec::new(),
+        };
+        assert_eq!(file_accent(&theme, &node), theme.accent);
     }
 }

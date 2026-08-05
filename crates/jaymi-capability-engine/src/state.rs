@@ -536,11 +536,11 @@ pub const MIN_WORKSPACE_PANEL_WIDTH: f32 = 280.0;
 /// Absolute ceiling for Coding side-panel width (also clamped by conversation min).
 pub const MAX_WORKSPACE_PANEL_WIDTH: f32 = 1400.0;
 /// Minimum conversation (central) column width — Coding cannot steal past this.
-pub const MIN_CONVERSATION_WIDTH: f32 = 340.0;
+pub const MIN_CONVERSATION_WIDTH: f32 = 380.0;
 /// Default conversation fraction of the window (workspace takes the rest).
-pub const DEFAULT_CONVERSATION_FRACTION: f32 = 0.30;
+pub const DEFAULT_CONVERSATION_FRACTION: f32 = 0.32;
 /// Maximum conversation fraction of the window.
-pub const MAX_CONVERSATION_FRACTION: f32 = 0.45;
+pub const MAX_CONVERSATION_FRACTION: f32 = 0.48;
 
 /// Temporary state for the Coding workspace.
 #[derive(Debug, Clone, PartialEq)]

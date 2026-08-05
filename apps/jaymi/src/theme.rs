@@ -34,20 +34,24 @@ pub mod radius {
     pub const MD: f32 = 8.0;
     /// Conversation bubbles, large panels.
     pub const LG: f32 = 12.0;
+    /// Floating composer / elevated chat chrome.
+    pub const XL: f32 = 16.0;
 }
 
 /// Typography scale (points) for shell chrome — Monaco keeps its own size.
 pub mod type_size {
-    /// Day separators, paths, meta labels.
-    pub const META: f32 = 11.0;
+    /// Day separators, paths, meta labels, hints.
+    pub const META: f32 = 12.0;
     /// Toolbar buttons, panel headers, chrome labels.
-    pub const UI: f32 = 12.0;
+    pub const UI: f32 = 13.0;
     /// Body copy in chat and dense panels.
-    pub const BODY: f32 = 13.0;
-    /// Surface titles (conversation, app bar).
-    pub const TITLE: f32 = 15.0;
-    /// Empty-state primary line.
-    pub const DISPLAY: f32 = 16.0;
+    pub const BODY: f32 = 14.0;
+    /// Section headlines.
+    pub const TITLE: f32 = 16.0;
+    /// Application brand / empty-state section title.
+    pub const DISPLAY: f32 = 22.0;
+    /// Centered welcome hero ("Hi, I'm Jaymi").
+    pub const WELCOME: f32 = 42.0;
 }
 
 /// Stroke widths — hairlines only; prefer fill hierarchy over thick borders.
@@ -143,9 +147,22 @@ impl Theme {
         }
     }
 
-    /// Resolve a persisted preference against the OS appearance.
+    /// Resolve a persisted preference against the OS appearance and accent.
     pub fn resolve(preference: ThemePreference, system_dark: bool) -> Self {
-        match preference {
+        Self::resolve_with_accent(
+            preference,
+            system_dark,
+            crate::system_accent::system_accent_color(),
+        )
+    }
+
+    /// Resolve theme colors, optionally overriding the interactive accent.
+    pub fn resolve_with_accent(
+        preference: ThemePreference,
+        system_dark: bool,
+        system_accent: Option<Color32>,
+    ) -> Self {
+        let mut theme = match preference {
             ThemePreference::Light => Self::light(),
             ThemePreference::Dark => Self::dark(),
             ThemePreference::System => {
@@ -155,7 +172,11 @@ impl Theme {
                     Self::light()
                 }
             }
+        };
+        if let Some(accent) = system_accent {
+            theme.accent = crate::system_accent::accent_for_mode(accent, theme.mode.is_dark());
         }
+        theme
     }
 
     /// Soft selection / hover fill derived from [`Self::accent`].
@@ -166,16 +187,24 @@ impl Theme {
 
     /// Text / icon color drawn on top of an accent fill (primary buttons).
     pub fn on_accent(&self) -> Color32 {
-        match self.mode {
-            ThemeMode::Light => self.background,
-            ThemeMode::Dark => Color32::from_rgb(20, 24, 32),
-        }
+        crate::system_accent::contrasting_on_accent(self.accent)
     }
 
     /// Modal backdrop scrim for command palette / quick open.
     pub fn overlay_scrim(&self) -> Color32 {
         let alpha = if self.mode.is_dark() { 160 } else { 120 };
         Color32::from_rgba_unmultiplied(0, 0, 0, alpha)
+    }
+
+    /// Soft drop shadow for floating chrome (composer).
+    pub fn elevation_shadow(&self) -> egui::Shadow {
+        let alpha = if self.mode.is_dark() { 90 } else { 36 };
+        egui::Shadow {
+            offset: [0, 6],
+            blur: 18,
+            spread: 0,
+            color: Color32::from_rgba_unmultiplied(0, 0, 0, alpha),
+        }
     }
 
     /// Monaco theme id registered in the WebView (`jaymi-light` / `jaymi-dark`).
@@ -416,6 +445,24 @@ mod tests {
         let dark = Theme::dark().to_egui_visuals();
         assert!(dark.dark_mode);
         assert_eq!(dark.panel_fill, Theme::dark().background);
+    }
+
+    #[test]
+    fn resolve_applies_system_accent_when_provided() {
+        let orange = Color32::from_rgb(255, 149, 0);
+        let theme = Theme::resolve_with_accent(ThemePreference::Light, false, Some(orange));
+        assert_eq!(theme.accent, orange);
+    }
+
+    #[test]
+    fn on_accent_contrasts_with_bright_accent() {
+        let theme = Theme::resolve_with_accent(
+            ThemePreference::Light,
+            false,
+            Some(Color32::from_rgb(255, 149, 0)),
+        );
+        // Orange is mid-luminance; on_accent should remain readable (not equal to accent).
+        assert_ne!(theme.on_accent(), theme.accent);
     }
 
     #[test]

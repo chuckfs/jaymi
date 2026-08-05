@@ -3,7 +3,6 @@
 //! Exposes the boot sequence and diagnostics types for the desktop binary and
 //! tests.
 
-// wry / raw-window-handle paths may use `unsafe` internally; keep app logic safe.
 #![deny(unsafe_code)]
 
 pub mod boot;
@@ -16,6 +15,8 @@ pub mod experience;
 pub mod monaco_host;
 mod problems;
 pub mod quick_open;
+#[allow(unsafe_code)] // AppKit / DWM bridges for OS accent color.
+mod system_accent;
 pub mod theme;
 pub mod ui;
 

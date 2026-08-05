@@ -4,6 +4,7 @@
 //! the right. Closing the workspace never destroys the conversation.
 
 pub mod explorer;
+pub mod nav_rail;
 
 use std::time::SystemTime;
 
@@ -21,6 +22,10 @@ use crate::monaco_host::{
 use crate::quick_open::{render_quick_open, QuickOpenOutcome, QuickOpenState};
 use crate::theme::{inset, radius, space, stroke, type_size, Theme};
 use crate::ui::explorer::ExplorerEvent;
+use crate::ui::nav_rail::{
+    render_nav_rail, NavRailContext, NavRailEvent, NavTab, DEFAULT_NAV_WIDTH, MAX_NAV_WIDTH,
+    MIN_NAV_WIDTH,
+};
 use jaymi_capabilities::{
     CodingBottomTab, EditorSettings, FoldedRegion, SplitDirection, WorkspaceKind,
     DEFAULT_CONVERSATION_FRACTION, DEFAULT_WORKSPACE_PANEL_WIDTH, MAX_CONVERSATION_FRACTION,
@@ -28,7 +33,7 @@ use jaymi_capabilities::{
 };
 use jaymi_config::{Config, Theme as ThemePreference};
 use jaymi_core::UserRequest;
-use jaymi_memory::MessageRole;
+use jaymi_memory::{ConversationMeta, MessageRole};
 
 /// Launch the conversation-first desktop window.
 pub fn run_diagnostics(
@@ -49,6 +54,7 @@ pub fn run_diagnostics(
         "Jaymi",
         options,
         Box::new(move |cc| {
+            configure_fonts(&cc.egui_ctx);
             let preference = app
                 .container()
                 .resolve::<Config>()
@@ -81,9 +87,116 @@ pub fn run_diagnostics(
                 workspace_anim_target: DEFAULT_WORKSPACE_PANEL_WIDTH,
                 awaiting_reply: false,
                 theme,
+                nav_open: false,
+                nav_tab: NavTab::Conversations,
+                nav_was_open: false,
+                nav_anim_start: None,
+                nav_anim_from: 0.0,
+                nav_anim_target: DEFAULT_NAV_WIDTH,
+                nav_width: DEFAULT_NAV_WIDTH,
             }))
         }),
     )
+}
+
+/// Painted hamburger (three bars) — no Unicode menu glyph.
+fn paint_hamburger(painter: &egui::Painter, rect: egui::Rect, color: egui::Color32) {
+    let c = rect.center();
+    let half_w = 7.0;
+    let stroke = egui::Stroke::new(1.75, color);
+    for dy in [-5.0_f32, 0.0, 5.0] {
+        painter.line_segment(
+            [
+                egui::pos2(c.x - half_w, c.y + dy),
+                egui::pos2(c.x + half_w, c.y + dy),
+            ],
+            stroke,
+        );
+    }
+}
+
+/// Accent send control with a painted up-chevron (no Unicode icon glyphs).
+fn paint_send_button(ui: &mut egui::Ui, theme: &Theme) -> egui::Response {
+    let size = egui::vec2(40.0, 40.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let fill = if response.hovered() {
+        theme.accent.gamma_multiply(0.92)
+    } else {
+        theme.accent
+    };
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::same(radius::LG as u8), fill);
+    let c = rect.center();
+    let arrow = [
+        c + egui::vec2(0.0, -6.0),
+        c + egui::vec2(6.0, 3.0),
+        c + egui::vec2(-6.0, 3.0),
+    ];
+    ui.painter().add(egui::Shape::convex_polygon(
+        arrow.to_vec(),
+        theme.on_accent(),
+        egui::Stroke::NONE,
+    ));
+    response
+}
+
+/// Prefer system proportional fonts so UI text never falls back to tofu squares.
+fn configure_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    // Keep egui defaults as fallbacks; prepend OS UI fonts when available.
+    #[cfg(target_os = "macos")]
+    {
+        for (path, name) in [
+            ("/System/Library/Fonts/SFNS.ttf", "sf_pro"),
+            ("/System/Library/Fonts/SFNSText.ttf", "sf_pro_text"),
+            ("/System/Library/Fonts/Helvetica.ttc", "helvetica"),
+        ] {
+            if let Ok(bytes) = std::fs::read(path) {
+                fonts
+                    .font_data
+                    .insert(name.into(), egui::FontData::from_owned(bytes).into());
+                fonts
+                    .families
+                    .entry(egui::FontFamily::Proportional)
+                    .or_default()
+                    .insert(0, name.into());
+                break;
+            }
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(bytes) = std::fs::read("C:\\Windows\\Fonts\\segoeui.ttf") {
+            fonts
+                .font_data
+                .insert("segoe_ui".into(), egui::FontData::from_owned(bytes).into());
+            fonts
+                .families
+                .entry(egui::FontFamily::Proportional)
+                .or_default()
+                .insert(0, "segoe_ui".into());
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        for path in [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        ] {
+            if let Ok(bytes) = std::fs::read(path) {
+                fonts
+                    .font_data
+                    .insert("dejavu".into(), egui::FontData::from_owned(bytes).into());
+                fonts
+                    .families
+                    .entry(egui::FontFamily::Proportional)
+                    .or_default()
+                    .insert(0, "dejavu".into());
+                break;
+            }
+        }
+    }
+    ctx.set_fonts(fonts);
 }
 
 struct JaymiApp {
@@ -119,6 +232,20 @@ struct JaymiApp {
     awaiting_reply: bool,
     /// Active application theme (drives egui visuals + Monaco Jaymi themes).
     theme: Theme,
+    /// Whether the left navigation rail is open (or animating open).
+    nav_open: bool,
+    /// Active page in the left navigation rail.
+    nav_tab: NavTab,
+    /// Previous-frame nav open flag (drives open/close animation).
+    nav_was_open: bool,
+    /// Wall-clock start of the nav rail animation, when running.
+    nav_anim_start: Option<std::time::Instant>,
+    /// Width the nav animation starts from.
+    nav_anim_from: f32,
+    /// Width the nav animation eases toward.
+    nav_anim_target: f32,
+    /// Remembered open width for the left nav rail.
+    nav_width: f32,
 }
 
 /// Duration of the workspace expand-in animation.
@@ -217,70 +344,21 @@ impl eframe::App for JaymiApp {
         let mut monaco_surface: Option<MonacoEditorSurface> = None;
 
         egui::TopBottomPanel::top("jaymi_top")
-            .exact_height(40.0)
-            .show_separator_line(true)
+            .exact_height(48.0)
+            .show_separator_line(false)
             .frame(
                 egui::Frame::new()
                     .fill(self.theme.background)
-                    .inner_margin(inset(space::MD, space::SM))
+                    .inner_margin(inset(space::LG, space::SM))
                     .stroke(egui::Stroke::NONE),
             )
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
-                    ui.label(
-                        egui::RichText::new("Jaymi")
-                            .strong()
-                            .size(type_size::TITLE)
-                            .color(self.theme.text_primary),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if self.experience.workspace_expanded()
-                            && ui
-                                .add(
-                                    egui::Button::new(
-                                        egui::RichText::new("Close Workspace")
-                                            .size(type_size::UI)
-                                            .color(self.theme.text_primary),
-                                    )
-                                    .frame(false),
-                                )
-                                .on_hover_text("Close workspace (conversation stays open)")
-                                .clicked()
-                        {
-                            self.close_workspace();
-                        }
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("⌘⇧P")
-                                        .size(type_size::UI)
-                                        .color(self.theme.text_secondary),
-                                )
-                                .frame(false),
-                            )
-                            .on_hover_text("Command Palette (⌘⇧P)")
-                            .clicked()
-                        {
-                            self.command_palette.open();
-                        }
-                        if ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("⌘P")
-                                        .size(type_size::UI)
-                                        .color(self.theme.text_secondary),
-                                )
-                                .frame(false),
-                            )
-                            .on_hover_text("Quick Open (⌘P)")
-                            .clicked()
-                        {
-                            self.quick_open.open();
-                            self.run_quick_open_search();
-                        }
-                    });
+                    self.render_nav_toggle(ui);
                 });
             });
+
+        self.render_nav_side_panel(ctx);
 
         if self.experience.workspace_expanded() {
             // Chat-forward: Coding expands beside conversation, never full-window.
@@ -295,9 +373,11 @@ impl eframe::App for JaymiApp {
             let (default_w, min_w, max_w) = if is_coding {
                 // Conversation defaults to ~30% of the window, never below
                 // MIN_CONVERSATION_WIDTH, and never above MAX_CONVERSATION_FRACTION.
+                // Reserve left-nav width when the rail is open/animating.
                 let window_w = ctx.screen_rect().width();
-                let max_w =
-                    (window_w - MIN_CONVERSATION_WIDTH).clamp(0.0, MAX_WORKSPACE_PANEL_WIDTH);
+                let nav_reserve = self.current_nav_width();
+                let max_w = (window_w - MIN_CONVERSATION_WIDTH - nav_reserve)
+                    .clamp(0.0, MAX_WORKSPACE_PANEL_WIDTH);
                 let min_from_conversation_cap =
                     (window_w * (1.0 - MAX_CONVERSATION_FRACTION)).max(0.0);
                 let min_w = min_from_conversation_cap
@@ -380,6 +460,7 @@ impl eframe::App for JaymiApp {
         }
 
         // Conversation column — always alive beside Coding (never replaced).
+        // Open window background only — no nested conversation frame.
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -387,12 +468,17 @@ impl eframe::App for JaymiApp {
                     .inner_margin(egui::Margin::ZERO),
             )
             .show(ctx, |ui| {
-                // Composer docks only under the conversation, not under Coding.
+                // Floating composer — anchored bottom, inset from edges, no chrome bar.
                 egui::TopBottomPanel::bottom("chat_composer")
-                    .show_separator_line(true)
+                    .show_separator_line(false)
                     .frame(
                         egui::Frame::new()
-                            .inner_margin(inset(space::MD, space::SM))
+                            .inner_margin(egui::Margin {
+                                left: space::XL as i8,
+                                right: space::XL as i8,
+                                top: space::MD as i8,
+                                bottom: space::LG as i8,
+                            })
                             .fill(self.theme.background)
                             .stroke(egui::Stroke::NONE),
                     )
@@ -403,8 +489,6 @@ impl eframe::App for JaymiApp {
                 self.render_conversation_surface(ui);
                 if self.show_diagnostics {
                     ui.add_space(space::MD);
-                    ui.separator();
-                    ui.add_space(space::SM);
                     self.render_diagnostics(ui);
                 }
             });
@@ -577,47 +661,28 @@ impl JaymiApp {
     }
 
     fn render_conversation_surface(&mut self, ui: &mut egui::Ui) {
-        // —— Title bar ——————————————————————————————————————————
-        egui::Frame::new()
-            .inner_margin(inset(space::MD, space::SM))
-            .fill(self.theme.background)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new(self.experience.conversation_title())
-                            .strong()
-                            .size(type_size::TITLE)
-                            .color(self.theme.text_primary),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        self.render_conversation_actions(ui);
-                    });
-                });
-            });
-        ui.painter().hline(
-            ui.max_rect().x_range(),
-            ui.cursor().top(),
-            egui::Stroke::new(stroke::HAIRLINE, self.theme.border),
-        );
-
-        // —— Scrollable history ————————————————————————————————
+        // Open history on the window background — no title, no surrounding frame.
         let available = ui.available_height();
+        let turns: Vec<_> = self.experience.conversation().to_vec();
+        let empty = turns.is_empty() && !self.awaiting_reply;
         egui::ScrollArea::vertical()
             .id_salt("conversation_scroll")
             .animated(true)
             .auto_shrink([false, false])
-            .stick_to_bottom(true)
+            .stick_to_bottom(!empty)
             .max_height(available)
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
-                ui.set_min_height(available.max(160.0));
-                egui::Frame::new()
-                    .inner_margin(inset(space::MD, space::MD))
-                    .show(ui, |ui| {
-                        let turns: Vec<_> = self.experience.conversation().to_vec();
-                        if turns.is_empty() && !self.awaiting_reply {
-                            self.render_conversation_empty_state(ui);
-                        } else {
+                ui.set_min_height(available.max(200.0));
+                if empty {
+                    // Full-bleed welcome — centered in the conversation column.
+                    self.render_conversation_empty_state(ui);
+                } else {
+                    ui.add_space(space::MD);
+                    ui.horizontal(|ui| {
+                        ui.add_space(space::LG);
+                        ui.vertical(|ui| {
+                            ui.set_max_width((ui.available_width() - space::LG).max(120.0));
                             let mut last_day: Option<i64> = None;
                             for turn in &turns {
                                 let day = turn.created_at.div_euclid(86_400);
@@ -631,59 +696,68 @@ impl JaymiApp {
                                     &turn.content,
                                     turn.created_at,
                                 );
-                                ui.add_space(space::SM);
+                                ui.add_space(space::LG);
                             }
                             if self.awaiting_reply {
                                 self.render_typing_indicator(ui);
                             }
-                        }
+                            // Breathing room above the floating composer.
+                            ui.add_space(space::XL);
+                        });
+                        ui.add_space(space::LG);
                     });
+                }
             });
     }
 
     fn render_conversation_empty_state(&mut self, ui: &mut egui::Ui) {
-        ui.vertical_centered(|ui| {
-            let height = ui.available_height().max(120.0);
-            ui.add_space((height * 0.28).clamp(space::LG, space::XL * 3.0));
-            ui.label(
-                egui::RichText::new("Start a conversation with Jaymi.")
-                    .size(type_size::DISPLAY)
-                    .color(self.theme.text_secondary),
-            );
-            ui.add_space(space::SM);
-            ui.label(
-                egui::RichText::new("Coding expands beside this chat when you open a project.")
-                    .size(type_size::BODY)
-                    .color(self.theme.text_secondary),
-            );
-            ui.add_space(space::MD);
-            if ui
-                .add(
-                    egui::Button::new(
-                        egui::RichText::new("Open Project…")
-                            .size(type_size::UI)
-                            .color(self.theme.on_accent()),
+        let available = ui.available_size();
+        ui.allocate_ui_with_layout(
+            available,
+            egui::Layout::top_down(egui::Align::Center),
+            |ui| {
+                // True vertical center of the conversation surface.
+                let block_height = 220.0;
+                let top = ((ui.available_height() - block_height) * 0.5).max(space::XL);
+                ui.add_space(top);
+
+                ui.label(
+                    egui::RichText::new("Hi, I'm Jaymi")
+                        .size(type_size::WELCOME)
+                        .strong()
+                        .color(self.theme.text_primary),
+                );
+                ui.add_space(space::MD + space::XS);
+                ui.set_max_width((ui.available_width() * 0.7).clamp(260.0, 480.0));
+                ui.label(
+                    egui::RichText::new("Ask anything,\nor open a Coding Workspace.")
+                        .size(type_size::BODY + 2.0)
+                        .color(self.theme.text_secondary),
+                );
+                ui.add_space(space::LG + space::SM);
+                if ui
+                    .add(
+                        egui::Button::new(
+                            egui::RichText::new("Open Project")
+                                .size(type_size::UI)
+                                .color(self.theme.on_accent()),
+                        )
+                        .fill(self.theme.accent)
+                        .corner_radius(radius::MD)
+                        .min_size(egui::vec2(156.0, 38.0))
+                        .stroke(egui::Stroke::NONE),
                     )
-                    .fill(self.theme.accent)
-                    .corner_radius(radius::MD)
-                    .stroke(egui::Stroke::NONE),
-                )
-                .on_hover_text("Choose a folder to open in Coding")
-                .clicked()
-            {
-                self.open_project_folder();
-            }
-            ui.add_space(space::SM);
-            ui.label(
-                egui::RichText::new("or use ⋯ for Recent Projects and more")
-                    .size(type_size::META)
-                    .color(self.theme.text_secondary),
-            );
-        });
+                    .on_hover_text("Choose a folder to open in Coding")
+                    .clicked()
+                {
+                    self.open_project_folder();
+                }
+            },
+        );
     }
 
     fn render_timestamp_separator(&self, ui: &mut egui::Ui, created_at: i64) {
-        ui.add_space(space::SM);
+        ui.add_space(space::MD);
         ui.vertical_centered(|ui| {
             ui.label(
                 egui::RichText::new(format_day_separator(created_at))
@@ -691,26 +765,21 @@ impl JaymiApp {
                     .color(self.theme.text_secondary),
             );
         });
-        ui.add_space(space::SM);
+        ui.add_space(space::MD);
     }
 
     fn render_typing_indicator(&self, ui: &mut egui::Ui) {
-        egui::Frame::new()
-            .corner_radius(radius::LG)
-            .inner_margin(inset(space::MD - space::XS, space::SM))
-            .fill(self.theme.surface)
-            .show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.spinner();
-                    ui.label(
-                        egui::RichText::new("Jaymi is typing…")
-                            .italics()
-                            .size(type_size::BODY)
-                            .color(self.theme.text_secondary),
-                    );
-                });
-            });
-        ui.add_space(space::SM);
+        ui.horizontal(|ui| {
+            ui.spinner();
+            ui.add_space(space::SM);
+            ui.label(
+                egui::RichText::new("Jaymi is typing…")
+                    .italics()
+                    .size(type_size::BODY)
+                    .color(self.theme.text_secondary),
+            );
+        });
+        ui.add_space(space::MD);
     }
 
     fn render_chat_bubble(
@@ -720,60 +789,61 @@ impl JaymiApp {
         content: &str,
         created_at: i64,
     ) {
-        let is_user = matches!(role, MessageRole::User);
-        let (label, fill, text_color, meta_color) = match role {
-            MessageRole::User => (
-                "You",
-                self.theme.accent,
-                self.theme.on_accent(),
-                self.theme.on_accent(),
-            ),
-            MessageRole::Assistant => (
-                "Jaymi",
-                self.theme.surface,
-                self.theme.text_primary,
-                self.theme.text_secondary,
-            ),
-            MessageRole::System => (
-                "System",
-                self.theme.surface_alt,
-                self.theme.text_primary,
-                self.theme.text_secondary,
-            ),
-        };
+        let max_bubble = (ui.available_width() * 0.78).clamp(240.0, 720.0);
 
-        let max_bubble = ui.available_width() * 0.85;
-        ui.horizontal(|ui| {
-            if is_user {
-                ui.add_space((ui.available_width() - max_bubble).max(0.0));
+        match role {
+            MessageRole::User => {
+                ui.horizontal(|ui| {
+                    ui.add_space((ui.available_width() - max_bubble).max(0.0));
+                    egui::Frame::new()
+                        .corner_radius(radius::XL)
+                        .inner_margin(inset(space::MD, space::SM + space::XS))
+                        .fill(self.theme.accent)
+                        .show(ui, |ui| {
+                            ui.set_max_width(max_bubble);
+                            ui.label(
+                                egui::RichText::new(format_message_time(created_at))
+                                    .size(type_size::META)
+                                    .color(self.theme.on_accent()),
+                            );
+                            ui.add_space(space::XS);
+                            ui.label(
+                                egui::RichText::new(content)
+                                    .size(type_size::BODY)
+                                    .color(self.theme.on_accent()),
+                            );
+                        });
+                });
             }
-            egui::Frame::new()
-                .corner_radius(radius::LG)
-                .inner_margin(inset(space::MD - space::XS, space::SM))
-                .fill(fill)
-                .show(ui, |ui| {
-                    ui.set_max_width(max_bubble);
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new(label)
-                                .size(type_size::META)
-                                .strong()
-                                .color(meta_color),
-                        );
-                        ui.label(
-                            egui::RichText::new(format_message_time(created_at))
-                                .size(type_size::META)
-                                .color(meta_color),
-                        );
-                    });
-                    ui.add_space(space::XS);
+            MessageRole::Assistant | MessageRole::System => {
+                // Assistant / system sit on the open background — no nested card.
+                let label = if matches!(role, MessageRole::System) {
+                    "System"
+                } else {
+                    "Jaymi"
+                };
+                ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new(content)
-                            .size(type_size::BODY)
-                            .color(text_color),
+                        egui::RichText::new(label)
+                            .size(type_size::META)
+                            .strong()
+                            .color(self.theme.text_secondary),
+                    );
+                    ui.label(
+                        egui::RichText::new(format_message_time(created_at))
+                            .size(type_size::META)
+                            .color(self.theme.text_secondary),
                     );
                 });
-        });
+                ui.add_space(space::XS);
+                ui.set_max_width(max_bubble);
+                ui.label(
+                    egui::RichText::new(content)
+                        .size(type_size::BODY)
+                        .color(self.theme.text_primary),
+                );
+            }
+        }
     }
 
     fn render_chat_composer(&mut self, ui: &mut egui::Ui) {
@@ -794,35 +864,31 @@ impl JaymiApp {
         }
 
         let send_clicked = egui::Frame::new()
-            .corner_radius(radius::MD)
-            .inner_margin(inset(space::MD - space::XS, space::SM))
+            .corner_radius(radius::XL)
+            .inner_margin(egui::Margin::symmetric(space::MD as i8, space::MD as i8))
             .fill(self.theme.surface)
+            .shadow(self.theme.elevation_shadow())
+            .stroke(egui::Stroke::NONE)
             .show(ui, |ui| {
+                ui.set_min_height(56.0);
                 ui.horizontal_centered(|ui| {
                     let response = ui.add(
-                        egui::TextEdit::singleline(&mut self.prompt)
-                            .desired_width(ui.available_width() - 48.0)
-                            .hint_text("Message Jaymi…")
+                        egui::TextEdit::multiline(&mut self.prompt)
+                            .desired_width(ui.available_width() - 56.0)
+                            .desired_rows(2)
+                            .hint_text(
+                                egui::RichText::new("Message Jaymi…")
+                                    .color(self.theme.text_secondary),
+                            )
                             .text_color(self.theme.text_primary)
                             .frame(false),
                     );
                     let enter_send = response.lost_focus()
-                        && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                        && ui.input(|input| {
+                            input.key_pressed(egui::Key::Enter) && !input.modifiers.shift
+                        });
 
-                    let send = ui
-                        .add_sized(
-                            [32.0, 32.0],
-                            egui::Button::new(
-                                egui::RichText::new("↑")
-                                    .size(type_size::DISPLAY)
-                                    .strong()
-                                    .color(self.theme.on_accent()),
-                            )
-                            .corner_radius(radius::MD)
-                            .fill(self.theme.accent)
-                            .stroke(egui::Stroke::NONE),
-                        )
-                        .on_hover_text("Send (Enter)");
+                    let send = paint_send_button(ui, &self.theme).on_hover_text("Send (Enter)");
 
                     if enter_send {
                         response.request_focus();
@@ -838,72 +904,196 @@ impl JaymiApp {
         }
     }
 
-    /// Three-dot action menu in the conversation header (discoverable activation).
-    fn render_conversation_actions(&mut self, ui: &mut egui::Ui) {
-        enum ConversationAction {
-            OpenProjectFolder,
-            OpenProjectId(String),
-            StartCoding,
-            ToggleDiagnostics,
+    /// Hamburger toggle for the left navigation rail.
+    fn render_nav_toggle(&mut self, ui: &mut egui::Ui) {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(34.0, 28.0), egui::Sense::click());
+        paint_hamburger(
+            ui.painter(),
+            rect,
+            if response.hovered() || self.nav_open {
+                self.theme.text_primary
+            } else {
+                self.theme.text_secondary
+            },
+        );
+        response.clone().on_hover_text(if self.nav_open {
+            "Hide navigation"
+        } else {
+            "Show navigation"
+        });
+        if response.clicked() {
+            self.nav_open = !self.nav_open;
+        }
+    }
+
+    /// Animated left rail (History / Images / Code).
+    fn render_nav_side_panel(&mut self, ctx: &egui::Context) {
+        let just_opened = self.nav_open && !self.nav_was_open;
+        let just_closed = !self.nav_open && self.nav_was_open;
+        if just_opened {
+            self.nav_anim_start = Some(std::time::Instant::now());
+            self.nav_anim_from = 0.0;
+            self.nav_anim_target = self.nav_width.clamp(MIN_NAV_WIDTH, MAX_NAV_WIDTH);
+        } else if just_closed {
+            self.nav_anim_start = Some(std::time::Instant::now());
+            self.nav_anim_from = self.current_nav_width().max(MIN_NAV_WIDTH * 0.25);
+            self.nav_anim_target = 0.0;
+        }
+        self.nav_was_open = self.nav_open;
+
+        let animating = self
+            .nav_anim_start
+            .is_some_and(|start| start.elapsed().as_secs_f32() < WORKSPACE_EXPAND_ANIM_SECS);
+        if !self.nav_open && !animating {
+            self.nav_anim_start = None;
+            return;
         }
 
-        let known_projects = self.app.list_projects().unwrap_or_default();
-        let mut action = None;
-        ui.menu_button("⋯", |ui| {
-            ui.set_min_width(220.0);
-            if ui.button("Open Project…").clicked() {
-                action = Some(ConversationAction::OpenProjectFolder);
-                ui.close_menu();
-            }
-            if !known_projects.is_empty() {
-                ui.menu_button("Recent Projects", |ui| {
-                    ui.set_min_width(220.0);
-                    for project in &known_projects {
-                        let label = match project.root_directory.as_ref() {
-                            Some(root) => format!("{} — {}", project.name, root.display()),
-                            None => project.name.clone(),
-                        };
-                        if ui.button(label).clicked() {
-                            action =
-                                Some(ConversationAction::OpenProjectId(project.id.to_string()));
-                            ui.close_menu();
-                        }
-                    }
-                });
-            }
-            ui.separator();
-            if ui.button("Open Coding").clicked() {
-                action = Some(ConversationAction::StartCoding);
-                ui.close_menu();
-            }
-            ui.add_enabled(false, egui::Button::new("Research Workspace (soon)"));
-            ui.add_enabled(false, egui::Button::new("Creation Workspace (soon)"));
-            ui.separator();
-            let diagnostics_label = if self.show_diagnostics {
-                "Hide Developer Diagnostics"
-            } else {
-                "Developer Diagnostics"
-            };
-            if ui.button(diagnostics_label).clicked() {
-                action = Some(ConversationAction::ToggleDiagnostics);
-                ui.close_menu();
-            }
-        })
-        .response
-        .on_hover_text("Conversation actions");
+        let width = if animating {
+            let elapsed = self
+                .nav_anim_start
+                .expect("animating implies start")
+                .elapsed()
+                .as_secs_f32();
+            let t = ease_out_cubic(elapsed / WORKSPACE_EXPAND_ANIM_SECS);
+            ctx.request_repaint();
+            self.nav_anim_from + (self.nav_anim_target - self.nav_anim_from) * t
+        } else {
+            self.nav_width.clamp(MIN_NAV_WIDTH, MAX_NAV_WIDTH)
+        };
 
-        match action {
-            Some(ConversationAction::OpenProjectFolder) => self.open_project_folder(),
-            Some(ConversationAction::OpenProjectId(project_id)) => {
-                self.open_project_by_id(&project_id)
+        if width < 1.0 {
+            return;
+        }
+
+        let conversations = self.project_conversations();
+        let recent_projects: Vec<(String, String)> = self
+            .app
+            .list_projects()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|project| {
+                let label = match project.root_directory.as_ref() {
+                    Some(root) => format!("{} - {}", project.name, root.display()),
+                    None => project.name.clone(),
+                };
+                (project.id.to_string(), label)
+            })
+            .collect();
+        let active_conversation_id = self.experience.conversation_id().map(str::to_string);
+        let has_project = self.app.active_project_id().is_some();
+        let coding_open = self.experience.active_workspace_kind() == Some(WorkspaceKind::Coding);
+
+        let mut events = Vec::new();
+        let panel = egui::SidePanel::left("jaymi_nav")
+            .exact_width(width)
+            .resizable(self.nav_open && !animating)
+            .min_width(MIN_NAV_WIDTH)
+            .max_width(MAX_NAV_WIDTH)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(self.theme.background)
+                    .inner_margin(egui::Margin {
+                        left: space::MD as i8,
+                        right: space::MD as i8,
+                        top: space::MD as i8,
+                        bottom: space::SM as i8,
+                    })
+                    .stroke(egui::Stroke::NONE),
+            );
+
+        let response = panel.show(ctx, |ui| {
+            // Hairline on the rail's trailing edge.
+            let rect = ui.max_rect();
+            ui.painter().vline(
+                rect.right(),
+                rect.y_range(),
+                egui::Stroke::new(stroke::HAIRLINE, self.theme.border),
+            );
+            let nav_ctx = NavRailContext {
+                theme: &self.theme,
+                tab: self.nav_tab,
+                conversations: &conversations,
+                active_conversation_id: active_conversation_id.as_deref(),
+                has_project,
+                coding_open,
+                recent_projects: &recent_projects,
+                show_diagnostics: self.show_diagnostics,
+            };
+            render_nav_rail(ui, &nav_ctx, &mut events);
+        });
+
+        if self.nav_open && !animating {
+            let rendered = response.response.rect.width();
+            if (rendered - self.nav_width).abs() > 1.0 {
+                self.nav_width = rendered.clamp(MIN_NAV_WIDTH, MAX_NAV_WIDTH);
             }
-            Some(ConversationAction::StartCoding) => self.start_coding_project(),
-            Some(ConversationAction::ToggleDiagnostics) => {
-                self.show_diagnostics = !self.show_diagnostics;
-                self.error = None;
-                self.status = None;
+        }
+
+        self.handle_nav_events(events);
+    }
+
+    fn current_nav_width(&self) -> f32 {
+        let animating = self
+            .nav_anim_start
+            .is_some_and(|start| start.elapsed().as_secs_f32() < WORKSPACE_EXPAND_ANIM_SECS);
+        if animating {
+            let elapsed = self
+                .nav_anim_start
+                .map(|start| start.elapsed().as_secs_f32())
+                .unwrap_or(0.0);
+            let t = ease_out_cubic(elapsed / WORKSPACE_EXPAND_ANIM_SECS);
+            self.nav_anim_from + (self.nav_anim_target - self.nav_anim_from) * t
+        } else if self.nav_open {
+            self.nav_width.clamp(MIN_NAV_WIDTH, MAX_NAV_WIDTH)
+        } else {
+            0.0
+        }
+    }
+
+    fn project_conversations(&self) -> Vec<ConversationMeta> {
+        let Some(project_id) = self.app.active_project_id() else {
+            return Vec::new();
+        };
+        self.app
+            .list_project_conversations(&project_id)
+            .unwrap_or_default()
+    }
+
+    fn handle_nav_events(&mut self, events: Vec<NavRailEvent>) {
+        for event in events {
+            match event {
+                NavRailEvent::SelectTab(tab) => {
+                    self.nav_tab = tab;
+                }
+                NavRailEvent::OpenProject => self.open_project_folder(),
+                NavRailEvent::OpenProjectId(project_id) => self.open_project_by_id(&project_id),
+                NavRailEvent::ToggleDiagnostics => {
+                    self.show_diagnostics = !self.show_diagnostics;
+                    self.error = None;
+                    self.status = None;
+                }
+                NavRailEvent::OpenConversation(conversation_id) => {
+                    match self.app.switch_to_conversation(&conversation_id) {
+                        Ok(()) => {
+                            self.error = None;
+                            if let Ok(session) = self.app.experience() {
+                                self.experience = session;
+                            }
+                        }
+                        Err(error) => self.error = Some(error.message().to_string()),
+                    }
+                }
+                NavRailEvent::OpenCoding => {
+                    self.nav_tab = NavTab::Projects;
+                    if self.app.active_project_id().is_some() {
+                        self.start_coding_project();
+                    } else {
+                        self.open_project_folder();
+                    }
+                }
             }
-            None => {}
         }
     }
 
@@ -992,6 +1182,15 @@ impl JaymiApp {
                 CodingShellEvent::SaveTab(path) => self.app.save_coding_file(&path),
                 CodingShellEvent::OpenCommandPalette => {
                     self.command_palette.open();
+                    Ok(())
+                }
+                CodingShellEvent::OpenQuickOpen => {
+                    self.quick_open.open();
+                    self.run_quick_open_search();
+                    Ok(())
+                }
+                CodingShellEvent::CloseWorkspace => {
+                    self.close_workspace();
                     Ok(())
                 }
                 CodingShellEvent::OpenSearch => {
