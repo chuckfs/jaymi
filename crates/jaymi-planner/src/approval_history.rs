@@ -681,6 +681,8 @@ mod tests {
             review_requirement: ReviewRequirement::Required,
             estimated_reversibility: EstimatedReversibility::PartiallyReversible,
             expected_outputs: vec!["written".into()],
+            deletion_method: None,
+            action_preview: None,
             lineage: Default::default(),
         })
     }

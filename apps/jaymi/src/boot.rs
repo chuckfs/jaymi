@@ -39,7 +39,7 @@ use jaymi_memory::{
 };
 use jaymi_parsers::{default_registry, ParserRegistry};
 use jaymi_permissions::PermissionEngine;
-use jaymi_planner::{Planner, PlannerDeps, PlannerResponse, ReviewIntent};
+use jaymi_planner::{Planner, PlannerDeps, PlannerResponse, ReviewIntent, ToolRouteTable};
 use jaymi_policies::PolicyEngine;
 use jaymi_project_engine::{
     CreateProjectRequest, Project, ProjectContext, ProjectEngine, ProjectEngineApi, ProjectHealth,
@@ -391,6 +391,7 @@ impl Application {
             memory: Arc::clone(&memory) as Arc<dyn MemoryEngineApi>,
             projects: Arc::clone(&projects) as Arc<dyn ProjectEngineApi>,
             context: Arc::clone(&context),
+            routes: ToolRouteTable::builtin(),
         });
         self.initialize_service(&mut planner)?;
         self.container.register(planner);
@@ -540,10 +541,10 @@ impl Application {
 
     /// Resume a ToolRisk-paused plan after an explicit user UI gesture.
     ///
-    /// Coding actions such as Save, New File, Delete, or Run Terminal already
-    /// express user intent, so they Approve the paused plan instead of leaving
-    /// a Review Card. Conversation / agent flows leave `awaiting_review` for
-    /// the in-conversation Review Card via [`Self::handle_with_workspace`].
+    /// Coding / Git / Terminal / Explorer / LSP rename gestures already express
+    /// user intent, so they auto-submit [`ReviewIntent::Approve`] through the
+    /// **same** review lifecycle as conversation Review Cards
+    /// ([`Self::submit_review`]). Tools never execute directly.
     pub fn complete_user_initiated(
         &self,
         response: PlannerResponse,
@@ -560,12 +561,39 @@ impl Application {
             .ok_or_else(|| JaymiError::new("awaiting review without an execution plan"))?
             .id()
             .clone();
-        let planner = self.container.resolve::<Planner>()?;
-        let resumed = planner.resolve_review(ReviewIntent::Approve { plan_id })?;
+        let resumed = self.submit_review(ReviewIntent::Approve { plan_id })?;
         if resumed.blocked {
             return Err(JaymiError::new(resumed.content));
         }
         Ok(resumed)
+    }
+
+    /// Single approval implementation for every entry point.
+    ///
+    /// Lifecycle: ExecutionPlan → Review → Planner → Approved → Execution.
+    ///
+    /// Conversation Review Cards, Coding Save/Delete/Run, Git Commit, Terminal,
+    /// Explorer, and LSP rename all emit [`ReviewIntent`] here. Review UI may
+    /// differ (card vs gesture auto-submit); approval semantics never do.
+    pub fn submit_review(
+        &self,
+        intent: jaymi_planner::ReviewIntent,
+    ) -> JaymiResult<jaymi_planner::PlannerResponse> {
+        let conversation_id = {
+            let mut experience = self
+                .experience
+                .lock()
+                .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+            experience.record_review_intent(intent.clone());
+            experience.conversation_id().map(str::to_string)
+        };
+        let planner = self.container.resolve::<Planner>()?;
+        let response = planner.resolve_review(intent)?;
+        if let Some(entry) = planner.approval_history()?.last().cloned() {
+            let _ = self.store_approval_history_memory(&entry, conversation_id.as_deref());
+        }
+        self.apply_workspace_response(&response)?;
+        Ok(response)
     }
 
     /// Ask the Planner to create a directory.
@@ -1361,33 +1389,14 @@ impl Application {
 
     /// Record a Review Card intent and resolve the paused Execution Plan.
     ///
-    /// - Approve resumes the same plan (no replan) and may execute tools.
-    /// - Modify regenerates affected steps into a child plan, keeps history,
-    ///   and re-pauses for approval (ContextBundle is not rebuilt unless required).
-    /// - Cancel drops the pause without executing.
-    ///
-    /// Successful decisions are recorded in Approval History (session + Memory).
-    /// The conversation stays active. Duplicate approvals after resume fail
-    /// deterministically.
+    /// Delegates to [`Self::submit_review`] — the single approval implementation.
+    /// Conversation cards, Coding gestures, Git, Terminal, Explorer, and LSP
+    /// rename all share that path.
     pub fn communicate_review_intent(
         &self,
         intent: jaymi_planner::ReviewIntent,
     ) -> JaymiResult<jaymi_planner::PlannerResponse> {
-        let conversation_id = {
-            let mut experience = self
-                .experience
-                .lock()
-                .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
-            experience.communicate_review_intent(intent.clone())?;
-            experience.conversation_id().map(str::to_string)
-        };
-        let planner = self.container.resolve::<Planner>()?;
-        let response = planner.resolve_review(intent)?;
-        if let Some(entry) = planner.approval_history()?.last().cloned() {
-            let _ = self.store_approval_history_memory(&entry, conversation_id.as_deref());
-        }
-        self.apply_workspace_response(&response)?;
-        Ok(response)
+        self.submit_review(intent)
     }
 
     /// Expand a capability workspace beside the conversation.
@@ -2311,6 +2320,10 @@ impl Application {
     }
 
     /// Rename the symbol under the cursor.
+    ///
+    /// Uses the same review lifecycle as Save / Git / Terminal: Planner pause
+    /// then [`Self::complete_user_initiated`] auto-submits
+    /// [`ReviewIntent::Approve`]. Tools never run outside an Approved plan.
     pub fn coding_lsp_rename(
         &self,
         path: &str,
@@ -2327,7 +2340,7 @@ impl Application {
             Some(new_name),
             None,
         )?;
-        self.lsp(request)
+        self.complete_user_initiated(self.lsp(request)?)
     }
 
     /// Find references for the symbol under the cursor.

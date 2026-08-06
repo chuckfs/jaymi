@@ -82,6 +82,7 @@ pub fn run_diagnostics(
                 prompt: String::new(),
                 focus_composer: false,
                 review_modify_notes: HashMap::new(),
+                review_preview_expanded: HashMap::new(),
                 experience,
                 show_diagnostics: false,
                 error: None,
@@ -292,6 +293,8 @@ struct JaymiApp {
     focus_composer: bool,
     /// Per-plan draft notes for Review Card Modify guidance.
     review_modify_notes: HashMap<String, String>,
+    /// Per-plan Preview Before Action expansion state.
+    review_preview_expanded: HashMap<String, bool>,
     experience: ExperienceSession,
     show_diagnostics: bool,
     /// Hard failure message (composer + recoverable actions).
@@ -961,11 +964,19 @@ impl JaymiApp {
                                     let plan_key = review.plan_id.as_str().to_string();
                                     let note = self
                                         .review_modify_notes
-                                        .entry(plan_key)
+                                        .entry(plan_key.clone())
                                         .or_default();
-                                    if let Some(intent) =
-                                        render_review_card(ui, &self.theme, review, note)
-                                    {
+                                    let expanded = self
+                                        .review_preview_expanded
+                                        .entry(plan_key)
+                                        .or_insert(false);
+                                    if let Some(intent) = render_review_card(
+                                        ui,
+                                        &self.theme,
+                                        review,
+                                        note,
+                                        expanded,
+                                    ) {
                                         review_intent = Some(intent);
                                     }
                                 }
@@ -2354,6 +2365,10 @@ impl JaymiApp {
     fn handle_review_intent(&mut self, intent: ReviewIntent) {
         if let ReviewIntent::Modify { plan_id, .. } = &intent {
             self.review_modify_notes.remove(plan_id.as_str());
+            self.review_preview_expanded.remove(plan_id.as_str());
+        }
+        if let ReviewIntent::Approve { plan_id } | ReviewIntent::Cancel { plan_id } = &intent {
+            self.review_preview_expanded.remove(plan_id.as_str());
         }
         match self.app.communicate_review_intent(intent) {
             Ok(response) => {

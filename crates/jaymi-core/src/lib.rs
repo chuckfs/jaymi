@@ -17,6 +17,7 @@ pub mod id;
 pub mod intent;
 pub mod lifecycle;
 pub mod lsp;
+pub mod preview;
 pub mod request;
 pub mod result;
 pub mod search;
@@ -36,8 +37,12 @@ pub use lsp::{
     LspCompletionItem, LspDiagnostic, LspHover, LspLocation, LspOperation, LspPosition, LspRange,
     LspRequest, LspTextEdit,
 };
+pub use preview::{
+    truncate_preview_body, ActionPreview, PreviewKind, PREVIEW_MAX_BODY_CHARS,
+    PREVIEW_MAX_BODY_LINES,
+};
 pub use request::{
-    DiscoveryQueryKind, GitOperation, GitPathStatus, GitRequest, ManagePathRequest,
+    DeletionMethod, DiscoveryQueryKind, GitOperation, GitPathStatus, GitRequest, ManagePathRequest,
     ProjectKnowledgeRequest, TerminalOperation, TerminalRequest, UserRequest, WriteFileRequest,
 };
 pub use result::JaymiResult;

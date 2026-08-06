@@ -15,7 +15,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use jaymi_capabilities::Capability;
-use jaymi_core::IntentId;
+use jaymi_core::{ActionPreview, DeletionMethod, IntentId};
 use jaymi_permissions::{PermissionAction, PermissionCategory};
 use serde::{Deserialize, Serialize};
 
@@ -331,6 +331,10 @@ pub struct ExecutionPlanParams {
     pub estimated_reversibility: EstimatedReversibility,
     /// What successful execution is expected to produce.
     pub expected_outputs: Vec<String>,
+    /// Deletion method when this plan deletes filesystem paths.
+    pub deletion_method: Option<DeletionMethod>,
+    /// Structured preview of what execution would change (Preview Before Action).
+    pub action_preview: Option<ActionPreview>,
     /// Revision lineage (immutable once created).
     pub lineage: PlanLineage,
 }
@@ -354,6 +358,8 @@ pub struct ExecutionPlan {
     review_requirement: ReviewRequirement,
     estimated_reversibility: EstimatedReversibility,
     expected_outputs: Vec<String>,
+    deletion_method: Option<DeletionMethod>,
+    action_preview: Option<ActionPreview>,
     lineage: PlanLineage,
     status: ExecutionStatus,
 }
@@ -378,6 +384,8 @@ impl ExecutionPlan {
             review_requirement: params.review_requirement,
             estimated_reversibility: params.estimated_reversibility,
             expected_outputs: params.expected_outputs,
+            deletion_method: params.deletion_method,
+            action_preview: params.action_preview,
             lineage,
             status: ExecutionStatus::Draft,
         }
@@ -446,6 +454,16 @@ impl ExecutionPlan {
     /// Expected outputs.
     pub fn expected_outputs(&self) -> &[String] {
         &self.expected_outputs
+    }
+
+    /// Deletion method when this plan deletes filesystem paths.
+    pub fn deletion_method(&self) -> Option<DeletionMethod> {
+        self.deletion_method
+    }
+
+    /// Structured preview of what execution would change.
+    pub fn action_preview(&self) -> Option<&ActionPreview> {
+        self.action_preview.as_ref()
     }
 
     /// Full lineage metadata.
@@ -641,6 +659,18 @@ pub struct ExecutionSummary {
     pub outputs: Vec<String>,
     /// True when some work succeeded but not the full expected outcome.
     pub partial: bool,
+    /// Paths moved to Trash during execution.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files_moved_to_trash: Vec<String>,
+    /// Paths permanently deleted during execution.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub files_permanently_deleted: Vec<String>,
+    /// Whether recovery via Trash is available after this execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_available: Option<bool>,
+    /// Deletion method used, when this execution deleted paths.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deletion_method: Option<DeletionMethod>,
     /// Convenience: first error, when any (diagnostics / older call sites).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
@@ -670,6 +700,10 @@ impl ExecutionSummary {
             tools_executed,
             outputs,
             partial: false,
+            files_moved_to_trash: Vec::new(),
+            files_permanently_deleted: Vec::new(),
+            recovery_available: None,
+            deletion_method: plan.deletion_method(),
         }
     }
 
@@ -732,6 +766,10 @@ impl ExecutionSummary {
             tools_executed: vec![tool_id],
             outputs,
             partial: meta.partial,
+            files_moved_to_trash: meta.files_moved_to_trash.clone(),
+            files_permanently_deleted: meta.files_permanently_deleted.clone(),
+            recovery_available: meta.recovery_available,
+            deletion_method: meta.deletion_method.or(plan.deletion_method()),
         }
     }
 
@@ -792,6 +830,27 @@ impl ExecutionSummary {
         }
         if !self.files_edited.is_empty() {
             lines.push(format!("Files edited: {}", self.files_edited.join(", ")));
+        }
+        if let Some(method) = self.deletion_method {
+            lines.push(format!("Deletion method: {}", method.as_str()));
+        }
+        if !self.files_moved_to_trash.is_empty() {
+            lines.push(format!(
+                "Moved to Trash: {}",
+                self.files_moved_to_trash.join(", ")
+            ));
+        }
+        if !self.files_permanently_deleted.is_empty() {
+            lines.push(format!(
+                "Permanently deleted: {}",
+                self.files_permanently_deleted.join(", ")
+            ));
+        }
+        if let Some(recovery) = self.recovery_available {
+            lines.push(format!(
+                "Recovery available: {}",
+                if recovery { "yes" } else { "no" }
+            ));
         }
         lines.push(format!("Duration: {} ms", self.duration_ms));
         if !self.warnings.is_empty() {
@@ -962,6 +1021,8 @@ mod tests {
             review_requirement: ReviewRequirement::NotRequired,
             estimated_reversibility: EstimatedReversibility::FullyReversible,
             expected_outputs: vec!["directory listing".into()],
+        deletion_method: None,
+        action_preview: None,
         lineage: Default::default(),
         }
     }

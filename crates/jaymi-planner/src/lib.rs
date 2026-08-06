@@ -9,9 +9,10 @@
 //! Meaningful tool-backed actions become an [`execution_plan::ExecutionPlan`]
 //! before any tool runs. Tools never generate plans; providers never see them.
 //!
-//! After Context assemble, paths branch by Intent (tool-backed / session /
-//! PlanWork / unsupported). That is intentional — not an Application→Engine
-//! bypass. See `request_lifecycle` and docs/planner.md.
+//! After Context assemble, tool-backed intents dispatch through a registered
+//! [`ToolRouteTable`] (Intent → tool). Session / PlanWork / Unknown stay
+//! special-cased. That is intentional — not an Application→Engine bypass.
+//! See `dispatch`, `request_lifecycle`, and docs/planner.md.
 //!
 //! The Planner does not own long-lived Memory or Project CRUD APIs. Those
 //! belong to the Memory Engine and Project Engine. Application (or tools)
@@ -21,16 +22,21 @@
 
 pub mod approval_history;
 pub mod decision;
+pub mod dispatch;
 pub mod execution_plan;
 pub mod paused_execution;
 pub mod plan_revision;
 pub mod reasoning;
 pub mod request_lifecycle;
 pub mod review_card;
+mod routes;
 
 pub use approval_history::{
     ApprovalDecision, ApprovalExecutionResult, ApprovalHistoryAccess, ApprovalHistoryEntry,
     ApprovalHistoryQuery, ApprovalHistoryStore, ApprovalHistoryView,
+};
+pub use dispatch::{
+    DispatchSupport, ExecutionMeta, IntentToolHandler, PreparedToolCall, ToolRoute, ToolRouteTable,
 };
 pub use execution_plan::{
     EstimatedReversibility, EstimatedRisk, ExecutionPlan, ExecutionPlanId, ExecutionPlanParams,
@@ -49,6 +55,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use decision::{DecisionEngine, Intent};
+use dispatch::{missing_capability_error, missing_route_error, unknown_tool_error};
 use jaymi_capabilities::{
     compose_capabilities, is_multi_capability, workspace_expansion_for, Capability,
     CapabilityComposition, CapabilityDescriptor, CapabilityDiscoveryReport, CapabilityEngineApi,
@@ -57,9 +64,9 @@ use jaymi_capabilities::{
 };
 use jaymi_context::{AssembleHints, ContextBundle, ContextEngine};
 use jaymi_core::{
-    Citation, Document, FileEntry, GitOperation, GitPathStatus, HealthReport, IntentId, JaymiError,
-    JaymiResult, Lifecycle, LspCompletionItem, LspDiagnostic, LspHover, LspLocation, LspRequest,
-    LspTextEdit, ProjectKnowledgeRequest, TerminalOperation, UserRequest,
+    ActionPreview, Citation, DeletionMethod, Document, FileEntry, GitPathStatus, HealthReport,
+    IntentId, JaymiError, JaymiResult, Lifecycle, LspCompletionItem, LspDiagnostic, LspHover,
+    LspLocation, LspTextEdit, UserRequest,
 };
 use jaymi_memory_engine::{
     AssembledMemoryContext, MemoryEngineApi, PromotionAskDecision, PromotionSuggestion,
@@ -72,10 +79,7 @@ use jaymi_policies::{ExecutionCandidate, PolicyDecision, PolicyEngine, PolicyEva
 use jaymi_project_engine::{Project, ProjectContext, ProjectEngineApi, ProjectKnowledgeHit};
 use jaymi_providers::ProviderRegistry;
 use jaymi_tools::{
-    InternetRequirement, PrivacyMode, ToolInput, ToolOrchestrator, ToolRegistry, GIT_TOOL_ID,
-    LANGUAGE_SERVER_TOOL_ID, LIST_PROJECT_TREE_TOOL_ID, MANAGE_PATH_TOOL_ID,
-    QUERY_INVENTORY_TOOL_ID, READ_FILE_TOOL_ID, SCAN_FILESYSTEM_TOOL_ID, SEARCH_FILES_TOOL_ID,
-    SEARCH_KNOWLEDGE_TOOL_ID, SEARCH_PROJECT_KNOWLEDGE_TOOL_ID, TERMINAL_TOOL_ID,
+    InternetRequirement, PrivacyMode, ToolInput, ToolOrchestrator, ToolRegistry, MANAGE_PATH_TOOL_ID,
     WRITE_FILE_TOOL_ID,
 };
 use reasoning::ReasoningEngine;
@@ -244,6 +248,8 @@ pub struct PlannerDeps {
     pub projects: Arc<dyn ProjectEngineApi>,
     /// Context Engine — sole assembler of request context for `handle`.
     pub context: Arc<ContextEngine>,
+    /// Intent → tool route table (compile-time registration; no reflection).
+    pub routes: ToolRouteTable,
 }
 
 /// Planner kernel.
@@ -268,6 +274,8 @@ pub struct Planner {
     memory: Arc<dyn MemoryEngineApi>,
     projects: Arc<dyn ProjectEngineApi>,
     context: Arc<ContextEngine>,
+    /// Intent → tool handlers (registration-based execution routing).
+    routes: ToolRouteTable,
     /// How many times [`Self::handle`] has been entered (integrity tests).
     handle_count: AtomicU64,
     /// Plans waiting on conversational review (resume without replan).
@@ -294,11 +302,17 @@ impl Planner {
             memory: deps.memory,
             projects: deps.projects,
             context: deps.context,
+            routes: deps.routes,
             handle_count: AtomicU64::new(0),
             paused: Mutex::new(PausedPlanStore::default()),
             plan_history: Mutex::new(Vec::new()),
             approval_history: Mutex::new(ApprovalHistoryStore::new()),
         }
+    }
+
+    /// Registered tool routes (Intent → tool) for diagnostics and tests.
+    pub fn tool_routes(&self) -> &ToolRouteTable {
+        &self.routes
     }
 
     /// Number of times [`Self::handle`] has been entered.
@@ -710,66 +724,6 @@ impl Planner {
         })
     }
 
-    /// Search project-scoped knowledge through Cap → Policy → Permission → Tool.
-    fn handle_search_project_knowledge(
-        &self,
-        capability: Capability,
-        project_id: &str,
-        text: &str,
-        limit: Option<usize>,
-    ) -> JaymiResult<PlannerResponse> {
-        let request = ProjectKnowledgeRequest {
-            project_id: project_id.to_string(),
-            text: text.to_string(),
-            limit,
-        };
-        let resource = std::path::PathBuf::from(format!("project:{project_id}"));
-        let input = ToolInput::project_knowledge(request);
-        let prepared = self.prepare_execution(
-            IntentId::SearchProjectKnowledge,
-            "Search project knowledge",
-            capability,
-            Some(SEARCH_PROJECT_KNOWLEDGE_TOOL_ID),
-            &input,
-            &resource,
-            "Search project knowledge",
-            PermissionCategory::Filesystem,
-            PermissionAction::Read,
-            vec!["project knowledge hits".into()],
-        )?;
-        if let Some(blocked) = prepared.blocked_response {
-            return Ok(blocked);
-        }
-
-        let mut plan = prepared.plan;
-        let tool_id = prepared.tool_id.clone();
-        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
-        self.ensure_success(&output)?;
-
-        let provider_id = prepared.provider_id.clone();
-        let content = output.message.clone().unwrap_or_else(|| {
-            format!(
-                "Project knowledge search completed via {} → {} → {}",
-                capability.id(),
-                tool_id,
-                provider_id.as_deref().unwrap_or("unknown")
-            )
-        });
-
-        Ok(PlannerResponse {
-            content,
-            capability: Some(capability),
-            tool_id: Some(tool_id),
-            provider_id,
-            project_knowledge: output.project_knowledge,
-            policy_evaluation: prepared.policy_evaluation,
-            permission_result: prepared.permission_result,
-            execution_plan: Some(plan),
-            execution_summary: Some(execution_summary),
-            ..PlannerResponse::default()
-        })
-    }
-
     /// Produce an execution plan for a goal without executing any tool.
     ///
     /// One or more independent capabilities may be composed into a single
@@ -946,87 +900,9 @@ impl Planner {
         // Reasoning Engine is intentionally unused for these deterministic paths.
         let _ = &self.reasoning;
 
-        let result = match intent {
-            Intent::ListDirectory { path } => {
-                self.handle_list_directory(capability, self.resolve_workspace_path(path))
-            }
-            Intent::ListProjectTree { path } => {
-                self.handle_list_project_tree(capability, self.resolve_workspace_path(path))
-            }
-            Intent::ReadFile { path } => {
-                self.handle_read_file(capability, self.resolve_workspace_path(path))
-            }
-            Intent::WriteFile { path, content } => {
-                self.handle_write_file(capability, self.resolve_workspace_path(path), content)
-            }
-            Intent::ManagePath {
-                command,
-                path,
-                destination,
-            } => self.handle_manage_path(
-                capability,
-                command,
-                self.resolve_workspace_path(path),
-                destination.map(|path| self.resolve_workspace_path(path)),
-            ),
-            Intent::RunTerminal {
-                operation,
-                session_id,
-                cwd,
-                command,
-                title,
-            } => self.handle_run_terminal(
-                capability,
-                operation,
-                session_id,
-                self.resolve_workspace_path(cwd),
-                command,
-                title,
-            ),
-            Intent::Git {
-                repo_root,
-                operation,
-                paths,
-                message,
-            } => self.handle_git(
-                capability,
-                self.resolve_workspace_path(repo_root),
-                operation,
-                paths,
-                message,
-            ),
-            Intent::Lsp { request } => {
-                let mut request = request;
-                request.workspace_root = self.resolve_workspace_path(request.workspace_root);
-                if let Some(path) = request.path {
-                    request.path = Some(self.resolve_workspace_path(path));
-                }
-                self.handle_lsp(capability, request)
-            }
-            Intent::DiscoverInventory { kind } => self.handle_discover_inventory(capability, kind),
-            Intent::SearchKnowledge { request } => {
-                self.handle_search_knowledge(capability, self.scope_search_request(request))
-            }
-            Intent::SearchProjectKnowledge {
-                project_id,
-                text,
-                limit,
-            } => self.handle_search_project_knowledge(capability, &project_id, &text, limit),
-            Intent::IndexRoots { path } => self.handle_index_roots(capability, path),
-            Intent::ContinueProject { .. }
-            | Intent::OpenProject { .. }
-            | Intent::CloseProject
-            | Intent::PlanWork { .. } => {
-                unreachable!("workspace and planning intents handled earlier")
-            }
-            Intent::Unknown => {
-                jaymi_logging::warn("planner", "unknown intent after capability mapping");
-                Ok(PlannerResponse {
-                    content: "Unsupported request.".to_string(),
-                    ..PlannerResponse::default()
-                })
-            }
-        };
+        // Tool-backed intents resolve through the registered route table.
+        // Session / PlanWork / Unknown stay special-cased above.
+        let result = self.dispatch_tool_backed(intent, capability, &request.content);
 
         let result = match result {
             Ok(mut response) => {
@@ -1080,23 +956,76 @@ impl Planner {
         request
     }
 
-    fn handle_list_directory(
+
+    /// Execute a tool-backed intent through the registered route table.
+    ///
+    /// Planner still owns prepare → review → execute. Routes only build
+    /// [`PreparedToolCall`] and map successful [`ToolOutput`] fields.
+    fn dispatch_tool_backed(
         &self,
+        intent: Intent,
         capability: Capability,
-        path: std::path::PathBuf,
+        request_text: &str,
     ) -> JaymiResult<PlannerResponse> {
-        let input = ToolInput::list_directory(path.clone());
+        let intent_id = intent.id();
+        if matches!(
+            intent_id,
+            IntentId::ContinueProject
+                | IntentId::OpenProject
+                | IntentId::CloseProject
+                | IntentId::PlanWork
+                | IntentId::Unknown
+        ) {
+            return Err(JaymiError::new(format!(
+                "intent {} is not tool-routed",
+                intent_id.as_str()
+            )));
+        }
+
+        let handler = self
+            .routes
+            .get(intent_id)
+            .ok_or_else(|| missing_route_error(intent_id))?;
+        let route = handler.route();
+        if route.capability != capability {
+            return Err(JaymiError::new(format!(
+                "route capability mismatch for {}: route={} decision={}",
+                intent_id.as_str(),
+                route.capability.id(),
+                capability.id()
+            )));
+        }
+
+        // Resolve the tool: prefer the registered route id; if that tool is not
+        // installed, fall back to capability selection (alternate fulfillment).
+        // A registered tool that does not advertise the capability is an error.
+        let tool_id = match self.tools.get(route.tool_id) {
+            Ok(tool) if tool.metadata().capabilities.contains(&capability) => {
+                route.tool_id.to_string()
+            }
+            Ok(_) => return Err(missing_capability_error(route.tool_id, capability)),
+            Err(_) => self.orchestrator.select(capability)?.ok_or_else(|| {
+                unknown_tool_error(route.tool_id)
+            })?,
+        };
+        // Confirm the selected tool fulfills the capability (covers fallback).
+        let tool = self.tools.get(&tool_id)?;
+        if !tool.metadata().capabilities.contains(&capability) {
+            return Err(missing_capability_error(&tool_id, capability));
+        }
+
+        let call = handler.prepare(&intent, request_text, self)?;
         let prepared = self.prepare_execution(
-            IntentId::ListDirectory,
-            "List directory",
+            intent_id,
+            &call.originating_request,
             capability,
-            Some(SEARCH_FILES_TOOL_ID),
-            &input,
-            &path,
-            "List directory",
-            PermissionCategory::Filesystem,
-            PermissionAction::Read,
-            vec!["directory listing".into()],
+            Some(&tool_id),
+            &call.input,
+            &call.resource_path,
+            &call.action_label,
+            call.permission_category,
+            call.permission_action,
+            call.expected_outputs.clone(),
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
@@ -1104,705 +1033,70 @@ impl Planner {
 
         let mut plan = prepared.plan;
         let tool_id = prepared.tool_id.clone();
-        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
+        let (output, execution_summary) =
+            self.execute_approved_plan(&mut plan, call.input.clone())?;
         if !output.success {
-            return Ok(self.tool_failure_response(
-                plan,
-                capability,
-                tool_id,
-                prepared.provider_id,
-                prepared.policy_evaluation,
-                prepared.permission_result,
-                output,
-                execution_summary,
-            ));
-        }
-
-        let provider_id = prepared.provider_id.clone();
-        let content = format!(
-            "Listed {} entries in {} via {} → {} → {}",
-            output.entries.len(),
-            path.display(),
-            capability.id(),
-            tool_id,
-            provider_id.as_deref().unwrap_or("unknown")
-        );
-
-        Ok(PlannerResponse {
-            content,
-            capability: Some(capability),
-            tool_id: Some(tool_id),
-            provider_id,
-            listed_path: Some(path),
-            entries: output.entries,
-            citations: output.citations,
-            policy_evaluation: prepared.policy_evaluation,
-            permission_result: prepared.permission_result,
-            execution_plan: Some(plan),
-            execution_summary: Some(execution_summary),
-            ..PlannerResponse::default()
-        })
-    }
-
-    fn handle_list_project_tree(
-        &self,
-        capability: Capability,
-        path: std::path::PathBuf,
-    ) -> JaymiResult<PlannerResponse> {
-        let input = ToolInput::list_directory(path.clone());
-        let prepared = self.prepare_execution(
-            IntentId::ListProjectTree,
-            "List project tree",
-            capability,
-            Some(LIST_PROJECT_TREE_TOOL_ID),
-            &input,
-            &path,
-            "List project tree",
-            PermissionCategory::Filesystem,
-            PermissionAction::Read,
-            vec!["project tree listing".into()],
-        )?;
-        if let Some(blocked) = prepared.blocked_response {
-            return Ok(blocked);
-        }
-
-        let mut plan = prepared.plan;
-        let tool_id = prepared.tool_id.clone();
-        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
-        self.ensure_success(&output)?;
-
-        let provider_id = prepared.provider_id.clone();
-        let listed_path = output.listed_path.clone().unwrap_or(path);
-        let content = format!(
-            "Listed project tree with {} entries under {} via {} → {} → {}",
-            output.entries.len(),
-            listed_path.display(),
-            capability.id(),
-            tool_id,
-            provider_id.as_deref().unwrap_or("unknown")
-        );
-
-        Ok(PlannerResponse {
-            content,
-            capability: Some(capability),
-            tool_id: Some(tool_id),
-            provider_id,
-            listed_path: Some(listed_path),
-            entries: output.entries,
-            citations: output.citations,
-            policy_evaluation: prepared.policy_evaluation,
-            permission_result: prepared.permission_result,
-            execution_plan: Some(plan),
-            execution_summary: Some(execution_summary),
-            ..PlannerResponse::default()
-        })
-    }
-
-    fn handle_read_file(
-        &self,
-        capability: Capability,
-        path: std::path::PathBuf,
-    ) -> JaymiResult<PlannerResponse> {
-        let input = ToolInput::read_file(path.clone());
-        let prepared = self.prepare_execution(
-            IntentId::ReadFile,
-            "Read file",
-            capability,
-            Some(READ_FILE_TOOL_ID),
-            &input,
-            &path,
-            "Read file",
-            PermissionCategory::Filesystem,
-            PermissionAction::Read,
-            vec!["unified document".into()],
-        )?;
-        if let Some(blocked) = prepared.blocked_response {
-            return Ok(blocked);
-        }
-
-        let mut plan = prepared.plan;
-        let tool_id = prepared.tool_id.clone();
-        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
-        self.ensure_success(&output)?;
-
-        let document = output
-            .document
-            .ok_or_else(|| JaymiError::new("read tool succeeded without returning a document"))?;
-        let provider_id = prepared.provider_id.clone();
-        let content = format!(
-            "Read {} ({}) via {} → {} → {} → {}",
-            path.display(),
-            document.file_type,
-            capability.id(),
-            tool_id,
-            provider_id.as_deref().unwrap_or("unknown"),
-            document.parser_id
-        );
-
-        Ok(PlannerResponse {
-            content,
-            capability: Some(capability),
-            tool_id: Some(tool_id),
-            provider_id,
-            document: Some(document),
-            policy_evaluation: prepared.policy_evaluation,
-            permission_result: prepared.permission_result,
-            execution_plan: Some(plan),
-            execution_summary: Some(execution_summary),
-            ..PlannerResponse::default()
-        })
-    }
-
-    fn handle_write_file(
-        &self,
-        capability: Capability,
-        path: std::path::PathBuf,
-        content: String,
-    ) -> JaymiResult<PlannerResponse> {
-        let input = ToolInput::write_file(path.clone(), content);
-        let prepared = self.prepare_execution(
-            IntentId::WriteFile,
-            "Write file",
-            capability,
-            Some(WRITE_FILE_TOOL_ID),
-            &input,
-            &path,
-            "Write file",
-            PermissionCategory::Filesystem,
-            PermissionAction::Write,
-            vec!["written file".into()],
-        )?;
-        if let Some(blocked) = prepared.blocked_response {
-            return Ok(blocked);
-        }
-
-        let mut plan = prepared.plan;
-        let tool_id = prepared.tool_id.clone();
-        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
-        if !output.success {
-            return Ok(self.tool_failure_response(
-                plan,
-                capability,
-                tool_id,
-                prepared.provider_id,
-                prepared.policy_evaluation,
-                prepared.permission_result,
-                output,
-                execution_summary,
-            ));
-        }
-        self.context.invalidate_cache("files_changed");
-
-        let provider_id = prepared.provider_id.clone();
-        let summary = output.message.unwrap_or_else(|| {
-            format!(
-                "Wrote {} via {} → {} → {}",
-                path.display(),
-                capability.id(),
-                tool_id,
-                provider_id.as_deref().unwrap_or("unknown")
-            )
-        });
-
-        Ok(PlannerResponse {
-            content: summary,
-            capability: Some(capability),
-            tool_id: Some(tool_id),
-            provider_id,
-            listed_path: Some(path),
-            policy_evaluation: prepared.policy_evaluation,
-            permission_result: prepared.permission_result,
-            execution_plan: Some(plan),
-            execution_summary: Some(execution_summary),
-            ..PlannerResponse::default()
-        })
-    }
-
-    fn handle_manage_path(
-        &self,
-        capability: Capability,
-        command: String,
-        path: std::path::PathBuf,
-        destination: Option<std::path::PathBuf>,
-    ) -> JaymiResult<PlannerResponse> {
-        let content = destination
-            .as_ref()
-            .map(|path| path.to_string_lossy().into_owned());
-        let input = ToolInput::manage_path(command.clone(), path.clone(), content);
-        let action = if command == "delete" {
-            PermissionAction::Delete
-        } else {
-            PermissionAction::Write
-        };
-        let path_label = path.display().to_string();
-        let (originating_request, action_label, expected_outputs) = match command.as_str() {
-            "delete" => (
-                format!("Delete {path_label}"),
-                format!("Delete {path_label}"),
-                vec![
-                    format!("Delete {path_label}"),
-                    "Remove the folder or file and everything inside it".into(),
-                    "Update the project index afterward".into(),
-                ],
-            ),
-            "rename" => (
-                format!(
-                    "Rename {path_label}{}",
-                    destination
-                        .as_ref()
-                        .map(|to| format!(" → {}", to.display()))
-                        .unwrap_or_default()
-                ),
-                format!("Rename {path_label}"),
-                vec![format!("Renamed {path_label}")],
-            ),
-            "mkdir" => (
-                format!("Create directory {path_label}"),
-                format!("Create directory {path_label}"),
-                vec![format!("Created {path_label}")],
-            ),
-            _ => (
-                format!("Manage path {path_label}"),
-                format!("Manage path {path_label}"),
-                vec!["managed path".into()],
-            ),
-        };
-        let prepared = self.prepare_execution(
-            IntentId::ManagePath,
-            &originating_request,
-            capability,
-            Some(MANAGE_PATH_TOOL_ID),
-            &input,
-            &path,
-            &action_label,
-            PermissionCategory::Filesystem,
-            action,
-            expected_outputs,
-        )?;
-        if let Some(blocked) = prepared.blocked_response {
-            return Ok(blocked);
-        }
-
-        let mut plan = prepared.plan;
-        let tool_id = prepared.tool_id.clone();
-        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
-        self.ensure_success(&output)?;
-        self.context.invalidate_cache("files_changed");
-
-        let provider_id = prepared.provider_id.clone();
-        let listed = output
-            .listed_path
-            .clone()
-            .or(destination)
-            .or(Some(path.clone()));
-        let summary = output.message.unwrap_or_else(|| {
-            format!(
-                "Managed path {} ({}) via {} → {} → {}",
-                path.display(),
-                command,
-                capability.id(),
-                tool_id,
-                provider_id.as_deref().unwrap_or("unknown")
-            )
-        });
-
-        Ok(PlannerResponse {
-            content: summary,
-            capability: Some(capability),
-            tool_id: Some(tool_id),
-            provider_id,
-            listed_path: listed,
-            policy_evaluation: prepared.policy_evaluation,
-            permission_result: prepared.permission_result,
-            execution_plan: Some(plan),
-            execution_summary: Some(execution_summary),
-            ..PlannerResponse::default()
-        })
-    }
-
-    fn handle_run_terminal(
-        &self,
-        capability: Capability,
-        operation: TerminalOperation,
-        session_id: String,
-        cwd: std::path::PathBuf,
-        command: Option<String>,
-        title: Option<String>,
-    ) -> JaymiResult<PlannerResponse> {
-        let input = match operation {
-            TerminalOperation::Ensure => {
-                ToolInput::ensure_terminal(session_id.clone(), cwd.clone())
+            if call.soft_failure {
+                return Ok(self.tool_failure_response(
+                    plan,
+                    capability,
+                    tool_id,
+                    prepared.provider_id,
+                    prepared.policy_evaluation,
+                    prepared.permission_result,
+                    output,
+                    execution_summary,
+                ));
             }
-            TerminalOperation::Run => {
-                let command = command
-                    .clone()
-                    .ok_or_else(|| JaymiError::new("terminal run requires a command"))?;
-                ToolInput::run_terminal(session_id.clone(), cwd.clone(), command)
+            self.ensure_success(&output)?;
+        }
+
+        if let Some(reason) = call.invalidate_cache {
+            self.context.invalidate_cache(reason);
+        }
+
+        let meta = ExecutionMeta {
+            capability,
+            tool_id,
+            provider_id: prepared.provider_id,
+            policy_evaluation: prepared.policy_evaluation,
+            permission_result: prepared.permission_result,
+            plan,
+            execution_summary,
+        };
+        handler.respond(&call, output, meta)
+    }
+
+    /// Planner-owned deletion policy: prefer Trash; permanent only when
+    /// explicitly requested or Trash is unavailable.
+    fn resolve_deletion_method(
+        &self,
+        requested: Option<DeletionMethod>,
+        request_text: &str,
+    ) -> JaymiResult<DeletionMethod> {
+        if matches!(requested, Some(DeletionMethod::Permanent))
+            || requests_permanent_deletion(request_text)
+        {
+            return Ok(DeletionMethod::Permanent);
+        }
+        if matches!(requested, Some(DeletionMethod::Trash)) {
+            if self.trash_supported_by_manage_path_tool() {
+                return Ok(DeletionMethod::Trash);
             }
-            TerminalOperation::Create => ToolInput::create_terminal(cwd.clone(), title.clone()),
-            TerminalOperation::Rename => {
-                let title = title
-                    .clone()
-                    .ok_or_else(|| JaymiError::new("terminal rename requires a title"))?;
-                ToolInput::rename_terminal(session_id.clone(), cwd.clone(), title)
-            }
-            TerminalOperation::Kill => ToolInput::kill_terminal(session_id.clone(), cwd.clone()),
-        };
-        let prepared = self.prepare_execution(
-            IntentId::RunTerminal,
-            "Execute terminal command",
-            capability,
-            Some(TERMINAL_TOOL_ID),
-            &input,
-            &cwd,
-            "Execute terminal command",
-            PermissionCategory::Terminal,
-            PermissionAction::Execute,
-            vec!["terminal output".into()],
-        )?;
-        if let Some(blocked) = prepared.blocked_response {
-            return Ok(blocked);
+            return Ok(DeletionMethod::Permanent);
         }
-
-        let mut plan = prepared.plan;
-        let tool_id = prepared.tool_id.clone();
-        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
-        self.ensure_success(&output)?;
-
-        let provider_id = prepared.provider_id.clone();
-        let summary = output.message.clone().unwrap_or_else(|| {
-            format!(
-                "Terminal session {} via {} → {} → {}",
-                session_id,
-                capability.id(),
-                tool_id,
-                provider_id.as_deref().unwrap_or("unknown")
-            )
-        });
-
-        Ok(PlannerResponse {
-            content: summary,
-            capability: Some(capability),
-            tool_id: Some(tool_id),
-            provider_id,
-            listed_path: Some(cwd),
-            terminal_session_id: output.session_id.or(Some(session_id)),
-            terminal_output: output.terminal_output,
-            terminal_scrollback: output.terminal_scrollback,
-            terminal_history: output.terminal_history,
-            terminal_title: output.terminal_title,
-            terminal_alive: output.terminal_alive,
-            policy_evaluation: prepared.policy_evaluation,
-            permission_result: prepared.permission_result,
-            execution_plan: Some(plan),
-            execution_summary: Some(execution_summary),
-            ..PlannerResponse::default()
-        })
-    }
-
-    fn handle_git(
-        &self,
-        capability: Capability,
-        repo_root: std::path::PathBuf,
-        operation: GitOperation,
-        paths: Vec<std::path::PathBuf>,
-        message: Option<String>,
-    ) -> JaymiResult<PlannerResponse> {
-        let input = ToolInput::git(repo_root.clone(), operation, paths, message);
-        let permission_action = if operation.is_mutating() {
-            PermissionAction::Write
+        if self.trash_supported_by_manage_path_tool() {
+            Ok(DeletionMethod::Trash)
         } else {
-            PermissionAction::Read
-        };
-        let action_label = format!("Git {}", operation.as_str());
-        let prepared = self.prepare_execution(
-            IntentId::Git,
-            &action_label,
-            capability,
-            Some(GIT_TOOL_ID),
-            &input,
-            &repo_root,
-            &action_label,
-            PermissionCategory::Filesystem,
-            permission_action,
-            vec!["git result".into()],
-        )?;
-        if let Some(blocked) = prepared.blocked_response {
-            return Ok(blocked);
+            Ok(DeletionMethod::Permanent)
         }
-
-        let mut plan = prepared.plan;
-        let tool_id = prepared.tool_id.clone();
-        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
-        self.ensure_success(&output)?;
-
-        let provider_id = prepared.provider_id.clone();
-        let summary = output.message.clone().unwrap_or_else(|| {
-            format!(
-                "Git {} via {} → {} → {}",
-                operation.as_str(),
-                capability.id(),
-                tool_id,
-                provider_id.as_deref().unwrap_or("unknown")
-            )
-        });
-
-        Ok(PlannerResponse {
-            content: summary,
-            capability: Some(capability),
-            tool_id: Some(tool_id),
-            provider_id,
-            listed_path: Some(repo_root),
-            git_branch: output.git_branch,
-            git_summary: output.git_summary,
-            git_is_repository: output.git_is_repository,
-            git_modified: output.git_modified,
-            git_added: output.git_added,
-            git_deleted: output.git_deleted,
-            git_staged: output.git_staged,
-            git_untracked: output.git_untracked,
-            policy_evaluation: prepared.policy_evaluation,
-            permission_result: prepared.permission_result,
-            execution_plan: Some(plan),
-            execution_summary: Some(execution_summary),
-            ..PlannerResponse::default()
-        })
     }
 
-    fn handle_lsp(
-        &self,
-        capability: Capability,
-        request: LspRequest,
-    ) -> JaymiResult<PlannerResponse> {
-        let workspace_root = request.workspace_root.clone();
-        let operation = request.operation;
-        let input = ToolInput::lsp(request);
-        let permission_action = if operation.is_mutating() {
-            PermissionAction::Write
-        } else {
-            PermissionAction::Read
-        };
-        let action_label = format!("LSP {}", operation.as_str());
-        let prepared = self.prepare_execution(
-            IntentId::Lsp,
-            &action_label,
-            capability,
-            Some(LANGUAGE_SERVER_TOOL_ID),
-            &input,
-            &workspace_root,
-            &action_label,
-            PermissionCategory::Filesystem,
-            permission_action,
-            vec!["lsp result".into()],
-        )?;
-        if let Some(blocked) = prepared.blocked_response {
-            return Ok(blocked);
-        }
-
-        let mut plan = prepared.plan;
-        let tool_id = prepared.tool_id.clone();
-        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
-        self.ensure_success(&output)?;
-
-        let provider_id = prepared.provider_id.clone();
-        let summary = output.message.clone().unwrap_or_else(|| {
-            format!(
-                "LSP {} via {} → {} → {}",
-                operation.as_str(),
-                capability.id(),
-                tool_id,
-                provider_id.as_deref().unwrap_or("unknown")
-            )
-        });
-
-        Ok(PlannerResponse {
-            content: summary,
-            capability: Some(capability),
-            tool_id: Some(tool_id),
-            provider_id,
-            listed_path: Some(workspace_root),
-            lsp_hover: output.lsp_hover,
-            lsp_completions: output.lsp_completions,
-            lsp_diagnostics: output.lsp_diagnostics,
-            lsp_definitions: output.lsp_definitions,
-            lsp_references: output.lsp_references,
-            lsp_edits: output.lsp_edits,
-            policy_evaluation: prepared.policy_evaluation,
-            permission_result: prepared.permission_result,
-            execution_plan: Some(plan),
-            execution_summary: Some(execution_summary),
-            ..PlannerResponse::default()
-        })
-    }
-
-    fn handle_discover_inventory(
-        &self,
-        capability: Capability,
-        kind: jaymi_core::DiscoveryQueryKind,
-    ) -> JaymiResult<PlannerResponse> {
-        let listed_path = match &kind {
-            jaymi_core::DiscoveryQueryKind::ByFolder { path, .. } => Some(path.clone()),
-            _ => None,
-        };
-        let resource_path = listed_path
-            .clone()
-            .unwrap_or_else(|| std::path::PathBuf::from("inventory"));
-        let input = ToolInput::discover(kind);
-        let prepared = self.prepare_execution(
-            IntentId::DiscoverInventory,
-            "Query inventory",
-            capability,
-            Some(QUERY_INVENTORY_TOOL_ID),
-            &input,
-            &resource_path,
-            "Query inventory",
-            PermissionCategory::Filesystem,
-            PermissionAction::Read,
-            vec!["inventory entries".into()],
-        )?;
-        if let Some(blocked) = prepared.blocked_response {
-            return Ok(blocked);
-        }
-
-        let mut plan = prepared.plan;
-        let tool_id = prepared.tool_id.clone();
-        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
-        self.ensure_success(&output)?;
-
-        let provider_id = prepared.provider_id.clone();
-        let content = output.message.unwrap_or_else(|| {
-            format!(
-                "Found {} inventoried entries via {} → {} (search engine)",
-                output.entries.len(),
-                capability.id(),
-                tool_id
-            )
-        });
-
-        Ok(PlannerResponse {
-            content,
-            capability: Some(capability),
-            tool_id: Some(tool_id),
-            provider_id,
-            listed_path,
-            entries: output.entries,
-            citations: output.citations,
-            policy_evaluation: prepared.policy_evaluation,
-            permission_result: prepared.permission_result,
-            execution_plan: Some(plan),
-            execution_summary: Some(execution_summary),
-            ..PlannerResponse::default()
-        })
-    }
-
-    fn handle_search_knowledge(
-        &self,
-        capability: Capability,
-        request: jaymi_core::SearchRequest,
-    ) -> JaymiResult<PlannerResponse> {
-        let resource_path = request
-            .folder
-            .clone()
-            .unwrap_or_else(|| std::path::PathBuf::from("search"));
-        let input = ToolInput::search(request);
-        let prepared = self.prepare_execution(
-            IntentId::SearchKnowledge,
-            "Search knowledge",
-            capability,
-            Some(SEARCH_KNOWLEDGE_TOOL_ID),
-            &input,
-            &resource_path,
-            "Search knowledge",
-            PermissionCategory::Filesystem,
-            PermissionAction::Read,
-            vec!["search hits".into()],
-        )?;
-        if let Some(blocked) = prepared.blocked_response {
-            return Ok(blocked);
-        }
-
-        let mut plan = prepared.plan;
-        let tool_id = prepared.tool_id.clone();
-        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
-        self.ensure_success(&output)?;
-
-        let provider_id = prepared.provider_id.clone();
-        let content = output.message.unwrap_or_else(|| {
-            format!(
-                "Found {} search hits via {} → {}",
-                output.entries.len(),
-                capability.id(),
-                tool_id
-            )
-        });
-
-        Ok(PlannerResponse {
-            content,
-            capability: Some(capability),
-            tool_id: Some(tool_id),
-            provider_id,
-            listed_path: Some(resource_path),
-            entries: output.entries,
-            citations: output.citations,
-            policy_evaluation: prepared.policy_evaluation,
-            permission_result: prepared.permission_result,
-            execution_plan: Some(plan),
-            execution_summary: Some(execution_summary),
-            ..PlannerResponse::default()
-        })
-    }
-
-    fn handle_index_roots(
-        &self,
-        capability: Capability,
-        path: Option<std::path::PathBuf>,
-    ) -> JaymiResult<PlannerResponse> {
-        let resource_path = path
-            .clone()
-            .unwrap_or_else(|| std::path::PathBuf::from("configured-roots"));
-        let input = ToolInput {
-            path: path.clone(),
-            ..ToolInput::default()
-        };
-        let prepared = self.prepare_execution(
-            IntentId::IndexRoots,
-            "Index filesystem",
-            capability,
-            Some(SCAN_FILESYSTEM_TOOL_ID),
-            &input,
-            &resource_path,
-            "Index filesystem",
-            PermissionCategory::Filesystem,
-            PermissionAction::Read,
-            vec!["index summary".into()],
-        )?;
-        if let Some(blocked) = prepared.blocked_response {
-            return Ok(blocked);
-        }
-
-        let mut plan = prepared.plan;
-        let tool_id = prepared.tool_id.clone();
-        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
-        self.ensure_success(&output)?;
-        self.context.invalidate_cache("search_index_updated");
-
-        let provider_id = prepared.provider_id.clone();
-        let content = output
-            .message
-            .unwrap_or_else(|| format!("Indexed filesystem via {tool_id}"));
-
-        Ok(PlannerResponse {
-            content,
-            capability: Some(capability),
-            tool_id: Some(tool_id),
-            provider_id,
-            listed_path: path,
-            policy_evaluation: prepared.policy_evaluation,
-            permission_result: prepared.permission_result,
-            execution_plan: Some(plan),
-            execution_summary: Some(execution_summary),
-            ..PlannerResponse::default()
-        })
+    fn trash_supported_by_manage_path_tool(&self) -> bool {
+        self.tools
+            .get(MANAGE_PATH_TOOL_ID)
+            .map(|tool| tool.supports_recoverable_delete())
+            .unwrap_or(false)
     }
 
     /// Build an action [`ExecutionPlan`], then gate via Action Policy → Permission → Review.
@@ -1832,17 +1126,14 @@ impl Planner {
         expected_outputs: Vec<String>,
     ) -> JaymiResult<PreparedExecution> {
         let tool_id = if let Some(preferred) = preferred_tool_id {
-            match self.tools.get(preferred) {
-                Ok(tool) if tool.metadata().capabilities.contains(&capability) => {
-                    preferred.to_string()
-                }
-                _ => self.orchestrator.select(capability)?.ok_or_else(|| {
-                    JaymiError::new(format!(
-                        "no tool registered for capability {}",
-                        capability.id()
-                    ))
-                })?,
+            let tool = self
+                .tools
+                .get(preferred)
+                .map_err(|_| unknown_tool_error(preferred))?;
+            if !tool.metadata().capabilities.contains(&capability) {
+                return Err(missing_capability_error(preferred, capability));
             }
+            preferred.to_string()
         } else {
             self.orchestrator.select(capability)?.ok_or_else(|| {
                 JaymiError::new(format!(
@@ -1913,6 +1204,8 @@ impl Planner {
             tool_risk,
             review_requirement,
             expected_outputs,
+            tool_input.deletion_method,
+            self.generate_action_preview(&tool_id, tool_input, &gate),
         );
         plan.mark_ready()
             .map_err(|error| JaymiError::new(error.to_string()))?;
@@ -2056,6 +1349,8 @@ impl Planner {
         tool_risk: jaymi_tools::ToolRisk,
         review_requirement: ReviewRequirement,
         expected_outputs: Vec<String>,
+        deletion_method: Option<DeletionMethod>,
+        action_preview: Option<ActionPreview>,
     ) -> ExecutionPlan {
         ExecutionPlan::create(ExecutionPlanParams {
             originating_request: originating_request.to_string(),
@@ -2099,8 +1394,29 @@ impl Planner {
             } else {
                 expected_outputs
             },
+            deletion_method,
+            action_preview,
             lineage: PlanLineage::root(),
         })
+    }
+
+    /// Ask the selected tool for a read-only preview when review is required.
+    fn generate_action_preview(
+        &self,
+        tool_id: &str,
+        tool_input: &ToolInput,
+        gate: &GateDecision,
+    ) -> Option<ActionPreview> {
+        if !matches!(gate, GateDecision::RequiresApproval { .. }) {
+            return None;
+        }
+        match self.orchestrator.preview(tool_id, tool_input) {
+            Ok(preview) => preview,
+            Err(error) => Some(ActionPreview::unavailable(
+                format!("Preview {tool_id}"),
+                format!("Preview unavailable: {}", error.message()),
+            )),
+        }
     }
 
     /// Execute tools for an Approved plan and produce an [`ExecutionSummary`].
@@ -2338,6 +1654,13 @@ impl Planner {
             review_requirement,
             estimated_reversibility: EstimatedReversibility::from_tool_risk(tool_risk),
             expected_outputs: parent.expected_outputs().to_vec(),
+            deletion_method: draft.tool_input.deletion_method.or(parent.deletion_method()),
+            action_preview: self
+                .orchestrator
+                .preview(&draft.tool_id, &draft.tool_input)
+                .ok()
+                .flatten()
+                .or_else(|| parent.action_preview().cloned()),
             lineage: PlanLineage::revision_of(&parent, Some(note.clone()), draft.changes.clone()),
         });
         child
@@ -2609,6 +1932,10 @@ impl Planner {
                 tools_executed: Vec::new(),
                 outputs: Vec::new(),
                 partial: false,
+                files_moved_to_trash: Vec::new(),
+                files_permanently_deleted: Vec::new(),
+                recovery_available: None,
+                deletion_method: None,
             }),
             ..PlannerResponse::default()
         })
@@ -2786,6 +2113,17 @@ impl GateDecision {
 ///
 /// Precedence: Denied > RequiresApproval > Allowed.
 /// ToolRisk Modify / Destructive / External escalates to RequiresApproval.
+fn requests_permanent_deletion(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    lower.contains("permanently delete")
+        || lower.contains("permanent delete")
+        || lower.contains("force delete")
+        || lower.contains("delete permanently")
+        || lower.contains("rm -rf")
+        || lower.contains("without trash")
+        || lower.contains("skip trash")
+}
+
 fn combine_gate_decision(
     policy: &PolicyEvaluation,
     permission: Option<&PermissionCheckResult>,
@@ -2886,6 +2224,25 @@ fn truncate_for_log(value: &str) -> String {
     }
 }
 
+
+impl DispatchSupport for Planner {
+    fn resolve_workspace_path(&self, path: PathBuf) -> PathBuf {
+        Planner::resolve_workspace_path(self, path)
+    }
+
+    fn scope_search_request(&self, request: jaymi_core::SearchRequest) -> jaymi_core::SearchRequest {
+        Planner::scope_search_request(self, request)
+    }
+
+    fn resolve_deletion_method(
+        &self,
+        requested: Option<DeletionMethod>,
+        request_text: &str,
+    ) -> JaymiResult<DeletionMethod> {
+        Planner::resolve_deletion_method(self, requested, request_text)
+    }
+}
+
 impl Lifecycle for Planner {
     fn name(&self) -> &'static str {
         NAME
@@ -2968,7 +2325,7 @@ mod tests {
     use jaymi_tools::{
         EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
         PrivacyMode, ReadFileTool, Reliability, ResourceCost, ResultType, SearchFilesTool, Tool,
-        ToolInput, ToolMetadata, ToolOutput, ToolRisk,
+        ToolInput, ToolMetadata, ToolOutput, ToolRisk, READ_FILE_TOOL_ID, SEARCH_FILES_TOOL_ID,
     };
     use jaymi_understanding::{ContentIntelligenceApi, SqliteContentStore, UnderstandingEngine};
     use std::fs::{self, File};
@@ -3008,7 +2365,32 @@ mod tests {
         })
     }
 
+    fn planner_with_tools_and_routes<F>(register: F, routes: ToolRouteTable) -> Planner
+    where
+        F: FnOnce(&mut ToolRegistry, Arc<FilesystemProvider>, Arc<ContentIntelligenceApi>),
+    {
+        planner_with_tools_policies_and_routes(
+            register,
+            |policies| {
+                policies.initialize().unwrap();
+            },
+            routes,
+        )
+    }
+
     fn planner_with_tools_and_policies<F, P>(register: F, configure_policies: P) -> Planner
+    where
+        F: FnOnce(&mut ToolRegistry, Arc<FilesystemProvider>, Arc<ContentIntelligenceApi>),
+        P: FnOnce(&mut PolicyEngine),
+    {
+        planner_with_tools_policies_and_routes(register, configure_policies, ToolRouteTable::builtin())
+    }
+
+    fn planner_with_tools_policies_and_routes<F, P>(
+        register: F,
+        configure_policies: P,
+        routes: ToolRouteTable,
+    ) -> Planner
     where
         F: FnOnce(&mut ToolRegistry, Arc<FilesystemProvider>, Arc<ContentIntelligenceApi>),
         P: FnOnce(&mut PolicyEngine),
@@ -3086,6 +2468,7 @@ mod tests {
             memory,
             projects,
             context: Arc::new(context),
+            routes,
         });
         planner.initialize().unwrap();
         planner
@@ -3491,6 +2874,193 @@ mod tests {
         })
     }
 
+    fn planner_with_manage() -> (Planner, Arc<FilesystemProvider>) {
+        let filesystem_slot = Arc::new(std::sync::Mutex::new(None));
+        let slot = Arc::clone(&filesystem_slot);
+        let planner = planner_with_tools(move |tools, filesystem, _content| {
+            *slot.lock().unwrap() = Some(Arc::clone(&filesystem));
+            tools
+                .register_tool(Arc::new(jaymi_tools::ManagePathTool::new(Arc::clone(
+                    &filesystem,
+                ))))
+                .unwrap();
+        });
+        let filesystem = filesystem_slot.lock().unwrap().clone().expect("filesystem");
+        (planner, filesystem)
+    }
+
+    #[test]
+    fn trash_delete() {
+        let (planner, filesystem) = planner_with_manage();
+        if !filesystem.supports_trash() {
+            return;
+        }
+        let dir = temp_dir();
+        let path = dir.join("trash-plan.txt");
+        fs::write(&path, b"recoverable").unwrap();
+
+        let response = planner
+            .handle(UserRequest::manage_delete(&path))
+            .expect("delete");
+        assert!(response.awaiting_review);
+        let plan = response.execution_plan.as_ref().expect("plan");
+        assert_eq!(plan.deletion_method(), Some(DeletionMethod::Trash));
+        let review = ReviewCardModel::from_plan(plan, None);
+        assert!(review
+            .approval_notice
+            .contains("moves the selected files to the Trash"));
+        assert!(review.plan_items.iter().any(|item| item.contains("Trash")));
+
+        let plan_id = plan.id().clone();
+        match planner.resolve_review(ReviewIntent::Approve { plan_id }) {
+            Ok(resumed) => {
+                assert!(!path.exists());
+                let summary = resumed.execution_summary.expect("summary");
+                assert_eq!(summary.deletion_method, Some(DeletionMethod::Trash));
+                assert!(!summary.files_moved_to_trash.is_empty());
+                assert_eq!(summary.recovery_available, Some(true));
+            }
+            Err(error)
+                if error.message().to_ascii_lowercase().contains("trash")
+                    || error.message().to_ascii_lowercase().contains("finder") => {}
+            Err(error) => panic!("unexpected approve failure: {error}"),
+        }
+    }
+
+    #[test]
+    fn permanent_delete() {
+        let (planner, _) = planner_with_manage();
+        let dir = temp_dir();
+        let path = dir.join("perm-plan.txt");
+        fs::write(&path, b"gone").unwrap();
+
+        let response = planner
+            .handle(UserRequest::manage_delete_permanent(&path))
+            .expect("permanent delete");
+        assert!(response.awaiting_review);
+        let plan = response.execution_plan.as_ref().expect("plan");
+        assert_eq!(plan.deletion_method(), Some(DeletionMethod::Permanent));
+        let review = ReviewCardModel::from_plan(plan, None);
+        assert!(review
+            .approval_notice
+            .contains("permanently deletes these files"));
+
+        let plan_id = plan.id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .expect("approve");
+        assert!(!path.exists());
+        let summary = resumed.execution_summary.expect("summary");
+        assert_eq!(summary.deletion_method, Some(DeletionMethod::Permanent));
+        assert!(!summary.files_permanently_deleted.is_empty());
+        assert_eq!(summary.recovery_available, Some(false));
+    }
+
+    #[test]
+    fn trash_unavailable() {
+        let (planner, filesystem) = planner_with_manage();
+        filesystem.set_trash_available(false);
+        let dir = temp_dir();
+        let path = dir.join("no-trash-plan.txt");
+        fs::write(&path, b"x").unwrap();
+
+        let response = planner
+            .handle(UserRequest::manage_delete(&path))
+            .expect("delete");
+        let plan = response.execution_plan.expect("plan");
+        assert_eq!(plan.deletion_method(), Some(DeletionMethod::Permanent));
+        let review = ReviewCardModel::from_plan(&plan, None);
+        assert!(review
+            .approval_notice
+            .contains("permanently deletes these files"));
+    }
+
+    #[test]
+    fn execution_summary_delete() {
+        let (planner, filesystem) = planner_with_manage();
+        let dir = temp_dir();
+        let path = dir.join("summary-delete.txt");
+        fs::write(&path, b"x").unwrap();
+
+        let method = if filesystem.supports_trash() {
+            DeletionMethod::Trash
+        } else {
+            DeletionMethod::Permanent
+        };
+        let request = if method == DeletionMethod::Permanent {
+            UserRequest::manage_delete_permanent(&path)
+        } else {
+            UserRequest::manage_delete(&path)
+        };
+        let response = planner.handle(request).expect("delete");
+        let plan_id = response.execution_plan.expect("plan").id().clone();
+        let resumed = match planner.resolve_review(ReviewIntent::Approve { plan_id }) {
+            Ok(resumed) => resumed,
+            Err(error)
+                if error.message().to_ascii_lowercase().contains("finder")
+                    || error.message().to_ascii_lowercase().contains("trash") =>
+            {
+                return;
+            }
+            Err(error) => panic!("unexpected approve failure: {error}"),
+        };
+        let summary = resumed.execution_summary.expect("summary");
+        let rendered = summary.render_conversation();
+        assert!(rendered.contains("Deletion method:"));
+        assert!(
+            rendered.contains("Moved to Trash:")
+                || rendered.contains("Permanently deleted:")
+        );
+        assert!(rendered.contains("Recovery available:"));
+        assert_eq!(summary.deletion_method, Some(method));
+    }
+
+    #[test]
+    fn preview_generation() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let path = dir.join("preview.txt");
+        fs::write(&path, "old\n").unwrap();
+        let response = planner
+            .handle(UserRequest::write_file(&path, "old\nnew\n"))
+            .expect("write");
+        assert!(response.awaiting_review);
+        let plan = response.execution_plan.expect("plan");
+        let preview = plan.action_preview().expect("preview");
+        assert_eq!(preview.kind, jaymi_core::PreviewKind::UnifiedDiff);
+        assert!(preview.body.as_ref().is_some_and(|body| body.contains("+new")));
+        let card = ReviewCardModel::from_plan(&plan, None);
+        assert!(card.action_preview.is_some());
+        assert!(card.render_text().contains("Preview"));
+        // Preview must not have mutated the file.
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old\n");
+    }
+
+    #[test]
+    fn large_preview() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let path = dir.join("large.txt");
+        let before: String = (0..80).map(|i| format!("line {i}\n")).collect();
+        let after: String = (0..120).map(|i| format!("changed {i}\n")).collect();
+        fs::write(&path, &before).unwrap();
+        let response = planner
+            .handle(UserRequest::write_file(&path, after))
+            .expect("write");
+        let plan = response.execution_plan.expect("plan");
+        let preview = plan.action_preview().expect("preview");
+        let card = ReviewCardModel::from_plan(&plan, None);
+        let truncated = card.render_text_with_preview(false);
+        let expanded = card.render_text_with_preview(true);
+        assert!(truncated.contains("Preview"));
+        assert!(
+            preview.truncated
+                || truncated.contains("truncated")
+                || truncated.lines().count() <= expanded.lines().count()
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), before);
+    }
+
     fn paused_write(planner: &Planner, path: &Path, contents: &str) -> ExecutionPlan {
         let mut plan = ExecutionPlan::create(ExecutionPlanParams {
             originating_request: format!("Write {}", path.display()),
@@ -3512,6 +3082,8 @@ mod tests {
             review_requirement: ReviewRequirement::Required,
             estimated_reversibility: EstimatedReversibility::PartiallyReversible,
             expected_outputs: vec!["written file".into()],
+        deletion_method: None,
+        action_preview: None,
         lineage: Default::default(),
         });
         plan.mark_ready().unwrap();
@@ -3677,6 +3249,8 @@ mod tests {
             review_requirement: ReviewRequirement::Required,
             estimated_reversibility: EstimatedReversibility::PartiallyReversible,
             expected_outputs: vec!["written file".into()],
+            deletion_method: None,
+            action_preview: None,
             lineage: PlanLineage::root(),
         });
         plan.mark_ready().unwrap();
@@ -3909,6 +3483,8 @@ mod tests {
             review_requirement: ReviewRequirement::Required,
             estimated_reversibility: EstimatedReversibility::PartiallyReversible,
             expected_outputs: vec!["written file".into()],
+        deletion_method: None,
+        action_preview: None,
         lineage: Default::default(),
         });
         plan.mark_ready().unwrap();
@@ -4191,6 +3767,168 @@ mod tests {
                     actions_performed: vec!["Attempted directory listing".into()],
                     ..Default::default()
                 },
+                ..Default::default()
+            })
+        }
+    }
+
+    #[test]
+    fn tool_registration() {
+        let table = ToolRouteTable::builtin();
+        assert_eq!(table.len(), 12, "shipping tool-backed intents must all register");
+        assert!(table.contains(IntentId::ListDirectory));
+        assert!(table.contains(IntentId::WriteFile));
+        assert!(table.contains(IntentId::ManagePath));
+        assert!(table.contains(IntentId::RunTerminal));
+        assert!(table.contains(IntentId::Git));
+        assert!(table.contains(IntentId::Lsp));
+        assert!(!table.contains(IntentId::PlanWork));
+        assert!(!table.contains(IntentId::Unknown));
+
+        let list = table.get(IntentId::ListDirectory).expect("list route");
+        assert_eq!(list.route().tool_id, SEARCH_FILES_TOOL_ID);
+        assert_eq!(list.route().capability, Capability::Search);
+
+        let mut custom = ToolRouteTable::new();
+        custom.register_handler(ListDirectoryProbe);
+        assert_eq!(custom.len(), 1);
+        assert_eq!(
+            custom.get(IntentId::ListDirectory).unwrap().route().tool_id,
+            "probe_list"
+        );
+    }
+
+    #[test]
+    fn planner_dispatch() {
+        let planner = planner_with_search_and_read();
+        let dir = temp_dir();
+        File::create(dir.join("a.txt")).unwrap();
+        let response = planner
+            .handle(UserRequest::list_directory(&dir))
+            .expect("dispatch list");
+        assert!(!response.blocked);
+        assert_eq!(response.tool_id.as_deref(), Some(SEARCH_FILES_TOOL_ID));
+        assert_eq!(response.capability, Some(Capability::Search));
+        assert!(response.execution_plan.is_some());
+        assert!(!response.entries.is_empty());
+
+        let file = dir.join("note.md");
+        fs::write(&file, "hello").unwrap();
+        let response = planner
+            .handle(UserRequest::read_file(&file))
+            .expect("dispatch read");
+        assert_eq!(response.tool_id.as_deref(), Some(READ_FILE_TOOL_ID));
+        assert_eq!(response.capability, Some(Capability::ReadDocuments));
+        assert!(response.document.is_some());
+    }
+
+    #[test]
+    fn unknown_tool() {
+        // Builtin ListDirectory route prefers search_files; registry is empty → error.
+        let planner = planner_with_tools_and_routes(
+            |_tools, _fs, _content| {},
+            ToolRouteTable::builtin(),
+        );
+        let err = planner
+            .handle(UserRequest::list_directory(temp_dir()))
+            .expect_err("missing preferred tool must fail");
+        assert!(
+            err.message().contains("unknown tool"),
+            "expected unknown tool error, got {}",
+            err.message()
+        );
+    }
+
+    #[test]
+    fn missing_capability() {
+        // Preferred tool is registered but does not advertise Search.
+        let planner = planner_with_tools(|tools, _fs, _content| {
+            tools
+                .register_tool(Arc::new(WrongCapabilityTool::new()))
+                .unwrap();
+        });
+        let err = planner
+            .handle(UserRequest::list_directory(temp_dir()))
+            .expect_err("capability mismatch must fail");
+        assert!(
+            err.message().contains("does not fulfill capability"),
+            "expected missing capability error, got {}",
+            err.message()
+        );
+    }
+
+    /// Minimal handler used only by `tool_registration`.
+    struct ListDirectoryProbe;
+    impl IntentToolHandler for ListDirectoryProbe {
+        fn route(&self) -> ToolRoute {
+            ToolRoute {
+                intent: IntentId::ListDirectory,
+                capability: Capability::Search,
+                tool_id: "probe_list",
+            }
+        }
+
+        fn prepare(
+            &self,
+            _intent: &Intent,
+            _request_text: &str,
+            _host: &dyn DispatchSupport,
+        ) -> JaymiResult<PreparedToolCall> {
+            Err(JaymiError::new("probe prepare unused"))
+        }
+
+        fn respond(
+            &self,
+            _call: &PreparedToolCall,
+            _output: ToolOutput,
+            _meta: ExecutionMeta,
+        ) -> JaymiResult<PlannerResponse> {
+            Err(JaymiError::new("probe respond unused"))
+        }
+    }
+
+    /// Tool id matches ListDirectory preferred id but ads the wrong capability.
+    struct WrongCapabilityTool {
+        metadata: ToolMetadata,
+    }
+
+    impl WrongCapabilityTool {
+        fn new() -> Self {
+            Self {
+                metadata: ToolMetadata {
+                    id: SEARCH_FILES_TOOL_ID.to_string(),
+                    name: "Wrong Capability".into(),
+                    version: "0".into(),
+                    description: "ads Code instead of Search".into(),
+                    provider: FILESYSTEM_PROVIDER_ID.to_string(),
+                    capabilities: vec![Capability::Code],
+                    risk: ToolRisk::Workspace,
+                    execution_mode: ExecutionMode::Synchronous,
+                    estimated_runtime: EstimatedRuntime::Fast,
+                    resource_cost: ResourceCost::Low,
+                    memory_usage: MemoryUsage::Small,
+                    gpu_requirements: GpuRequirements::None,
+                    privacy: PrivacyMode::LocalOnly,
+                    internet: InternetRequirement::Never,
+                    reliability: Reliability::Experimental,
+                    result_type: ResultType::StructuredData,
+                },
+            }
+        }
+    }
+
+    impl Tool for WrongCapabilityTool {
+        fn metadata(&self) -> &ToolMetadata {
+            &self.metadata
+        }
+
+        fn validate(&self, _input: &ToolInput) -> JaymiResult<()> {
+            Ok(())
+        }
+
+        fn execute(&self, _input: &ToolInput) -> JaymiResult<ToolOutput> {
+            Ok(ToolOutput {
+                success: true,
                 ..Default::default()
             })
         }

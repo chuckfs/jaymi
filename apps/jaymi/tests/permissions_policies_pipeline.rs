@@ -14,7 +14,7 @@ use jaymi_permissions::{
     PermissionAction, PermissionCategory, PermissionDecision, PermissionEngine, PermissionRequest,
     PermissionScope,
 };
-use jaymi_planner::{Planner, PlannerDeps, ReviewIntent};
+use jaymi_planner::{Planner, PlannerDeps, ReviewIntent, ToolRouteTable};
 use jaymi_policies::{
     BuiltinPolicy, ExecutionCandidate, Policy, PolicyDecision, PolicyEngine, PolicyScope,
 };
@@ -269,6 +269,7 @@ fn planner_with_only_cloud_search(privacy_maximum: bool) -> Planner {
         memory,
         projects,
         context: Arc::new(context),
+        routes: ToolRouteTable::builtin(),
     });
     planner.initialize().unwrap();
     planner

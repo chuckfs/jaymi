@@ -174,6 +174,10 @@ pub struct ReviewCardModel {
     pub estimated_duration: EstimatedDuration,
     /// Reversibility of effects.
     pub reversibility: EstimatedReversibility,
+    /// Deletion method when this card reviews a delete plan.
+    pub deletion_method: Option<jaymi_core::DeletionMethod>,
+    /// Structured preview of what will change (Preview Before Action).
+    pub action_preview: Option<jaymi_core::ActionPreview>,
     /// Interactive vs resolved.
     pub state: ReviewCardState,
     /// 1-based revision number.
@@ -249,16 +253,24 @@ impl ReviewCardModel {
             parts.join(" ")
         };
 
-        let after_approval = match plan.estimated_reversibility() {
-            EstimatedReversibility::Irreversible => {
-                "After approval, Jaymi will execute this plan. The change may be difficult or impossible to undo.".into()
+        let after_approval = match plan.deletion_method() {
+            Some(jaymi_core::DeletionMethod::Trash) => {
+                "After approval, Jaymi will move the selected files to the Trash. You can restore them from Trash.".into()
             }
-            EstimatedReversibility::PartiallyReversible => {
-                "After approval, Jaymi will execute this plan. Some effects can be undone; others may not.".into()
+            Some(jaymi_core::DeletionMethod::Permanent) => {
+                "After approval, Jaymi will permanently delete these files. This cannot be undone from Trash.".into()
             }
-            EstimatedReversibility::FullyReversible => {
-                "After approval, Jaymi will execute this plan. Effects should be reversible.".into()
-            }
+            None => match plan.estimated_reversibility() {
+                EstimatedReversibility::Irreversible => {
+                    "After approval, Jaymi will execute this plan. The change may be difficult or impossible to undo.".into()
+                }
+                EstimatedReversibility::PartiallyReversible => {
+                    "After approval, Jaymi will execute this plan. Some effects can be undone; others may not.".into()
+                }
+                EstimatedReversibility::FullyReversible => {
+                    "After approval, Jaymi will execute this plan. Effects should be reversible.".into()
+                }
+            },
         };
 
         let permissions = plan
@@ -287,6 +299,8 @@ impl ReviewCardModel {
                 plan.steps().len().max(1),
             ),
             reversibility: plan.estimated_reversibility(),
+            deletion_method: plan.deletion_method(),
+            action_preview: plan.action_preview().cloned(),
             state: ReviewCardState::Pending,
             revision: plan.revision(),
             parent_plan_id: plan.parent_plan_id().cloned(),
@@ -319,6 +333,11 @@ impl ReviewCardModel {
 
     /// Conversational plain-text body for chat bubbles and future clients.
     pub fn render_text(&self) -> String {
+        self.render_text_with_preview(false)
+    }
+
+    /// Conversational body with optional expanded preview.
+    pub fn render_text_with_preview(&self, expand_preview: bool) -> String {
         let mut lines = Vec::new();
         lines.push(self.opening.clone());
         lines.push(String::new());
@@ -329,6 +348,18 @@ impl ReviewCardModel {
             for item in &self.plan_items {
                 lines.push(format!("• {item}"));
             }
+        }
+        if let Some(preview) = &self.action_preview {
+            lines.push(String::new());
+            let display = if expand_preview {
+                preview.clone()
+            } else {
+                preview.clone().truncate_for_display(
+                    jaymi_core::PREVIEW_MAX_BODY_LINES,
+                    jaymi_core::PREVIEW_MAX_BODY_CHARS,
+                )
+            };
+            lines.push(display.render_text(expand_preview));
         }
         if self.revision > 1 || !self.revision_changes.is_empty() {
             lines.push(String::new());
@@ -421,9 +452,25 @@ fn conversational_plan_items(
                     })
                     .unwrap_or("change");
                 if action == "delete" {
-                    items.push(format!("Delete {resource}"));
-                    items.push("Remove the folder or file and everything inside it".into());
-                    items.push("Update the project index afterward".into());
+                    match plan.deletion_method() {
+                        Some(jaymi_core::DeletionMethod::Trash) => {
+                            items.push(format!("Delete {resource}"));
+                            items.push("Deletion Method: Trash".into());
+                            items.push("Move the selected files to the Trash".into());
+                            items.push("Update the project index afterward".into());
+                        }
+                        Some(jaymi_core::DeletionMethod::Permanent) => {
+                            items.push(format!("Permanently delete {resource}"));
+                            items.push("Deletion Method: Permanent".into());
+                            items.push("Remove the folder or file with no Trash recovery".into());
+                            items.push("Update the project index afterward".into());
+                        }
+                        None => {
+                            items.push(format!("Delete {resource}"));
+                            items.push("Remove the folder or file and everything inside it".into());
+                            items.push("Update the project index afterward".into());
+                        }
+                    }
                 } else if plan.originating_request().to_ascii_lowercase().contains("rename")
                     || plan
                         .steps()
@@ -472,18 +519,29 @@ fn conversational_plan_items(
 }
 
 fn approval_notice_for(plan: &ExecutionPlan, explanation: Option<&str>) -> String {
-    let mut notice = match (plan.estimated_risk(), plan.estimated_reversibility()) {
-        (EstimatedRisk::High, EstimatedReversibility::Irreversible)
-        | (_, EstimatedReversibility::Irreversible) => {
-            "This action is destructive and requires your approval.".to_string()
+    let mut notice = if let Some(method) = plan.deletion_method() {
+        match method {
+            jaymi_core::DeletionMethod::Trash => {
+                "This action moves the selected files to the Trash and can be undone.".to_string()
+            }
+            jaymi_core::DeletionMethod::Permanent => {
+                "This action permanently deletes these files.".to_string()
+            }
         }
-        (EstimatedRisk::High, _) => {
-            "This action has high risk and requires your approval.".to_string()
+    } else {
+        match (plan.estimated_risk(), plan.estimated_reversibility()) {
+            (EstimatedRisk::High, EstimatedReversibility::Irreversible)
+            | (_, EstimatedReversibility::Irreversible) => {
+                "This action is destructive and requires your approval.".to_string()
+            }
+            (EstimatedRisk::High, _) => {
+                "This action has high risk and requires your approval.".to_string()
+            }
+            (EstimatedRisk::Medium, EstimatedReversibility::PartiallyReversible) => {
+                "This will change your workspace and requires your approval.".to_string()
+            }
+            _ => "This action requires your approval before anything runs.".to_string(),
         }
-        (EstimatedRisk::Medium, EstimatedReversibility::PartiallyReversible) => {
-            "This will change your workspace and requires your approval.".to_string()
-        }
-        _ => "This action requires your approval before anything runs.".to_string(),
     };
     if let Some(explanation) = explanation.map(str::trim).filter(|s| !s.is_empty()) {
         notice = format!("{notice} {explanation}");
@@ -568,6 +626,8 @@ mod tests {
             review_requirement: ReviewRequirement::Required,
             estimated_reversibility: EstimatedReversibility::Irreversible,
             expected_outputs: vec!["deleted path".into()],
+            deletion_method: None,
+            action_preview: None,
             lineage: Default::default(),
         });
         plan.mark_ready().unwrap();

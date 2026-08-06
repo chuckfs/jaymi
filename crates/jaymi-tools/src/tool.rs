@@ -2,9 +2,9 @@
 
 use crate::metadata::ToolMetadata;
 use jaymi_core::{
-    Citation, DiscoveryQueryKind, Document, FileEntry, GitOperation, GitPathStatus, JaymiResult,
-    LspCompletionItem, LspDiagnostic, LspHover, LspLocation, LspRequest, LspTextEdit,
-    ProjectKnowledgeRequest, SearchRequest, TerminalOperation,
+    ActionPreview, Citation, DeletionMethod, DiscoveryQueryKind, Document, FileEntry, GitOperation,
+    GitPathStatus, JaymiResult, LspCompletionItem, LspDiagnostic, LspHover, LspLocation, LspRequest,
+    LspTextEdit, ProjectKnowledgeRequest, SearchRequest, TerminalOperation,
 };
 use jaymi_project_engine::ProjectKnowledgeHit;
 use jaymi_providers::LspOperationResult;
@@ -37,6 +37,8 @@ pub struct ToolInput {
     pub paths: Vec<std::path::PathBuf>,
     /// Structured Language Server request.
     pub lsp: Option<LspRequest>,
+    /// Planner-chosen deletion method for `manage_path` delete (tools never invent this).
+    pub deletion_method: Option<DeletionMethod>,
 }
 
 impl ToolInput {
@@ -68,7 +70,8 @@ impl ToolInput {
     /// Create input for mkdir / rename / delete path management.
     ///
     /// `command` is `mkdir`, `rename`, or `delete`. For rename, `content` is the
-    /// destination path string.
+    /// destination path string. For delete, set [`Self::deletion_method`] — the
+    /// Planner chooses Trash vs Permanent; tools never invent a strategy.
     pub fn manage_path(
         command: impl Into<String>,
         path: impl Into<std::path::PathBuf>,
@@ -78,6 +81,19 @@ impl ToolInput {
             path: Some(path.into()),
             command: Some(command.into()),
             content: content.map(Into::into),
+            ..Self::default()
+        }
+    }
+
+    /// Create input for a Planner-directed delete (Trash or Permanent).
+    pub fn manage_delete(
+        path: impl Into<std::path::PathBuf>,
+        method: DeletionMethod,
+    ) -> Self {
+        Self {
+            path: Some(path.into()),
+            command: Some("delete".into()),
+            deletion_method: Some(method),
             ..Self::default()
         }
     }
@@ -284,6 +300,14 @@ pub struct ToolExecutionMetadata {
     pub resources_changed: Vec<String>,
     /// Files created, overwritten, renamed, or deleted.
     pub files_edited: Vec<String>,
+    /// Paths moved to the OS Trash (recoverable).
+    pub files_moved_to_trash: Vec<String>,
+    /// Paths permanently deleted (not recoverable via Trash).
+    pub files_permanently_deleted: Vec<String>,
+    /// Whether recovery via Trash is available after this mutation.
+    pub recovery_available: Option<bool>,
+    /// Deletion method the Planner directed (when this was a delete).
+    pub deletion_method: Option<DeletionMethod>,
     /// Non-fatal warnings.
     pub warnings: Vec<String>,
     /// Wall-clock duration inside the tool, when measured.
@@ -313,6 +337,38 @@ impl ToolExecutionMetadata {
             actions_performed: vec![action.into()],
             resources_changed: paths.clone(),
             files_edited: paths,
+            ..Self::default()
+        }
+    }
+
+    /// Metadata for a Trash move (recoverable delete).
+    pub fn moved_to_trash(path: impl AsRef<std::path::Path>) -> Self {
+        let path = path.as_ref().display().to_string();
+        Self {
+            actions_performed: vec![format!("Moved {path} to Trash")],
+            resources_changed: vec![path.clone()],
+            files_edited: vec![path.clone()],
+            files_moved_to_trash: vec![path],
+            recovery_available: Some(true),
+            deletion_method: Some(DeletionMethod::Trash),
+            next_suggested_actions: vec![
+                "Restore from Trash if this was a mistake".into(),
+                "Empty Trash later to reclaim disk space".into(),
+            ],
+            ..Self::default()
+        }
+    }
+
+    /// Metadata for a permanent delete (not recoverable via Trash).
+    pub fn permanently_deleted(path: impl AsRef<std::path::Path>) -> Self {
+        let path = path.as_ref().display().to_string();
+        Self {
+            actions_performed: vec![format!("Permanently deleted {path}")],
+            resources_changed: vec![path.clone()],
+            files_edited: vec![path.clone()],
+            files_permanently_deleted: vec![path],
+            recovery_available: Some(false),
+            deletion_method: Some(DeletionMethod::Permanent),
             ..Self::default()
         }
     }
@@ -480,4 +536,21 @@ pub trait Tool: Send + Sync {
 
     /// Execute the operation through the appropriate provider.
     fn execute(&self, input: &ToolInput) -> JaymiResult<ToolOutput>;
+
+    /// Whether the bound provider can move deletes to Trash.
+    ///
+    /// Default `false`. The Planner uses this to decide deletion policy;
+    /// tools still never choose the strategy themselves.
+    fn supports_recoverable_delete(&self) -> bool {
+        false
+    }
+
+    /// Read-only preview of what [`Self::execute`] would change.
+    ///
+    /// Default `Ok(None)` for read-only tools. Mutating tools should return
+    /// structured [`ActionPreview`] metadata. Must not mutate provider state.
+    fn preview(&self, input: &ToolInput) -> JaymiResult<Option<ActionPreview>> {
+        let _ = input;
+        Ok(None)
+    }
 }

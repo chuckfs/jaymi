@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::registry::ToolRegistry;
 use crate::tool::{ToolInput, ToolOutput};
 use jaymi_capabilities::Capability;
-use jaymi_core::{JaymiError, JaymiResult};
+use jaymi_core::{ActionPreview, JaymiError, JaymiResult};
 
 /// Coordinates tool selection and execution.
 ///
@@ -94,5 +94,16 @@ impl ToolOrchestrator {
         })?;
         let output = self.execute(&tool_id, input)?;
         Ok((tool_id, output))
+    }
+
+    /// Read-only preview of what executing `tool_id` with `input` would change.
+    pub fn preview(
+        &self,
+        tool_id: &str,
+        input: &ToolInput,
+    ) -> JaymiResult<Option<ActionPreview>> {
+        let tool = self.registry.get(tool_id)?;
+        tool.validate(input)?;
+        tool.preview(input)
     }
 }

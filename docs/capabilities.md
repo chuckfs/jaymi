@@ -32,7 +32,29 @@ Registration is not the same as executability. Planned capabilities remain regis
 
 **Planned:** OCR (placeholder provider only — not executable), Chat, Generate Images, Browse the Web, Organize Files, Automate Tasks, Internet, Automation
 
-Effective availability can demote Ready / Experimental to Unavailable when required tools or providers are missing. Planned stays Planned until the product promotes it.
+### Catalog vs effective availability
+
+Two assessments must not be conflated:
+
+| Path | API | Meaning |
+| --- | --- | --- |
+| **Catalog / request validate** | `CapabilityEngine::validate` | Catalog maturity only (Ready / Experimental / Planned). Planner request gating uses this tier. |
+| **Effective / discover** | `discover` / Inspector / capability plans | Catalog + live tool/provider inventory via `effective_availability` |
+
+Effective availability can demote Ready / Experimental to **Unavailable** when required tools or providers are missing. Planned stays Planned until the product promotes it.
+
+**Effective at boot (approximate):**
+
+| Capability | Catalog | Effective discover | Why |
+| --- | --- | --- | --- |
+| Search, Read Documents, Discover, File Management, Execute Terminal Commands | Ready | Ready | Required tools/providers advertise the capability |
+| Index | Ready | **Unavailable** | `scan_filesystem` ads Index; no provider currently ads Index |
+| Code | Experimental | **Experimental** | `terminal` / `git` / `language_server` + matching providers |
+| Embeddings | Experimental | Experimental | Provider only (`embedding.local`); no tool required |
+| Vision | Experimental | **Unavailable** | Requires a vision tool; none registered |
+| OCR / Chat / Generate Images / … | Planned | Planned | Planned never promotes via inventory alone |
+
+Preferred tool hints (e.g. Code prefers `editor`) are diagnostics only — there is no `editor` tool yet; LSP / terminal / git fulfill Code inventory.
 
 ---
 

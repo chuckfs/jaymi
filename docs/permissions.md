@@ -1,6 +1,6 @@
 Permissions
 
-**Status: Current Implementation** (rule engine) · **Target:** conversational approval UX, history, revoke
+**Status: Current Implementation** (rule engine + Review Before Action) · **Target:** durable grants, permission history, revoke
 
 Permissions define what Jaymi is allowed to do on behalf of the user.
 
@@ -119,9 +119,32 @@ Cloud providers always require explicit user approval before transmitting person
 
 ⸻
 
+Default Decisions
+
+**Status: Current** — `PermissionEngine::check`
+
+| Category · Action | Decision |
+|-------------------|----------|
+| Filesystem · Read | Allowed |
+| Filesystem · Write | RequiresApproval |
+| Filesystem · Delete | RequiresApproval |
+| Filesystem · other | Denied |
+| Terminal · Execute | RequiresApproval |
+| Terminal · other | Denied |
+| Internet · * | Denied |
+| Communication · * | Denied |
+| System · * | Denied |
+| AiProviders · * | Denied |
+
+The Planner may still escalate to RequiresApproval from ToolRisk (Modify / Destructive / External) or Action Policy even when this table would allow.
+
+⸻
+
 Permission Scope
 
-Permissions may be granted at different scopes.
+**Status: Target** (enum present; grant store / enforcement not shipped)
+
+Permission requests carry a scope field. Values are defined for future durable grants:
 
 Once
 
@@ -161,6 +184,8 @@ Example:
 
 Always allow Jaymi to read my Downloads folder.
 
+Today the Planner passes `PermissionScope::Once` on checks; scopes are not yet matched against stored grants.
+
 ⸻
 
 Permission Request
@@ -182,7 +207,7 @@ Jaymi would like to rename 12 files in your Downloads folder to make them easier
 
 Approval Workflow
 
-**Status: Partial** — Permission + Action Policy emit Allowed / RequiresApproval / Denied · Review Card resume · **Target:** full conversational approval UX
+**Status: Current** — Permission + Action Policy emit Allowed / RequiresApproval / Denied · Review Before Action via `Application::submit_review` · **Target:** durable permission grants and revoke UI
 
 Permission Engine and Action Policies share the same decision triad. The Planner
 combines them (Denied > RequiresApproval > Allowed) and may also escalate from
@@ -191,10 +216,12 @@ ToolRisk (Modify / Destructive / External).
 | Decision | Planner |
 |----------|---------|
 | Allowed | Execute |
-| RequiresApproval | Review Card → await user → resume same plan |
+| RequiresApproval | Review → `ReviewIntent` → Planner resume (same plan) |
 | Denied | Explain why → do not execute |
 
-Approval never bypasses the Planner. Tools never execute themselves.
+Approval never bypasses the Planner. Tools never execute themselves. Review UI
+may be a conversation Review Card or a Coding gesture that auto-submits
+`ReviewIntent::Approve`; both go through `Application::submit_review`.
 
 ```text
 Planner
@@ -202,7 +229,7 @@ Planner
   → Permission Check (Allowed / RequiresApproval / Denied)
   → Combine (+ ToolRisk escalate)
   → Allowed → Execute
-  → RequiresApproval → Review Card → User → Resume
+  → RequiresApproval → Review → ReviewIntent → Planner → Approved → Execute
   → Denied → Explain → Stop
 ```
 
@@ -226,6 +253,12 @@ Examples include:
 
 Whenever possible, Jaymi should prefer reversible actions.
 
+**Current:** Filesystem deletes default to OS Trash / Recycle Bin. The Planner
+chooses `DeletionMethod` (`trash` | `permanent`); providers implement the
+method; tools never invent a strategy. Permanent delete is used only when the
+user explicitly requests it, Trash is unavailable, or the provider cannot
+recover.
+
 Examples:
 
 Instead of deleting:
@@ -244,14 +277,22 @@ Generate a preview.
 
 Preview Before Action
 
+**Status: Current** for write_file, manage_path (rename/move/mkdir/delete),
+git mutations, and language_server rename. Image editing remains a stub kind.
+
 Whenever practical, Jaymi should present a preview.
+
+Tools produce structured `ActionPreview` metadata. The Planner attaches it to
+the Execution Plan and Review Card. Providers never render UI. Large previews
+are truncated with expand.
 
 Examples include:
 
-* File diffs
+* File diffs (unified +/− counts)
 * Document changes
-* Image edits
-* File moves
+* Image edits (future)
+* File moves / renames (before/after or source/destination)
+* Git impact (modified / staged)
 * Folder reorganizations
 
 The user should understand exactly what will happen before approving.
@@ -280,6 +321,8 @@ Cancel on Execution Plans — see `docs/planner.md`), which is Current.
 ⸻
 
 Revocation
+
+**Status: Target**
 
 Permissions are never permanent unless the user explicitly chooses.
 

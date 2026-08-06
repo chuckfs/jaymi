@@ -285,6 +285,8 @@ pub struct PausedPlanSnapshot {
     pub review_requirement: String,
     /// Reversibility label.
     pub reversibility: String,
+    /// Deletion strategy when this plan deletes (`trash` / `permanent`).
+    pub deletion_method: Option<String>,
     /// Permission requirement labels (`filesystem:write`, …).
     pub permissions: Vec<String>,
     /// Resources the plan would touch.
@@ -395,6 +397,9 @@ impl PausedPlanSnapshot {
             risk: plan.estimated_risk().as_str().to_string(),
             review_requirement: plan.review_requirement().as_str().to_string(),
             reversibility: plan.estimated_reversibility().as_str().to_string(),
+            deletion_method: plan
+                .deletion_method()
+                .map(|method| method.as_str().to_string()),
             permissions: plan
                 .permissions_required()
                 .iter()
@@ -457,6 +462,8 @@ mod tests {
             review_requirement: ReviewRequirement::Required,
             estimated_reversibility: EstimatedReversibility::PartiallyReversible,
             expected_outputs: vec!["written file".into()],
+        deletion_method: None,
+        action_preview: None,
         lineage: Default::default(),
         });
         plan.mark_ready().unwrap();

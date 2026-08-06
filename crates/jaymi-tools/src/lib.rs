@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod categories;
+pub mod diff;
 pub mod git;
 pub mod list_project_tree;
 pub mod lsp;
@@ -23,6 +24,7 @@ pub mod terminal;
 pub mod tool;
 pub mod write_file;
 
+pub use diff::{unified_diff, write_file_preview, DiffStats, DIFF_MAX_SOURCE_LINES};
 pub use git::{GitTool, GIT_TOOL_ID};
 pub use list_project_tree::{ListProjectTreeTool, LIST_PROJECT_TREE_TOOL_ID};
 pub use lsp::{LanguageServerTool, LANGUAGE_SERVER_TOOL_ID};

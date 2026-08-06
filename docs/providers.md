@@ -19,12 +19,16 @@ Instead, every interaction flows through tools that hold bound providers.
 
 ### Current providers
 
-* Filesystem
-* Terminal (PTY) — `TerminalProvider` wraps a `TerminalManager` that owns every live `TerminalSession` (independent PTY shells, one per tab) for the workspace lifetime. Supports `ensure`/`run` (existing session), `create` (spawn a new session at a cwd, id assigned by the manager unless it's the first session), `rename` (display title), and `kill` (close one session). Bound into the `terminal` tool; Coding Workspace never touches the PTY directly — it renders `TerminalSession` metadata (id, title, cwd, history, alive) only.
-* Git — repository detection, status (branch / modified / added / deleted / staged / untracked), stage, unstage, discard, commit. Bound into the `git` tool; Coding Workspace consumes results via Planner only. Merge / rebase / cherry-pick are not implemented.
-* Language Server (Rust Analyzer)
-* Local embedding
-* OCR placeholder (architecture only)
+Stable ids registered at boot and bound into tools:
+
+| Id | Name | Notes |
+|----|------|-------|
+| `filesystem` | Filesystem | list / read / write / mkdir / rename; delete via OS Trash when supported (`move_to_trash`) or permanent unlink (`delete_permanently`). `supports_trash` advertises recovery; the Planner decides policy. Ads: Search, ReadDocuments, FileManagement |
+| `terminal` | Terminal (PTY) | `TerminalProvider` wraps a `TerminalManager` that owns every live `TerminalSession`. Supports `ensure` / `run` / `create` / `rename` / `kill`. Bound into the `terminal` tool. Ads: ExecuteTerminalCommands, Code |
+| `git` | Git | status / stage / unstage / discard / commit. Merge / rebase / cherry-pick are **Target**. Ads: Code |
+| `lsp` | Language Server | Rust Analyzer (mock in tests). Ads: Code |
+| `embedding.local` | Local embedding | Ads: Embeddings, Search |
+| `ocr.placeholder` | OCR placeholder | Architecture only; OCR capability remains **Planned** |
 
 There is no separate ProviderManager. Capability-based selection for planning lives in the Capability Engine; execution lives in tools.
 
@@ -337,6 +341,8 @@ Providers remain isolated.
 ⸻
 
 Installation
+
+**Status: Target**
 
 Providers are installable modules.
 

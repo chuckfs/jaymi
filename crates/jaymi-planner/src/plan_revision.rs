@@ -463,6 +463,8 @@ mod tests {
             review_requirement: ReviewRequirement::Required,
             estimated_reversibility: EstimatedReversibility::PartiallyReversible,
             expected_outputs: vec!["written file".into()],
+            deletion_method: None,
+            action_preview: None,
             lineage: Default::default(),
         })
     }
@@ -524,6 +526,8 @@ mod tests {
             review_requirement: ReviewRequirement::Required,
             estimated_reversibility: EstimatedReversibility::Irreversible,
             expected_outputs: vec!["deleted".into()],
+            deletion_method: None,
+            action_preview: None,
             lineage: Default::default(),
         });
         let input = ToolInput::manage_path("delete", "/tmp/work", None::<String>);

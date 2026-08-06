@@ -48,6 +48,8 @@ pub enum Intent {
         path: PathBuf,
         /// Destination path when renaming.
         destination: Option<PathBuf>,
+        /// Explicit deletion method for `delete` (Planner fills policy when `None`).
+        deletion_method: Option<jaymi_core::DeletionMethod>,
     },
     /// Ensure, run, create, rename, or kill a persistent terminal session.
     RunTerminal {
@@ -219,6 +221,7 @@ impl DecisionEngine {
                     command: manage.command.clone(),
                     path: manage.path.clone(),
                     destination: manage.destination.clone(),
+                    deletion_method: manage.deletion_method,
                 };
             }
         }

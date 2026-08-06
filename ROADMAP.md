@@ -27,8 +27,8 @@ Progress
 | 4 | Memory Engine | **Current** (core; graph/export/aging Target) |
 | 5 | Project Engine | **Current** (core; Git/artifacts Target) |
 | 6 | Workspace & Capability Engine | **Current** (engine + Coding shell + thin UX; rich IDE/canvas Target) |
-| 7 | Tool Engine | **Partial** (framework + 6 tools; most catalog Target) |
-| 8 | Provider Ecosystem | **Partial** (Registry + 3 local providers; plugins Target) |
+| 7 | Tool Engine | **Partial** (framework + 12 tools; broader catalog Target) |
+| 8 | Provider Ecosystem | **Partial** (Registry + 6 local providers; plugins Target) |
 | 9 | Daily Driver | **Target** |
 
 Architectural Integrity (orthogonal to layers): Context sole assemble path, ContextBundle sole request-context contract on `PlannerResponse`, Project ownership, Planner responsibilities, Planner integrity (requests via `handle`), Provider simplification (no ProviderManager), Capability availability (Ready / Experimental / Planned / Unavailable), canonical request pipeline (Intent → Capability → Context Policy → assemble → Action Policy → Permission → Tool), Session ownership (one project open/close lifecycle), Documentation & Diagnostics (Operational / Experimental / Stub / Disabled) — **Current**. Behavior stage after ContextBundle — **Planned**.
@@ -236,7 +236,7 @@ Capabilities also change the user experience.
 
 Conversation stays permanent. Workspaces expand beside it.
 
-**Current:** conversation shell + Coding Workspace shell (five panels + `CodingState`) + workspace expansion model + capability state / inspector.
+**Current:** conversation shell + Coding Workspace shell (five dock pages — Terminal / Problems / Search / Git / Diagnostics — plus an Output placeholder not listed in `pages()`) + `CodingState` + workspace expansion model + capability state / inspector.
 
 **Target UX:**
 
@@ -258,22 +258,30 @@ Objective
 
 Implement capabilities using interchangeable tools.
 
-Current tools
+Current tools (12; registered at boot)
 
 * `search_files`
+* `list_project_tree`
 * `search_knowledge`
 * `search_project_knowledge`
 * `read_file`
+* `write_file`
+* `manage_path`
+* `terminal`
+* `git`
+* `language_server`
 * `query_inventory`
 * `scan_filesystem`
 
 Target tools (examples)
 
-Coding → Local editor, Language server, Terminal, Git
+Coding → dedicated editor tool (beyond LSP rename / workspace shell)
 
 Images → Local image model, Vision model
 
 Search → Messages, Photos, and other sources
+
+Git → merge / rebase / cherry-pick (status / stage / unstage / discard / commit are Current)
 
 Tools are replaceable.
 
@@ -289,16 +297,20 @@ Objective
 
 Allow Jaymi to connect to external systems.
 
-Current providers
+Current providers (6; bound at boot)
 
-* Filesystem
-* Local embedding
-* OCR placeholder (architecture only)
+* `filesystem`
+* `terminal` (PTY)
+* `git` (status / stage / unstage / discard / commit)
+* `lsp` (Rust Analyzer)
+* `embedding.local`
+* `ocr.placeholder` (architecture only — OCR capability remains Planned)
 
 Target examples
 
 * Local models / AI providers
-* Git, Messages, Calendar, Email, Notes, Browser, Terminal
+* Messages, Calendar, Email, Notes, Browser
+* Git merge / rebase / cherry-pick
 * Installable / enableable provider plugins
 
 Every provider follows the same interface.

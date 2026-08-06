@@ -97,6 +97,41 @@ pub struct WriteFileRequest {
     pub content: String,
 }
 
+/// How a filesystem delete should be carried out.
+///
+/// The **Planner** chooses the method. Providers implement Trash / permanent
+/// delete. Tools never invent a strategy — they execute the method supplied on
+/// the tool input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeletionMethod {
+    /// Move to the OS Trash / Recycle Bin (recoverable when the provider supports it).
+    Trash,
+    /// Unlink permanently (no recovery via Trash).
+    Permanent,
+}
+
+impl DeletionMethod {
+    /// Stable label for plans, diagnostics, and summaries.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Trash => "trash",
+            Self::Permanent => "permanent",
+        }
+    }
+
+    /// True when effects are expected to be recoverable from Trash.
+    pub fn is_recoverable(self) -> bool {
+        matches!(self, Self::Trash)
+    }
+}
+
+impl std::fmt::Display for DeletionMethod {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// Structured request to create, rename, or delete a filesystem path.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagePathRequest {
@@ -106,6 +141,8 @@ pub struct ManagePathRequest {
     pub path: PathBuf,
     /// Destination path when renaming (also accepted via [`UserRequest`] content helpers).
     pub destination: Option<PathBuf>,
+    /// Explicit deletion method for `delete` (Planner fills policy when `None`).
+    pub deletion_method: Option<DeletionMethod>,
 }
 
 /// Terminal operations exposed through the Terminal tool / provider.
@@ -331,6 +368,7 @@ impl UserRequest {
                 command: "mkdir".into(),
                 path,
                 destination: None,
+                deletion_method: None,
             }),
             ..Self::bare("")
         }
@@ -346,12 +384,13 @@ impl UserRequest {
                 command: "rename".into(),
                 path,
                 destination: Some(destination),
+                deletion_method: None,
             }),
             ..Self::bare("")
         }
     }
 
-    /// Create a structured request to delete a file or directory.
+    /// Create a structured request to delete a file or directory (Planner prefers Trash).
     pub fn manage_delete(path: impl Into<PathBuf>) -> Self {
         let path = path.into();
         Self {
@@ -360,6 +399,22 @@ impl UserRequest {
                 command: "delete".into(),
                 path,
                 destination: None,
+                deletion_method: None,
+            }),
+            ..Self::bare("")
+        }
+    }
+
+    /// Create a structured request to **permanently** delete a file or directory.
+    pub fn manage_delete_permanent(path: impl Into<PathBuf>) -> Self {
+        let path = path.into();
+        Self {
+            content: format!("permanently delete {}", path.display()),
+            manage_path: Some(ManagePathRequest {
+                command: "delete".into(),
+                path,
+                destination: None,
+                deletion_method: Some(DeletionMethod::Permanent),
             }),
             ..Self::bare("")
         }

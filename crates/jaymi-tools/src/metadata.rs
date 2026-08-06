@@ -44,12 +44,21 @@ impl ToolRisk {
 
     /// Escalate risk for a specific invocation (never de-escalates the base).
     ///
-    /// Examples: `manage_path` delete → Destructive; git discard → Destructive;
-    /// network-required tools → External.
+    /// Examples: permanent `manage_path` delete → Destructive; Trash delete →
+    /// Modify (recoverable); git discard → Destructive; network-required tools
+    /// → External.
     pub fn effective_for(self, input: &ToolInput, internet: InternetRequirement) -> Self {
         let mut risk = self;
         if matches!(input.command.as_deref(), Some("delete")) {
-            risk = risk.escalate(Self::Destructive);
+            match input.deletion_method {
+                Some(jaymi_core::DeletionMethod::Trash) => {
+                    risk = risk.escalate(Self::Modify);
+                }
+                Some(jaymi_core::DeletionMethod::Permanent) | None => {
+                    // Missing method is treated as permanent (safer).
+                    risk = risk.escalate(Self::Destructive);
+                }
+            }
         }
         if let Some(op) = input.git_operation {
             if op.is_destructive() {
@@ -272,9 +281,19 @@ mod tests {
 
     #[test]
     fn effective_risk_escalates_delete_and_discard() {
-        let delete = ToolInput::manage_path("delete", "/tmp/a", None::<String>);
+        let permanent = ToolInput::manage_delete("/tmp/a", jaymi_core::DeletionMethod::Permanent);
         assert_eq!(
-            ToolRisk::Modify.effective_for(&delete, InternetRequirement::Never),
+            ToolRisk::Modify.effective_for(&permanent, InternetRequirement::Never),
+            ToolRisk::Destructive
+        );
+        let trash = ToolInput::manage_delete("/tmp/a", jaymi_core::DeletionMethod::Trash);
+        assert_eq!(
+            ToolRisk::Modify.effective_for(&trash, InternetRequirement::Never),
+            ToolRisk::Modify
+        );
+        let delete_without_method = ToolInput::manage_path("delete", "/tmp/a", None::<String>);
+        assert_eq!(
+            ToolRisk::Modify.effective_for(&delete_without_method, InternetRequirement::Never),
             ToolRisk::Destructive
         );
         let mut discard = ToolInput::default();

@@ -48,6 +48,10 @@ pub struct ExecutionSummaryDiag {
     pub duration_ms: u64,
     pub tools: Vec<String>,
     pub files_edited: Vec<String>,
+    pub files_moved_to_trash: Vec<String>,
+    pub files_permanently_deleted: Vec<String>,
+    pub recovery_available: Option<bool>,
+    pub deletion_method: Option<String>,
     pub partial: bool,
     pub error: Option<String>,
 }
@@ -61,6 +65,12 @@ impl ExecutionSummaryDiag {
             duration_ms: summary.duration_ms,
             tools: summary.tools_executed.clone(),
             files_edited: summary.files_edited.clone(),
+            files_moved_to_trash: summary.files_moved_to_trash.clone(),
+            files_permanently_deleted: summary.files_permanently_deleted.clone(),
+            recovery_available: summary.recovery_available,
+            deletion_method: summary
+                .deletion_method
+                .map(|method| method.as_str().to_string()),
             partial: summary.partial,
             error: summary.error.clone(),
         }
@@ -152,6 +162,7 @@ pub const EXECUTION_INSPECTION_SECTION_TITLES: &[&str] = &[
     "Current Execution Plan",
     "Review state",
     "Risk",
+    "Deletion strategy",
     "Permissions",
     "Planner pause state",
     "Pending approvals",
@@ -252,6 +263,39 @@ pub fn execution_inspection_sections(
                 .first()
                 .map(|pending| vec![format!("pending review risk={}", pending.risk)])
                 .unwrap_or_else(|| vec!["no active plan risk".into()]),
+        },
+    });
+
+    sections.push(CodingDiagnosticsSection {
+        title: "Deletion strategy".into(),
+        lines: match current.and_then(|plan| plan.deletion_method.as_deref()) {
+            Some(method) => vec![
+                format!("deletion_method={method}"),
+                match method {
+                    "trash" => "Recoverable via OS Trash / Recycle Bin.".into(),
+                    "permanent" => "Permanent delete — not recoverable via Trash.".into(),
+                    other => format!("method={other}"),
+                },
+            ],
+            None => {
+                let from_summary = inspection.execution_summaries.iter().find_map(|summary| {
+                    summary.deletion_method.as_ref().map(|method| {
+                        vec![
+                            format!("last summary deletion_method={method}"),
+                            format!(
+                                "moved={} · permanent={} · recovery={}",
+                                summary.files_moved_to_trash.len(),
+                                summary.files_permanently_deleted.len(),
+                                summary
+                                    .recovery_available
+                                    .map(|value| if value { "yes" } else { "no" })
+                                    .unwrap_or("n/a")
+                            ),
+                        ]
+                    })
+                });
+                from_summary.unwrap_or_else(|| vec!["no deletion strategy on the active plan".into()])
+            }
         },
     });
 

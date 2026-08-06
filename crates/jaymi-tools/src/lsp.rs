@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use jaymi_capabilities::Capability;
-use jaymi_core::{JaymiError, JaymiResult, LspOperation};
+use jaymi_core::{ActionPreview, JaymiError, JaymiResult, LspOperation, PreviewKind};
 use jaymi_providers::{LspProvider, LSP_PROVIDER_ID};
 
 use crate::metadata::{
@@ -137,6 +137,67 @@ impl Tool for LanguageServerTool {
             .ok_or_else(|| JaymiError::new("language_server tool requires an lsp request"))?;
         let result = self.lsp.execute(request)?;
         Ok(ToolOutput::lsp(result, request.clone()))
+    }
+
+    fn preview(&self, input: &ToolInput) -> JaymiResult<Option<ActionPreview>> {
+        self.validate(input)?;
+        let request = input
+            .lsp
+            .as_ref()
+            .ok_or_else(|| JaymiError::new("language_server tool requires an lsp request"))?;
+        if request.operation != LspOperation::Rename {
+            return Ok(None);
+        }
+        // Rename RPC returns workspace edits without applying them — safe preview.
+        let result = self.lsp.execute(request)?;
+        let new_name = request.new_name.as_deref().unwrap_or("(unnamed)");
+        let path = request
+            .path
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "(unknown)".into());
+        let mut summary = vec![
+            format!("Rename symbol in {path}"),
+            format!("New name: {new_name}"),
+            format!("Edits: {}", result.edits.len()),
+        ];
+        let mut body_lines = Vec::new();
+        let mut resources = Vec::new();
+        for edit in &result.edits {
+            let edit_path = edit.path.clone();
+            if !resources.contains(&edit_path) {
+                resources.push(edit_path.clone());
+            }
+            body_lines.push(format!(
+                "{edit_path}:{}:{} → {}",
+                edit.range.start.line, edit.range.start.character, edit.new_text
+            ));
+        }
+        if resources.is_empty() {
+            summary.push("No workspace edits returned".into());
+        }
+        let body = if body_lines.is_empty() {
+            None
+        } else {
+            Some(body_lines.join("\n"))
+        };
+        Ok(Some(
+            ActionPreview {
+                kind: PreviewKind::LspWorkspaceEdit,
+                title: format!("Rename → {new_name}"),
+                summary_lines: summary,
+                body,
+                truncated: false,
+                total_lines: None,
+                added_lines: None,
+                removed_lines: None,
+                resources,
+            }
+            .truncate_for_display(
+                jaymi_core::PREVIEW_MAX_BODY_LINES,
+                jaymi_core::PREVIEW_MAX_BODY_CHARS,
+            ),
+        ))
     }
 }
 

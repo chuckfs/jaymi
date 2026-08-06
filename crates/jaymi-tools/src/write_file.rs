@@ -6,9 +6,10 @@
 use std::sync::Arc;
 
 use jaymi_capabilities::Capability;
-use jaymi_core::{JaymiError, JaymiResult};
+use jaymi_core::{ActionPreview, JaymiError, JaymiResult};
 use jaymi_providers::{FilesystemProvider, FILESYSTEM_PROVIDER_ID};
 
+use crate::diff::write_file_preview;
 use crate::metadata::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
     PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata, ToolRisk,
@@ -91,6 +92,37 @@ impl Tool for WriteFileTool {
             metadata: ToolExecutionMetadata::wrote_file(path, content.len()),
             ..Default::default()
         })
+    }
+
+    fn preview(&self, input: &ToolInput) -> JaymiResult<Option<ActionPreview>> {
+        self.validate(input)?;
+        let path = input
+            .path
+            .as_ref()
+            .ok_or_else(|| JaymiError::new("file path is required"))?;
+        let content = input
+            .content
+            .as_ref()
+            .ok_or_else(|| JaymiError::new("content is required"))?;
+        let path_label = path.display().to_string();
+        let before = if path.exists() {
+            match self.filesystem.read_file(path) {
+                Ok(bytes) => Some(String::from_utf8_lossy(&bytes).into_owned()),
+                Err(error) => {
+                    return Ok(Some(ActionPreview::unavailable(
+                        format!("Write {path_label}"),
+                        format!("Could not read existing file for diff: {}", error.message()),
+                    )));
+                }
+            }
+        } else {
+            None
+        };
+        Ok(Some(write_file_preview(
+            &path_label,
+            before.as_deref(),
+            content,
+        )))
     }
 }
 

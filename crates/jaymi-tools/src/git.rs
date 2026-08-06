@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use jaymi_capabilities::Capability;
-use jaymi_core::{GitOperation, JaymiError, JaymiResult};
+use jaymi_core::{ActionPreview, GitOperation, JaymiError, JaymiResult, PreviewKind};
 use jaymi_providers::{GitProvider, GIT_PROVIDER_ID};
 
 use crate::metadata::{
@@ -112,6 +112,139 @@ impl Tool for GitTool {
             snapshot.untracked,
             format!("Git {} · {}", operation.as_str(), snapshot.summary),
         ))
+    }
+
+    fn preview(&self, input: &ToolInput) -> JaymiResult<Option<ActionPreview>> {
+        self.validate(input)?;
+        let repo = input
+            .path
+            .as_ref()
+            .ok_or_else(|| JaymiError::new("git repo root is required"))?;
+        let operation = input
+            .git_operation
+            .ok_or_else(|| JaymiError::new("git operation is required"))?;
+        if matches!(operation, GitOperation::Status) {
+            return Ok(None);
+        }
+
+        let snapshot = self.git.status(repo)?;
+        let mut summary = vec![format!("Operation: {}", operation.as_str())];
+        let mut body_lines = Vec::new();
+
+        let path_filter: Option<std::collections::HashSet<String>> = if input.paths.is_empty() {
+            None
+        } else {
+            Some(
+                input
+                    .paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect(),
+            )
+        };
+        let matches_filter = |path: &str| {
+            path_filter
+                .as_ref()
+                .map(|set| set.contains(path))
+                .unwrap_or(true)
+        };
+
+        let modified: Vec<_> = snapshot
+            .modified
+            .iter()
+            .filter(|entry| matches_filter(&entry.path))
+            .map(|entry| entry.path.clone())
+            .collect();
+        let staged: Vec<_> = snapshot
+            .staged
+            .iter()
+            .filter(|entry| matches_filter(&entry.path))
+            .map(|entry| entry.path.clone())
+            .collect();
+        let added: Vec<_> = snapshot
+            .added
+            .iter()
+            .filter(|entry| matches_filter(&entry.path))
+            .map(|entry| entry.path.clone())
+            .collect();
+        let deleted: Vec<_> = snapshot
+            .deleted
+            .iter()
+            .filter(|entry| matches_filter(&entry.path))
+            .map(|entry| entry.path.clone())
+            .collect();
+
+        if !input.paths.is_empty() {
+            summary.push(format!(
+                "Paths: {}",
+                input
+                    .paths
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
+        summary.push(format!("Files modified: {}", modified.len()));
+        summary.push(format!("Staged changes: {}", staged.len()));
+        if !added.is_empty() {
+            summary.push(format!("Added: {}", added.len()));
+        }
+        if !deleted.is_empty() {
+            summary.push(format!("Deleted: {}", deleted.len()));
+        }
+        if let Some(message) = input.content.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            summary.push(format!("Commit message: {message}"));
+        }
+
+        if !modified.is_empty() {
+            body_lines.push("Modified:".into());
+            for path in &modified {
+                body_lines.push(format!("  {path}"));
+            }
+        }
+        if !staged.is_empty() {
+            body_lines.push("Staged:".into());
+            for path in &staged {
+                body_lines.push(format!("  {path}"));
+            }
+        }
+        if !added.is_empty() {
+            body_lines.push("Added:".into());
+            for path in &added {
+                body_lines.push(format!("  {path}"));
+            }
+        }
+        if !deleted.is_empty() {
+            body_lines.push("Deleted:".into());
+            for path in &deleted {
+                body_lines.push(format!("  {path}"));
+            }
+        }
+
+        let body = if body_lines.is_empty() {
+            None
+        } else {
+            Some(body_lines.join("\n"))
+        };
+        let resources = input
+            .paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .chain(std::iter::once(repo.display().to_string()))
+            .collect();
+
+        Ok(Some(ActionPreview {
+            kind: PreviewKind::GitImpact,
+            title: format!("Git {}", operation.as_str()),
+            summary_lines: summary,
+            body,
+            truncated: false,
+            total_lines: None,
+            added_lines: None,
+            removed_lines: None,
+            resources,
+        }))
     }
 }
 

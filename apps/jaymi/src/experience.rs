@@ -318,33 +318,53 @@ impl ExperienceSession {
         self.last_review_intent.as_ref()
     }
 
+    /// Record a Review Card intent against the matching pending card, when any.
+    ///
+    /// Updates the card and appends an acknowledgement when a conversation
+    /// Review Card is pending. Coding / Git / Terminal gestures may have no
+    /// card — they still record [`Self::last_review_intent`] so approval
+    /// semantics stay unified. Does **not** execute the Execution Plan.
+    pub fn record_review_intent(&mut self, intent: ReviewIntent) -> ReviewIntent {
+        let plan_id = intent.plan_id().clone();
+        if let Some(recorded) = self.conversation.iter_mut().rev().find_map(|turn| {
+            turn.review
+                .as_mut()
+                .filter(|card| card.plan_id == plan_id && card.state.is_pending())
+                .and_then(|card| card.communicate(intent.clone()))
+        }) {
+            self.last_review_intent = Some(recorded.clone());
+            self.append_turn(ConversationTurn::user(recorded.acknowledgement()));
+            recorded
+        } else {
+            self.last_review_intent = Some(intent.clone());
+            intent
+        }
+    }
+
     /// Record a Review Card intent against the matching pending card in-conversation.
     ///
-    /// Updates the card state and stores the intent. Does **not** approve,
-    /// cancel, or execute the underlying Execution Plan.
+    /// Requires a pending card (conversation path). Prefer
+    /// [`Self::record_review_intent`] when gestures may omit a card.
+    /// Does **not** approve, cancel, or execute the underlying Execution Plan.
     pub fn communicate_review_intent(
         &mut self,
         intent: ReviewIntent,
     ) -> JaymiResult<ReviewIntent> {
         let plan_id = intent.plan_id().clone();
-        let recorded = self
-            .conversation
-            .iter_mut()
-            .rev()
-            .find_map(|turn| {
-                turn.review
-                    .as_mut()
-                    .filter(|card| card.plan_id == plan_id && card.state.is_pending())
-                    .and_then(|card| card.communicate(intent.clone()))
+        let before = self.last_review_intent.clone();
+        let recorded = self.record_review_intent(intent);
+        let card_resolved = self.conversation.iter().rev().any(|turn| {
+            turn.review.as_ref().is_some_and(|card| {
+                card.plan_id == plan_id && !card.state.is_pending()
             })
-            .ok_or_else(|| {
-                JaymiError::new(format!(
-                    "no pending review card for plan {}",
-                    plan_id.as_str()
-                ))
-            })?;
-        self.last_review_intent = Some(recorded.clone());
-        self.append_turn(ConversationTurn::user(recorded.acknowledgement()));
+        });
+        if !card_resolved {
+            self.last_review_intent = before;
+            return Err(JaymiError::new(format!(
+                "no pending review card for plan {}",
+                plan_id.as_str()
+            )));
+        }
         Ok(recorded)
     }
 
@@ -445,6 +465,8 @@ mod tests {
             review_requirement: ReviewRequirement::Required,
             estimated_reversibility: EstimatedReversibility::Irreversible,
             expected_outputs: vec!["managed path".into()],
+        deletion_method: None,
+        action_preview: None,
         lineage: Default::default(),
         });
         plan.mark_ready().unwrap();
@@ -496,6 +518,10 @@ mod tests {
             tools_executed: vec!["search_files".into()],
             outputs: vec!["directory listing".into()],
             partial: false,
+            files_moved_to_trash: Vec::new(),
+            files_permanently_deleted: Vec::new(),
+            recovery_available: None,
+            deletion_method: None,
         };
         session.apply_planner_response(&PlannerResponse {
             content: "Listed 2 entries.".into(),
@@ -541,5 +567,27 @@ mod tests {
             .is_pending());
         assert_eq!(session.turn_count(), 2);
         assert!(session.conversation()[1].content.contains("Cancelled"));
+    }
+
+    #[test]
+    fn gesture_approve_records_intent_without_review_card() {
+        let mut session = ExperienceSession::new();
+        let plan_id = jaymi_planner::ExecutionPlanId::from_existing("plan-gesture");
+        let recorded = session.record_review_intent(ReviewIntent::Approve {
+            plan_id: plan_id.clone(),
+        });
+        assert_eq!(recorded.as_str(), "approve");
+        assert_eq!(
+            session.last_review_intent().map(ReviewIntent::as_str),
+            Some("approve")
+        );
+        assert_eq!(
+            session.turn_count(),
+            0,
+            "gesture approval must not invent conversation turns"
+        );
+        assert!(session
+            .communicate_review_intent(ReviewIntent::Approve { plan_id })
+            .is_err());
     }
 }

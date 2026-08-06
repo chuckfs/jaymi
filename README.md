@@ -74,12 +74,13 @@ Jaymi’s architectural kernel is shipped through Layers 0–6, with foundation 
 | Memory (conversation / project / personal) | Current |
 | Project Engine (identity + workspace context) | Current |
 | Capability planning + availability + Coding Workspace shell | Current |
-| Tools (search files/knowledge/project knowledge, read, inventory, scan) | Current (small set) |
-| Providers (filesystem, local embedding, OCR placeholder) | Current / Partial |
+| Tools (12: search / read / write / manage_path / terminal / git / language_server / inventory / scan, …) | Partial — framework + shipping set; broader catalog Target |
+| Providers (`filesystem`, `terminal`, `git`, `lsp`, `embedding.local`, `ocr.placeholder`) | Partial — six local providers; plugins Target |
+| Review Before Action (`submit_review` / Review Cards / gesture Approve) | Current |
 | Reasoning (language-model backends) | Stub |
 | OCR engine | Stub — architecture only |
 | Diagnostics readiness labels | Operational / Experimental / Stub / Disabled |
-| Git / Terminal / Messages / Mail / Image generation | Target |
+| Messages / Mail / Image generation / Git merge·rebase | Target |
 | Installable provider plugins | Target |
 | Daily-driver product UX (Layer 9) | Target |
 

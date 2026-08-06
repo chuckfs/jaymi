@@ -17,11 +17,13 @@ use jaymi_planner::{ReviewCardModel, ReviewCardState, ReviewIntent};
 ///
 /// `modify_note` is the draft free-text guidance for Modify; the UI owns the
 /// buffer so it survives frames. Modify is enabled once the note is non-empty.
+/// `preview_expanded` toggles full vs truncated Preview Before Action bodies.
 pub fn render_review_card(
     ui: &mut egui::Ui,
     theme: &Theme,
     model: &ReviewCardModel,
     modify_note: &mut String,
+    preview_expanded: &mut bool,
 ) -> Option<ReviewIntent> {
     let mut chosen: Option<ReviewIntent> = None;
     let pending = model.state.is_pending();
@@ -105,6 +107,63 @@ pub fn render_review_card(
                 }
             }
 
+            if let Some(preview) = &model.action_preview {
+                ui.add_space(space::MD);
+                ui.label(
+                    egui::RichText::new("Preview")
+                        .size(type_size::UI)
+                        .strong()
+                        .color(theme.text_primary),
+                );
+                ui.add_space(space::XS);
+                let display = if *preview_expanded {
+                    preview.clone()
+                } else {
+                    preview.clone().truncate_for_display(
+                        jaymi_core::PREVIEW_MAX_BODY_LINES,
+                        jaymi_core::PREVIEW_MAX_BODY_CHARS,
+                    )
+                };
+                for line in display.summary_lines {
+                    ui.label(
+                        egui::RichText::new(format!("• {line}"))
+                            .size(type_size::BODY)
+                            .color(theme.text_primary),
+                    );
+                }
+                if let Some(body) = display.body {
+                    ui.add_space(space::XS);
+                    ui.label(
+                        egui::RichText::new(body)
+                            .size(type_size::META)
+                            .color(theme.text_secondary)
+                            .monospace(),
+                    );
+                }
+                if display.truncated || preview.truncated {
+                    ui.add_space(space::XS);
+                    let label = if *preview_expanded {
+                        "Show less"
+                    } else {
+                        "Expand preview"
+                    };
+                    if ui
+                        .add(
+                            egui::Button::new(
+                                egui::RichText::new(label)
+                                    .size(type_size::META)
+                                    .color(theme.text_secondary),
+                            )
+                            .fill(theme.surface_alt)
+                            .corner_radius(radius::SM),
+                        )
+                        .clicked()
+                    {
+                        *preview_expanded = !*preview_expanded;
+                    }
+                }
+            }
+
             ui.add_space(space::MD);
             ui.label(
                 egui::RichText::new(&model.approval_notice)
@@ -114,6 +173,9 @@ pub fn render_review_card(
 
             ui.add_space(space::SM);
             meta_row(ui, theme, "Risk", model.risk_level.as_str());
+            if let Some(method) = model.deletion_method {
+                meta_row(ui, theme, "Deletion Method", method.as_str());
+            }
             meta_row(ui, theme, "Permissions", &display_list(&model.permissions));
             meta_row(
                 ui,
@@ -298,6 +360,8 @@ mod tests {
             review_requirement: ReviewRequirement::Required,
             estimated_reversibility: EstimatedReversibility::Irreversible,
             expected_outputs: vec!["managed path".into()],
+            deletion_method: None,
+            action_preview: None,
             lineage: Default::default(),
         });
         plan.mark_ready().unwrap();

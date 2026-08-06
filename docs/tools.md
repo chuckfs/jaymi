@@ -1,6 +1,6 @@
 Tools
 
-**Status: Partial** — framework + eleven tools · **Target:** broad catalog
+**Status: Partial** — framework + twelve tools · **Target:** broad catalog
 
 Tools are the executable building blocks of Jaymi.
 
@@ -18,21 +18,37 @@ The Planner decides what should happen.
 
 The Tool performs it.
 
+Adding a new tool-backed path requires **tool registration** (boot) and **route
+registration** (`ToolRouteTable` / `IntentToolHandler`) plus Intent → Capability
+mapping in the Decision Engine. It must **not** require a new `Planner::handle`
+match arm. The Planner still owns Execution Plan → Review → Execute.
+
 ⸻
 
 Current tools
 
-* `search_files`
-* `list_project_tree`
-* `search_knowledge`
-* `search_project_knowledge`
-* `read_file`
-* `write_file`
-* `terminal` — ensure / run / create / rename / kill PTY sessions (`TerminalOperation`) through the Terminal Provider
-* `git`
-* `language_server`
-* `query_inventory`
-* `scan_filesystem`
+All twelve are registered at boot and available to the Planner (tool availability = registered + healthy). Capability fulfillment is separate — see [capabilities.md](capabilities.md).
+
+| Tool | Base risk | Capability ads | Bound provider id | Review (effective) |
+|------|-----------|----------------|-------------------|--------------------|
+| `search_files` | Workspace | Search | `filesystem` | No (unless escalated) |
+| `list_project_tree` | Workspace | Search | `filesystem` | No |
+| `search_knowledge` | Safe | Search | *(SearchEngine; metadata may say filesystem)* | No |
+| `search_project_knowledge` | Workspace | Search | `filesystem` | No |
+| `read_file` | Workspace | ReadDocuments | `filesystem` | No |
+| `write_file` | Modify | FileManagement | `filesystem` | Yes |
+| `manage_path` | Modify | FileManagement | `filesystem` | Yes (permanent delete → Destructive) |
+| `terminal` | Destructive | ExecuteTerminalCommands, Code | `terminal` | Yes |
+| `git` | Workspace | Code | `git` | Mutate → Yes; discard → Destructive |
+| `language_server` | Workspace | Code | `lsp` | Rename → Yes |
+| `query_inventory` | Safe | Discover | *(SearchEngine; metadata may say filesystem)* | No |
+| `scan_filesystem` | Workspace | Index | *(Discovery; metadata may say filesystem)* | No |
+
+`manage_path` — mkdir / rename / delete; delete executes Planner-chosen
+`DeletionMethod` (Trash by default, Permanent when requested or Trash is
+unavailable). Tools never choose the strategy.
+
+`terminal` — ensure / run / create / rename / kill PTY sessions (`TerminalOperation`) through the Terminal Provider.
 
 Every tool declares a **ToolRisk**:
 
@@ -51,9 +67,9 @@ Every tool declares a **ToolRisk**:
 | `write_file`, `manage_path` (base) | Modify |
 | `terminal` | Destructive |
 
-Effective risk may escalate per invocation (e.g. `manage_path` delete → Destructive; git discard → Destructive; git mutate / LSP rename → Modify; network-required → External).
+Effective risk may escalate per invocation (e.g. permanent `manage_path` delete → Destructive; Trash delete → Modify; git discard → Destructive; git mutate / LSP rename → Modify; network-required → External).
 
-The Planner derives review from ToolRisk (not from PermissionEngine hardcodes). Explicit Coding UI gestures (Save, New File, Run Terminal, …) approve a paused plan via `complete_user_initiated`. Conversation / agent flows leave the Review Card pending.
+The Planner derives review from ToolRisk (not from PermissionEngine hardcodes). Every approval path shares one lifecycle: ExecutionPlan → Review → Planner → Approved → Execution via `Application::submit_review` (`ReviewIntent`). Conversation Review Cards leave the card pending for explicit Approve / Cancel / Modify. Coding / Git / Terminal / Explorer / LSP rename gestures may auto-submit `ReviewIntent::Approve` after an explicit user action (Save, Delete, Run, Commit, …) through `complete_user_initiated` — still the same Planner gate; tools never execute directly.
 
 ⸻
 

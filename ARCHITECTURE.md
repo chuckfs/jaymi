@@ -230,7 +230,7 @@ Capabilities define what Jaymi knows how to do.
 
 Boot registers the **full capability catalog**. Availability (Ready / Experimental / Planned / Unavailable) distinguishes conceptual support from what is currently executable. Planned capabilities stay registered.
 
-Conversation remains permanent. Workspace kinds can expand beside it (conversation shell + **Coding Workspace shell** with five panels + expansion chrome + capability state / inspector).
+Conversation remains permanent. Workspace kinds can expand beside it (conversation shell + **Coding Workspace shell** with five dock pages — Terminal / Problems / Search / Git / Diagnostics — plus Output placeholder, expansion chrome, and capability state / inspector).
 
 See [docs/capabilities.md](docs/capabilities.md).
 
@@ -253,7 +253,7 @@ Status: **Partial**
 
 Tools are concrete implementations of capabilities.
 
-### Current tools
+### Current tools (12)
 
 * `search_files`
 * `list_project_tree`
@@ -261,16 +261,18 @@ Tools are concrete implementations of capabilities.
 * `search_project_knowledge`
 * `read_file`
 * `write_file`
+* `manage_path`
 * `terminal`
 * `git`
+* `language_server`
 * `query_inventory`
 * `scan_filesystem`
 
-The planner selects tools automatically for supported intents.
+The planner selects tools automatically for supported intents. Mutating tools pause for Review before execution (`Application::submit_review`).
 
 ### Target tools
 
-Messages, Photos, Editor, LSP, Image Model, Vision Model, and many more — interchangeable under stable capabilities.
+Messages, Photos, dedicated Editor tool, Image Model, Vision Model, Git merge/rebase/cherry-pick, and many more — interchangeable under stable capabilities.
 
 ⸻
 
@@ -290,7 +292,7 @@ There is no ProviderManager. Execution goes through tools.
 
 ### Target
 
-Git, Messages, Mail, Calendar, Browser, Photos, Notes, local/cloud AI models, installable provider plugins.
+Messages, Mail, Calendar, Browser, Photos, Notes, local/cloud AI models, Git merge/rebase/cherry-pick, installable provider plugins.
 
 Providers expose consistent interfaces.
 
@@ -302,17 +304,27 @@ Providers can be added, removed, or replaced without affecting the planner.
 
 Permission Engine
 
-Status: **Current** (rule engine)
+Status: **Current** (rule engine) · Review Before Action **Current** · durable grants / revoke **Target**
 
 Jaymi should never surprise the user.
 
 ### Current
 
-Permission categories and scopes; default rules (e.g. filesystem read/write and terminal execute allowed; many network actions denied or require approval); consulted before tool execution.
+Permission categories and scope enums; default decisions consulted before tool execution:
+
+| Category · Action | Default |
+|-------------------|---------|
+| Filesystem · Read | Allowed |
+| Filesystem · Write | RequiresApproval |
+| Filesystem · Delete | RequiresApproval |
+| Terminal · Execute | RequiresApproval |
+| Internet / Communication / System / AI Providers | Denied |
+
+Planner combines Permission + Action Policy + ToolRisk (Denied > RequiresApproval > Allowed). Review Before Action uses one lifecycle — ExecutionPlan → Review → `ReviewIntent` → Planner → Approved → Execution (`Application::submit_review`). Conversation Review Cards and Coding gestures (Save / Delete / Run / Git / LSP rename) share that path; tools never execute outside an Approved plan. Action previews and Trash-default deletes are Current.
 
 ### Target
 
-Conversational approval UX, plain-language previews, permission history, revocation UI, reversible defaults (Trash vs delete).
+Durable permission grants by scope, permission history, revocation UI. Scope values (`Once` / `Conversation` / `Project` / `Global`) exist on requests today but are not yet enforced by a grant store.
 
 The user remains in control.
 

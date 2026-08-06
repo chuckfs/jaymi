@@ -4,6 +4,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jaymi_capabilities::Capability;
@@ -23,6 +24,8 @@ pub const FILESYSTEM_PROVIDER_ID: &str = "filesystem";
 pub struct FilesystemProvider {
     identity: ProviderIdentity,
     initialized: bool,
+    /// When false, Trash is treated as unavailable (tests / constrained hosts).
+    trash_available: AtomicBool,
 }
 
 impl FilesystemProvider {
@@ -43,6 +46,7 @@ impl FilesystemProvider {
                 ],
             },
             initialized: false,
+            trash_available: AtomicBool::new(true),
         }
     }
 
@@ -357,12 +361,83 @@ impl FilesystemProvider {
             })
     }
 
-    /// Delete a file or directory (directories removed recursively).
+    /// Permanently delete a file or directory (no Trash).
+    ///
+    /// Prefer [`Self::move_to_trash`] when recovery is desired. This is the
+    /// previous `delete_path` behavior.
     pub fn delete_path(&self, path: &Path) -> JaymiResult<()> {
+        self.delete_permanently(path)
+    }
+
+    /// Whether this provider can move paths to the OS Trash / Recycle Bin.
+    pub fn supports_trash(&self) -> bool {
+        self.trash_available.load(Ordering::Relaxed) && platform_supports_trash()
+    }
+
+    /// Test/diagnostics helper: force Trash unavailable for this provider.
+    pub fn set_trash_available(&self, available: bool) {
+        self.trash_available.store(available, Ordering::Relaxed);
+    }
+
+    /// Move a path to the OS Trash / Recycle Bin when supported.
+    pub fn move_to_trash(&self, path: &Path) -> JaymiResult<TrashResult> {
         if !self.initialized {
             jaymi_logging::error(
                 "providers",
-                "filesystem delete_path rejected: provider is not initialized",
+                "filesystem move_to_trash rejected: provider is not initialized",
+            );
+            return Err(JaymiError::new(
+                "filesystem provider is not initialized".to_string(),
+            ));
+        }
+        if !self.supports_trash() {
+            return Err(JaymiError::new(
+                "Trash is unavailable for this filesystem provider".to_string(),
+            ));
+        }
+
+        jaymi_logging::info(
+            "providers",
+            format!("filesystem move_to_trash path={}", path.display()),
+        );
+
+        let path = normalize_path(path)?;
+        // Confirm the path exists before asking the OS Trash.
+        let _ = fs::symlink_metadata(&path).map_err(|error| {
+            let message = format!("cannot access path {}: {error}", path.display());
+            jaymi_logging::error("providers", &message);
+            JaymiError::new(message)
+        })?;
+
+        trash::delete(&path).map_err(|error| {
+            let message = format!(
+                "failed to move {} to Trash: {error}",
+                path.display()
+            );
+            jaymi_logging::error("providers", &message);
+            JaymiError::new(message)
+        })?;
+
+        jaymi_logging::info(
+            "providers",
+            format!(
+                "filesystem move_to_trash completed path={}",
+                path.display()
+            ),
+        );
+
+        Ok(TrashResult {
+            original_path: path,
+            recovery_available: true,
+        })
+    }
+
+    /// Permanently delete a file or directory (cannot be recovered from Trash).
+    pub fn delete_permanently(&self, path: &Path) -> JaymiResult<()> {
+        if !self.initialized {
+            jaymi_logging::error(
+                "providers",
+                "filesystem delete_permanently rejected: provider is not initialized",
             );
             return Err(JaymiError::new(
                 "filesystem provider is not initialized".to_string(),
@@ -371,7 +446,7 @@ impl FilesystemProvider {
 
         jaymi_logging::info(
             "providers",
-            format!("filesystem delete_path path={}", path.display()),
+            format!("filesystem delete_permanently path={}", path.display()),
         );
 
         let path = normalize_path(path)?;
@@ -391,15 +466,35 @@ impl FilesystemProvider {
             .map(|_| {
                 jaymi_logging::info(
                     "providers",
-                    format!("filesystem delete_path completed path={}", path.display()),
+                    format!(
+                        "filesystem delete_permanently completed path={}",
+                        path.display()
+                    ),
                 );
             })
             .map_err(|error| {
-                let message = format!("failed to delete {}: {error}", path.display());
+                let message = format!("failed to permanently delete {}: {error}", path.display());
                 jaymi_logging::error("providers", &message);
                 JaymiError::new(message)
             })
     }
+}
+
+/// Outcome of moving a path to Trash.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrashResult {
+    /// Path that was moved.
+    pub original_path: PathBuf,
+    /// Whether the OS Trash can typically restore the item.
+    pub recovery_available: bool,
+}
+
+fn platform_supports_trash() -> bool {
+    cfg!(any(
+        target_os = "macos",
+        target_os = "windows",
+        target_os = "linux"
+    ))
 }
 
 impl Default for FilesystemProvider {
@@ -681,6 +776,61 @@ mod tests {
         assert!(!renamed.exists());
         provider.delete_path(&nested).unwrap();
         assert!(!nested.exists());
+    }
+
+    #[test]
+    fn trash_delete() {
+        let dir = tempfile_dir();
+        let mut provider = FilesystemProvider::new();
+        provider.initialize().unwrap();
+        if !provider.supports_trash() {
+            return;
+        }
+
+        let file = dir.join("trash-me.txt");
+        provider.write_file(&file, b"recoverable").unwrap();
+        match provider.move_to_trash(&file) {
+            Ok(result) => {
+                assert!(!file.exists());
+                assert!(result.recovery_available);
+                assert!(
+                    result.original_path.ends_with("trash-me.txt"),
+                    "unexpected trash path {:?}",
+                    result.original_path
+                );
+            }
+            Err(error) if error.message().to_ascii_lowercase().contains("finder") => {}
+            Err(error) => panic!("unexpected trash failure: {error}"),
+        }
+    }
+
+    #[test]
+    fn permanent_delete() {
+        let dir = tempfile_dir();
+        let mut provider = FilesystemProvider::new();
+        provider.initialize().unwrap();
+
+        let file = dir.join("gone.txt");
+        provider.write_file(&file, b"bye").unwrap();
+        provider.delete_permanently(&file).unwrap();
+        assert!(!file.exists());
+    }
+
+    #[test]
+    fn trash_unavailable() {
+        let dir = tempfile_dir();
+        let mut provider = FilesystemProvider::new();
+        provider.initialize().unwrap();
+        provider.set_trash_available(false);
+        assert!(!provider.supports_trash());
+
+        let file = dir.join("no-trash.txt");
+        provider.write_file(&file, b"x").unwrap();
+        let error = provider.move_to_trash(&file).unwrap_err();
+        assert!(error.message().contains("Trash is unavailable"));
+        assert!(file.exists());
+        provider.delete_permanently(&file).unwrap();
+        assert!(!file.exists());
     }
 
     fn tempfile_dir() -> PathBuf {

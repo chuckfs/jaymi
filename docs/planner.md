@@ -387,15 +387,34 @@ Generate Results
 ### Current planning
 
 Tool-backed intents create a Planner-owned **Execution Plan** after Context
-assemble. The plan is immutable in content and progresses through Draft →
+assemble. Routing from Intent to Tool uses a compile-time **`ToolRouteTable`**
+(`IntentToolHandler` registration) — not a growing `handle` match arm per tool.
+The plan is immutable in content and progresses through Draft →
 Ready → (AwaitingReview) → Approved → Executing → Completed / Failed /
 Cancelled. Tools run only from an Approved plan; providers never see plans.
 
 When review is required, the Planner **pauses**: the Execution Plan enters
 AwaitingReview, the exact tool input is retained, and the conversation stays
-active. The Review Card is conversational (opening + Plan bullets + approval
-notice + Approve / Cancel / Modify with example phrases) and emits
-Approve / Modify / Cancel intents only — it never executes.
+active. There is exactly one approval implementation
+(`Application::submit_review` → `Planner::resolve_review`). Entry points
+(Conversation, Coding Workspace, Git, Terminal, Explorer, future Image /
+Research) may differ in Review UI, but approval semantics never do: every path
+emits `ReviewIntent` and tools run only from an Approved plan.
+
+Conversation Review Cards are conversational (opening + Plan bullets + approval
+notice + Approve / Cancel / Modify with example phrases) and emit intents only —
+they never execute. Coding gestures (Save, Delete, Run, Git Commit, LSP rename)
+may auto-submit `ReviewIntent::Approve` after an explicit user action; the
+Planner still receives Approve and resumes the same paused plan.
+
+Filesystem deletes record a **Deletion Method** on the Execution Plan (`trash`
+or `permanent`). Review Cards explain Trash recovery vs permanent delete.
+Execution Summaries record files moved, permanent deletes, and recovery
+availability. Diagnostics show **Deletion strategy**.
+
+Mutating tools attach a structured **Preview** (unified diff, rename/move
+paths, git impact, LSP edits). The Planner stores it on the Execution Plan;
+Review Cards embed it and truncate large bodies with expand.
 
 - **Approve** resumes the same plan (no replan) and executes tools.
 - **Modify** regenerates only affected steps into a **child** plan (new id,
@@ -425,12 +444,13 @@ Examples include:
 
 * Chat (Planned)
 * Search (Ready)
-* Code (Experimental catalog; Unavailable until coding tools exist)
-* Vision / Embeddings (Experimental; Vision Unavailable without vision tools)
+* Code (Experimental catalog; Experimental effective at boot — terminal / git / language_server fulfill inventory)
+* Vision / Embeddings (Experimental catalog; Vision Unavailable without vision tools; Embeddings Experimental via `embedding.local`)
 * OCR (Planned — placeholder provider; not executable)
 * Generate Images / Browse Internet / Automate Tasks / Internet / Automation (Planned)
 * File Management / Execute Terminal Commands (Ready)
-* Read Documents / Discover / Index (Ready)
+* Read Documents / Discover (Ready)
+* Index (Ready catalog; Unavailable on discover until a provider ads Index — `scan_filesystem` still registers as the Index tool)
 
 Capabilities are stable.
 

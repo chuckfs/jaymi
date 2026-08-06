@@ -28,7 +28,7 @@ pub use embedding::{
     cosine_similarity, EmbeddingProvider, EmbeddingProviderStatus, EmbeddingVector,
     LocalEmbeddingProvider, EMBEDDING_PROVIDER_ID, LOCAL_EMBEDDING_DIMS, LOCAL_EMBEDDING_MODEL,
 };
-pub use filesystem::{FilesystemProvider, FILESYSTEM_PROVIDER_ID};
+pub use filesystem::{FilesystemProvider, TrashResult, FILESYSTEM_PROVIDER_ID};
 pub use git::{GitProvider, GitStatusSnapshot, GIT_PROVIDER_ID};
 pub use lsp::{
     resolve_lsp_command, LspOperationResult, LspProvider, DEFAULT_LSP_COMMAND, LSP_PROVIDER_ID,
