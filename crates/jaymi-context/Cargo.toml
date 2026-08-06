@@ -13,6 +13,8 @@ jaymi-logging = { workspace = true }
 jaymi-memory-engine = { workspace = true }
 jaymi-project-engine = { workspace = true }
 jaymi-search = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 
 [dev-dependencies]
 jaymi-database = { workspace = true }

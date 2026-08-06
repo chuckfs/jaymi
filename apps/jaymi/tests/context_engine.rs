@@ -67,16 +67,23 @@ fn context_bundle_includes_memory_and_optional_workspace() {
         .assemble(&UserRequest::new("remember this workspace"))
         .expect("assemble");
 
-    assert!(bundle.sources.contains(&ContextSource::RetrievedMemories));
-    assert!(bundle.sources.contains(&ContextSource::ActiveWorkspace));
-    assert_eq!(bundle.active_workspace.as_deref(), Some("coding"));
-    assert!(bundle.assemble_generation >= 1);
+    assert!(bundle.sources().contains(&ContextSource::RetrievedMemories));
+    assert!(bundle.sources().contains(&ContextSource::ActiveWorkspace));
+    assert_eq!(bundle.workspace_kind(), Some("coding"));
+    assert!(bundle.assemble_generation() >= 1);
 
     // Public Planner response still carries memory context from the bundle.
     let response = app
         .handle(UserRequest::new("unsupported unique phrase xyzzy"))
         .expect("handle");
     assert!(response.memory_context.is_some());
+    assert!(
+        response.context_bundle.is_some(),
+        "PlannerResponse must carry the immutable ContextBundle"
+    );
+    let bundle = response.context_bundle.as_ref().unwrap();
+    assert!(bundle.sources().contains(&ContextSource::RetrievedMemories));
+    assert!(bundle.sources().contains(&ContextSource::UserRequest));
 }
 
 #[test]

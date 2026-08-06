@@ -19,7 +19,7 @@ use jaymi_capabilities::{
 };
 
 use jaymi_config::Config;
-use jaymi_context::ContextEngine;
+use jaymi_context::{ContextEngine, ContextHistoryEntry, ContextInspectorReport};
 use jaymi_core::{
     AppState, DiscoveryQueryKind, EntryType, GitOperation, HealthReport, JaymiError, JaymiResult,
     Lifecycle, SearchRequest, ServiceContainer, UserRequest,
@@ -346,6 +346,13 @@ impl Application {
         self.initialize_service(&mut discovery)?;
         let discovery = Arc::new(discovery);
         self.container.register(Arc::clone(&discovery));
+
+        // Invalidate ContextBundle cache when discovery mutates the inventory
+        // (explicit index scans and filesystem watcher flushes).
+        let context_for_cache = Arc::clone(&context);
+        discovery.add_change_hook(Arc::new(move || {
+            context_for_cache.invalidate_cache("search_index_updated");
+        }));
 
         // Filesystem watcher keeps the inventory synchronized with configured roots.
         let mut watcher = FilesystemWatcher::new(Arc::clone(&discovery));
@@ -937,7 +944,16 @@ impl Application {
     /// Activate a conversation for memory context assembly.
     pub fn set_active_conversation(&self, conversation_id: Option<&str>) -> JaymiResult<()> {
         let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
-        memory.set_active_conversation(conversation_id)
+        let previous = memory.active_conversation_id();
+        let next = conversation_id.map(str::to_string);
+        if previous == next {
+            return Ok(());
+        }
+        memory.set_active_conversation(conversation_id)?;
+        if let Ok(context) = self.container.resolve::<Arc<ContextEngine>>() {
+            context.invalidate_cache("conversation_changed");
+        }
+        Ok(())
     }
 
     /// Load a persisted conversation into the live experience session.
@@ -1030,6 +1046,22 @@ impl Application {
         let planner = self.container.resolve::<Planner>()?;
         let report = planner.inspect_capabilities()?;
         Ok(report.with_active_workspace(self.active_ui_workspace()?))
+    }
+
+    /// Developer-facing Context Inspector for the latest assembled ContextBundle.
+    ///
+    /// Read-only diagnostics — never re-assembles and never affects execution.
+    pub fn inspect_context(&self) -> JaymiResult<Option<ContextInspectorReport>> {
+        let context = self.container.resolve::<Arc<ContextEngine>>()?;
+        Ok(context.inspect_last())
+    }
+
+    /// Recent Context History entries (newest first) for debugging / transparency.
+    ///
+    /// Read-only — never re-assembles and never affects execution.
+    pub fn context_history(&self) -> JaymiResult<Vec<ContextHistoryEntry>> {
+        let context = self.container.resolve::<Arc<ContextEngine>>()?;
+        Ok(context.history())
     }
 
     /// Describe a capability through the Capability Engine (catalog metadata).
@@ -3080,6 +3112,17 @@ impl Application {
             .inspect_capabilities()
             .ok()
             .map(|report| report.with_active_workspace(self.active_ui_workspace().ok().flatten()));
+        let context_inspector = self
+            .container
+            .resolve::<Arc<ContextEngine>>()
+            .ok()
+            .and_then(|engine| engine.inspect_last());
+        let context_history = self
+            .container
+            .resolve::<Arc<ContextEngine>>()
+            .ok()
+            .map(|engine| engine.history())
+            .unwrap_or_default();
         let provider_ids: Vec<String> = providers
             .list()
             .unwrap_or_default()
@@ -3532,9 +3575,12 @@ impl Application {
                 "Context Engine",
                 OperationalStatus::from_health(context_health.healthy, context_health.initialized),
                 format!(
-                    "sources_bound={} · assembles={}",
+                    "sources_bound={} · assembles={} · history={} · cache_hits={} · policies=[{}]",
                     context_engine.sources_bound(),
-                    context_engine.assemble_count()
+                    context_engine.assemble_count(),
+                    context_engine.history_len(),
+                    context_engine.cache_stats().hits,
+                    context_engine.active_context_policies().join(",")
                 ),
             ),
             SubsystemStatus::new(
@@ -3568,6 +3614,8 @@ impl Application {
             unavailable_capability_ids,
             capability_status_details,
             capability_inspector,
+            context_inspector,
+            context_history,
             parser_count: parsers.len(),
             parser_ids,
             database_connected: database.is_connected(),

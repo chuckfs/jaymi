@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use jaymi_capabilities::CapabilityInspectorReport;
+use jaymi_context::{ContextHistoryEntry, ContextInspectorReport};
 use jaymi_core::{AppState, FileEntry};
 
 /// Operational readiness of a subsystem, distinct from lifecycle initialization.
@@ -111,6 +112,10 @@ pub struct DiagnosticsSnapshot {
     pub capability_status_details: Vec<String>,
     /// Developer-facing capability inspector (availability / active / requirements).
     pub capability_inspector: Option<CapabilityInspectorReport>,
+    /// Developer-facing context inspector (latest ContextBundle assemble).
+    pub context_inspector: Option<ContextInspectorReport>,
+    /// Recent Context History entries (newest first) for debugging / transparency.
+    pub context_history: Vec<ContextHistoryEntry>,
     /// Number of registered parsers.
     pub parser_count: usize,
     /// Registered parser ids.
@@ -305,6 +310,29 @@ impl DiagnosticsSnapshot {
             .map(CapabilityInspectorReport::render)
     }
 
+    /// Render the context inspector section, when present.
+    pub fn render_context_inspector(&self) -> Option<String> {
+        self.context_inspector
+            .as_ref()
+            .map(ContextInspectorReport::render)
+    }
+
+    /// Render recent Context History (newest first).
+    pub fn render_context_history(&self, limit: usize) -> Option<String> {
+        if self.context_history.is_empty() {
+            return None;
+        }
+        let mut lines = Vec::new();
+        lines.push(format!(
+            "Context History ({} retained)",
+            self.context_history.len()
+        ));
+        for (index, entry) in self.context_history.iter().take(limit).enumerate() {
+            lines.push(format!("  [{index}] {}", entry.render()));
+        }
+        Some(lines.join("\n"))
+    }
+
     /// Format read success for display.
     pub fn read_success_label(&self) -> &'static str {
         if self.read_success {
@@ -333,6 +361,14 @@ impl DiagnosticsSnapshot {
         if let Some(inspector) = self.render_capability_inspector() {
             lines.push(String::new());
             lines.push(inspector);
+        }
+        if let Some(inspector) = self.render_context_inspector() {
+            lines.push(String::new());
+            lines.push(inspector);
+        }
+        if let Some(history) = self.render_context_history(8) {
+            lines.push(String::new());
+            lines.push(history);
         }
         lines.join("\n")
     }
@@ -394,6 +430,8 @@ mod tests {
             unavailable_capability_ids: vec![],
             capability_status_details: vec![],
             capability_inspector: None,
+            context_inspector: None,
+            context_history: vec![],
             parser_count: 0,
             parser_ids: vec![],
             database_connected: false,

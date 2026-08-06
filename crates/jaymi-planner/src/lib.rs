@@ -25,7 +25,7 @@ use jaymi_capabilities::{
     CapabilityInspectorReport, CapabilityInventory, DiscoveredProvider, DiscoveredTool,
     ExecutionPlan, WorkspaceExpansion,
 };
-use jaymi_context::ContextEngine;
+use jaymi_context::{ContextBundle, ContextEngine};
 use jaymi_core::{
     Citation, Document, FileEntry, GitOperation, GitPathStatus, HealthReport, JaymiError,
     JaymiResult, Lifecycle, LspCompletionItem, LspDiagnostic, LspHover, LspLocation, LspRequest,
@@ -104,6 +104,8 @@ pub struct PlannerResponse {
     pub promotion_ask: PromotionAskDecision,
     /// Relevant memories assembled for this request (never a full dump).
     pub memory_context: Option<AssembledMemoryContext>,
+    /// Immutable Context Engine snapshot for this request (Planner / Behaviors / LLM).
+    pub context_bundle: Option<ContextBundle>,
     /// Project-scoped knowledge hits (files, memories, tasks, decisions, …).
     pub project_knowledge: Vec<ProjectKnowledgeHit>,
     /// Terminal session id when a terminal tool ran.
@@ -398,6 +400,7 @@ impl Planner {
         let context = self.projects.open(project_id)?;
         self.bind_memory_project(Some(project_id))?;
         self.resume_project_conversation(project_id)?;
+        self.context.invalidate_cache("project_changed");
         jaymi_logging::info(
             "planner",
             format!(
@@ -418,6 +421,7 @@ impl Planner {
         self.ensure_ready()?;
         let closed = self.projects.close()?;
         let _ = self.bind_memory_project(None);
+        self.context.invalidate_cache("project_changed");
         Ok(closed)
     }
 
@@ -621,16 +625,13 @@ impl Planner {
 
         // Context Engine is the sole assembler of request context.
         let context = self.context.assemble(&request)?;
-        let memory_context = context.memory.clone();
-        let promotion_suggestions = context.promotion_suggestions.clone();
-        let promotion_ask = context.promotion_ask;
-        if !promotion_suggestions.is_empty() {
+        if !context.promotion_suggestions().is_empty() {
             jaymi_logging::info(
                 "planner",
                 format!(
                     "promotion suggestions={} ask={:?}",
-                    promotion_suggestions.len(),
-                    promotion_ask
+                    context.promotion_suggestions().len(),
+                    context.promotion_ask()
                 ),
             );
         }
@@ -641,30 +642,15 @@ impl Planner {
         match &intent {
             Intent::ContinueProject { name } => {
                 let response = self.handle_continue_project(name)?;
-                return Ok(finalize(
-                    response,
-                    memory_context,
-                    promotion_suggestions,
-                    promotion_ask,
-                ));
+                return Ok(finalize(response, context.clone()));
             }
             Intent::OpenProject { project_id } => {
                 let response = self.handle_open_project_id(project_id)?;
-                return Ok(finalize(
-                    response,
-                    memory_context,
-                    promotion_suggestions,
-                    promotion_ask,
-                ));
+                return Ok(finalize(response, context.clone()));
             }
             Intent::CloseProject => {
                 let response = self.handle_close_project()?;
-                return Ok(finalize(
-                    response,
-                    memory_context,
-                    promotion_suggestions,
-                    promotion_ask,
-                ));
+                return Ok(finalize(response, context.clone()));
             }
             _ => {}
         }
@@ -674,14 +660,13 @@ impl Planner {
                 "planner",
                 "unsupported request; no capability mapped for intent",
             );
-            return Ok(PlannerResponse {
-                content: "Unsupported request. Try: list <directory>, read <file>, search <query>, index <path>, or ask what files exist".to_string(),
-                promotion_suggestions,
-                promotion_ask,
-                memory_context: Some(memory_context),
-                project_context: context.project.clone(),
-                ..PlannerResponse::default()
-            });
+            return Ok(finalize(
+                PlannerResponse {
+                    content: "Unsupported request. Try: list <directory>, read <file>, search <query>, index <path>, or ask what files exist".to_string(),
+                    ..PlannerResponse::default()
+                },
+                context,
+            ));
         };
 
         jaymi_logging::info(
@@ -694,14 +679,9 @@ impl Planner {
         if let Intent::PlanWork { capabilities, goal } = &intent {
             let mut response = self.handle_plan_work(capabilities, goal)?;
             if response.project_context.is_none() {
-                response.project_context = context.project.clone();
+                response.project_context = context.project().cloned();
             }
-            return Ok(finalize(
-                response,
-                memory_context,
-                promotion_suggestions,
-                promotion_ask,
-            ));
+            return Ok(finalize(response, context.clone()));
         }
 
         let availability = self.capabilities.validate(capability);
@@ -812,14 +792,9 @@ impl Planner {
                     );
                 }
                 if response.project_context.is_none() {
-                    response.project_context = context.project.clone();
+                    response.project_context = context.project().cloned();
                 }
-                Ok(finalize(
-                    response,
-                    memory_context,
-                    promotion_suggestions,
-                    promotion_ask,
-                ))
+                Ok(finalize(response, context.clone()))
             }
             Err(error) => Err(error),
         };
@@ -1027,6 +1002,7 @@ impl Planner {
         let tool_id = prepared.tool_id.clone();
         let output = self.orchestrator.execute(&tool_id, input)?;
         self.ensure_success(&output)?;
+        self.context.invalidate_cache("files_changed");
 
         let provider_id = prepared.provider_id.clone();
         let summary = output.message.unwrap_or_else(|| {
@@ -1083,6 +1059,7 @@ impl Planner {
         let tool_id = prepared.tool_id.clone();
         let output = self.orchestrator.execute(&tool_id, input)?;
         self.ensure_success(&output)?;
+        self.context.invalidate_cache("files_changed");
 
         let provider_id = prepared.provider_id.clone();
         let listed = output
@@ -1441,6 +1418,7 @@ impl Planner {
         let tool_id = prepared.tool_id.clone();
         let output = self.orchestrator.execute(&tool_id, input)?;
         self.ensure_success(&output)?;
+        self.context.invalidate_cache("search_index_updated");
 
         let provider_id = prepared.provider_id.clone();
         let content = output
@@ -1626,15 +1604,14 @@ struct PreparedExecution {
     blocked_response: Option<PlannerResponse>,
 }
 
-fn finalize(
-    mut response: PlannerResponse,
-    memory_context: AssembledMemoryContext,
-    promotion_suggestions: Vec<PromotionSuggestion>,
-    promotion_ask: PromotionAskDecision,
-) -> PlannerResponse {
-    response.promotion_suggestions = promotion_suggestions;
-    response.promotion_ask = promotion_ask;
-    response.memory_context = Some(memory_context);
+fn finalize(mut response: PlannerResponse, bundle: ContextBundle) -> PlannerResponse {
+    response.promotion_suggestions = bundle.promotion_suggestions().to_vec();
+    response.promotion_ask = bundle.promotion_ask();
+    response.memory_context = Some(bundle.memory().clone());
+    if response.project_context.is_none() {
+        response.project_context = bundle.project().cloned();
+    }
+    response.context_bundle = Some(bundle);
     response
 }
 

@@ -10,7 +10,7 @@ mod watch;
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use jaymi_core::{HealthReport, JaymiError, JaymiResult, Lifecycle};
@@ -56,6 +56,8 @@ pub struct DiscoveryEngine {
     knowledge: Arc<SqliteKnowledgeStore>,
     configured_roots: Vec<PathBuf>,
     indexing_enabled: bool,
+    /// Invoked after a scan that changed inventory (added/updated/removed).
+    change_hooks: Mutex<Vec<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl DiscoveryEngine {
@@ -70,6 +72,28 @@ impl DiscoveryEngine {
             knowledge,
             configured_roots,
             indexing_enabled,
+            change_hooks: Mutex::new(Vec::new()),
+        }
+    }
+
+    /// Register a hook called when a scan mutates the inventory.
+    ///
+    /// Used by Application to invalidate ContextBundle caches when files /
+    /// the search index update via discovery scans (including the watcher).
+    pub fn add_change_hook(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        if let Ok(mut guard) = self.change_hooks.lock() {
+            guard.push(hook);
+        }
+    }
+
+    fn notify_inventory_changed(&self) {
+        let hooks = self
+            .change_hooks
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default();
+        for hook in hooks {
+            hook();
         }
     }
 
@@ -255,6 +279,10 @@ impl DiscoveryEngine {
                 duration.as_millis()
             ),
         );
+
+        if added > 0 || updated > 0 || removed > 0 {
+            self.notify_inventory_changed();
+        }
 
         Ok(ScanReport {
             roots: normalized_roots,

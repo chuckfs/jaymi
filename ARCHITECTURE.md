@@ -141,13 +141,25 @@ The Context Engine coordinates:
 
 It returns a unified `ContextBundle`. The Planner does not assemble these pieces itself.
 
-### Current ContextBundle sources
+Recently assembled bundles are cached by project, workspace, conversation, active file, and request type (plus a request fingerprint). The cache is invalidated when files, project, workspace, conversation, or the search index change — performance only; correctness is unchanged. See `docs/context.md`.
 
-* Active / open project workspace
-* Retrieved memories + promotion suggestions
-* Active conversation scoping (via Memory)
-* Active UX workspace / session state
-* Lightweight search coordination hints
+Context History retains recent bundles with timestamp, request, providers used, bundle size, and execution duration for debugging and future reasoning transparency.
+
+The LLM-facing Context API (`ContextEngine::to_llm_context` → `LlmContext`) converts a bundle into a stable, deterministically serializable structure for future model consumers — no model calls, no prompts. See `docs/context.md`.
+
+Context Policies (`ContextPolicyEngine`) decide which providers may participate before assemble — relevant, minimal, privacy-aware, deterministic, and explainable. Independent of the action Policy Engine and of any LLM.
+
+### Context Providers
+
+Assemble is provider-driven. Subsystems implement `ContextProvider` with deterministic `relevance`, `priority`, and `estimate_size`. The engine skips low-relevance providers, allocates a configurable character/token budget to higher-priority providers first, and fits oversized contributions (truncate / summarize / preserve metadata). No AI scoring. The engine orchestrates providers without depending on their internals.
+
+Initial providers: Conversation, Project, Workspace, Editor, Search, Memory, Diagnostics, Permission.
+
+### Current ContextBundle (immutable snapshot)
+
+First-class sections: Conversation, Active Project, Active Workspace, Current File, Current Selection, Open Files, Search Results, Memory Results, Diagnostics, Permissions, Planner Metadata, Active Capabilities, User Request Metadata.
+
+The bundle never searches or reasons — Planner execution, Behaviors, and future LLM providers consume it as a frozen snapshot (`PlannerResponse.context_bundle`).
 
 ### Target context sources (not yet assembled)
 

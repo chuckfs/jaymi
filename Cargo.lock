@@ -2326,6 +2326,8 @@ dependencies = [
  "jaymi-memory-engine",
  "jaymi-project-engine",
  "jaymi-search",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
