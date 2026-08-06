@@ -51,8 +51,11 @@ fn git_status_stage_unstage_and_commit_metadata() {
     assert!(git.added.is_empty());
 
     let response = app
-        .git_stage(&root, vec![PathBuf::from("readme.md")])
-        .expect("stage via planner");
+        .complete_user_initiated(
+            app.git_stage(&root, vec![PathBuf::from("readme.md")])
+                .expect("stage via planner"),
+        )
+        .expect("approve stage");
     assert!(!response.blocked);
     assert_eq!(response.tool_id.as_deref(), Some(GIT_TOOL_ID));
     assert_eq!(response.provider_id.as_deref(), Some(GIT_PROVIDER_ID));

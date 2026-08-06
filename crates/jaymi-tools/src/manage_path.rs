@@ -11,9 +11,9 @@ use jaymi_providers::{FilesystemProvider, FILESYSTEM_PROVIDER_ID};
 
 use crate::metadata::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
-    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata,
+    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata, ToolRisk,
 };
-use crate::tool::{Tool, ToolInput, ToolOutput};
+use crate::tool::{Tool, ToolExecutionMetadata, ToolInput, ToolOutput};
 
 /// Stable tool identifier used by the Planner and registries.
 pub const MANAGE_PATH_TOOL_ID: &str = "manage_path";
@@ -36,6 +36,7 @@ impl ManagePathTool {
                 description: "Create, rename, or delete a local file or directory".to_string(),
                 provider: FILESYSTEM_PROVIDER_ID.to_string(),
                 capabilities: vec![Capability::FileManagement],
+                risk: ToolRisk::Modify,
                 execution_mode: ExecutionMode::Synchronous,
                 estimated_runtime: EstimatedRuntime::Fast,
                 resource_cost: ResourceCost::VeryLow,
@@ -108,6 +109,10 @@ impl Tool for ManagePathTool {
                     success: true,
                     message: Some(format!("Created directory {}", path.display())),
                     listed_path: Some(path.clone()),
+                    metadata: ToolExecutionMetadata::path_change(
+                        format!("Created directory {}", path.display()),
+                        [path.display().to_string()],
+                    ),
                     ..Default::default()
                 })
             }
@@ -121,7 +126,11 @@ impl Tool for ManagePathTool {
                 Ok(ToolOutput {
                     success: true,
                     message: Some(format!("Renamed {} → {}", path.display(), to.display())),
-                    listed_path: Some(to),
+                    listed_path: Some(to.clone()),
+                    metadata: ToolExecutionMetadata::path_change(
+                        format!("Renamed {} → {}", path.display(), to.display()),
+                        [path.display().to_string(), to.display().to_string()],
+                    ),
                     ..Default::default()
                 })
             }
@@ -131,6 +140,10 @@ impl Tool for ManagePathTool {
                     success: true,
                     message: Some(format!("Deleted {}", path.display())),
                     listed_path: Some(path.clone()),
+                    metadata: ToolExecutionMetadata::path_change(
+                        format!("Deleted {}", path.display()),
+                        [path.display().to_string()],
+                    ),
                     ..Default::default()
                 })
             }

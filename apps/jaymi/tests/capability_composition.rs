@@ -22,9 +22,9 @@ fn planner_composes_research_coding_creation_into_one_plan() {
     let second = planner.handle(UserRequest::new(goal)).expect("second");
 
     assert_eq!(first.capability, Some(Capability::Search));
-    assert_eq!(first.execution_plan, second.execution_plan);
+    assert_eq!(first.capability_plan, second.capability_plan);
 
-    let plan = first.execution_plan.expect("execution plan");
+    let plan = first.capability_plan.expect("capability plan");
     assert_eq!(plan.goal.as_deref(), Some(goal));
     assert_eq!(plan.steps.len(), 3);
     assert_eq!(
@@ -63,6 +63,7 @@ fn planner_composes_research_coding_creation_into_one_plan() {
         .contains("Composed 3 independent capabilities"));
     assert!(first.content.contains("search → code → generate_images"));
     assert!(!first.blocked);
+    assert!(first.execution_plan.is_none());
 
     let workspace = first.workspace.expect("workspace from primary");
     assert_eq!(workspace.kind, WorkspaceKind::Research);
@@ -139,7 +140,7 @@ fn plan_capabilities_accepts_custom_sequences() {
         .expect("planner")
         .handle(UserRequest::new("compose discover read code"))
         .expect("handle compose")
-        .execution_plan
+        .capability_plan
         .expect("plan")
         .capabilities()
         .contains(&Capability::Discover));

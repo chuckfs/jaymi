@@ -13,7 +13,7 @@ use jaymi_providers::{
 
 use crate::metadata::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
-    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata,
+    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata, ToolRisk,
 };
 use crate::tool::{Tool, ToolInput, ToolOutput};
 
@@ -38,6 +38,7 @@ impl TerminalTool {
                 description: "Run commands in a persistent local PTY session".to_string(),
                 provider: TERMINAL_PROVIDER_ID.to_string(),
                 capabilities: vec![Capability::ExecuteTerminalCommands, Capability::Code],
+                risk: ToolRisk::Destructive,
                 execution_mode: ExecutionMode::Synchronous,
                 estimated_runtime: EstimatedRuntime::Medium,
                 resource_cost: ResourceCost::Low,

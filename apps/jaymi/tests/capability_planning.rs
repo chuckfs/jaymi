@@ -22,8 +22,8 @@ fn coding_request_builds_deterministic_execution_plan_without_tools() {
     assert_eq!(first.capability, Some(Capability::Code));
     assert_eq!(second.capability, Some(Capability::Code));
 
-    let plan = first.execution_plan.expect("execution plan");
-    let plan_again = second.execution_plan.expect("execution plan again");
+    let plan = first.capability_plan.expect("capability plan");
+    let plan_again = second.capability_plan.expect("capability plan again");
     assert_eq!(plan, plan_again, "plan generation must be deterministic");
 
     assert_eq!(plan.goal.as_deref(), Some(goal));
@@ -55,9 +55,12 @@ fn coding_request_builds_deterministic_execution_plan_without_tools() {
     // Planning for "help me build an app" still does not execute tools.
     assert!(first.tool_id.is_none());
     assert!(plan.is_executable());
-    assert!(first.content.contains("Execution plan"));
+    assert!(first.content.contains("Execution plan") || first.content.contains("capability plan"));
     assert!(first.content.contains("code"));
     assert!(!first.blocked);
+    // PlanWork does not produce an action ExecutionPlan.
+    assert!(first.execution_plan.is_none());
+    assert!(first.execution_summary.is_none());
 
     let direct = app
         .plan_capability(Capability::Code, Some(goal))

@@ -160,6 +160,12 @@ Archive / Delete
 
 Memory is never created accidentally.
 
+Structured `kind` values used by Application today include
+`execution_summary` (plan outcomes) and `approval_history` (Review Card
+decisions). Approval History is searchable via Memory query + Planner
+session store; sensitive fields stay Private and must be redacted for
+Restricted / Context exports.
+
 ⸻
 
 Memory Promotion

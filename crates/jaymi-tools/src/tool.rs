@@ -226,6 +226,8 @@ pub struct ToolOutput {
     pub message: Option<String>,
     /// Resolved/canonical path for listing tools, when applicable.
     pub listed_path: Option<std::path::PathBuf>,
+    /// Structured execution metadata for Planner Execution Summaries.
+    pub metadata: ToolExecutionMetadata,
     /// Project-scoped knowledge hits when applicable.
     pub project_knowledge: Vec<ProjectKnowledgeHit>,
     /// Terminal session id when applicable.
@@ -270,22 +272,98 @@ pub struct ToolOutput {
     pub lsp_edits: Vec<LspTextEdit>,
 }
 
+/// Structured execution metadata tools provide for Planner summaries.
+///
+/// Tools fill what they know; the Planner merges this into an
+/// [`ExecutionSummary`](jaymi_planner is not a dependency — Planner consumes this).
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct ToolExecutionMetadata {
+    /// Concrete actions the tool performed.
+    pub actions_performed: Vec<String>,
+    /// Resources touched or changed (paths, URIs, session ids).
+    pub resources_changed: Vec<String>,
+    /// Files created, overwritten, renamed, or deleted.
+    pub files_edited: Vec<String>,
+    /// Non-fatal warnings.
+    pub warnings: Vec<String>,
+    /// Wall-clock duration inside the tool, when measured.
+    pub duration_ms: Option<u64>,
+    /// Suggested follow-ups the tool can recommend.
+    pub next_suggested_actions: Vec<String>,
+    /// True when some work succeeded but not the full expected outcome.
+    pub partial: bool,
+}
+
+impl ToolExecutionMetadata {
+    /// Metadata for a successful single-file write/create.
+    pub fn wrote_file(path: impl AsRef<std::path::Path>, bytes: usize) -> Self {
+        let path = path.as_ref().display().to_string();
+        Self {
+            actions_performed: vec![format!("Wrote {bytes} bytes to {path}")],
+            resources_changed: vec![path.clone()],
+            files_edited: vec![path],
+            ..Self::default()
+        }
+    }
+
+    /// Metadata for a path mutation (mkdir / rename / delete).
+    pub fn path_change(action: impl Into<String>, paths: impl IntoIterator<Item = String>) -> Self {
+        let paths: Vec<String> = paths.into_iter().collect();
+        Self {
+            actions_performed: vec![action.into()],
+            resources_changed: paths.clone(),
+            files_edited: paths,
+            ..Self::default()
+        }
+    }
+
+    /// Metadata for a read-only listing/search.
+    pub fn inspected(
+        action: impl Into<String>,
+        resource: impl Into<String>,
+        duration_ms: Option<u64>,
+    ) -> Self {
+        Self {
+            actions_performed: vec![action.into()],
+            resources_changed: vec![resource.into()],
+            duration_ms,
+            ..Self::default()
+        }
+    }
+}
+
 impl ToolOutput {
     /// Successful directory listing.
     pub fn directory_listing(entries: Vec<FileEntry>) -> Self {
+        let count = entries.len();
         Self {
             success: true,
             entries,
+            metadata: ToolExecutionMetadata {
+                actions_performed: vec![format!("Listed {count} entries")],
+                next_suggested_actions: vec![
+                    "Open a listed file".into(),
+                    "Search within this folder".into(),
+                ],
+                ..ToolExecutionMetadata::default()
+            },
             ..Self::default()
         }
     }
 
     /// Successful recursive project-tree listing with canonical root.
     pub fn project_tree(root: impl Into<std::path::PathBuf>, entries: Vec<FileEntry>) -> Self {
+        let root = root.into();
+        let count = entries.len();
         Self {
             success: true,
             entries,
-            listed_path: Some(root.into()),
+            listed_path: Some(root.clone()),
+            metadata: ToolExecutionMetadata::inspected(
+                format!("Listed project tree ({count} entries)"),
+                root.display().to_string(),
+                None,
+            ),
             ..Self::default()
         }
     }
@@ -293,10 +371,16 @@ impl ToolOutput {
     /// Successful document read.
     pub fn document(document: Document) -> Self {
         let parser_id = document.parser_id.clone();
+        let path = document.path.display().to_string();
         Self {
             success: true,
             document: Some(document),
             parser_id: Some(parser_id),
+            metadata: ToolExecutionMetadata::inspected(
+                format!("Read document {path}"),
+                path,
+                None,
+            ),
             ..Self::default()
         }
     }

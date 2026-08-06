@@ -1,8 +1,9 @@
-//! Execution plans — capability selections without execution.
+//! Capability plans — capability selections without execution.
 //!
-//! A plan describes *what* Jaymi intends to do: which capability, which tools,
-//! which providers, and which permissions are required. Tools are never run
-//! here — the Planner decides whether and when to execute.
+//! A capability plan describes *what* Jaymi intends to do at the capability
+//! layer: which capability, which tools, which providers, and which
+//! permissions are required. Tools are never run here — the Planner owns
+//! action execution plan creation and decides whether and when to execute.
 
 use crate::descriptor::{capability_descriptor, CapabilityAvailability, CapabilityDescriptor};
 use crate::discovery::{capability_requirements, CapabilityInventory, CapabilityRequirements};
@@ -155,17 +156,18 @@ impl CapabilityPlanStep {
 
 /// Planned capabilities for a request.
 ///
-/// An execution plan never runs tools. The Planner uses it to understand what
-/// is required before any tool selection or execution.
+/// A capability plan never runs tools. The Planner uses it to understand what
+/// is required before creating a Planner-owned action execution plan and
+/// selecting tools. Distinct from action execution plans.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ExecutionPlan {
+pub struct CapabilityPlan {
     /// Optional natural-language goal that produced this plan.
     pub goal: Option<String>,
     /// Ordered capability steps.
     pub steps: Vec<CapabilityPlanStep>,
 }
 
-impl ExecutionPlan {
+impl CapabilityPlan {
     /// True when every step is currently in an executable availability tier.
     ///
     /// Planned steps keep the plan honest but incomplete — they are included
@@ -232,7 +234,7 @@ impl ExecutionPlan {
     /// Short summary for logs and diagnostics.
     pub fn summary(&self) -> String {
         if self.steps.is_empty() {
-            return "execution plan: empty".into();
+            return "capability plan: empty".into();
         }
         let ids: Vec<_> = self.steps.iter().map(|step| step.descriptor.id).collect();
         let status = if self.is_executable() {
@@ -243,7 +245,7 @@ impl ExecutionPlan {
             "incomplete"
         };
         format!(
-            "execution plan ({status}): {} capability(ies) [{}] · tools=[{}] · providers=[{}] · permissions=[{}]",
+            "capability plan ({status}): {} capability(ies) [{}] · tools=[{}] · providers=[{}] · permissions=[{}]",
             self.steps.len(),
             ids.join(", "),
             self.required_tools().join(", "),

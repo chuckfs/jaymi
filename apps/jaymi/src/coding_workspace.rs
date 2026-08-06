@@ -84,6 +84,7 @@ pub fn build_coding_diagnostics_view(
     coding: Option<&CodingState>,
     project: Option<&Project>,
     activity: Option<&LastPlannerActivity>,
+    inspection: &crate::execution_diagnostics::ExecutionInspection,
 ) -> CodingDiagnosticsView {
     let mut sections = Vec::new();
 
@@ -166,6 +167,11 @@ pub fn build_coding_diagnostics_view(
         },
     });
 
+    // Developer-facing execution inspection (pause / review / approvals).
+    sections.extend(crate::execution_diagnostics::execution_inspection_sections(
+        inspection,
+    ));
+
     sections.push(CodingDiagnosticsSection {
         title: "Planner activity".into(),
         lines: {
@@ -186,6 +192,12 @@ pub fn build_coding_diagnostics_view(
                         activity.tool_id.as_deref().unwrap_or("—"),
                         activity.provider_id.as_deref().unwrap_or("—")
                     ));
+                    if activity.awaiting_review {
+                        lines.push(format!(
+                            "awaiting_review=true · plan={}",
+                            activity.plan_id.as_deref().unwrap_or("—")
+                        ));
+                    }
                 }
                 None => lines.push("last: no planner requests yet".into()),
             }
@@ -301,7 +313,7 @@ pub fn build_coding_diagnostics_view(
     });
 
     sections.push(CodingDiagnosticsSection {
-        title: "Permissions".into(),
+        title: "Permission engine".into(),
         lines: {
             let mut lines = Vec::new();
             if let Some(permissions) = snapshot.subsystem("Permissions") {
@@ -443,6 +455,14 @@ pub struct LastPlannerActivity {
     pub provider_id: Option<String>,
     /// Whether policy/permission blocked execution.
     pub blocked: bool,
+    /// True when the response left a plan awaiting review.
+    pub awaiting_review: bool,
+    /// Execution plan id from the last response, when any.
+    pub plan_id: Option<String>,
+    /// Plan status label, when any.
+    pub plan_status: Option<String>,
+    /// Estimated risk from the last plan, when any.
+    pub risk: Option<String>,
     /// End-to-end Planner handle duration.
     pub duration_ms: u64,
     /// Permission decision label, when evaluated.

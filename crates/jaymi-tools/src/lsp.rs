@@ -11,7 +11,7 @@ use jaymi_providers::{LspProvider, LSP_PROVIDER_ID};
 
 use crate::metadata::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
-    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata,
+    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata, ToolRisk,
 };
 use crate::tool::{Tool, ToolInput, ToolOutput};
 
@@ -39,6 +39,7 @@ impl LanguageServerTool {
                     .to_string(),
                 provider: LSP_PROVIDER_ID.to_string(),
                 capabilities: vec![Capability::Code],
+                risk: ToolRisk::Workspace,
                 execution_mode: ExecutionMode::Synchronous,
                 estimated_runtime: EstimatedRuntime::Medium,
                 resource_cost: ResourceCost::Medium,

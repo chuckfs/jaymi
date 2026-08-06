@@ -40,11 +40,13 @@ The Planner is responsible for:
 
 * Understanding the user’s goal
 * Determining whether additional reasoning is required
-* Building execution plans
+* Building execution plans (every meaningful action)
 * Loading context through the Context Engine (`assemble`)
 * Selecting capabilities
 * Choosing tools
+* Gating plans through review when required
 * Coordinating execution
+* Producing execution summaries
 * Managing permissions
 * Recovering from failures
 * Producing the final response
@@ -196,10 +198,10 @@ Every user-facing request enters `Planner::handle` (**Current**). After Intent
 and Capability resolution, every path assembles a `ContextBundle`. Stages after
 assemble **branch** by Intent class:
 
-| Variant | Context assemble | Behavior | Action Policy → Permission → Tool |
-|---------|------------------|----------|-----------------------------------|
+| Variant | Context assemble | Behavior | Execution Plan → Review → Tool → Summary |
+|---------|------------------|----------|------------------------------------------|
 | Tool-backed (search / read / list / …) | Yes | Planned (skipped) | Yes |
-| PlanWork | Yes | Planned (skipped) | No — plan only |
+| PlanWork | Yes | Planned (skipped) | No — capability plan only |
 | Session open / close / continue | Yes (after Project Engine mutate) | Planned (skipped) | No |
 | Unsupported / plain chat | Yes | Planned (skipped) | No |
 
@@ -220,16 +222,67 @@ Assemble ContextBundle
 ↓
 Run Behavior                          # Planned — not implemented
 ↓
-Evaluate Action Policy                # tool-backed only
+Create Execution Plan                 # tool-backed only
 ↓
-Check Permissions                     # tool-backed only
+Review Execution Plan                 # when review required
 ↓
-Execute Tool                          # tool-backed only
+Evaluate Action Policy                # during plan gating
+↓
+Check Permissions                     # during plan gating
+↓
+Execute Tool                          # Approved plans only
 ↓
 Invoke Providers                      # inside tool execution (bound providers)
 ↓
-Respond
+Summarize Execution                   # tool-backed only
+↓
+Respond                               # ContextBundle always attached
 ```
+
+### Execution Summary
+
+**Status: Current** — structured summaries for completed / partial / failed / cancelled plans
+
+Every completed (or gated terminal) plan produces an [`ExecutionSummary`] with:
+
+* Goal
+* Actions performed
+* Resources changed
+* Files edited
+* Duration
+* Warnings
+* Errors
+* Next suggested actions
+
+The Planner builds summaries from the plan plus tool [`ToolExecutionMetadata`].
+Summaries appear naturally in the conversation transcript and are stored through
+the Memory Engine (`kind = execution_summary`) for later retrieval.
+
+### Approval History
+
+**Status: Current** — searchable record of Review Card decisions
+
+Every Approve / Modify / Cancel is recorded with:
+
+* Execution Plan ID
+* Timestamp
+* User decision
+* Reason (optional — Modify note / cancel explanation)
+* Modified plan (child id after Modify)
+* Execution result (when Approve runs tools, or cancel outcome)
+
+History is kept in-session on the Planner and persisted to Memory
+(`kind = approval_history`) for transparency, future retrieval, Planner
+reasoning, and Coding Diagnostics. Search via
+`Application::search_approval_history` / `Planner::search_approval_history`.
+
+Sensitive fields (reasons, goals, resource paths, edited files) are **redacted**
+when access is Restricted — Context / external exports must not expose them
+outside the user's permission boundary. Local UI uses Full access.
+
+Coding / Developer **Diagnostics** surfaces the live pause store, review state,
+risk, plan permissions, pending/completed approvals, execution summaries, and
+approval history, including explicit pause/resume explanations for developers.
 
 Do not treat older “Retrieve Memory → Select Capabilities” diagrams as Current — Memory/Project/Search contribute only through Context Providers during assemble.
 
@@ -333,7 +386,30 @@ Generate Results
 
 ### Current planning
 
-Capability PlanWork intents produce an execution plan without running tools. Plans consider **availability** (Ready / Experimental / Planned / Unavailable): Planned steps may appear so the plan stays honest, but only executable-tier steps make a plan ready. Tool-backed intents select one tool through the orchestrator and require an executable-tier capability.
+Tool-backed intents create a Planner-owned **Execution Plan** after Context
+assemble. The plan is immutable in content and progresses through Draft →
+Ready → (AwaitingReview) → Approved → Executing → Completed / Failed /
+Cancelled. Tools run only from an Approved plan; providers never see plans.
+
+When review is required, the Planner **pauses**: the Execution Plan enters
+AwaitingReview, the exact tool input is retained, and the conversation stays
+active. The Review Card is conversational (opening + Plan bullets + approval
+notice + Approve / Cancel / Modify with example phrases) and emits
+Approve / Modify / Cancel intents only — it never executes.
+
+- **Approve** resumes the same plan (no replan) and executes tools.
+- **Modify** regenerates only affected steps into a **child** plan (new id,
+  lineage + revision history). The parent is cancelled; the child is re-paused
+  for approval. ContextBundle is **not** rebuilt unless the modification
+  requires it. Review Cards show the revision diff.
+- **Cancel** cancels the pause without executing.
+- A **new user request** (any `handle`) also invalidates paused plans.
+- **Timeout** and **duplicate approval** fail deterministically without double-executing.
+
+Capability **PlanWork** intents produce a separate **Capability Plan**
+(composition of capabilities, tools, providers, and permissions) without
+running tools. Planned steps may appear so the plan stays honest, but only
+executable-tier steps make a capability plan ready.
 
 Execution plans should remain simple, deterministic, and explainable.
 

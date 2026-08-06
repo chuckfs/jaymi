@@ -9,7 +9,7 @@ use jaymi_search::{hits_to_citations, hits_to_entries, SearchEngine, SearchEngin
 
 use crate::metadata::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
-    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata,
+    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata, ToolRisk,
 };
 use crate::tool::{Tool, ToolInput, ToolOutput};
 
@@ -38,6 +38,7 @@ impl SearchKnowledgeTool {
                         .to_string(),
                 provider: FILESYSTEM_PROVIDER_ID.to_string(),
                 capabilities: vec![Capability::Search],
+                risk: ToolRisk::Safe,
                 execution_mode: ExecutionMode::Synchronous,
                 estimated_runtime: EstimatedRuntime::Fast,
                 resource_cost: ResourceCost::VeryLow,

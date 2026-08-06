@@ -10,9 +10,11 @@
 /// enum so diagnostics and docs share one vocabulary without presenting
 /// aspirational behavior as Current.
 ///
-/// **Tool-backed** intents run through Action Policy → Permission → Tool.
+/// **Tool-backed** intents create an Execution Plan, optionally wait for
+/// review, then run Action Policy → Permission (during plan gating) → Tool,
+/// and finally produce an Execution Summary.
 /// Session / PlanWork / unsupported paths assemble a ContextBundle and
-/// return without those stages.
+/// return without action-plan execution.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestStage {
     /// Inbound user request enters the Planner.
@@ -29,14 +31,23 @@ pub enum RequestStage {
     AssembleContextBundle,
     /// Behavior stage — **Planned** (not implemented).
     RunBehavior,
-    /// Action Policy Engine evaluates the tool/provider candidate (tool-backed only).
+    /// Planner creates an immutable action ExecutionPlan (tool-backed only).
+    CreateExecutionPlan,
+    /// Review gate when the plan requires approval (tool-backed only).
+    ///
+    /// The Planner pauses here: plan + tool input are retained so Approve can
+    /// resume without replanning. Conversation stays active across the pause.
+    ReviewExecutionPlan,
+    /// Action Policy Engine evaluates the tool/provider candidate (during plan gating).
     EvaluateActionPolicy,
-    /// Permission Engine checks authorization (tool-backed only).
+    /// Permission Engine checks authorization (during plan gating).
     CheckPermissions,
-    /// Tool Orchestrator selects and runs the tool (tool-backed only).
+    /// Tool Orchestrator runs the tool for an Approved plan (tool-backed only).
     ExecuteTool,
     /// Bound providers perform work **inside** tool execution (not a second Planner hop).
     InvokeProviders,
+    /// Planner records an ExecutionSummary for the plan outcome.
+    SummarizeExecution,
     /// Planner returns a response (with ContextBundle attached).
     Respond,
 }

@@ -42,12 +42,21 @@ fn coding_diagnostics_view_covers_required_sections() {
     for expected in [
         "Active project",
         "Workspace state",
+        "Current Execution Plan",
+        "Review state",
+        "Risk",
+        "Permissions",
+        "Planner pause state",
+        "Pending approvals",
+        "Completed approvals",
+        "Execution summaries",
+        "Approval history",
         "Planner activity",
         "Tool execution",
         "Provider status",
         "Indexing status",
         "Memory context",
-        "Permissions",
+        "Permission engine",
         "Current capability",
         "Timing metrics",
     ] {
@@ -84,7 +93,11 @@ fn coding_diagnostics_view_covers_required_sections() {
         "memory context missing: {flat}"
     );
     assert!(
-        flat.contains("mode=") || flat.contains("Permissions"),
+        flat.contains("Current Execution Plan") || flat.contains("Planner pause state"),
+        "execution inspection missing: {flat}"
+    );
+    assert!(
+        flat.contains("mode=") || flat.contains("Permission engine") || flat.contains("Permissions"),
         "permissions missing: {flat}"
     );
 

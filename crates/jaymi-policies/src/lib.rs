@@ -11,12 +11,11 @@ pub mod builtin;
 pub mod evaluation;
 pub mod scope;
 
-use builtin::BuiltinPolicy;
-use evaluation::evaluate_policies;
 use jaymi_core::{HealthReport, JaymiError, JaymiResult, Lifecycle};
-use scope::PolicyScope;
 
-pub use evaluation::{ExecutionCandidate, PolicyEvaluation};
+pub use builtin::BuiltinPolicy;
+pub use evaluation::{evaluate_policies, ExecutionCandidate, PolicyDecision, PolicyEvaluation};
+pub use scope::PolicyScope;
 
 const NAME: &str = "policy_engine";
 // Preferences only — persistence is Target; no database peer yet.
@@ -58,9 +57,10 @@ impl PolicyEngine {
         Ok(self.active.clone())
     }
 
-    /// Evaluate whether policies allow a tool/provider candidate to proceed.
+    /// Evaluate whether policies allow, require approval for, or deny a candidate.
     ///
-    /// Offline First actively rejects internet-required or cloud-only tools.
+    /// Offline First requires approval for internet/cloud tools. Privacy Maximum
+    /// hard-denies non-local candidates (overrides softer policies).
     pub fn evaluate(&self, candidate: &ExecutionCandidate) -> JaymiResult<PolicyEvaluation> {
         let policies = self.resolve()?;
         Ok(evaluate_policies(&policies, candidate))
@@ -164,6 +164,7 @@ mod tests {
         let mut engine = PolicyEngine::new();
         engine.initialize().unwrap();
         let evaluation = engine.evaluate(&local_candidate()).unwrap();
+        assert_eq!(evaluation.decision, PolicyDecision::Allowed);
         assert!(evaluation.allowed);
         assert!(evaluation.prefer_local);
         assert!(evaluation
@@ -173,11 +174,12 @@ mod tests {
     }
 
     #[test]
-    fn offline_first_denies_internet_tools() {
+    fn offline_first_requires_approval_for_internet_tools() {
         let mut engine = PolicyEngine::new();
         engine.initialize().unwrap();
         let evaluation = engine.evaluate(&cloud_candidate()).unwrap();
-        assert!(!evaluation.allowed);
+        assert_eq!(evaluation.decision, PolicyDecision::RequiresApproval);
+        assert!(evaluation.allowed);
         assert!(evaluation
             .reasons
             .iter()

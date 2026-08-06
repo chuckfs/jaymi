@@ -14,6 +14,7 @@ pub mod command_palette;
 pub mod context_session;
 pub mod diagnostics;
 pub mod editor_workspace;
+pub mod execution_diagnostics;
 pub mod experience;
 pub mod monaco_host;
 mod problems;
@@ -34,6 +35,9 @@ pub use coding_quick_actions::{
 pub use coding_workspace::{
     build_coding_diagnostics_view, coding_panel_lines, coding_shell_summary,
     CodingDiagnosticsSection, CodingDiagnosticsView, CodingShellEvent, LastPlannerActivity,
+};
+pub use execution_diagnostics::{
+    build_execution_inspection, ExecutionInspection, EXECUTION_INSPECTION_SECTION_TITLES,
 };
 pub use command_dispatch::{dispatch_command, CommandDispatchEffect};
 pub use diagnostics::{DiagnosticsSnapshot, OperationalStatus, SubsystemStatus};

@@ -35,13 +35,18 @@ pub struct PermissionRequest {
 }
 
 /// Possible outcomes of a permission check.
+///
+/// The Planner maps these directly onto execution gates:
+/// - [`Allowed`](Self::Allowed) → execute (when policies also allow)
+/// - [`RequiresApproval`](Self::RequiresApproval) → Review Card → await → resume
+/// - [`Denied`](Self::Denied) → explain why → do not execute
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PermissionDecision {
-    /// Action may proceed.
+    /// Action may proceed without conversational review.
     Allowed,
     /// Action must not proceed.
     Denied,
-    /// User approval is required before proceeding.
+    /// User approval is required before proceeding (Review Card).
     RequiresApproval,
 }
 
@@ -77,7 +82,7 @@ pub struct PermissionCheckResult {
 }
 
 impl PermissionCheckResult {
-    /// True when the Planner may execute the tool.
+    /// True when the Planner may execute the tool without review.
     pub fn allows_execution(&self) -> bool {
         self.decision.allows_execution()
     }
@@ -100,31 +105,98 @@ impl PermissionEngine {
         self.initialized
     }
 
-    /// Slice 0.4+: local filesystem read/write and terminal execute are allowed.
-    /// Network and other actions remain denied / approval-gated.
+    /// Evaluate a permission request into Allowed / RequiresApproval / Denied.
+    ///
+    /// Local filesystem reads are Allowed. Local writes, deletes, and terminal
+    /// execution RequireApproval (Planner shows a Review Card). Internet and
+    /// unconfigured categories are Denied until an explicit grant exists.
+    ///
+    /// Action Policies may further escalate or deny; they never grant what this
+    /// engine denies. The Planner never lets a Tool execute itself.
     pub fn check(&self, request: &PermissionRequest) -> JaymiResult<PermissionCheckResult> {
         self.ensure_initialized()?;
 
-        let decision = match (request.category, request.action) {
-            (PermissionCategory::Filesystem, PermissionAction::Read)
-            | (PermissionCategory::Filesystem, PermissionAction::Write)
-            | (PermissionCategory::Filesystem, PermissionAction::Delete) => {
-                PermissionDecision::Allowed
-            }
-            (PermissionCategory::Filesystem, _) => PermissionDecision::Denied,
-            (PermissionCategory::Terminal, PermissionAction::Execute) => {
-                PermissionDecision::Allowed
-            }
-            (PermissionCategory::Terminal, _) => PermissionDecision::Denied,
-            (PermissionCategory::Internet, _) => PermissionDecision::Denied,
-            (PermissionCategory::Communication, _) => PermissionDecision::RequiresApproval,
-            (PermissionCategory::System, _) => PermissionDecision::RequiresApproval,
-            (PermissionCategory::AiProviders, _) => PermissionDecision::RequiresApproval,
+        let resource = request
+            .resource
+            .as_deref()
+            .unwrap_or("the requested resource");
+
+        let (decision, explanation) = match (request.category, request.action) {
+            (PermissionCategory::Filesystem, PermissionAction::Read) => (
+                PermissionDecision::Allowed,
+                format!(
+                    "Read access to local files is granted for '{resource}' ({})",
+                    request.explanation
+                ),
+            ),
+            (PermissionCategory::Filesystem, PermissionAction::Write) => (
+                PermissionDecision::RequiresApproval,
+                format!(
+                    "Writing to '{resource}' requires your approval before Jaymi can modify local files ({})",
+                    request.explanation
+                ),
+            ),
+            (PermissionCategory::Filesystem, PermissionAction::Delete) => (
+                PermissionDecision::RequiresApproval,
+                format!(
+                    "Deleting '{resource}' requires your approval before Jaymi can remove local data ({})",
+                    request.explanation
+                ),
+            ),
+            (PermissionCategory::Filesystem, _) => (
+                PermissionDecision::Denied,
+                format!(
+                    "Filesystem action is not granted for '{resource}' ({})",
+                    request.explanation
+                ),
+            ),
+            (PermissionCategory::Terminal, PermissionAction::Execute) => (
+                PermissionDecision::RequiresApproval,
+                format!(
+                    "Running a terminal command requires your approval ({})",
+                    request.explanation
+                ),
+            ),
+            (PermissionCategory::Terminal, _) => (
+                PermissionDecision::Denied,
+                format!(
+                    "Terminal action is not granted ({})",
+                    request.explanation
+                ),
+            ),
+            (PermissionCategory::Internet, _) => (
+                PermissionDecision::Denied,
+                format!(
+                    "Internet access is not granted. Jaymi cannot use the network for '{resource}' until you grant this permission ({})",
+                    request.explanation
+                ),
+            ),
+            (PermissionCategory::Communication, _) => (
+                PermissionDecision::Denied,
+                format!(
+                    "Communication access is not granted ({})",
+                    request.explanation
+                ),
+            ),
+            (PermissionCategory::System, _) => (
+                PermissionDecision::Denied,
+                format!(
+                    "System access is not granted ({})",
+                    request.explanation
+                ),
+            ),
+            (PermissionCategory::AiProviders, _) => (
+                PermissionDecision::Denied,
+                format!(
+                    "AI provider access is not granted ({})",
+                    request.explanation
+                ),
+            ),
         };
 
         Ok(PermissionCheckResult {
             decision,
-            explanation: request.explanation.clone(),
+            explanation,
             category: request.category,
             action: request.action,
             resource: request.resource.clone(),
@@ -168,12 +240,20 @@ impl Lifecycle for PermissionEngine {
         )
         .with_details(vec![
             (
-                "local_filesystem".to_string(),
-                "read_write_auto_allowed".to_string(),
+                "local_filesystem_read".to_string(),
+                "allowed".to_string(),
+            ),
+            (
+                "local_filesystem_write_delete".to_string(),
+                "requires_approval".to_string(),
             ),
             (
                 "local_terminal".to_string(),
-                "execute_auto_allowed".to_string(),
+                "requires_approval".to_string(),
+            ),
+            (
+                "internet".to_string(),
+                "denied".to_string(),
             ),
         ])
     }
@@ -213,10 +293,11 @@ mod tests {
         let result = engine.check(&read_request()).unwrap();
         assert_eq!(result.decision, PermissionDecision::Allowed);
         assert!(result.allows_execution());
+        assert!(result.explanation.contains("granted"));
     }
 
     #[test]
-    fn allows_filesystem_write() {
+    fn write_requires_approval() {
         let mut engine = PermissionEngine::new();
         engine.initialize().unwrap();
         let result = engine
@@ -228,12 +309,30 @@ mod tests {
                 resource: Some("/tmp/a.txt".into()),
             })
             .unwrap();
-        assert_eq!(result.decision, PermissionDecision::Allowed);
-        assert!(result.allows_execution());
+        assert_eq!(result.decision, PermissionDecision::RequiresApproval);
+        assert!(!result.allows_execution());
+        assert!(result.explanation.contains("approval"));
     }
 
     #[test]
-    fn allows_terminal_execute() {
+    fn delete_requires_approval() {
+        let mut engine = PermissionEngine::new();
+        engine.initialize().unwrap();
+        let result = engine
+            .check(&PermissionRequest {
+                category: PermissionCategory::Filesystem,
+                action: PermissionAction::Delete,
+                scope: PermissionScope::Once,
+                explanation: "Delete a path".into(),
+                resource: Some("/tmp/a.txt".into()),
+            })
+            .unwrap();
+        assert_eq!(result.decision, PermissionDecision::RequiresApproval);
+        assert!(result.explanation.contains("approval"));
+    }
+
+    #[test]
+    fn terminal_execute_requires_approval() {
         let mut engine = PermissionEngine::new();
         engine.initialize().unwrap();
         let result = engine
@@ -245,12 +344,13 @@ mod tests {
                 resource: Some("pwd".into()),
             })
             .unwrap();
-        assert_eq!(result.decision, PermissionDecision::Allowed);
-        assert!(result.allows_execution());
+        assert_eq!(result.decision, PermissionDecision::RequiresApproval);
+        assert!(!result.allows_execution());
+        assert!(result.explanation.contains("approval"));
     }
 
     #[test]
-    fn denies_internet_actions() {
+    fn denies_internet_actions_with_explanation() {
         let mut engine = PermissionEngine::new();
         engine.initialize().unwrap();
         let result = engine
@@ -259,9 +359,12 @@ mod tests {
                 action: PermissionAction::Network,
                 scope: PermissionScope::Once,
                 explanation: "Call an API".into(),
-                resource: None,
+                resource: Some("https://example.com".into()),
             })
             .unwrap();
         assert_eq!(result.decision, PermissionDecision::Denied);
+        assert!(!result.allows_execution());
+        assert!(result.explanation.contains("not granted"));
+        assert!(result.explanation.contains("https://example.com"));
     }
 }

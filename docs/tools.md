@@ -34,6 +34,27 @@ Current tools
 * `query_inventory`
 * `scan_filesystem`
 
+Every tool declares a **ToolRisk**:
+
+| Risk | Meaning | Review |
+|------|---------|--------|
+| Safe | Read-only indexes / inventory | No |
+| Workspace | Browse / open / switch workspace | No |
+| Modify | Edit local user data | Yes |
+| Destructive | Delete or permanently change data | Yes |
+| External | Internet, APIs, cloud | Yes |
+
+| Tool | Risk |
+|------|------|
+| `query_inventory`, `search_knowledge` | Safe |
+| `search_files`, `list_project_tree`, `search_project_knowledge`, `read_file`, `scan_filesystem`, `git` (base), `language_server` (base) | Workspace |
+| `write_file`, `manage_path` (base) | Modify |
+| `terminal` | Destructive |
+
+Effective risk may escalate per invocation (e.g. `manage_path` delete → Destructive; git discard → Destructive; git mutate / LSP rename → Modify; network-required → External).
+
+The Planner derives review from ToolRisk (not from PermissionEngine hardcodes). Explicit Coding UI gestures (Save, New File, Run Terminal, …) approve a paused plan via `complete_user_initiated`. Conversation / agent flows leave the Review Card pending.
+
 ⸻
 
 Philosophy

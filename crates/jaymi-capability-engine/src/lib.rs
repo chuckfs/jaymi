@@ -3,10 +3,10 @@
 //! Capabilities are abstract abilities. They describe what Jaymi knows how to
 //! do — never how work is performed.
 //!
-//! Architecture: Planner → Capability Engine → Execution Plan
+//! Architecture: Planner → Capability Engine → Capability Plan
 //!
 //! Tools and providers implement capabilities. The Capability Engine does not
-//! execute work.
+//! execute work. Action execution plans are owned by the Planner.
 
 #![forbid(unsafe_code)]
 
@@ -46,7 +46,7 @@ pub use inspector::{
     build_inspector_report, inspect_requirements, CapabilityInspectorReport, InspectedCapability,
 };
 pub use plan::{
-    build_plan_step, capability_permission_requirements, CapabilityPlanStep, ExecutionPlan,
+    build_plan_step, capability_permission_requirements, CapabilityPlan, CapabilityPlanStep,
     PermissionRequirement,
 };
 pub use problems::{

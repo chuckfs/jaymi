@@ -44,8 +44,11 @@ fn spawn_shell_execute_command_and_capture_stdout() {
     );
 
     let response = app
-        .run_terminal(DEFAULT_TERMINAL_SESSION_ID, &root, "ls")
-        .expect("run ls");
+        .complete_user_initiated(
+            app.run_terminal(DEFAULT_TERMINAL_SESSION_ID, &root, "ls")
+                .expect("run ls"),
+        )
+        .expect("approve terminal");
     assert!(!response.blocked);
     assert_eq!(response.tool_id.as_deref(), Some(TERMINAL_TOOL_ID));
     assert_eq!(response.provider_id.as_deref(), Some(TERMINAL_PROVIDER_ID));

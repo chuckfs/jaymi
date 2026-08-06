@@ -12,7 +12,7 @@ use jaymi_capabilities::{
 };
 use jaymi_core::{JaymiError, JaymiResult};
 use jaymi_memory::{ConversationMessage, MessageRole};
-use jaymi_planner::PlannerResponse;
+use jaymi_planner::{ExecutionSummary, PlannerResponse, ReviewCardModel, ReviewIntent};
 
 /// Persistent conversation turn kept across workspace open/close.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -23,6 +23,10 @@ pub struct ConversationTurn {
     pub content: String,
     /// Unix seconds when the turn was created (for separators / timestamps).
     pub created_at: i64,
+    /// Optional in-conversation Review Card (structured; not a modal).
+    pub review: Option<ReviewCardModel>,
+    /// Optional structured Execution Summary embedded in the conversation.
+    pub execution_summary: Option<ExecutionSummary>,
 }
 
 impl ConversationTurn {
@@ -32,6 +36,8 @@ impl ConversationTurn {
             role: MessageRole::User,
             content: content.into(),
             created_at: unix_now(),
+            review: None,
+            execution_summary: None,
         }
     }
 
@@ -41,6 +47,33 @@ impl ConversationTurn {
             role: MessageRole::Assistant,
             content: content.into(),
             created_at: unix_now(),
+            review: None,
+            execution_summary: None,
+        }
+    }
+
+    /// Assistant turn that embeds a Review Card inside the conversation.
+    pub fn assistant_with_review(content: impl Into<String>, review: ReviewCardModel) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            content: content.into(),
+            created_at: unix_now(),
+            review: Some(review),
+            execution_summary: None,
+        }
+    }
+
+    /// Assistant turn that embeds an Execution Summary inside the conversation.
+    pub fn assistant_with_summary(
+        content: impl Into<String>,
+        summary: ExecutionSummary,
+    ) -> Self {
+        Self {
+            role: MessageRole::Assistant,
+            content: content.into(),
+            created_at: unix_now(),
+            review: None,
+            execution_summary: Some(summary),
         }
     }
 }
@@ -65,6 +98,8 @@ pub struct ExperienceSession {
     promoted: Vec<String>,
     /// Stable conversation id when bound to Memory Engine transcripts.
     conversation_id: Option<String>,
+    /// Most recent Review Card intent communicated by the user (not executed here).
+    last_review_intent: Option<ReviewIntent>,
 }
 
 impl ExperienceSession {
@@ -278,9 +313,78 @@ impl ExperienceSession {
         Ok(summary)
     }
 
+    /// Most recent Review Card intent, when any (intent only — not executed).
+    pub fn last_review_intent(&self) -> Option<&ReviewIntent> {
+        self.last_review_intent.as_ref()
+    }
+
+    /// Record a Review Card intent against the matching pending card in-conversation.
+    ///
+    /// Updates the card state and stores the intent. Does **not** approve,
+    /// cancel, or execute the underlying Execution Plan.
+    pub fn communicate_review_intent(
+        &mut self,
+        intent: ReviewIntent,
+    ) -> JaymiResult<ReviewIntent> {
+        let plan_id = intent.plan_id().clone();
+        let recorded = self
+            .conversation
+            .iter_mut()
+            .rev()
+            .find_map(|turn| {
+                turn.review
+                    .as_mut()
+                    .filter(|card| card.plan_id == plan_id && card.state.is_pending())
+                    .and_then(|card| card.communicate(intent.clone()))
+            })
+            .ok_or_else(|| {
+                JaymiError::new(format!(
+                    "no pending review card for plan {}",
+                    plan_id.as_str()
+                ))
+            })?;
+        self.last_review_intent = Some(recorded.clone());
+        self.append_turn(ConversationTurn::user(recorded.acknowledgement()));
+        Ok(recorded)
+    }
+
     /// Apply a Planner response: append assistant content and honor workspace.
+    ///
+    /// Completed / failed / cancelled / partial Execution Summaries are folded
+    /// into the conversation naturally (structured field + readable text).
     pub fn apply_planner_response(&mut self, response: &PlannerResponse) {
-        if !response.content.trim().is_empty() {
+        if response.awaiting_review {
+            if let Some(plan) = &response.execution_plan {
+                let explanation = response
+                    .permission_result
+                    .as_ref()
+                    .map(|result| result.explanation.as_str());
+                let review = ReviewCardModel::from_plan(plan, explanation);
+                // Always prefer the conversational Review Card body so the
+                // assistant turn matches the card (not a diagnostic pause line).
+                let content = review.render_text();
+                self.append_turn(ConversationTurn::assistant_with_review(content, review));
+            } else if !response.content.trim().is_empty() {
+                self.append_turn(ConversationTurn::assistant(response.content.clone()));
+            }
+        } else if let Some(summary) = response
+            .execution_summary
+            .as_ref()
+            .filter(|summary| summary.should_surface_in_conversation())
+        {
+            let rendered = summary.render_conversation();
+            let content = if response.content.trim().is_empty() {
+                rendered
+            } else if response.content.contains("Execution summary") {
+                response.content.clone()
+            } else {
+                format!("{}\n\n{rendered}", response.content.trim_end())
+            };
+            self.append_turn(ConversationTurn::assistant_with_summary(
+                content,
+                summary.clone(),
+            ));
+        } else if !response.content.trim().is_empty() {
             self.append_turn(ConversationTurn::assistant(response.content.clone()));
         }
         if let Some(workspace) = &response.workspace {
@@ -303,7 +407,139 @@ impl ExperienceSession {
                 role: message.role,
                 content: message.content.clone(),
                 created_at: message.created_at,
+                review: None,
+                execution_summary: None,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jaymi_capabilities::Capability;
+    use jaymi_core::IntentId;
+    use jaymi_planner::{
+        EstimatedReversibility, EstimatedRisk, ExecutionPlan, ExecutionPlanParams, ExecutionStep,
+        ExecutionStatus, PlanPermissionRequirement, ReviewRequirement,
+    };
+
+    fn awaiting_plan() -> ExecutionPlan {
+        let mut plan = ExecutionPlan::create(ExecutionPlanParams {
+            originating_request: "Delete scratch".into(),
+            planner_intent: IntentId::ManagePath,
+            capability: Capability::FileManagement,
+            proposed_tools: vec!["manage_path".into()],
+            steps: vec![ExecutionStep {
+                order: 1,
+                description: "Delete path".into(),
+                tool_id: Some("manage_path".into()),
+                resource: Some("/tmp/scratch".into()),
+            }],
+            estimated_risk: EstimatedRisk::High,
+            affected_resources: vec!["/tmp/scratch".into()],
+            permissions_required: vec![PlanPermissionRequirement {
+                category: "filesystem".into(),
+                action: "delete".into(),
+            }],
+            review_requirement: ReviewRequirement::Required,
+            estimated_reversibility: EstimatedReversibility::Irreversible,
+            expected_outputs: vec!["managed path".into()],
+        lineage: Default::default(),
+        });
+        plan.mark_ready().unwrap();
+        plan.mark_awaiting_review().unwrap();
+        plan
+    }
+
+    #[test]
+    fn awaiting_review_response_embeds_review_card_in_conversation() {
+        let plan = awaiting_plan();
+        let plan_id = plan.id().clone();
+        let status = plan.status();
+        let mut session = ExperienceSession::new();
+        session.apply_planner_response(&PlannerResponse {
+            content: "diagnostic pause line should be ignored".into(),
+            awaiting_review: true,
+            execution_plan: Some(plan),
+            ..PlannerResponse::default()
+        });
+        assert_eq!(session.turn_count(), 1);
+        let turn = &session.conversation()[0];
+        let review = turn.review.as_ref().expect("review card");
+        assert_eq!(review.plan_id, plan_id);
+        assert!(review.state.is_pending());
+        assert!(review.asking_to_do.contains("Delete scratch"));
+        assert!(turn.content.starts_with("I can do that."));
+        assert!(turn.content.contains("Plan"));
+        assert!(turn.content.contains("You can:"));
+        assert!(turn.content.contains("Modify the plan"));
+        assert_eq!(status, ExecutionStatus::AwaitingReview);
+    }
+
+    #[test]
+    fn completed_summary_appears_in_conversation() {
+        use jaymi_planner::{ExecutionStatus, ExecutionSummary};
+        let mut session = ExperienceSession::new();
+        let summary = ExecutionSummary {
+            plan_id: jaymi_planner::ExecutionPlanId::from_existing("plan-test"),
+            status: ExecutionStatus::Completed,
+            goal: "List /tmp".into(),
+            actions_performed: vec!["Listed 2 entries".into()],
+            resources_changed: vec!["/tmp".into()],
+            files_edited: Vec::new(),
+            duration_ms: 12,
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            error: None,
+            next_suggested_actions: vec!["Open a listed file".into()],
+            tools_executed: vec!["search_files".into()],
+            outputs: vec!["directory listing".into()],
+            partial: false,
+        };
+        session.apply_planner_response(&PlannerResponse {
+            content: "Listed 2 entries.".into(),
+            execution_summary: Some(summary.clone()),
+            ..PlannerResponse::default()
+        });
+        assert_eq!(session.turn_count(), 1);
+        let turn = &session.conversation()[0];
+        assert!(turn.content.contains("Execution summary"));
+        assert!(turn.content.contains("Goal: List /tmp"));
+        assert_eq!(
+            turn.execution_summary.as_ref().map(|s| s.status),
+            Some(ExecutionStatus::Completed)
+        );
+    }
+
+    #[test]
+    fn review_intent_is_recorded_without_executing() {
+        let plan = awaiting_plan();
+        let plan_id = plan.id().clone();
+        let mut session = ExperienceSession::new();
+        session.apply_planner_response(&PlannerResponse {
+            content: "Review needed.".into(),
+            awaiting_review: true,
+            execution_plan: Some(plan),
+            ..PlannerResponse::default()
+        });
+        let recorded = session
+            .communicate_review_intent(ReviewIntent::Cancel {
+                plan_id: plan_id.clone(),
+            })
+            .expect("cancel intent");
+        assert_eq!(recorded.as_str(), "cancel");
+        assert_eq!(
+            session.last_review_intent().map(ReviewIntent::as_str),
+            Some("cancel")
+        );
+        assert!(!session.conversation()[0]
+            .review
+            .as_ref()
+            .unwrap()
+            .state
+            .is_pending());
+        assert_eq!(session.turn_count(), 2);
+        assert!(session.conversation()[1].content.contains("Cancelled"));
     }
 }

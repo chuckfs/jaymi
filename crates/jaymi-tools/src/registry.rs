@@ -182,7 +182,7 @@ mod tests {
     use super::*;
     use crate::metadata::{
         EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
-        PrivacyMode, Reliability, ResourceCost, ResultType,
+        PrivacyMode, Reliability, ResourceCost, ResultType, ToolRisk,
     };
     use jaymi_core::Lifecycle;
 
@@ -194,6 +194,7 @@ mod tests {
             description: "test".to_string(),
             provider: "none".to_string(),
             capabilities: vec![Capability::Search],
+            risk: ToolRisk::Safe,
             execution_mode: ExecutionMode::Synchronous,
             estimated_runtime: EstimatedRuntime::Instant,
             resource_cost: ResourceCost::VeryLow,

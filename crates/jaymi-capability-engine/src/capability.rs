@@ -1,9 +1,12 @@
 //! Stable capability identifiers.
 
+use serde::{Deserialize, Serialize};
+
 /// Stable capability identifiers.
 ///
 /// Capabilities describe behavior independently from tools and providers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Capability {
     /// Conversational interaction.
     Chat,

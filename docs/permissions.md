@@ -182,21 +182,32 @@ Jaymi would like to rename 12 files in your Downloads folder to make them easier
 
 Approval Workflow
 
-**Status: Partial** — engine returns Allow / Deny / RequiresApproval · **Target:** full conversational approval UX
+**Status: Partial** — Permission + Action Policy emit Allowed / RequiresApproval / Denied · Review Card resume · **Target:** full conversational approval UX
 
-Every protected action follows the same process.
+Permission Engine and Action Policies share the same decision triad. The Planner
+combines them (Denied > RequiresApproval > Allowed) and may also escalate from
+ToolRisk (Modify / Destructive / External).
 
+| Decision | Planner |
+|----------|---------|
+| Allowed | Execute |
+| RequiresApproval | Review Card → await user → resume same plan |
+| Denied | Explain why → do not execute |
+
+Approval never bypasses the Planner. Tools never execute themselves.
+
+```text
 Planner
-↓
-Permission Check
-↓
-Request Approval
-↓
-User Decision
-↓
-Execute
-↓
-Report Result
+  → Action Policy (Allowed / RequiresApproval / Denied)
+  → Permission Check (Allowed / RequiresApproval / Denied)
+  → Combine (+ ToolRisk escalate)
+  → Allowed → Execute
+  → RequiresApproval → Review Card → User → Resume
+  → Denied → Explain → Stop
+```
+
+Offline First requires approval for internet/cloud tools. Privacy Maximum
+hard-denies non-local tools (overrides Offline First's approval path).
 
 No protected action bypasses this workflow.
 
@@ -262,6 +273,9 @@ History may include:
 * Scope
 
 Users should be able to review and revoke previously granted permissions.
+
+This is distinct from **Approval History** (Review Card Approve / Modify /
+Cancel on Execution Plans — see `docs/planner.md`), which is Current.
 
 ⸻
 

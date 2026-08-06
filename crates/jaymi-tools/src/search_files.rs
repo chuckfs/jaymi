@@ -8,9 +8,9 @@ use jaymi_providers::{FilesystemProvider, FILESYSTEM_PROVIDER_ID};
 
 use crate::metadata::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
-    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata,
+    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata, ToolRisk,
 };
-use crate::tool::{Tool, ToolInput, ToolOutput};
+use crate::tool::{Tool, ToolExecutionMetadata, ToolInput, ToolOutput};
 
 /// Stable tool identifier used by the Planner and registries.
 pub const SEARCH_FILES_TOOL_ID: &str = "search_files";
@@ -36,6 +36,7 @@ impl SearchFilesTool {
                 description: "List the contents of a single local directory".to_string(),
                 provider: FILESYSTEM_PROVIDER_ID.to_string(),
                 capabilities: vec![Capability::Search],
+                risk: ToolRisk::Workspace,
                 execution_mode: ExecutionMode::Synchronous,
                 estimated_runtime: EstimatedRuntime::Fast,
                 resource_cost: ResourceCost::VeryLow,
@@ -73,7 +74,19 @@ impl Tool for SearchFilesTool {
             .as_ref()
             .ok_or_else(|| JaymiError::new("directory path is required"))?;
         let entries = self.filesystem.list_directory(path)?;
-        Ok(ToolOutput::directory_listing(entries))
+        let count = entries.len();
+        let mut output = ToolOutput::directory_listing(entries);
+        output.listed_path = Some(path.clone());
+        output.metadata = ToolExecutionMetadata::inspected(
+            format!("Listed {count} entries in {}", path.display()),
+            path.display().to_string(),
+            None,
+        );
+        output.metadata.next_suggested_actions = vec![
+            "Open a listed file".into(),
+            "Search within this folder".into(),
+        ];
+        Ok(output)
     }
 }
 

@@ -39,7 +39,7 @@ use jaymi_memory::{
 };
 use jaymi_parsers::{default_registry, ParserRegistry};
 use jaymi_permissions::PermissionEngine;
-use jaymi_planner::{Planner, PlannerDeps, PlannerResponse};
+use jaymi_planner::{Planner, PlannerDeps, PlannerResponse, ReviewIntent};
 use jaymi_policies::PolicyEngine;
 use jaymi_project_engine::{
     CreateProjectRequest, Project, ProjectContext, ProjectEngine, ProjectEngineApi, ProjectHealth,
@@ -538,6 +538,36 @@ impl Application {
         self.handle(UserRequest::write_file(path.as_ref(), content))
     }
 
+    /// Resume a ToolRisk-paused plan after an explicit user UI gesture.
+    ///
+    /// Coding actions such as Save, New File, Delete, or Run Terminal already
+    /// express user intent, so they Approve the paused plan instead of leaving
+    /// a Review Card. Conversation / agent flows leave `awaiting_review` for
+    /// the in-conversation Review Card via [`Self::handle_with_workspace`].
+    pub fn complete_user_initiated(
+        &self,
+        response: PlannerResponse,
+    ) -> JaymiResult<PlannerResponse> {
+        if !response.awaiting_review {
+            if response.blocked {
+                return Err(JaymiError::new(response.content));
+            }
+            return Ok(response);
+        }
+        let plan_id = response
+            .execution_plan
+            .as_ref()
+            .ok_or_else(|| JaymiError::new("awaiting review without an execution plan"))?
+            .id()
+            .clone();
+        let planner = self.container.resolve::<Planner>()?;
+        let resumed = planner.resolve_review(ReviewIntent::Approve { plan_id })?;
+        if resumed.blocked {
+            return Err(JaymiError::new(resumed.content));
+        }
+        Ok(resumed)
+    }
+
     /// Ask the Planner to create a directory.
     pub fn manage_mkdir(&self, path: impl AsRef<Path>) -> JaymiResult<PlannerResponse> {
         self.handle(UserRequest::manage_mkdir(path.as_ref()))
@@ -1016,6 +1046,8 @@ impl Application {
                 role: message.role,
                 content: message.content,
                 created_at: message.created_at,
+                review: None,
+                execution_summary: None,
             })
             .collect();
         let mut experience = self
@@ -1125,7 +1157,7 @@ impl Application {
     pub fn build_capability_plan(
         &self,
         capabilities: &[Capability],
-    ) -> JaymiResult<jaymi_capabilities::ExecutionPlan> {
+    ) -> JaymiResult<jaymi_capabilities::CapabilityPlan> {
         let planner = self.container.resolve::<Planner>()?;
         planner.build_capability_plan(capabilities)
     }
@@ -1135,17 +1167,17 @@ impl Application {
         &self,
         capability: Capability,
         goal: Option<&str>,
-    ) -> JaymiResult<jaymi_capabilities::ExecutionPlan> {
+    ) -> JaymiResult<jaymi_capabilities::CapabilityPlan> {
         let planner = self.container.resolve::<Planner>()?;
         planner.plan_capability(capability, goal)
     }
 
-    /// Compose independent capabilities into one execution plan (no execution).
+    /// Compose independent capabilities into one capability plan (no execution).
     pub fn plan_capabilities(
         &self,
         capabilities: &[Capability],
         goal: Option<&str>,
-    ) -> JaymiResult<jaymi_capabilities::ExecutionPlan> {
+    ) -> JaymiResult<jaymi_capabilities::CapabilityPlan> {
         let planner = self.container.resolve::<Planner>()?;
         planner.plan_capabilities(capabilities, goal)
     }
@@ -1154,7 +1186,7 @@ impl Application {
     pub fn compose_capability_plan(
         &self,
         composition: &jaymi_capabilities::CapabilityComposition,
-    ) -> JaymiResult<jaymi_capabilities::ExecutionPlan> {
+    ) -> JaymiResult<jaymi_capabilities::CapabilityPlan> {
         let planner = self.container.resolve::<Planner>()?;
         planner.compose_capability_plan(composition)
     }
@@ -1179,12 +1211,183 @@ impl Application {
             .lock()
             .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
         experience.apply_planner_response(response);
+        let conversation_id = experience.conversation_id().map(str::to_string);
         let coding_open = experience.active_workspace_kind() == Some(WorkspaceKind::Coding);
         drop(experience);
+        if let Some(summary) = response
+            .execution_summary
+            .as_ref()
+            .filter(|summary| summary.should_surface_in_conversation())
+        {
+            let _ = self.store_execution_summary_memory(summary, conversation_id.as_deref());
+        }
         if coding_open {
             let _ = self.refresh_coding_explorer();
         }
         Ok(())
+    }
+
+    /// Persist an Execution Summary for future Memory retrieval.
+    fn store_execution_summary_memory(
+        &self,
+        summary: &jaymi_planner::ExecutionSummary,
+        conversation_id: Option<&str>,
+    ) -> JaymiResult<MemoryRecord> {
+        let project_id = self.active_project_id();
+        let scope = if conversation_id.is_some() {
+            jaymi_memory::MemoryScope::Conversation
+        } else {
+            jaymi_memory::MemoryScope::Working
+        };
+        self.store_memory(&StoreMemoryRequest {
+            scope,
+            summary: summary.memory_summary_line(),
+            content: summary.memory_content(),
+            conversation_id: conversation_id.map(str::to_string),
+            project_id,
+            importance: Some(60),
+            confidence: Some(90),
+            tags: vec![
+                "execution_summary".into(),
+                summary.status.as_str().into(),
+            ],
+            source: Some("planner".into()),
+            kind: Some("execution_summary".into()),
+            metadata_json: Some(summary.memory_metadata_json()),
+        })
+    }
+
+    /// Persist an Approval History entry for transparency and future retrieval.
+    ///
+    /// Stored as `kind = approval_history` with Private sensitivity metadata.
+    /// Callers that surface history must use [`Self::search_approval_history`]
+    /// so Restricted access redacts reasons and resource paths.
+    fn store_approval_history_memory(
+        &self,
+        entry: &jaymi_planner::ApprovalHistoryEntry,
+        conversation_id: Option<&str>,
+    ) -> JaymiResult<MemoryRecord> {
+        let project_id = self.active_project_id();
+        let mut entry = entry.clone();
+        if entry.conversation_id.is_none() {
+            entry.conversation_id = conversation_id.map(str::to_string);
+        }
+        if entry.project_id.is_none() {
+            entry.project_id = project_id.clone();
+        }
+        let scope = if entry.conversation_id.is_some() {
+            jaymi_memory::MemoryScope::Conversation
+        } else {
+            jaymi_memory::MemoryScope::Working
+        };
+        self.store_memory(&StoreMemoryRequest {
+            scope,
+            summary: entry.memory_summary_line(),
+            content: entry.memory_content(),
+            conversation_id: entry.conversation_id.clone(),
+            project_id: entry.project_id.clone(),
+            importance: Some(70),
+            confidence: Some(95),
+            tags: vec![
+                "approval_history".into(),
+                entry.decision.as_str().into(),
+            ],
+            source: Some("planner".into()),
+            kind: Some("approval_history".into()),
+            metadata_json: Some(entry.memory_metadata_json()),
+        })
+    }
+
+    /// Search Approval History (in-session Planner store + durable Memory).
+    ///
+    /// `access` controls whether reasons, goals, and resource paths are visible.
+    /// Use [`ApprovalHistoryAccess::Full`] for local user UI / diagnostics and
+    /// [`ApprovalHistoryAccess::Restricted`] for Context / Planner exports.
+    pub fn search_approval_history(
+        &self,
+        query: &jaymi_planner::ApprovalHistoryQuery,
+        access: jaymi_planner::ApprovalHistoryAccess,
+    ) -> JaymiResult<Vec<jaymi_planner::ApprovalHistoryView>> {
+        let planner = self.container.resolve::<Planner>()?;
+        let mut entries = planner.search_approval_history(query)?;
+
+        let conversation_id = query.conversation_id.clone().or_else(|| {
+            self.experience()
+                .ok()
+                .and_then(|session| session.conversation_id().map(str::to_string))
+        });
+        let project_id = query.project_id.clone().or_else(|| self.active_project_id());
+
+        let memory_query = MemoryQuery {
+            text: query.text.clone(),
+            kind: Some("approval_history".into()),
+            conversation_id: conversation_id.clone(),
+            project_id: project_id.clone(),
+            limit: query.limit.or(Some(100)),
+            ..MemoryQuery::default()
+        };
+        if let Ok(records) = self.retrieve_memory(&memory_query) {
+            for record in records {
+                if let Some(entry) = jaymi_planner::ApprovalHistoryEntry::from_memory_record(
+                    &record.summary,
+                    &record.content,
+                    &record.metadata_json,
+                    record.conversation_id.clone(),
+                    record.project_id.clone(),
+                    record.created_at,
+                ) {
+                    if entry.matches(query)
+                        && !entries.iter().any(|existing| {
+                            existing.plan_id == entry.plan_id
+                                && existing.decision == entry.decision
+                                && existing.timestamp == entry.timestamp
+                        })
+                    {
+                        entries.push(entry);
+                    }
+                }
+            }
+        }
+
+        entries.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        if let Some(limit) = query.limit {
+            entries.truncate(limit);
+        }
+        Ok(entries
+            .into_iter()
+            .map(|entry| entry.view_for(access))
+            .collect())
+    }
+
+    /// Record a Review Card intent and resolve the paused Execution Plan.
+    ///
+    /// - Approve resumes the same plan (no replan) and may execute tools.
+    /// - Modify regenerates affected steps into a child plan, keeps history,
+    ///   and re-pauses for approval (ContextBundle is not rebuilt unless required).
+    /// - Cancel drops the pause without executing.
+    ///
+    /// Successful decisions are recorded in Approval History (session + Memory).
+    /// The conversation stays active. Duplicate approvals after resume fail
+    /// deterministically.
+    pub fn communicate_review_intent(
+        &self,
+        intent: jaymi_planner::ReviewIntent,
+    ) -> JaymiResult<jaymi_planner::PlannerResponse> {
+        let conversation_id = {
+            let mut experience = self
+                .experience
+                .lock()
+                .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+            experience.communicate_review_intent(intent.clone())?;
+            experience.conversation_id().map(str::to_string)
+        };
+        let planner = self.container.resolve::<Planner>()?;
+        let response = planner.resolve_review(intent)?;
+        if let Some(entry) = planner.approval_history()?.last().cloned() {
+            let _ = self.store_approval_history_memory(&entry, conversation_id.as_deref());
+        }
+        self.apply_workspace_response(&response)?;
+        Ok(response)
     }
 
     /// Expand a capability workspace beside the conversation.
@@ -1453,10 +1656,7 @@ impl Application {
                 }
                 let path = Path::new(&parent).join(name);
                 let path_str = path.to_string_lossy().into_owned();
-                let response = self.write_file(&path, "")?;
-                if response.blocked {
-                    return Err(JaymiError::new(response.content));
-                }
+                self.complete_user_initiated(self.write_file(&path, "")?)?;
                 self.with_coding_state(|coding| coding.explorer.clear_pending())?;
                 self.refresh_coding_explorer()?;
                 self.select_coding_path(&path_str, false)?;
@@ -1472,10 +1672,7 @@ impl Application {
                 }
                 let path = Path::new(&parent).join(name);
                 let path_str = path.to_string_lossy().into_owned();
-                let response = self.manage_mkdir(&path)?;
-                if response.blocked {
-                    return Err(JaymiError::new(response.content));
-                }
+                self.complete_user_initiated(self.manage_mkdir(&path)?)?;
                 self.with_coding_state(|coding| {
                     coding.explorer.clear_pending();
                     coding.explorer.expanded_paths.insert(parent);
@@ -1494,10 +1691,7 @@ impl Application {
                     .map(|parent| parent.join(name))
                     .ok_or_else(|| JaymiError::new("cannot rename path without a parent"))?;
                 let to_str = to.to_string_lossy().into_owned();
-                let response = self.manage_rename(&from, &to)?;
-                if response.blocked {
-                    return Err(JaymiError::new(response.content));
-                }
+                self.complete_user_initiated(self.manage_rename(&from, &to)?)?;
                 self.with_coding_state(|coding| {
                     coding.explorer.clear_pending();
                     coding.editors.remap_path(&path, &to_str, name);
@@ -1511,10 +1705,7 @@ impl Application {
 
     /// Delete a path through Planner → manage_path and refresh the explorer.
     pub fn delete_coding_path(&self, path: &str) -> JaymiResult<()> {
-        let response = self.manage_delete(path)?;
-        if response.blocked {
-            return Err(JaymiError::new(response.content));
-        }
+        self.complete_user_initiated(self.manage_delete(path)?)?;
         self.with_coding_state(|coding| {
             let _ = coding.close_tab(path);
             if coding.explorer.selected_path.as_deref() == Some(path) {
@@ -1744,10 +1935,7 @@ impl Application {
             if open_content.is_some() {
                 self.set_coding_tab_content(&path, new_text)?;
             } else {
-                let response = self.write_file(&path, new_text)?;
-                if response.blocked {
-                    return Err(JaymiError::new(response.content));
-                }
+                self.complete_user_initiated(self.write_file(&path, new_text)?)?;
             }
         }
         Ok(total_replacements)
@@ -2008,10 +2196,7 @@ impl Application {
             return Err(JaymiError::new(format!("no open tab for {path}")));
         };
 
-        let response = self.write_file(path, content.clone())?;
-        if response.blocked {
-            return Err(JaymiError::new(response.content));
-        }
+        self.complete_user_initiated(self.write_file(path, content.clone())?)?;
         self.with_coding_state(|coding| {
             coding.mark_tab_clean(path);
         })?;
@@ -2273,10 +2458,9 @@ impl Application {
             });
         };
 
-        let response = self.ensure_terminal(DEFAULT_TERMINAL_SESSION_ID, &cwd)?;
-        if response.blocked {
-            return Err(JaymiError::new(response.content));
-        }
+        let response = self.complete_user_initiated(
+            self.ensure_terminal(DEFAULT_TERMINAL_SESSION_ID, &cwd)?,
+        )?;
         self.apply_terminal_response(&response)?;
         self.with_coding_state(|coding| {
             if coding.active_terminal_id.is_none() {
@@ -2293,10 +2477,7 @@ impl Application {
             .with_coding_state(|coding| coding.explorer.project_root.clone())?
             .ok_or_else(|| JaymiError::new("cannot create terminal — open a project first"))?;
 
-        let response = self.create_terminal(&cwd, title)?;
-        if response.blocked {
-            return Err(JaymiError::new(response.content));
-        }
+        let response = self.complete_user_initiated(self.create_terminal(&cwd, title)?)?;
         let session_id = response
             .terminal_session_id
             .clone()
@@ -2329,10 +2510,8 @@ impl Application {
             ));
         };
 
-        let response = self.rename_terminal(session_id, &cwd, title)?;
-        if response.blocked {
-            return Err(JaymiError::new(response.content));
-        }
+        let response =
+            self.complete_user_initiated(self.rename_terminal(session_id, &cwd, title)?)?;
         self.apply_terminal_response(&response)?;
         Ok(())
     }
@@ -2349,10 +2528,7 @@ impl Application {
         })?;
         let cwd = cwd.unwrap_or_default();
 
-        let response = self.kill_terminal(session_id, &cwd)?;
-        if response.blocked {
-            return Err(JaymiError::new(response.content));
-        }
+        self.complete_user_initiated(self.kill_terminal(session_id, &cwd)?)?;
         self.with_coding_state(|coding| {
             coding.remove_terminal_session(session_id);
         })?;
@@ -2386,10 +2562,8 @@ impl Application {
             ));
         };
 
-        let response = self.run_terminal(session_id, &cwd, command)?;
-        if response.blocked {
-            return Err(JaymiError::new(response.content));
-        }
+        let response =
+            self.complete_user_initiated(self.run_terminal(session_id, &cwd, command)?)?;
         self.apply_terminal_response(&response)?;
         Ok(())
     }
@@ -2629,9 +2803,7 @@ impl Application {
                 self.git_commit(&root, message)?
             }
         };
-        if response.blocked {
-            return Err(JaymiError::new(response.content));
-        }
+        let response = self.complete_user_initiated(response)?;
         self.apply_git_response(&response)?;
         if matches!(operation, GitOperation::Commit) {
             self.with_coding_state(|coding| {
@@ -2882,12 +3054,34 @@ impl Application {
             .flatten()
             .map(|context| context.project);
 
+        let approval_history = self
+            .search_approval_history(
+                &jaymi_planner::ApprovalHistoryQuery {
+                    limit: Some(20),
+                    ..Default::default()
+                },
+                jaymi_planner::ApprovalHistoryAccess::Full,
+            )
+            .unwrap_or_default();
+        let paused = self
+            .container
+            .resolve::<Planner>()
+            .ok()
+            .and_then(|planner| planner.paused_snapshots().ok())
+            .unwrap_or_default();
+        let inspection = crate::execution_diagnostics::build_execution_inspection(
+            paused,
+            &experience,
+            approval_history,
+        );
+
         Ok(build_coding_diagnostics_view(
             &snapshot,
             &experience,
             coding.as_ref(),
             project.as_ref(),
             activity.as_ref(),
+            &inspection,
         ))
     }
 
@@ -3035,6 +3229,19 @@ impl Application {
             tool_id: response.tool_id.clone(),
             provider_id: response.provider_id.clone(),
             blocked: response.blocked,
+            awaiting_review: response.awaiting_review,
+            plan_id: response
+                .execution_plan
+                .as_ref()
+                .map(|plan| plan.id().as_str().to_string()),
+            plan_status: response
+                .execution_plan
+                .as_ref()
+                .map(|plan| plan.status().as_str().to_string()),
+            risk: response
+                .execution_plan
+                .as_ref()
+                .map(|plan| plan.estimated_risk().as_str().to_string()),
             duration_ms,
             permission_decision: response
                 .permission_result
@@ -3171,7 +3378,7 @@ impl Application {
             .list()
             .unwrap_or_default()
             .into_iter()
-            .map(|metadata| metadata.id)
+            .map(|metadata| format!("{} ({})", metadata.id, metadata.risk.as_str()))
             .collect();
         let parser_ids = parsers.parser_ids();
         let active_policies: Vec<String> = policies
@@ -3189,7 +3396,9 @@ impl Application {
         .to_string();
 
         let indexing_enabled = config.settings().indexing_enabled;
-        let permission_mode = "filesystem read auto-allowed; write/internet denied".to_string();
+        let permission_mode =
+            "read: allowed · write/delete/terminal: requires_approval · internet: denied · review from policy+permission+ToolRisk"
+                .to_string();
 
         let stub_provider_ids: Vec<&str> = provider_ids
             .iter()
@@ -3880,6 +4089,29 @@ mod tests {
             .iter()
             .any(|id| id == OCR_PROVIDER_ID));
         assert_eq!(diagnostics.tool_count, 12);
+        assert!(
+            diagnostics
+                .tool_ids
+                .iter()
+                .any(|id| id == "write_file (modify)"),
+            "diagnostics must show ToolRisk: {:?}",
+            diagnostics.tool_ids
+        );
+        assert!(
+            diagnostics
+                .tool_ids
+                .iter()
+                .any(|id| id == "terminal (destructive)"),
+            "diagnostics must show ToolRisk: {:?}",
+            diagnostics.tool_ids
+        );
+        assert!(
+            diagnostics
+                .permission_mode
+                .as_deref()
+                .is_some_and(|mode| mode.contains("requires_approval")),
+            "permission mode should describe RequiresApproval decisions"
+        );
         assert_eq!(
             diagnostics.capability_count,
             jaymi_capabilities::Capability::all().len()

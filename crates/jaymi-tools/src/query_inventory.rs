@@ -11,7 +11,7 @@ use jaymi_search::{
 
 use crate::metadata::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
-    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata,
+    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata, ToolRisk,
 };
 use crate::tool::{Tool, ToolInput, ToolOutput};
 
@@ -40,6 +40,7 @@ impl QueryInventoryTool {
                         .to_string(),
                 provider: FILESYSTEM_PROVIDER_ID.to_string(),
                 capabilities: vec![Capability::Discover],
+                risk: ToolRisk::Safe,
                 execution_mode: ExecutionMode::Synchronous,
                 estimated_runtime: EstimatedRuntime::Fast,
                 resource_cost: ResourceCost::VeryLow,

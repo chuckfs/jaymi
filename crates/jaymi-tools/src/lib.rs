@@ -29,7 +29,7 @@ pub use lsp::{LanguageServerTool, LANGUAGE_SERVER_TOOL_ID};
 pub use manage_path::{ManagePathTool, MANAGE_PATH_TOOL_ID};
 pub use metadata::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
-    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata,
+    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata, ToolRisk,
 };
 pub use orchestrator::ToolOrchestrator;
 pub use query_inventory::{QueryInventoryTool, QUERY_INVENTORY_TOOL_ID};
@@ -40,7 +40,7 @@ pub use search_files::{SearchFilesTool, SEARCH_FILES_TOOL_ID};
 pub use search_knowledge::{SearchKnowledgeTool, SEARCH_KNOWLEDGE_TOOL_ID};
 pub use search_project_knowledge::{SearchProjectKnowledgeTool, SEARCH_PROJECT_KNOWLEDGE_TOOL_ID};
 pub use terminal::{TerminalTool, TERMINAL_TOOL_ID};
-pub use tool::{Tool, ToolInput, ToolOutput};
+pub use tool::{Tool, ToolExecutionMetadata, ToolInput, ToolOutput};
 pub use write_file::{WriteFileTool, WRITE_FILE_TOOL_ID};
 
 use jaymi_core::{HealthReport, JaymiResult, Lifecycle};

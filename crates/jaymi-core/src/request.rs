@@ -182,6 +182,11 @@ impl GitOperation {
     pub fn is_mutating(self) -> bool {
         !matches!(self, Self::Status)
     }
+
+    /// Whether this operation permanently discards worktree data.
+    pub fn is_destructive(self) -> bool {
+        matches!(self, Self::Discard)
+    }
 }
 
 /// One path with a short Git status code (`M`, `A`, `??`, …).

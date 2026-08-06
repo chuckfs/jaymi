@@ -2333,6 +2333,9 @@ dependencies = [
 [[package]]
 name = "jaymi-core"
 version = "0.1.0"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "jaymi-database"
@@ -2428,6 +2431,8 @@ dependencies = [
  "jaymi-search",
  "jaymi-tools",
  "jaymi-understanding",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

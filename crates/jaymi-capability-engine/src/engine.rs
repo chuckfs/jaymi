@@ -12,7 +12,7 @@ use crate::discovery::{
     assess_capability, CapabilityDiscoveryReport, CapabilityInventory, CapabilityStatus,
 };
 use crate::inspector::{build_inspector_report, CapabilityInspectorReport};
-use crate::plan::{build_plan_step, ExecutionPlan};
+use crate::plan::{build_plan_step, CapabilityPlan};
 use crate::registry::CapabilityRegistry;
 use crate::Capability;
 
@@ -80,26 +80,27 @@ pub trait CapabilityEngineApi: Send + Sync {
     /// List descriptors for registered capabilities.
     fn list_descriptors(&self) -> Vec<CapabilityDescriptor>;
 
-    /// Build an execution plan for the requested capabilities (no execution).
+    /// Build a capability plan for the requested capabilities (no execution).
     ///
     /// Uses an empty inventory (preferred tools/providers only). Prefer
     /// [`Self::plan`] when tools and providers are known.
-    fn build_execution_plan(&self, capabilities: &[Capability]) -> JaymiResult<ExecutionPlan> {
+    fn build_capability_plan(&self, capabilities: &[Capability]) -> JaymiResult<CapabilityPlan> {
         self.plan(capabilities, &CapabilityInventory::default(), None)
     }
 
-    /// Build a structured execution plan from capabilities and inventory.
+    /// Build a structured capability plan from capabilities and inventory.
     ///
     /// Plans include capability, required tools, required providers, and
-    /// required permissions. Nothing is executed.
+    /// required permissions. Nothing is executed. Distinct from Planner-owned
+    /// action execution plans.
     fn plan(
         &self,
         capabilities: &[Capability],
         inventory: &CapabilityInventory,
         goal: Option<&str>,
-    ) -> JaymiResult<ExecutionPlan>;
+    ) -> JaymiResult<CapabilityPlan>;
 
-    /// Compose independent capabilities into one execution plan.
+    /// Compose independent capabilities into one capability plan.
     ///
     /// Capabilities are never merged — each becomes its own plan step with
     /// its own tools, providers, and permissions. Duplicates are dropped
@@ -109,7 +110,7 @@ pub trait CapabilityEngineApi: Send + Sync {
         capabilities: &[Capability],
         inventory: &CapabilityInventory,
         goal: Option<&str>,
-    ) -> JaymiResult<ExecutionPlan> {
+    ) -> JaymiResult<CapabilityPlan> {
         let ordered = compose_capabilities(capabilities)?;
         self.plan(&ordered, inventory, goal)
     }
@@ -119,7 +120,7 @@ pub trait CapabilityEngineApi: Send + Sync {
         &self,
         composition: &CapabilityComposition,
         inventory: &CapabilityInventory,
-    ) -> JaymiResult<ExecutionPlan> {
+    ) -> JaymiResult<CapabilityPlan> {
         self.compose(
             composition.as_slice(),
             inventory,
@@ -288,7 +289,7 @@ impl CapabilityEngineApi for CapabilityEngine {
             .unwrap_or_default()
     }
 
-    fn build_execution_plan(&self, capabilities: &[Capability]) -> JaymiResult<ExecutionPlan> {
+    fn build_capability_plan(&self, capabilities: &[Capability]) -> JaymiResult<CapabilityPlan> {
         self.plan(capabilities, &CapabilityInventory::default(), None)
     }
 
@@ -297,7 +298,7 @@ impl CapabilityEngineApi for CapabilityEngine {
         capabilities: &[Capability],
         inventory: &CapabilityInventory,
         goal: Option<&str>,
-    ) -> JaymiResult<ExecutionPlan> {
+    ) -> JaymiResult<CapabilityPlan> {
         self.ensure_ready()?;
         if capabilities.is_empty() {
             return Err(JaymiError::new("plan requires at least one capability"));
@@ -314,7 +315,7 @@ impl CapabilityEngineApi for CapabilityEngine {
             );
             steps.push(build_plan_step(*capability, status.availability, inventory));
         }
-        let plan = ExecutionPlan {
+        let plan = CapabilityPlan {
             goal: goal.map(str::to_string),
             steps,
         };
@@ -480,7 +481,7 @@ mod tests {
         assert_eq!(catalog.availability, CapabilityAvailability::Planned);
 
         let plan = engine
-            .build_execution_plan(&[Capability::Search, Capability::Index])
+            .build_capability_plan(&[Capability::Search, Capability::Index])
             .unwrap();
         assert_eq!(plan.steps.len(), 2);
         assert!(!plan.is_ready());
@@ -687,7 +688,7 @@ mod tests {
             CapabilityAvailability::Planned
         );
         let plan = engine
-            .build_execution_plan(&[Capability::Internet, Capability::GenerateImages])
+            .build_capability_plan(&[Capability::Internet, Capability::GenerateImages])
             .unwrap();
         assert_eq!(plan.steps.len(), 2);
         assert_eq!(plan.steps[0].availability, CapabilityAvailability::Planned);

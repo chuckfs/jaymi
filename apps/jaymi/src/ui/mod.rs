@@ -5,7 +5,9 @@
 
 pub mod explorer;
 pub mod nav_rail;
+pub mod review_card;
 
+use std::collections::HashMap;
 use std::time::SystemTime;
 
 use eframe::egui;
@@ -29,6 +31,7 @@ use crate::ui::nav_rail::{
     render_nav_rail, NavRailContext, NavRailEvent, NavTab, DEFAULT_NAV_WIDTH, MAX_NAV_WIDTH,
     MIN_NAV_WIDTH,
 };
+use crate::ui::review_card::render_review_card;
 use jaymi_capabilities::{
     CodingBottomTab, EditorSettings, FoldedRegion, SplitDirection, WorkspaceKind,
     DEFAULT_CONVERSATION_FRACTION, DEFAULT_WORKSPACE_PANEL_WIDTH, MAX_CONVERSATION_FRACTION,
@@ -37,6 +40,7 @@ use jaymi_capabilities::{
 use jaymi_config::{Config, Theme as ThemePreference};
 use jaymi_core::UserRequest;
 use jaymi_memory::{ConversationMeta, MessageRole};
+use jaymi_planner::ReviewIntent;
 
 /// Launch the conversation-first desktop window.
 pub fn run_diagnostics(
@@ -77,6 +81,7 @@ pub fn run_diagnostics(
                 read_path_input: initial_read_path,
                 prompt: String::new(),
                 focus_composer: false,
+                review_modify_notes: HashMap::new(),
                 experience,
                 show_diagnostics: false,
                 error: None,
@@ -285,6 +290,8 @@ struct JaymiApp {
     prompt: String,
     /// Request focus on the conversation composer after a Quick Action insert.
     focus_composer: bool,
+    /// Per-plan draft notes for Review Card Modify guidance.
+    review_modify_notes: HashMap<String, String>,
     experience: ExperienceSession,
     show_diagnostics: bool,
     /// Hard failure message (composer + recoverable actions).
@@ -917,6 +924,7 @@ impl JaymiApp {
         let available = ui.available_height();
         let turns: Vec<_> = self.experience.conversation().to_vec();
         let empty = turns.is_empty() && !self.awaiting_reply;
+        let mut review_intent: Option<ReviewIntent> = None;
         egui::ScrollArea::vertical()
             .id_salt("conversation_scroll")
             .animated(true)
@@ -948,6 +956,19 @@ impl JaymiApp {
                                     &turn.content,
                                     turn.created_at,
                                 );
+                                if let Some(review) = &turn.review {
+                                    ui.add_space(space::SM);
+                                    let plan_key = review.plan_id.as_str().to_string();
+                                    let note = self
+                                        .review_modify_notes
+                                        .entry(plan_key)
+                                        .or_default();
+                                    if let Some(intent) =
+                                        render_review_card(ui, &self.theme, review, note)
+                                    {
+                                        review_intent = Some(intent);
+                                    }
+                                }
                                 ui.add_space(space::LG);
                             }
                             if self.awaiting_reply {
@@ -960,6 +981,9 @@ impl JaymiApp {
                     });
                 }
             });
+        if let Some(intent) = review_intent {
+            self.handle_review_intent(intent);
+        }
     }
 
     fn render_conversation_empty_state(&mut self, ui: &mut egui::Ui) {
@@ -2322,6 +2346,57 @@ impl JaymiApp {
         self.awaiting_reply = false;
     }
 
+    /// Apply a Review Card button: record intent, then Planner pause/resume.
+    ///
+    /// Approve resumes the paused plan without replanning. Modify regenerates
+    /// affected steps into a child plan (re-paused for approval). Cancel drops
+    /// the pause. The card itself never executes tools — the Planner does.
+    fn handle_review_intent(&mut self, intent: ReviewIntent) {
+        if let ReviewIntent::Modify { plan_id, .. } = &intent {
+            self.review_modify_notes.remove(plan_id.as_str());
+        }
+        match self.app.communicate_review_intent(intent) {
+            Ok(response) => {
+                self.error = None;
+                self.status = Some(if response.awaiting_review {
+                    if response
+                        .execution_plan
+                        .as_ref()
+                        .map(|plan| plan.revision() > 1)
+                        .unwrap_or(false)
+                    {
+                        "Plan revised — review the changes before approval.".into()
+                    } else {
+                        "Still awaiting review.".into()
+                    }
+                } else if response
+                    .execution_plan
+                    .as_ref()
+                    .map(|plan| plan.status() == jaymi_planner::ExecutionStatus::Completed)
+                    .unwrap_or(false)
+                {
+                    "Resumed paused plan — execution completed.".into()
+                } else if response
+                    .execution_plan
+                    .as_ref()
+                    .map(|plan| plan.status() == jaymi_planner::ExecutionStatus::Cancelled)
+                    .unwrap_or(false)
+                {
+                    "Paused plan cancelled.".into()
+                } else {
+                    response.content.chars().take(120).collect()
+                });
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
+                }
+            }
+            Err(error) => {
+                self.status = None;
+                self.error = Some(error.message().to_string());
+            }
+        }
+    }
+
     fn close_workspace(&mut self) {
         if let Some(host) = self.monaco.as_mut() {
             let _ = host.set_viewport(None, 0.0, 1.0);
@@ -2368,6 +2443,54 @@ impl JaymiApp {
                 .size(type_size::UI)
                 .color(self.theme.text_secondary),
         );
+
+        // Execution inspection — why plans are paused / resumed.
+        if let Ok(view) = self.app.coding_diagnostics_view() {
+            let execution_titles: std::collections::HashSet<&str> =
+                crate::execution_diagnostics::EXECUTION_INSPECTION_SECTION_TITLES
+                    .iter()
+                    .copied()
+                    .collect();
+            let execution_sections: Vec<_> = view
+                .sections
+                .iter()
+                .filter(|section| execution_titles.contains(section.title.as_str()))
+                .collect();
+            if !execution_sections.is_empty() {
+                ui.add_space(space::MD);
+                ui.label(
+                    egui::RichText::new("Execution inspection")
+                        .strong()
+                        .size(type_size::UI)
+                        .color(self.theme.text_primary),
+                );
+                ui.add_space(space::XS);
+                ui.label(
+                    egui::RichText::new(
+                        "Developer view of Execution Plans, review gates, pause/resume, and approvals.",
+                    )
+                    .size(type_size::META)
+                    .color(self.theme.text_secondary),
+                );
+                for section in execution_sections {
+                    ui.add_space(space::SM);
+                    ui.label(
+                        egui::RichText::new(&section.title)
+                            .strong()
+                            .size(type_size::META)
+                            .color(self.theme.text_primary),
+                    );
+                    for line in &section.lines {
+                        ui.label(
+                            egui::RichText::new(line)
+                                .size(type_size::META)
+                                .color(self.theme.text_secondary),
+                        );
+                    }
+                }
+            }
+        }
+
         ui.add_space(space::SM);
         egui::Grid::new("subsystem_statuses")
             .striped(true)

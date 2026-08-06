@@ -10,11 +10,13 @@
 //! lives only in the Planner; without Planner hints, free text is [`IntentId::Unknown`].
 
 use crate::UserRequest;
+use serde::{Deserialize, Serialize};
 
 /// Stable intent identity shared across Planner, Context, Capabilities, and Policies.
 ///
 /// Unit variants only — request payloads stay on the Planner's Intent enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum IntentId {
     /// List the immediate contents of one directory.
     ListDirectory,

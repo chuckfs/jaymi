@@ -93,6 +93,16 @@ fn save_writes_file_contents_through_planner_pipeline() {
     let response = app
         .write_file(&path, "# new content\n")
         .expect("write through planner");
+    assert!(
+        response.awaiting_review,
+        "Modify risk must pause for review"
+    );
+    assert_eq!(response.tool_id.as_deref(), Some(WRITE_FILE_TOOL_ID));
+    assert!(!path.exists() || fs::read_to_string(&path).unwrap() == "# old\n");
+
+    let response = app
+        .complete_user_initiated(response)
+        .expect("approve write");
     assert_eq!(response.tool_id.as_deref(), Some(WRITE_FILE_TOOL_ID));
     assert_eq!(
         response.provider_id.as_deref(),

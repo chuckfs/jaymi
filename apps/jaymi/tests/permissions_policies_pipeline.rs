@@ -1,4 +1,4 @@
-//! Integration tests for Slice 0.4 — permissions and policies in the Planner.
+//! Integration tests — Action Policy + Permission + Review gating.
 
 use std::fs;
 use std::path::PathBuf;
@@ -14,12 +14,14 @@ use jaymi_permissions::{
     PermissionAction, PermissionCategory, PermissionDecision, PermissionEngine, PermissionRequest,
     PermissionScope,
 };
-use jaymi_planner::{Planner, PlannerDeps};
-use jaymi_policies::{ExecutionCandidate, PolicyEngine};
+use jaymi_planner::{Planner, PlannerDeps, ReviewIntent};
+use jaymi_policies::{
+    BuiltinPolicy, ExecutionCandidate, Policy, PolicyDecision, PolicyEngine, PolicyScope,
+};
 use jaymi_providers::ProviderRegistry;
 use jaymi_tools::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
-    PrivacyMode, Reliability, ResourceCost, ResultType, Tool, ToolInput, ToolMetadata,
+    PrivacyMode, Reliability, ResourceCost, ResultType, Tool, ToolInput, ToolMetadata, ToolRisk,
     ToolOrchestrator, ToolOutput, ToolRegistry,
 };
 
@@ -32,7 +34,10 @@ fn approved_read_requests_include_permission_and_policy() {
     let app = Application::boot_with_data_dir(&data_dir).expect("boot");
     let response = app.list_directory(&work).expect("list");
     assert!(!response.blocked);
-    assert!(response.policy_evaluation.as_ref().unwrap().allowed);
+    assert_eq!(
+        response.policy_evaluation.as_ref().unwrap().decision,
+        PolicyDecision::Allowed
+    );
     assert_eq!(
         response.permission_result.as_ref().unwrap().decision,
         PermissionDecision::Allowed
@@ -52,18 +57,91 @@ fn approved_read_requests_include_permission_and_policy() {
 }
 
 #[test]
-fn policy_evaluation_denies_cloud_tool_before_permission() {
-    let planner = planner_with_only_cloud_search();
+fn approval_flow_offline_first_pauses_cloud_tool_for_review() {
+    let planner = planner_with_only_cloud_search(false);
+    let response = planner
+        .handle(UserRequest::list_directory(temp_dir("policy-approve-work")))
+        .expect("handle");
+
+    assert!(response.blocked);
+    assert!(response.awaiting_review);
+    assert!(response.entries.is_empty());
+    assert_eq!(response.tool_id.as_deref(), Some("cloud_search"));
+    assert_eq!(
+        response.policy_evaluation.as_ref().unwrap().decision,
+        PolicyDecision::RequiresApproval
+    );
+    assert!(response.permission_result.is_some());
+    assert!(response.content.contains("I can do that."));
+    assert!(response.content.contains("You can:"));
+    assert!(response.content.contains("Offline First"));
+
+    let plan_id = response.execution_plan.expect("plan").id().clone();
+    let resumed = planner
+        .resolve_review(ReviewIntent::Approve { plan_id })
+        .expect("approve through planner");
+    assert!(!resumed.awaiting_review);
+    assert!(!resumed.blocked);
+    assert_eq!(resumed.tool_id.as_deref(), Some("cloud_search"));
+}
+
+#[test]
+fn denied_flow_privacy_maximum_explains_and_skips_execution() {
+    let planner = planner_with_only_cloud_search(true);
     let response = planner
         .handle(UserRequest::list_directory(temp_dir("policy-deny-work")))
         .expect("handle");
 
     assert!(response.blocked);
+    assert!(!response.awaiting_review);
     assert!(response.entries.is_empty());
     assert_eq!(response.tool_id.as_deref(), Some("cloud_search"));
-    assert!(!response.policy_evaluation.as_ref().unwrap().allowed);
+    assert_eq!(
+        response.policy_evaluation.as_ref().unwrap().decision,
+        PolicyDecision::Denied
+    );
     assert!(response.permission_result.is_none());
-    assert!(response.content.contains("Blocked by policy"));
+    assert!(response.content.contains("Denied"));
+    assert!(response.content.contains("Privacy Maximum"));
+}
+
+#[test]
+fn policy_override_privacy_maximum_beats_offline_first_approval() {
+    let planner = planner_with_only_cloud_search(true);
+    let evaluation = planner
+        .handle(UserRequest::list_directory(temp_dir("override-work")))
+        .expect("handle")
+        .policy_evaluation
+        .expect("policy");
+    assert_eq!(evaluation.decision, PolicyDecision::Denied);
+    assert!(evaluation.explanation().contains("Privacy Maximum"));
+    assert!(evaluation
+        .policies_applied
+        .iter()
+        .any(|name| name == "Offline First" || name == "Privacy Maximum"));
+}
+
+#[test]
+fn policy_explanation_is_user_visible_on_deny_and_approval() {
+    let approve = planner_with_only_cloud_search(false)
+        .handle(UserRequest::list_directory(temp_dir("explain-approve")))
+        .expect("handle");
+    assert!(approve.content.contains("Offline First"));
+    assert!(approve
+        .execution_summary
+        .as_ref()
+        .and_then(|summary| summary.error.as_ref())
+        .is_some_and(|error| error.contains("Offline First")));
+
+    let deny = planner_with_only_cloud_search(true)
+        .handle(UserRequest::list_directory(temp_dir("explain-deny")))
+        .expect("handle");
+    assert!(deny.content.contains("Privacy Maximum"));
+    assert!(deny
+        .execution_summary
+        .as_ref()
+        .and_then(|summary| summary.error.as_ref())
+        .is_some_and(|error| error.contains("Privacy Maximum")));
 }
 
 #[test]
@@ -81,6 +159,7 @@ fn denied_permission_prevents_execution() {
         .unwrap();
     assert_eq!(result.decision, PermissionDecision::Denied);
     assert!(!result.allows_execution());
+    assert!(result.explanation.contains("not granted"));
 }
 
 #[test]
@@ -97,7 +176,7 @@ fn offline_first_policy_participates_in_evaluation() {
             cloud_only: false,
         })
         .unwrap();
-    assert!(local.allowed);
+    assert_eq!(local.decision, PolicyDecision::Allowed);
     assert!(local.prefer_local);
 
     let remote = policies
@@ -109,14 +188,14 @@ fn offline_first_policy_participates_in_evaluation() {
             cloud_only: true,
         })
         .unwrap();
-    assert!(!remote.allowed);
+    assert_eq!(remote.decision, PolicyDecision::RequiresApproval);
     assert!(remote
         .reasons
         .iter()
         .any(|reason| reason.contains("Offline First")));
 }
 
-fn planner_with_only_cloud_search() -> Planner {
+fn planner_with_only_cloud_search(privacy_maximum: bool) -> Planner {
     let mut capabilities = CapabilityEngine::new();
     capabilities.initialize().unwrap();
     capabilities.register(Capability::Search).unwrap();
@@ -133,6 +212,13 @@ fn planner_with_only_cloud_search() -> Planner {
 
     let mut policies = PolicyEngine::new();
     policies.initialize().unwrap();
+    if privacy_maximum {
+        policies.active.push(Policy {
+            name: "Privacy Maximum".into(),
+            scope: PolicyScope::Global,
+            builtin: Some(BuiltinPolicy::PrivacyMaximum),
+        });
+    }
     let mut permissions = PermissionEngine::new();
     permissions.initialize().unwrap();
 
@@ -202,6 +288,7 @@ impl CloudSearchTool {
                 description: "Requires internet".into(),
                 provider: "cloud".into(),
                 capabilities: vec![Capability::Search],
+                risk: ToolRisk::External,
                 execution_mode: ExecutionMode::Synchronous,
                 estimated_runtime: EstimatedRuntime::Fast,
                 resource_cost: ResourceCost::Low,
@@ -226,7 +313,7 @@ impl Tool for CloudSearchTool {
     }
 
     fn execute(&self, _input: &ToolInput) -> JaymiResult<ToolOutput> {
-        panic!("cloud tool must not execute when Offline First is active");
+        Ok(ToolOutput::directory_listing(Vec::new()))
     }
 }
 

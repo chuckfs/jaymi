@@ -11,9 +11,9 @@ use jaymi_providers::{FilesystemProvider, FILESYSTEM_PROVIDER_ID};
 
 use crate::metadata::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
-    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata,
+    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata, ToolRisk,
 };
-use crate::tool::{Tool, ToolInput, ToolOutput};
+use crate::tool::{Tool, ToolExecutionMetadata, ToolInput, ToolOutput};
 
 /// Stable tool identifier used by the Planner and registries.
 pub const WRITE_FILE_TOOL_ID: &str = "write_file";
@@ -36,6 +36,7 @@ impl WriteFileTool {
                 description: "Write or overwrite a local text file".to_string(),
                 provider: FILESYSTEM_PROVIDER_ID.to_string(),
                 capabilities: vec![Capability::FileManagement],
+                risk: ToolRisk::Modify,
                 execution_mode: ExecutionMode::Synchronous,
                 estimated_runtime: EstimatedRuntime::Fast,
                 resource_cost: ResourceCost::VeryLow,
@@ -87,6 +88,7 @@ impl Tool for WriteFileTool {
                 path.display()
             )),
             listed_path: Some(path.clone()),
+            metadata: ToolExecutionMetadata::wrote_file(path, content.len()),
             ..Default::default()
         })
     }

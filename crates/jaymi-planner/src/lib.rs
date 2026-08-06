@@ -2,8 +2,12 @@
 //!
 //! Every user-facing request enters [`Planner::handle`]. Canonical stages:
 //! Intent → Capability → Context Policy → Providers → Context Engine →
-//! ContextBundle → Behavior (Planned) → Action Policies → Permissions →
-//! Tool Orchestrator → Providers → Response.
+//! ContextBundle → Behavior (Planned) → Execution Plan → Review (if required) →
+//! Action Policies → Permissions → Tool Orchestrator → Providers →
+//! Execution Summary → Response.
+//!
+//! Meaningful tool-backed actions become an [`execution_plan::ExecutionPlan`]
+//! before any tool runs. Tools never generate plans; providers never see them.
 //!
 //! After Context assemble, paths branch by Intent (tool-backed / session /
 //! PlanWork / unsupported). That is intentional — not an Application→Engine
@@ -15,24 +19,45 @@
 
 #![forbid(unsafe_code)]
 
+pub mod approval_history;
 pub mod decision;
+pub mod execution_plan;
+pub mod paused_execution;
+pub mod plan_revision;
 pub mod reasoning;
 pub mod request_lifecycle;
+pub mod review_card;
+
+pub use approval_history::{
+    ApprovalDecision, ApprovalExecutionResult, ApprovalHistoryAccess, ApprovalHistoryEntry,
+    ApprovalHistoryQuery, ApprovalHistoryStore, ApprovalHistoryView,
+};
+pub use execution_plan::{
+    EstimatedReversibility, EstimatedRisk, ExecutionPlan, ExecutionPlanId, ExecutionPlanParams,
+    ExecutionStatus, ExecutionStep, ExecutionSummary, PlanLineage, PlanPermissionRequirement,
+    PlanTransitionError, ReviewRequirement,
+};
+pub use paused_execution::{
+    PauseError, PausedExecution, PausedPlanSnapshot, PausedPlanStore, DEFAULT_PAUSE_TTL,
+};
+pub use plan_revision::{ModificationScope, PlanHistoryEntry, PlanRevisionDraft};
+pub use review_card::{EstimatedDuration, ReviewCardModel, ReviewCardState, ReviewIntent};
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use decision::{DecisionEngine, Intent};
 use jaymi_capabilities::{
     compose_capabilities, is_multi_capability, workspace_expansion_for, Capability,
     CapabilityComposition, CapabilityDescriptor, CapabilityDiscoveryReport, CapabilityEngineApi,
-    CapabilityInspectorReport, CapabilityInventory, DiscoveredProvider, DiscoveredTool,
-    ExecutionPlan, WorkspaceExpansion,
+    CapabilityInspectorReport, CapabilityInventory, CapabilityPlan, DiscoveredProvider,
+    DiscoveredTool, WorkspaceExpansion,
 };
 use jaymi_context::{AssembleHints, ContextBundle, ContextEngine};
 use jaymi_core::{
-    Citation, Document, FileEntry, GitOperation, GitPathStatus, HealthReport, JaymiError,
+    Citation, Document, FileEntry, GitOperation, GitPathStatus, HealthReport, IntentId, JaymiError,
     JaymiResult, Lifecycle, LspCompletionItem, LspDiagnostic, LspHover, LspLocation, LspRequest,
     LspTextEdit, ProjectKnowledgeRequest, TerminalOperation, UserRequest,
 };
@@ -40,10 +65,10 @@ use jaymi_memory_engine::{
     AssembledMemoryContext, MemoryEngineApi, PromotionAskDecision, PromotionSuggestion,
 };
 use jaymi_permissions::{
-    PermissionAction, PermissionCategory, PermissionCheckResult, PermissionEngine,
-    PermissionRequest, PermissionScope,
+    PermissionAction, PermissionCategory, PermissionCheckResult, PermissionDecision,
+    PermissionEngine, PermissionRequest, PermissionScope,
 };
-use jaymi_policies::{ExecutionCandidate, PolicyEngine, PolicyEvaluation};
+use jaymi_policies::{ExecutionCandidate, PolicyDecision, PolicyEngine, PolicyEvaluation};
 use jaymi_project_engine::{Project, ProjectContext, ProjectEngineApi, ProjectKnowledgeHit};
 use jaymi_providers::ProviderRegistry;
 use jaymi_tools::{
@@ -54,6 +79,7 @@ use jaymi_tools::{
     WRITE_FILE_TOOL_ID,
 };
 use reasoning::ReasoningEngine;
+use plan_revision::apply_modification_note;
 
 const NAME: &str = "planner";
 const DEPENDENCIES: &[&str] = &[
@@ -100,10 +126,16 @@ pub struct PlannerResponse {
     pub permission_result: Option<PermissionCheckResult>,
     /// True when policy or permission blocked tool execution.
     pub blocked: bool,
+    /// True when an execution plan is waiting for review before tools may run.
+    pub awaiting_review: bool,
     /// Project closed by a Close intent, when any (session action result — not request context).
     pub closed_project: Option<Project>,
-    /// Capability execution plan selected for the request (never executed here).
+    /// Capability composition plan (PlanWork / diagnostics; never executes tools).
+    pub capability_plan: Option<CapabilityPlan>,
+    /// Action execution plan for this request (Planner-owned; immutable content).
     pub execution_plan: Option<ExecutionPlan>,
+    /// Summary produced after plan execution, cancellation, or review gate.
+    pub execution_summary: Option<ExecutionSummary>,
     /// Workspace expansion requested by the selected capability (conversation stays).
     pub workspace: Option<WorkspaceExpansion>,
     /// Immutable Context Engine snapshot for this request.
@@ -218,6 +250,11 @@ pub struct PlannerDeps {
 ///
 /// The Planner remains deterministic. Reasoning is delegated. Execution is
 /// delegated. Every user-facing request enters [`Self::handle`].
+///
+/// When an [`ExecutionPlan`] requires review, the Planner **pauses** (stores
+/// plan + tool input) and returns [`PlannerResponse::awaiting_review`]. The
+/// conversation stays active. [`Self::resolve_review`] resumes, revises
+/// (Modify → child plan), or cancels the paused plan without replanning on Approve.
 pub struct Planner {
     initialized: bool,
     decision: DecisionEngine,
@@ -233,6 +270,12 @@ pub struct Planner {
     context: Arc<ContextEngine>,
     /// How many times [`Self::handle`] has been entered (integrity tests).
     handle_count: AtomicU64,
+    /// Plans waiting on conversational review (resume without replan).
+    paused: Mutex<PausedPlanStore>,
+    /// Lineage of proposed / revised / cancelled plans for this Planner.
+    plan_history: Mutex<Vec<PlanHistoryEntry>>,
+    /// Review Card decisions for transparency, reasoning, and diagnostics.
+    approval_history: Mutex<ApprovalHistoryStore>,
 }
 
 impl Planner {
@@ -252,12 +295,147 @@ impl Planner {
             projects: deps.projects,
             context: deps.context,
             handle_count: AtomicU64::new(0),
+            paused: Mutex::new(PausedPlanStore::default()),
+            plan_history: Mutex::new(Vec::new()),
+            approval_history: Mutex::new(ApprovalHistoryStore::new()),
         }
     }
 
     /// Number of times [`Self::handle`] has been entered.
     pub fn handle_count(&self) -> u64 {
         self.handle_count.load(Ordering::Relaxed)
+    }
+
+    /// Snapshot of Execution Plan lineage history (oldest first).
+    pub fn plan_history(&self) -> JaymiResult<Vec<PlanHistoryEntry>> {
+        Ok(self
+            .plan_history
+            .lock()
+            .map_err(|_| JaymiError::new("plan history lock poisoned"))?
+            .clone())
+    }
+
+    fn record_plan_history(&self, plan: &ExecutionPlan) -> JaymiResult<()> {
+        let mut history = self
+            .plan_history
+            .lock()
+            .map_err(|_| JaymiError::new("plan history lock poisoned"))?;
+        history.push(PlanHistoryEntry {
+            plan_id: plan.id().clone(),
+            parent_plan_id: plan.parent_plan_id().cloned(),
+            revision: plan.revision(),
+            status: plan.status().as_str().to_string(),
+            originating_request: plan.originating_request().to_string(),
+            changes: plan.revision_changes().to_vec(),
+            modification_note: plan.modification_note().map(str::to_string),
+        });
+        Ok(())
+    }
+
+    fn update_plan_history_status(
+        &self,
+        plan_id: &ExecutionPlanId,
+        status: ExecutionStatus,
+    ) -> JaymiResult<()> {
+        let mut history = self
+            .plan_history
+            .lock()
+            .map_err(|_| JaymiError::new("plan history lock poisoned"))?;
+        if let Some(entry) = history
+            .iter_mut()
+            .rev()
+            .find(|entry| &entry.plan_id == plan_id)
+        {
+            entry.status = status.as_str().to_string();
+        }
+        Ok(())
+    }
+
+    /// Snapshot of Approval History (oldest first).
+    pub fn approval_history(&self) -> JaymiResult<Vec<ApprovalHistoryEntry>> {
+        Ok(self
+            .approval_history
+            .lock()
+            .map_err(|_| JaymiError::new("approval history lock poisoned"))?
+            .entries()
+            .to_vec())
+    }
+
+    /// Search in-session Approval History (newest first).
+    pub fn search_approval_history(
+        &self,
+        query: &ApprovalHistoryQuery,
+    ) -> JaymiResult<Vec<ApprovalHistoryEntry>> {
+        Ok(self
+            .approval_history
+            .lock()
+            .map_err(|_| JaymiError::new("approval history lock poisoned"))?
+            .search(query))
+    }
+
+    /// Search Approval History as permission-aware views.
+    pub fn search_approval_history_views(
+        &self,
+        query: &ApprovalHistoryQuery,
+        access: ApprovalHistoryAccess,
+    ) -> JaymiResult<Vec<ApprovalHistoryView>> {
+        Ok(self
+            .approval_history
+            .lock()
+            .map_err(|_| JaymiError::new("approval history lock poisoned"))?
+            .search_views(query, access))
+    }
+
+    fn record_approval_history(&self, entry: ApprovalHistoryEntry) -> JaymiResult<()> {
+        self.approval_history
+            .lock()
+            .map_err(|_| JaymiError::new("approval history lock poisoned"))?
+            .record(entry);
+        Ok(())
+    }
+
+    /// Record a Review Card decision against the resulting Planner response.
+    fn record_approval_from_resolve(
+        &self,
+        intent: &ReviewIntent,
+        response: &PlannerResponse,
+    ) -> JaymiResult<()> {
+        let reviewed_plan_id = intent.plan_id().clone();
+        let response_plan = response.execution_plan.as_ref();
+        let (modified_plan_id, parent_plan_id, affected, goal) = match intent {
+            ReviewIntent::Modify { .. } => {
+                let child = response_plan;
+                (
+                    child.map(|plan| plan.id().clone()),
+                    Some(reviewed_plan_id.clone()),
+                    child
+                        .map(|plan| plan.affected_resources().to_vec())
+                        .unwrap_or_default(),
+                    child.map(|plan| plan.originating_request().to_string()),
+                )
+            }
+            ReviewIntent::Approve { .. } | ReviewIntent::Cancel { .. } => (
+                None,
+                response_plan.and_then(|plan| plan.parent_plan_id().cloned()),
+                response_plan
+                    .map(|plan| plan.affected_resources().to_vec())
+                    .unwrap_or_default(),
+                response_plan.map(|plan| plan.originating_request().to_string()),
+            ),
+        };
+
+        let entry = ApprovalHistoryEntry::from_intent_and_response(
+            intent,
+            &reviewed_plan_id,
+            modified_plan_id,
+            parent_plan_id,
+            affected,
+            goal,
+            response.execution_summary.as_ref(),
+            None,
+            None,
+        );
+        self.record_approval_history(entry)
     }
 
     /// Discover registered capabilities through the Capability Engine.
@@ -291,7 +469,7 @@ impl Planner {
     ///
     /// Uses the live tool/provider inventory so availability reflects what is
     /// currently executable. Nothing is executed.
-    pub fn build_capability_plan(&self, capabilities: &[Capability]) -> JaymiResult<ExecutionPlan> {
+    pub fn build_capability_plan(&self, capabilities: &[Capability]) -> JaymiResult<CapabilityPlan> {
         let inventory = self.capability_inventory()?;
         self.capabilities.plan(capabilities, &inventory, None)
     }
@@ -304,7 +482,7 @@ impl Planner {
         &self,
         capability: Capability,
         goal: Option<&str>,
-    ) -> JaymiResult<ExecutionPlan> {
+    ) -> JaymiResult<CapabilityPlan> {
         self.plan_capabilities(&[capability], goal)
     }
 
@@ -316,7 +494,7 @@ impl Planner {
         &self,
         capabilities: &[Capability],
         goal: Option<&str>,
-    ) -> JaymiResult<ExecutionPlan> {
+    ) -> JaymiResult<CapabilityPlan> {
         let inventory = self.capability_inventory()?;
         self.capabilities.compose(capabilities, &inventory, goal)
     }
@@ -325,7 +503,7 @@ impl Planner {
     pub fn compose_capability_plan(
         &self,
         composition: &CapabilityComposition,
-    ) -> JaymiResult<ExecutionPlan> {
+    ) -> JaymiResult<CapabilityPlan> {
         let inventory = self.capability_inventory()?;
         self.capabilities.compose_plan(composition, &inventory)
     }
@@ -548,6 +726,8 @@ impl Planner {
         let resource = std::path::PathBuf::from(format!("project:{project_id}"));
         let input = ToolInput::project_knowledge(request);
         let prepared = self.prepare_execution(
+            IntentId::SearchProjectKnowledge,
+            "Search project knowledge",
             capability,
             Some(SEARCH_PROJECT_KNOWLEDGE_TOOL_ID),
             &input,
@@ -555,13 +735,15 @@ impl Planner {
             "Search project knowledge",
             PermissionCategory::Filesystem,
             PermissionAction::Read,
+            vec!["project knowledge hits".into()],
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
         }
 
+        let mut plan = prepared.plan;
         let tool_id = prepared.tool_id.clone();
-        let output = self.orchestrator.execute(&tool_id, input)?;
+        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
         self.ensure_success(&output)?;
 
         let provider_id = prepared.provider_id.clone();
@@ -582,6 +764,8 @@ impl Planner {
             project_knowledge: output.project_knowledge,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
+            execution_plan: Some(plan),
+            execution_summary: Some(execution_summary),
             ..PlannerResponse::default()
         })
     }
@@ -631,7 +815,7 @@ impl Planner {
         Ok(PlannerResponse {
             content,
             capability: Some(primary),
-            execution_plan: Some(plan),
+            capability_plan: Some(plan),
             workspace: workspace_expansion_for(
                 primary,
                 format!("capability {} requested workspace expansion", primary.id()),
@@ -656,6 +840,10 @@ impl Planner {
         }
 
         self.handle_count.fetch_add(1, Ordering::Relaxed);
+
+        // A new user request (not resolve_review) invalidates any paused plan —
+        // editing the request must never resume a stale plan.
+        self.invalidate_paused("new user request")?;
 
         jaymi_logging::info(
             "planner",
@@ -842,8 +1030,8 @@ impl Planner {
 
         let result = match result {
             Ok(mut response) => {
-                if response.execution_plan.is_none() {
-                    response.execution_plan = self.plan_capability(capability, None).ok();
+                if response.capability_plan.is_none() {
+                    response.capability_plan = self.plan_capability(capability, None).ok();
                 }
                 if response.workspace.is_none() {
                     response.workspace = workspace_expansion_for(
@@ -899,6 +1087,8 @@ impl Planner {
     ) -> JaymiResult<PlannerResponse> {
         let input = ToolInput::list_directory(path.clone());
         let prepared = self.prepare_execution(
+            IntentId::ListDirectory,
+            "List directory",
             capability,
             Some(SEARCH_FILES_TOOL_ID),
             &input,
@@ -906,14 +1096,27 @@ impl Planner {
             "List directory",
             PermissionCategory::Filesystem,
             PermissionAction::Read,
+            vec!["directory listing".into()],
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
         }
 
+        let mut plan = prepared.plan;
         let tool_id = prepared.tool_id.clone();
-        let output = self.orchestrator.execute(&tool_id, input)?;
-        self.ensure_success(&output)?;
+        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
+        if !output.success {
+            return Ok(self.tool_failure_response(
+                plan,
+                capability,
+                tool_id,
+                prepared.provider_id,
+                prepared.policy_evaluation,
+                prepared.permission_result,
+                output,
+                execution_summary,
+            ));
+        }
 
         let provider_id = prepared.provider_id.clone();
         let content = format!(
@@ -935,6 +1138,8 @@ impl Planner {
             citations: output.citations,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
+            execution_plan: Some(plan),
+            execution_summary: Some(execution_summary),
             ..PlannerResponse::default()
         })
     }
@@ -946,6 +1151,8 @@ impl Planner {
     ) -> JaymiResult<PlannerResponse> {
         let input = ToolInput::list_directory(path.clone());
         let prepared = self.prepare_execution(
+            IntentId::ListProjectTree,
+            "List project tree",
             capability,
             Some(LIST_PROJECT_TREE_TOOL_ID),
             &input,
@@ -953,13 +1160,15 @@ impl Planner {
             "List project tree",
             PermissionCategory::Filesystem,
             PermissionAction::Read,
+            vec!["project tree listing".into()],
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
         }
 
+        let mut plan = prepared.plan;
         let tool_id = prepared.tool_id.clone();
-        let output = self.orchestrator.execute(&tool_id, input)?;
+        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
         self.ensure_success(&output)?;
 
         let provider_id = prepared.provider_id.clone();
@@ -983,6 +1192,8 @@ impl Planner {
             citations: output.citations,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
+            execution_plan: Some(plan),
+            execution_summary: Some(execution_summary),
             ..PlannerResponse::default()
         })
     }
@@ -994,6 +1205,8 @@ impl Planner {
     ) -> JaymiResult<PlannerResponse> {
         let input = ToolInput::read_file(path.clone());
         let prepared = self.prepare_execution(
+            IntentId::ReadFile,
+            "Read file",
             capability,
             Some(READ_FILE_TOOL_ID),
             &input,
@@ -1001,13 +1214,15 @@ impl Planner {
             "Read file",
             PermissionCategory::Filesystem,
             PermissionAction::Read,
+            vec!["unified document".into()],
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
         }
 
+        let mut plan = prepared.plan;
         let tool_id = prepared.tool_id.clone();
-        let output = self.orchestrator.execute(&tool_id, input)?;
+        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
         self.ensure_success(&output)?;
 
         let document = output
@@ -1032,6 +1247,8 @@ impl Planner {
             document: Some(document),
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
+            execution_plan: Some(plan),
+            execution_summary: Some(execution_summary),
             ..PlannerResponse::default()
         })
     }
@@ -1044,6 +1261,8 @@ impl Planner {
     ) -> JaymiResult<PlannerResponse> {
         let input = ToolInput::write_file(path.clone(), content);
         let prepared = self.prepare_execution(
+            IntentId::WriteFile,
+            "Write file",
             capability,
             Some(WRITE_FILE_TOOL_ID),
             &input,
@@ -1051,14 +1270,27 @@ impl Planner {
             "Write file",
             PermissionCategory::Filesystem,
             PermissionAction::Write,
+            vec!["written file".into()],
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
         }
 
+        let mut plan = prepared.plan;
         let tool_id = prepared.tool_id.clone();
-        let output = self.orchestrator.execute(&tool_id, input)?;
-        self.ensure_success(&output)?;
+        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
+        if !output.success {
+            return Ok(self.tool_failure_response(
+                plan,
+                capability,
+                tool_id,
+                prepared.provider_id,
+                prepared.policy_evaluation,
+                prepared.permission_result,
+                output,
+                execution_summary,
+            ));
+        }
         self.context.invalidate_cache("files_changed");
 
         let provider_id = prepared.provider_id.clone();
@@ -1080,6 +1312,8 @@ impl Planner {
             listed_path: Some(path),
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
+            execution_plan: Some(plan),
+            execution_summary: Some(execution_summary),
             ..PlannerResponse::default()
         })
     }
@@ -1100,21 +1334,58 @@ impl Planner {
         } else {
             PermissionAction::Write
         };
+        let path_label = path.display().to_string();
+        let (originating_request, action_label, expected_outputs) = match command.as_str() {
+            "delete" => (
+                format!("Delete {path_label}"),
+                format!("Delete {path_label}"),
+                vec![
+                    format!("Delete {path_label}"),
+                    "Remove the folder or file and everything inside it".into(),
+                    "Update the project index afterward".into(),
+                ],
+            ),
+            "rename" => (
+                format!(
+                    "Rename {path_label}{}",
+                    destination
+                        .as_ref()
+                        .map(|to| format!(" → {}", to.display()))
+                        .unwrap_or_default()
+                ),
+                format!("Rename {path_label}"),
+                vec![format!("Renamed {path_label}")],
+            ),
+            "mkdir" => (
+                format!("Create directory {path_label}"),
+                format!("Create directory {path_label}"),
+                vec![format!("Created {path_label}")],
+            ),
+            _ => (
+                format!("Manage path {path_label}"),
+                format!("Manage path {path_label}"),
+                vec!["managed path".into()],
+            ),
+        };
         let prepared = self.prepare_execution(
+            IntentId::ManagePath,
+            &originating_request,
             capability,
             Some(MANAGE_PATH_TOOL_ID),
             &input,
             &path,
-            "Manage path",
+            &action_label,
             PermissionCategory::Filesystem,
             action,
+            expected_outputs,
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
         }
 
+        let mut plan = prepared.plan;
         let tool_id = prepared.tool_id.clone();
-        let output = self.orchestrator.execute(&tool_id, input)?;
+        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
         self.ensure_success(&output)?;
         self.context.invalidate_cache("files_changed");
 
@@ -1143,6 +1414,8 @@ impl Planner {
             listed_path: listed,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
+            execution_plan: Some(plan),
+            execution_summary: Some(execution_summary),
             ..PlannerResponse::default()
         })
     }
@@ -1176,6 +1449,8 @@ impl Planner {
             TerminalOperation::Kill => ToolInput::kill_terminal(session_id.clone(), cwd.clone()),
         };
         let prepared = self.prepare_execution(
+            IntentId::RunTerminal,
+            "Execute terminal command",
             capability,
             Some(TERMINAL_TOOL_ID),
             &input,
@@ -1183,13 +1458,15 @@ impl Planner {
             "Execute terminal command",
             PermissionCategory::Terminal,
             PermissionAction::Execute,
+            vec!["terminal output".into()],
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
         }
 
+        let mut plan = prepared.plan;
         let tool_id = prepared.tool_id.clone();
-        let output = self.orchestrator.execute(&tool_id, input)?;
+        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
         self.ensure_success(&output)?;
 
         let provider_id = prepared.provider_id.clone();
@@ -1217,6 +1494,8 @@ impl Planner {
             terminal_alive: output.terminal_alive,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
+            execution_plan: Some(plan),
+            execution_summary: Some(execution_summary),
             ..PlannerResponse::default()
         })
     }
@@ -1235,21 +1514,26 @@ impl Planner {
         } else {
             PermissionAction::Read
         };
+        let action_label = format!("Git {}", operation.as_str());
         let prepared = self.prepare_execution(
+            IntentId::Git,
+            &action_label,
             capability,
             Some(GIT_TOOL_ID),
             &input,
             &repo_root,
-            &format!("Git {}", operation.as_str()),
+            &action_label,
             PermissionCategory::Filesystem,
             permission_action,
+            vec!["git result".into()],
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
         }
 
+        let mut plan = prepared.plan;
         let tool_id = prepared.tool_id.clone();
-        let output = self.orchestrator.execute(&tool_id, input)?;
+        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
         self.ensure_success(&output)?;
 
         let provider_id = prepared.provider_id.clone();
@@ -1279,6 +1563,8 @@ impl Planner {
             git_untracked: output.git_untracked,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
+            execution_plan: Some(plan),
+            execution_summary: Some(execution_summary),
             ..PlannerResponse::default()
         })
     }
@@ -1296,21 +1582,26 @@ impl Planner {
         } else {
             PermissionAction::Read
         };
+        let action_label = format!("LSP {}", operation.as_str());
         let prepared = self.prepare_execution(
+            IntentId::Lsp,
+            &action_label,
             capability,
             Some(LANGUAGE_SERVER_TOOL_ID),
             &input,
             &workspace_root,
-            &format!("LSP {}", operation.as_str()),
+            &action_label,
             PermissionCategory::Filesystem,
             permission_action,
+            vec!["lsp result".into()],
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
         }
 
+        let mut plan = prepared.plan;
         let tool_id = prepared.tool_id.clone();
-        let output = self.orchestrator.execute(&tool_id, input)?;
+        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
         self.ensure_success(&output)?;
 
         let provider_id = prepared.provider_id.clone();
@@ -1338,6 +1629,8 @@ impl Planner {
             lsp_edits: output.lsp_edits,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
+            execution_plan: Some(plan),
+            execution_summary: Some(execution_summary),
             ..PlannerResponse::default()
         })
     }
@@ -1356,6 +1649,8 @@ impl Planner {
             .unwrap_or_else(|| std::path::PathBuf::from("inventory"));
         let input = ToolInput::discover(kind);
         let prepared = self.prepare_execution(
+            IntentId::DiscoverInventory,
+            "Query inventory",
             capability,
             Some(QUERY_INVENTORY_TOOL_ID),
             &input,
@@ -1363,13 +1658,15 @@ impl Planner {
             "Query inventory",
             PermissionCategory::Filesystem,
             PermissionAction::Read,
+            vec!["inventory entries".into()],
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
         }
 
+        let mut plan = prepared.plan;
         let tool_id = prepared.tool_id.clone();
-        let output = self.orchestrator.execute(&tool_id, input)?;
+        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
         self.ensure_success(&output)?;
 
         let provider_id = prepared.provider_id.clone();
@@ -1392,6 +1689,8 @@ impl Planner {
             citations: output.citations,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
+            execution_plan: Some(plan),
+            execution_summary: Some(execution_summary),
             ..PlannerResponse::default()
         })
     }
@@ -1407,6 +1706,8 @@ impl Planner {
             .unwrap_or_else(|| std::path::PathBuf::from("search"));
         let input = ToolInput::search(request);
         let prepared = self.prepare_execution(
+            IntentId::SearchKnowledge,
+            "Search knowledge",
             capability,
             Some(SEARCH_KNOWLEDGE_TOOL_ID),
             &input,
@@ -1414,13 +1715,15 @@ impl Planner {
             "Search knowledge",
             PermissionCategory::Filesystem,
             PermissionAction::Read,
+            vec!["search hits".into()],
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
         }
 
+        let mut plan = prepared.plan;
         let tool_id = prepared.tool_id.clone();
-        let output = self.orchestrator.execute(&tool_id, input)?;
+        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
         self.ensure_success(&output)?;
 
         let provider_id = prepared.provider_id.clone();
@@ -1443,6 +1746,8 @@ impl Planner {
             citations: output.citations,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
+            execution_plan: Some(plan),
+            execution_summary: Some(execution_summary),
             ..PlannerResponse::default()
         })
     }
@@ -1460,6 +1765,8 @@ impl Planner {
             ..ToolInput::default()
         };
         let prepared = self.prepare_execution(
+            IntentId::IndexRoots,
+            "Index filesystem",
             capability,
             Some(SCAN_FILESYSTEM_TOOL_ID),
             &input,
@@ -1467,13 +1774,15 @@ impl Planner {
             "Index filesystem",
             PermissionCategory::Filesystem,
             PermissionAction::Read,
+            vec!["index summary".into()],
         )?;
         if let Some(blocked) = prepared.blocked_response {
             return Ok(blocked);
         }
 
+        let mut plan = prepared.plan;
         let tool_id = prepared.tool_id.clone();
-        let output = self.orchestrator.execute(&tool_id, input)?;
+        let (output, execution_summary) = self.execute_approved_plan(&mut plan, input)?;
         self.ensure_success(&output)?;
         self.context.invalidate_cache("search_index_updated");
 
@@ -1490,21 +1799,37 @@ impl Planner {
             listed_path: path,
             policy_evaluation: prepared.policy_evaluation,
             permission_result: prepared.permission_result,
+            execution_plan: Some(plan),
+            execution_summary: Some(execution_summary),
             ..PlannerResponse::default()
         })
     }
 
-    /// Planner → Action Policy Engine → Permission Engine (tool selected, not yet run).
+    /// Build an action [`ExecutionPlan`], then gate via Action Policy → Permission → Review.
+    ///
+    /// Tools are never executed here. Callers must run [`Self::execute_approved_plan`]
+    /// only when `blocked_response` is `None` and the plan status is Approved.
+    ///
+    /// Decisions:
+    /// - **Denied** (policy or permission) → explain why, cancel, do not execute
+    /// - **RequiresApproval** (policy, permission, or ToolRisk) → Review Card,
+    ///   pause until [`Self::resolve_review`]
+    /// - **Allowed** → approve for execution
+    ///
+    /// Approval never bypasses the Planner. Tools never execute themselves.
     #[allow(clippy::too_many_arguments)]
     fn prepare_execution(
         &self,
+        intent: IntentId,
+        originating_request: &str,
         capability: Capability,
         preferred_tool_id: Option<&str>,
-        _input: &ToolInput,
+        tool_input: &ToolInput,
         path: &Path,
         action_label: &str,
         permission_category: PermissionCategory,
         permission_action: PermissionAction,
+        expected_outputs: Vec<String>,
     ) -> JaymiResult<PreparedExecution> {
         let tool_id = if let Some(preferred) = preferred_tool_id {
             match self.tools.get(preferred) {
@@ -1528,8 +1853,12 @@ impl Planner {
         };
 
         let tool = self.tools.get(&tool_id)?;
-        let metadata = tool.metadata();
+        let metadata = tool.metadata().clone();
         let provider_id = metadata.provider.clone();
+        let tool_risk = metadata
+            .risk
+            .effective_for(tool_input, metadata.internet);
+        let resource = path.display().to_string();
         let candidate = ExecutionCandidate {
             tool_id: tool_id.clone(),
             provider_id: provider_id.clone(),
@@ -1538,105 +1867,774 @@ impl Planner {
             cloud_only: matches!(metadata.privacy, PrivacyMode::CloudOnly),
         };
 
-        jaymi_logging::info(
-            "planner",
-            format!(
-                "policy evaluation tool={} provider={} internet={} local_only={}",
-                candidate.tool_id,
-                candidate.provider_id,
-                candidate.requires_internet,
-                candidate.local_only
-            ),
-        );
         let policy_evaluation = self.policies.evaluate(&candidate)?;
-        if !policy_evaluation.allowed {
-            jaymi_logging::warn(
-                "planner",
-                format!(
-                    "policy blocked tool={}: {}",
-                    tool_id,
-                    policy_evaluation.summary()
-                ),
-            );
-            return Ok(PreparedExecution {
-                tool_id: tool_id.clone(),
-                provider_id: Some(provider_id),
-                policy_evaluation: Some(policy_evaluation.clone()),
-                permission_result: None,
-                blocked_response: Some(PlannerResponse {
-                    content: format!(
-                        "Blocked by policy before executing '{}': {}",
-                        tool_id,
-                        policy_evaluation.summary()
-                    ),
-                    capability: Some(capability),
-                    tool_id: Some(tool_id),
-                    provider_id: Some(candidate.provider_id),
-                    policy_evaluation: Some(policy_evaluation),
-                    permission_result: None,
-                    blocked: true,
-                    ..PlannerResponse::default()
-                }),
-            });
-        }
 
-        let permission_request = PermissionRequest {
-            category: permission_category,
-            action: permission_action,
-            scope: PermissionScope::Once,
-            explanation: format!("{action_label} at {}", path.display()),
-            resource: Some(path.display().to_string()),
-        };
-        jaymi_logging::info(
-            "planner",
-            format!(
-                "permission check category={} action={} resource={}",
-                permission_category_label(permission_category),
-                permission_action_label(permission_action),
-                path.display()
-            ),
-        );
-        let permission_result = self.permissions.check(&permission_request)?;
-        if !permission_result.allows_execution() {
-            jaymi_logging::warn(
+        // Permission still runs when policy only requires approval, so the
+        // Review Card and diagnostics can surface both explanations. Hard
+        // policy deny skips permission (nothing to authorize).
+        let permission_result = if matches!(policy_evaluation.decision, PolicyDecision::Denied) {
+            None
+        } else {
+            let permission_request = PermissionRequest {
+                category: permission_category,
+                action: permission_action,
+                scope: PermissionScope::Once,
+                explanation: format!("{action_label} at {resource}"),
+                resource: Some(resource.clone()),
+            };
+            jaymi_logging::info(
                 "planner",
                 format!(
-                    "permission {} for tool={} resource={}",
-                    permission_result.decision.as_str(),
-                    tool_id,
+                    "permission check category={} action={} resource={}",
+                    permission_category_label(permission_category),
+                    permission_action_label(permission_action),
                     path.display()
                 ),
             );
-            return Ok(PreparedExecution {
-                tool_id: tool_id.clone(),
-                provider_id: Some(provider_id),
-                policy_evaluation: Some(policy_evaluation.clone()),
-                permission_result: Some(permission_result.clone()),
-                blocked_response: Some(PlannerResponse {
-                    content: format!(
-                        "Blocked by permission ({}) before executing '{}': {}",
-                        permission_result.decision.as_str(),
-                        tool_id,
-                        permission_result.explanation
+            Some(self.permissions.check(&permission_request)?)
+        };
+
+        let gate = combine_gate_decision(&policy_evaluation, permission_result.as_ref(), tool_risk);
+        let review_requirement = if matches!(gate, GateDecision::RequiresApproval { .. }) {
+            ReviewRequirement::Required
+        } else {
+            ReviewRequirement::NotRequired
+        };
+
+        let mut plan = self.create_action_plan(
+            intent,
+            originating_request,
+            capability,
+            &tool_id,
+            &resource,
+            action_label,
+            permission_category,
+            permission_action,
+            tool_risk,
+            review_requirement,
+            expected_outputs,
+        );
+        plan.mark_ready()
+            .map_err(|error| JaymiError::new(error.to_string()))?;
+        self.record_plan_history(&plan)?;
+
+        jaymi_logging::info(
+            "planner",
+            format!(
+                "execution plan created {} · risk={} · gate={} · review={} · tool={} provider={} · policy={}",
+                plan.id(),
+                tool_risk.as_str(),
+                gate.as_str(),
+                review_requirement.as_str(),
+                candidate.tool_id,
+                candidate.provider_id,
+                policy_evaluation.decision.as_str()
+            ),
+        );
+
+        match gate {
+            GateDecision::Denied { explanation } => {
+                jaymi_logging::warn(
+                    "planner",
+                    format!("execution denied for tool={tool_id}: {explanation}"),
+                );
+                let _ = plan.cancel();
+                let summary = ExecutionSummary::from_plan(
+                    &plan,
+                    Vec::new(),
+                    Vec::new(),
+                    Some(explanation.clone()),
+                );
+                Ok(PreparedExecution {
+                    plan: plan.clone(),
+                    tool_id: tool_id.clone(),
+                    provider_id: Some(provider_id),
+                    policy_evaluation: Some(policy_evaluation.clone()),
+                    permission_result: permission_result.clone(),
+                    blocked_response: Some(PlannerResponse {
+                        content: format!(
+                            "Denied before executing '{tool_id}': {explanation}"
+                        ),
+                        capability: Some(capability),
+                        tool_id: Some(tool_id),
+                        provider_id: Some(candidate.provider_id),
+                        policy_evaluation: Some(policy_evaluation),
+                        permission_result,
+                        blocked: true,
+                        awaiting_review: false,
+                        execution_plan: Some(plan),
+                        execution_summary: Some(summary),
+                        ..PlannerResponse::default()
+                    }),
+                })
+            }
+            GateDecision::RequiresApproval { explanation } => {
+                plan.mark_awaiting_review()
+                    .map_err(|error| JaymiError::new(error.to_string()))?;
+                jaymi_logging::warn(
+                    "planner",
+                    format!(
+                        "execution plan {} paused awaiting review · risk={} tool={} · {explanation}",
+                        plan.id(),
+                        tool_risk.as_str(),
+                        tool_id
                     ),
-                    capability: Some(capability),
-                    tool_id: Some(tool_id),
-                    provider_id: Some(candidate.provider_id),
+                );
+                self.pause_execution(PausedExecution {
+                    plan: plan.clone(),
+                    tool_input: tool_input.clone(),
+                    tool_id: tool_id.clone(),
+                    provider_id: Some(provider_id.clone()),
+                    capability,
+                    policy_evaluation: Some(policy_evaluation.clone()),
+                    permission_result: permission_result.clone(),
+                    paused_at: Instant::now(),
+                })?;
+                let summary = ExecutionSummary::from_plan(
+                    &plan,
+                    Vec::new(),
+                    Vec::new(),
+                    Some(explanation.clone()),
+                );
+                let review = ReviewCardModel::from_plan(&plan, Some(explanation.as_str()));
+                Ok(PreparedExecution {
+                    plan: plan.clone(),
+                    tool_id: tool_id.clone(),
+                    provider_id: Some(provider_id),
+                    policy_evaluation: Some(policy_evaluation.clone()),
+                    permission_result: permission_result.clone(),
+                    blocked_response: Some(PlannerResponse {
+                        content: review.render_text(),
+                        capability: Some(capability),
+                        tool_id: Some(tool_id),
+                        provider_id: Some(candidate.provider_id),
+                        policy_evaluation: Some(policy_evaluation),
+                        permission_result,
+                        blocked: true,
+                        awaiting_review: true,
+                        execution_plan: Some(plan),
+                        execution_summary: Some(summary),
+                        ..PlannerResponse::default()
+                    }),
+                })
+            }
+            GateDecision::Allowed => {
+                plan.approve()
+                    .map_err(|error| JaymiError::new(error.to_string()))?;
+                jaymi_logging::info(
+                    "planner",
+                    format!(
+                        "execution plan approved {} · risk={}",
+                        plan.id(),
+                        tool_risk.as_str()
+                    ),
+                );
+                Ok(PreparedExecution {
+                    plan,
+                    tool_id,
+                    provider_id: Some(provider_id),
                     policy_evaluation: Some(policy_evaluation),
-                    permission_result: Some(permission_result),
-                    blocked: true,
-                    ..PlannerResponse::default()
-                }),
-            });
+                    permission_result,
+                    blocked_response: None,
+                })
+            }
+        }
+    }
+
+    /// Create a Draft action plan (content frozen at construction).
+    #[allow(clippy::too_many_arguments)]
+    fn create_action_plan(
+        &self,
+        intent: IntentId,
+        originating_request: &str,
+        capability: Capability,
+        tool_id: &str,
+        resource: &str,
+        action_label: &str,
+        permission_category: PermissionCategory,
+        permission_action: PermissionAction,
+        tool_risk: jaymi_tools::ToolRisk,
+        review_requirement: ReviewRequirement,
+        expected_outputs: Vec<String>,
+    ) -> ExecutionPlan {
+        ExecutionPlan::create(ExecutionPlanParams {
+            originating_request: originating_request.to_string(),
+            planner_intent: intent,
+            capability,
+            proposed_tools: vec![tool_id.to_string()],
+            steps: {
+                // Multiple expected_outputs entries are treated as conversational
+                // plan steps (e.g. delete preview bullets). A single entry stays
+                // an expected output with one action step.
+                if expected_outputs.len() > 1 {
+                    expected_outputs
+                        .iter()
+                        .enumerate()
+                        .map(|(index, description)| ExecutionStep {
+                            order: index + 1,
+                            description: description.clone(),
+                            tool_id: Some(tool_id.to_string()),
+                            resource: Some(resource.to_string()),
+                        })
+                        .collect()
+                } else {
+                    vec![ExecutionStep {
+                        order: 1,
+                        description: action_label.to_string(),
+                        tool_id: Some(tool_id.to_string()),
+                        resource: Some(resource.to_string()),
+                    }]
+                }
+            },
+            estimated_risk: EstimatedRisk::from_tool_risk(tool_risk),
+            affected_resources: vec![resource.to_string()],
+            permissions_required: vec![PlanPermissionRequirement::from_enums(
+                permission_category,
+                permission_action,
+            )],
+            review_requirement,
+            estimated_reversibility: EstimatedReversibility::from_tool_risk(tool_risk),
+            expected_outputs: if expected_outputs.len() > 1 {
+                vec![format!("Completed: {action_label}")]
+            } else {
+                expected_outputs
+            },
+            lineage: PlanLineage::root(),
+        })
+    }
+
+    /// Execute tools for an Approved plan and produce an [`ExecutionSummary`].
+    fn execute_approved_plan(
+        &self,
+        plan: &mut ExecutionPlan,
+        input: ToolInput,
+    ) -> JaymiResult<(jaymi_tools::ToolOutput, ExecutionSummary)> {
+        if !plan.status().may_execute() {
+            return Err(JaymiError::new(format!(
+                "execution plan {} is not approved (status={})",
+                plan.id(),
+                plan.status()
+            )));
+        }
+        let tool_id = plan
+            .primary_tool_id()
+            .ok_or_else(|| JaymiError::new("execution plan has no proposed tools"))?
+            .to_string();
+        plan.mark_executing()
+            .map_err(|error| JaymiError::new(error.to_string()))?;
+        jaymi_logging::info(
+            "planner",
+            format!("execution plan {} executing tool={}", plan.id(), tool_id),
+        );
+        let started = Instant::now();
+        match self.orchestrator.execute(&tool_id, input) {
+            Ok(output) => {
+                let duration_ms = started.elapsed().as_millis() as u64;
+                if output.success {
+                    let _ = plan.mark_completed();
+                } else {
+                    let _ = plan.mark_failed();
+                }
+                let summary =
+                    ExecutionSummary::from_tool_result(plan, tool_id, &output, duration_ms);
+                Ok((output, summary))
+            }
+            Err(error) => {
+                let duration_ms = started.elapsed().as_millis() as u64;
+                let _ = plan.mark_failed();
+                // Preserve structured failure context for callers that map Err
+                // into a response (tests use success=false ToolOutput instead).
+                let _ = duration_ms;
+                Err(error)
+            }
+        }
+    }
+
+    /// Number of plans currently paused awaiting review.
+    pub fn paused_count(&self) -> JaymiResult<usize> {
+        Ok(self.paused_store()?.len())
+    }
+
+    /// True when `plan_id` has an active pause.
+    pub fn is_paused(&self, plan_id: &ExecutionPlanId) -> JaymiResult<bool> {
+        Ok(self.paused_store()?.contains(plan_id))
+    }
+
+    /// Read-only snapshots of every plan currently paused for review.
+    pub fn paused_snapshots(&self) -> JaymiResult<Vec<PausedPlanSnapshot>> {
+        Ok(self.paused_store()?.snapshots(Instant::now()))
+    }
+
+    /// Override pause TTL (tests).
+    pub fn set_pause_ttl(&self, ttl: Duration) -> JaymiResult<()> {
+        self.paused_store()?.set_ttl(ttl);
+        Ok(())
+    }
+
+    /// Insert a pause entry (used by prepare_execution; visible for tests).
+    pub fn pause_execution(&self, entry: PausedExecution) -> JaymiResult<()> {
+        let mut store = self.paused_store()?;
+        // One active pause: a new pause replaces any prior paused plans.
+        for mut previous in store.invalidate_all() {
+            let _ = previous.plan.cancel();
+            jaymi_logging::info(
+                "planner",
+                format!(
+                    "invalidated paused plan {} before new pause",
+                    previous.plan.id()
+                ),
+            );
+        }
+        let id = entry.plan_id().clone();
+        store.pause(entry);
+        jaymi_logging::info("planner", format!("paused execution plan {id}"));
+        Ok(())
+    }
+
+    /// Resolve a Review Card intent against a paused plan.
+    ///
+    /// - **Approve** — resume the same plan (no replan); execute tools.
+    /// - **Cancel** — cancel the paused plan; nothing executes.
+    /// - **Modify** — regenerate affected steps into a child plan, keep history,
+    ///   and re-pause for approval. Does **not** rebuild ContextBundle unless
+    ///   the modification requires it.
+    ///
+    /// Conversation remains active; this does not require a new user prompt for
+    /// Approve / Cancel / Modify-with-note. Duplicate approval after a successful
+    /// resume returns an error. Timed-out pauses are cancelled and reported.
+    pub fn resolve_review(&self, intent: ReviewIntent) -> JaymiResult<PlannerResponse> {
+        self.ensure_ready()?;
+        let plan_id = intent.plan_id().clone();
+        jaymi_logging::info(
+            "planner",
+            format!(
+                "resolve_review intent={} plan={}",
+                intent.as_str(),
+                plan_id.as_str()
+            ),
+        );
+
+        let (response, reassemble_context) = match &intent {
+            ReviewIntent::Approve { plan_id } => (self.resume_paused(plan_id.clone())?, true),
+            ReviewIntent::Cancel { plan_id } => (
+                self.invalidate_paused_plan(plan_id.clone(), "cancelled by user", true)?,
+                true,
+            ),
+            ReviewIntent::Modify { plan_id, note } => {
+                let note = note.clone().unwrap_or_default();
+                let (response, needs_context) = self.revise_paused_plan(plan_id.clone(), note)?;
+                (response, needs_context)
+            }
+        };
+
+        self.record_approval_from_resolve(&intent, &response)?;
+
+        if !reassemble_context {
+            // Partial / ordinary modifications reuse the existing session context.
+            return Ok(finalize(response, ContextBundle::default()));
         }
 
-        Ok(PreparedExecution {
-            tool_id,
-            provider_id: Some(provider_id),
-            policy_evaluation: Some(policy_evaluation),
-            permission_result: Some(permission_result),
-            blocked_response: None,
+        // Assemble a fresh ContextBundle so resume/cancel responses stay on-contract.
+        let hints = AssembleHints {
+            intent: response
+                .execution_plan
+                .as_ref()
+                .map(|plan| plan.planner_intent())
+                .unwrap_or(IntentId::Unknown),
+            capability_ids: response
+                .capability
+                .map(|capability| vec![capability.id().to_string()])
+                .unwrap_or_default(),
+        };
+        let request = UserRequest::new("");
+        let bundle = self.context.assemble_with(&request, Some(&hints))?;
+        Ok(finalize(response, bundle))
+    }
+
+    /// Modify a paused plan: cancel parent, create child revision, re-pause.
+    ///
+    /// Returns `(response, requires_context_reassemble)`.
+    fn revise_paused_plan(
+        &self,
+        plan_id: ExecutionPlanId,
+        note: String,
+    ) -> JaymiResult<(PlannerResponse, bool)> {
+        let entry = {
+            let mut store = self.paused_store()?;
+            match store.take_for_invalidate(&plan_id) {
+                Ok(entry) => entry,
+                Err(PauseError::TimedOut { plan_id }) => {
+                    return Ok((self.timeout_response(&plan_id)?, true));
+                }
+                Err(PauseError::NotFound { plan_id }) => {
+                    return Err(JaymiError::new(format!(
+                        "no paused plan {plan_id} to modify"
+                    )));
+                }
+                Err(error) => return Err(JaymiError::new(error.to_string())),
+            }
+        };
+
+        let mut parent = entry.plan;
+        let parent_id = parent.id().clone();
+        let _ = parent.cancel();
+        self.update_plan_history_status(&parent_id, ExecutionStatus::Cancelled)?;
+
+        let draft = apply_modification_note(&parent, &entry.tool_id, &entry.tool_input, &note);
+        if draft.changes.is_empty() && note.trim().is_empty() {
+            return Err(JaymiError::new(
+                "modify requires a note describing the requested changes",
+            ));
+        }
+
+        let tool = self.tools.get(&draft.tool_id)?;
+        let metadata = tool.metadata().clone();
+        let tool_risk = metadata
+            .risk
+            .effective_for(&draft.tool_input, metadata.internet);
+        let review_requirement = if tool_risk.requires_review()
+            || matches!(
+                entry
+                    .permission_result
+                    .as_ref()
+                    .map(|result| result.decision),
+                Some(PermissionDecision::RequiresApproval)
+            ) {
+            ReviewRequirement::Required
+        } else {
+            ReviewRequirement::NotRequired
+        };
+
+        let resource = draft
+            .affected_resources
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "unspecified".into());
+        let permission_action = if draft.tool_id == MANAGE_PATH_TOOL_ID
+            && draft.tool_input.command.as_deref() == Some("delete")
+        {
+            PermissionAction::Delete
+        } else if draft.tool_id == WRITE_FILE_TOOL_ID
+            || draft.tool_input.command.as_deref() == Some("rename")
+            || draft.tool_input.command.as_deref() == Some("mkdir")
+        {
+            PermissionAction::Write
+        } else {
+            PermissionAction::Read
+        };
+
+        let mut child = ExecutionPlan::create(ExecutionPlanParams {
+            originating_request: draft.originating_request.clone(),
+            planner_intent: parent.planner_intent(),
+            capability: entry.capability,
+            proposed_tools: vec![draft.tool_id.clone()],
+            steps: draft.steps.clone(),
+            estimated_risk: EstimatedRisk::from_tool_risk(tool_risk),
+            affected_resources: draft.affected_resources.clone(),
+            permissions_required: vec![PlanPermissionRequirement::from_enums(
+                PermissionCategory::Filesystem,
+                permission_action,
+            )],
+            review_requirement,
+            estimated_reversibility: EstimatedReversibility::from_tool_risk(tool_risk),
+            expected_outputs: parent.expected_outputs().to_vec(),
+            lineage: PlanLineage::revision_of(&parent, Some(note.clone()), draft.changes.clone()),
+        });
+        child
+            .mark_ready()
+            .map_err(|error| JaymiError::new(error.to_string()))?;
+        self.record_plan_history(&child)?;
+
+        // Reuse policy/permission snapshots when the tool identity is unchanged
+        // and the modification is partial; otherwise re-check cheaply without
+        // reassembling ContextBundle.
+        let candidate = ExecutionCandidate {
+            tool_id: draft.tool_id.clone(),
+            provider_id: metadata.provider.clone(),
+            requires_internet: matches!(metadata.internet, InternetRequirement::Required),
+            local_only: matches!(metadata.privacy, PrivacyMode::LocalOnly),
+            cloud_only: matches!(metadata.privacy, PrivacyMode::CloudOnly),
+        };
+        let policy_evaluation = if draft.tool_id == entry.tool_id && entry.policy_evaluation.is_some()
+        {
+            entry.policy_evaluation.clone().unwrap()
+        } else {
+            self.policies.evaluate(&candidate)?
+        };
+
+        let permission_result = if matches!(policy_evaluation.decision, PolicyDecision::Denied) {
+            None
+        } else if draft.tool_id == entry.tool_id && entry.permission_result.is_some() {
+            entry.permission_result.clone()
+        } else {
+            let permission_request = PermissionRequest {
+                category: PermissionCategory::Filesystem,
+                action: permission_action,
+                scope: PermissionScope::Once,
+                explanation: format!("Revised plan step at {resource}"),
+                resource: Some(resource.clone()),
+            };
+            Some(self.permissions.check(&permission_request)?)
+        };
+
+        if matches!(policy_evaluation.decision, PolicyDecision::Denied) {
+            let _ = child.cancel();
+            self.update_plan_history_status(child.id(), ExecutionStatus::Cancelled)?;
+            let summary = ExecutionSummary::from_plan(
+                &child,
+                Vec::new(),
+                Vec::new(),
+                Some(policy_evaluation.explanation()),
+            );
+            return Ok((
+                PlannerResponse {
+                    content: format!(
+                        "Revised plan {} was denied by policy: {}",
+                        child.id(),
+                        policy_evaluation.explanation()
+                    ),
+                    capability: Some(entry.capability),
+                    tool_id: Some(draft.tool_id),
+                    provider_id: Some(metadata.provider),
+                    policy_evaluation: Some(policy_evaluation),
+                    permission_result: None,
+                    blocked: true,
+                    execution_plan: Some(child),
+                    execution_summary: Some(summary),
+                    ..PlannerResponse::default()
+                },
+                draft.requires_context_reassemble,
+            ));
+        }
+
+        if let Some(permission) = &permission_result {
+            if matches!(permission.decision, PermissionDecision::Denied) {
+                let _ = child.cancel();
+                self.update_plan_history_status(child.id(), ExecutionStatus::Cancelled)?;
+                let summary = ExecutionSummary::from_plan(
+                    &child,
+                    Vec::new(),
+                    Vec::new(),
+                    Some(permission.explanation.clone()),
+                );
+                return Ok((
+                    PlannerResponse {
+                        content: format!(
+                            "Revised plan {} was denied by permission: {}",
+                            child.id(),
+                            permission.explanation
+                        ),
+                        capability: Some(entry.capability),
+                        tool_id: Some(draft.tool_id),
+                        provider_id: Some(metadata.provider),
+                        policy_evaluation: Some(policy_evaluation),
+                        permission_result: permission_result.clone(),
+                        blocked: true,
+                        execution_plan: Some(child),
+                        execution_summary: Some(summary),
+                        ..PlannerResponse::default()
+                    },
+                    draft.requires_context_reassemble,
+                ));
+            }
+        }
+
+        // Revised plans that still require review are re-paused for approval.
+        child
+            .mark_awaiting_review()
+            .map_err(|error| JaymiError::new(error.to_string()))?;
+        self.pause_execution(PausedExecution {
+            plan: child.clone(),
+            tool_input: draft.tool_input,
+            tool_id: draft.tool_id.clone(),
+            provider_id: Some(metadata.provider.clone()),
+            capability: entry.capability,
+            policy_evaluation: Some(policy_evaluation.clone()),
+            permission_result: permission_result.clone(),
+            paused_at: Instant::now(),
+        })?;
+        self.update_plan_history_status(child.id(), ExecutionStatus::AwaitingReview)?;
+
+        let explanation = permission_result
+            .as_ref()
+            .map(|result| result.explanation.as_str());
+        let review = ReviewCardModel::from_plan(&child, explanation);
+
+        Ok((
+            PlannerResponse {
+                content: review.render_text(),
+                capability: Some(entry.capability),
+                tool_id: Some(draft.tool_id),
+                provider_id: Some(metadata.provider),
+                policy_evaluation: Some(policy_evaluation),
+                permission_result,
+                blocked: true,
+                awaiting_review: true,
+                execution_plan: Some(child),
+                ..PlannerResponse::default()
+            },
+            draft.requires_context_reassemble,
+        ))
+    }
+
+    fn resume_paused(&self, plan_id: ExecutionPlanId) -> JaymiResult<PlannerResponse> {
+        let mut entry = {
+            let mut store = self.paused_store()?;
+            match store.take_for_resume(&plan_id) {
+                Ok(entry) => entry,
+                Err(PauseError::TimedOut { plan_id }) => {
+                    return self.timeout_response(&plan_id);
+                }
+                Err(PauseError::NotFound { plan_id }) => {
+                    return Err(JaymiError::new(format!(
+                        "duplicate or unknown approval for plan {plan_id}"
+                    )));
+                }
+                Err(error) => return Err(JaymiError::new(error.to_string())),
+            }
+        };
+
+        entry
+            .plan
+            .approve()
+            .map_err(|error| JaymiError::new(error.to_string()))?;
+        jaymi_logging::info(
+            "planner",
+            format!(
+                "resuming paused plan {} without replan tool={}",
+                entry.plan.id(),
+                entry.tool_id
+            ),
+        );
+
+        let (output, execution_summary) =
+            self.execute_approved_plan(&mut entry.plan, entry.tool_input)?;
+        self.ensure_success(&output)?;
+
+        let content = output.message.clone().unwrap_or_else(|| {
+            format!(
+                "Resumed and completed plan {} via {} → {}",
+                entry.plan.id(),
+                entry.capability.id(),
+                entry.tool_id
+            )
+        });
+
+        Ok(response_from_tool_output(
+            content,
+            entry.capability,
+            entry.tool_id,
+            entry.provider_id,
+            entry.plan,
+            execution_summary,
+            entry.policy_evaluation,
+            entry.permission_result,
+            output,
+        ))
+    }
+
+    fn invalidate_paused_plan(
+        &self,
+        plan_id: ExecutionPlanId,
+        reason: &str,
+        user_cancelled: bool,
+    ) -> JaymiResult<PlannerResponse> {
+        let mut entry = {
+            let mut store = self.paused_store()?;
+            match store.take_for_invalidate(&plan_id) {
+                Ok(entry) => entry,
+                Err(PauseError::TimedOut { plan_id }) => {
+                    return self.timeout_response(&plan_id);
+                }
+                Err(PauseError::NotFound { plan_id }) => {
+                    return Err(JaymiError::new(format!(
+                        "no paused plan {plan_id} to invalidate ({reason})"
+                    )));
+                }
+                Err(error) => return Err(JaymiError::new(error.to_string())),
+            }
+        };
+        let _ = entry.plan.cancel();
+        let summary = ExecutionSummary::cancelled(&entry.plan, reason);
+        let content = if user_cancelled {
+            format!(
+                "Cancelled plan {}. No tools were executed.",
+                entry.plan.id()
+            )
+        } else {
+            format!(
+                "Invalidated plan {}. Send an updated request to build a new plan. ({reason})",
+                entry.plan.id()
+            )
+        };
+        Ok(PlannerResponse {
+            content,
+            capability: Some(entry.capability),
+            tool_id: Some(entry.tool_id),
+            provider_id: entry.provider_id,
+            policy_evaluation: entry.policy_evaluation,
+            permission_result: entry.permission_result,
+            blocked: false,
+            awaiting_review: false,
+            execution_plan: Some(entry.plan),
+            execution_summary: Some(summary),
+            ..PlannerResponse::default()
         })
+    }
+
+    fn timeout_response(&self, plan_id: &str) -> JaymiResult<PlannerResponse> {
+        let plan_id = ExecutionPlanId::from_existing(plan_id);
+        Ok(PlannerResponse {
+            content: format!(
+                "Paused plan {} timed out waiting for review. No tools were executed.",
+                plan_id.as_str()
+            ),
+            blocked: true,
+            awaiting_review: false,
+            execution_summary: Some(ExecutionSummary {
+                plan_id: plan_id.clone(),
+                status: ExecutionStatus::Cancelled,
+                goal: format!("Review timed out for plan {}", plan_id.as_str()),
+                actions_performed: Vec::new(),
+                resources_changed: Vec::new(),
+                files_edited: Vec::new(),
+                duration_ms: 0,
+                warnings: Vec::new(),
+                errors: vec!["review timeout".into()],
+                error: Some("review timeout".into()),
+                next_suggested_actions: vec![
+                    "Retry the request".into(),
+                    "Approve sooner when a Review Card appears".into(),
+                ],
+                tools_executed: Vec::new(),
+                outputs: Vec::new(),
+                partial: false,
+            }),
+            ..PlannerResponse::default()
+        })
+    }
+
+    /// Cancel every paused plan because the user sent a new request.
+    fn invalidate_paused(&self, reason: &str) -> JaymiResult<()> {
+        let mut store = self.paused_store()?;
+        let removed = store.invalidate_all();
+        for mut entry in removed {
+            let _ = entry.plan.cancel();
+            jaymi_logging::info(
+                "planner",
+                format!(
+                    "invalidated paused plan {} ({reason})",
+                    entry.plan.id()
+                ),
+            );
+        }
+        Ok(())
+    }
+
+    fn paused_store(&self) -> JaymiResult<std::sync::MutexGuard<'_, PausedPlanStore>> {
+        self.paused
+            .lock()
+            .map_err(|_| JaymiError::new(PauseError::Poisoned.to_string()))
     }
 
     fn ensure_success(&self, output: &jaymi_tools::ToolOutput) -> JaymiResult<()> {
@@ -1651,14 +2649,99 @@ impl Planner {
             ))
         }
     }
+
+    /// Build a PlannerResponse for a soft tool failure (structured summary retained).
+    #[allow(clippy::too_many_arguments)]
+    fn tool_failure_response(
+        &self,
+        plan: ExecutionPlan,
+        capability: Capability,
+        tool_id: String,
+        provider_id: Option<String>,
+        policy_evaluation: Option<PolicyEvaluation>,
+        permission_result: Option<PermissionCheckResult>,
+        output: jaymi_tools::ToolOutput,
+        execution_summary: ExecutionSummary,
+    ) -> PlannerResponse {
+        let detail = execution_summary
+            .error
+            .clone()
+            .or(output.message)
+            .unwrap_or_else(|| format!("tool '{tool_id}' failed"));
+        PlannerResponse {
+            content: format!("Failed while executing '{tool_id}': {detail}"),
+            capability: Some(capability),
+            tool_id: Some(tool_id),
+            provider_id,
+            policy_evaluation,
+            permission_result,
+            blocked: true,
+            awaiting_review: false,
+            execution_plan: Some(plan),
+            execution_summary: Some(execution_summary),
+            ..PlannerResponse::default()
+        }
+    }
 }
 
 struct PreparedExecution {
+    plan: ExecutionPlan,
     tool_id: String,
     provider_id: Option<String>,
     policy_evaluation: Option<PolicyEvaluation>,
     permission_result: Option<PermissionCheckResult>,
     blocked_response: Option<PlannerResponse>,
+}
+
+fn response_from_tool_output(
+    content: String,
+    capability: Capability,
+    tool_id: String,
+    provider_id: Option<String>,
+    plan: ExecutionPlan,
+    execution_summary: ExecutionSummary,
+    policy_evaluation: Option<PolicyEvaluation>,
+    permission_result: Option<PermissionCheckResult>,
+    output: jaymi_tools::ToolOutput,
+) -> PlannerResponse {
+    PlannerResponse {
+        content,
+        capability: Some(capability),
+        tool_id: Some(tool_id),
+        provider_id,
+        listed_path: output.listed_path,
+        entries: output.entries,
+        citations: output.citations,
+        document: output.document,
+        policy_evaluation,
+        permission_result,
+        blocked: false,
+        awaiting_review: false,
+        execution_plan: Some(plan),
+        execution_summary: Some(execution_summary),
+        project_knowledge: output.project_knowledge,
+        terminal_session_id: output.session_id,
+        terminal_output: output.terminal_output,
+        terminal_scrollback: output.terminal_scrollback,
+        terminal_history: output.terminal_history,
+        terminal_title: output.terminal_title,
+        terminal_alive: output.terminal_alive,
+        git_branch: output.git_branch,
+        git_summary: output.git_summary,
+        git_is_repository: output.git_is_repository,
+        git_modified: output.git_modified,
+        git_added: output.git_added,
+        git_deleted: output.git_deleted,
+        git_staged: output.git_staged,
+        git_untracked: output.git_untracked,
+        lsp_hover: output.lsp_hover,
+        lsp_completions: output.lsp_completions,
+        lsp_diagnostics: output.lsp_diagnostics,
+        lsp_definitions: output.lsp_definitions,
+        lsp_references: output.lsp_references,
+        lsp_edits: output.lsp_edits,
+        ..PlannerResponse::default()
+    }
 }
 
 fn finalize(mut response: PlannerResponse, bundle: ContextBundle) -> PlannerResponse {
@@ -1678,6 +2761,72 @@ fn log_promotions(bundle: &ContextBundle) {
                 bundle.promotion_ask()
             ),
         );
+    }
+}
+
+/// Combined Policy + Permission + ToolRisk gate for one prepared execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GateDecision {
+    Allowed,
+    RequiresApproval { explanation: String },
+    Denied { explanation: String },
+}
+
+impl GateDecision {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Allowed => "allowed",
+            Self::RequiresApproval { .. } => "requires_approval",
+            Self::Denied { .. } => "denied",
+        }
+    }
+}
+
+/// Combine Action Policy, Permission, and ToolRisk into one Planner gate.
+///
+/// Precedence: Denied > RequiresApproval > Allowed.
+/// ToolRisk Modify / Destructive / External escalates to RequiresApproval.
+fn combine_gate_decision(
+    policy: &PolicyEvaluation,
+    permission: Option<&PermissionCheckResult>,
+    tool_risk: jaymi_tools::ToolRisk,
+) -> GateDecision {
+    if matches!(policy.decision, PolicyDecision::Denied) {
+        return GateDecision::Denied {
+            explanation: policy.explanation(),
+        };
+    }
+
+    if let Some(permission) = permission {
+        if matches!(permission.decision, PermissionDecision::Denied) {
+            return GateDecision::Denied {
+                explanation: permission.explanation.clone(),
+            };
+        }
+    }
+
+    let mut reasons = Vec::new();
+    if matches!(policy.decision, PolicyDecision::RequiresApproval) {
+        reasons.push(policy.explanation());
+    }
+    if let Some(permission) = permission {
+        if matches!(permission.decision, PermissionDecision::RequiresApproval) {
+            reasons.push(permission.explanation.clone());
+        }
+    }
+    if tool_risk.requires_review() {
+        reasons.push(format!(
+            "tool risk '{}' requires review before execution",
+            tool_risk.as_str()
+        ));
+    }
+
+    if reasons.is_empty() {
+        GateDecision::Allowed
+    } else {
+        GateDecision::RequiresApproval {
+            explanation: reasons.join(" · "),
+        }
     }
 }
 
@@ -1817,14 +2966,15 @@ mod tests {
     use jaymi_project_engine::{InMemoryProjectStore, ProjectEngine};
     use jaymi_providers::{FilesystemProvider, Provider, FILESYSTEM_PROVIDER_ID};
     use jaymi_tools::{
-        EstimatedRuntime, ExecutionMode, GpuRequirements, MemoryUsage, ReadFileTool, Reliability,
-        ResourceCost, ResultType, SearchFilesTool, Tool, ToolMetadata, ToolOutput,
+        EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
+        PrivacyMode, ReadFileTool, Reliability, ResourceCost, ResultType, SearchFilesTool, Tool,
+        ToolInput, ToolMetadata, ToolOutput, ToolRisk,
     };
     use jaymi_understanding::{ContentIntelligenceApi, SqliteContentStore, UnderstandingEngine};
     use std::fs::{self, File};
     use std::io::Write;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::path::{Path, PathBuf};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     fn test_memory_engine() -> Arc<dyn MemoryEngineApi> {
         let mut engine = MemoryEngine::with_store(Arc::new(InMemoryMemoryStore::new()));
@@ -1853,11 +3003,22 @@ mod tests {
     where
         F: FnOnce(&mut ToolRegistry, Arc<FilesystemProvider>, Arc<ContentIntelligenceApi>),
     {
+        planner_with_tools_and_policies(register, |policies| {
+            policies.initialize().unwrap();
+        })
+    }
+
+    fn planner_with_tools_and_policies<F, P>(register: F, configure_policies: P) -> Planner
+    where
+        F: FnOnce(&mut ToolRegistry, Arc<FilesystemProvider>, Arc<ContentIntelligenceApi>),
+        P: FnOnce(&mut PolicyEngine),
+    {
         let mut capabilities = CapabilityEngine::new();
         capabilities.initialize().unwrap();
         capabilities.register(Capability::Search).unwrap();
         capabilities.register(Capability::ReadDocuments).unwrap();
         capabilities.register(Capability::Code).unwrap();
+        capabilities.register(Capability::FileManagement).unwrap();
 
         let mut providers = ProviderRegistry::new();
         providers.initialize().unwrap();
@@ -1897,7 +3058,7 @@ mod tests {
         let orchestrator = ToolOrchestrator::new(Arc::clone(&tools));
 
         let mut policies = PolicyEngine::new();
-        policies.initialize().unwrap();
+        configure_policies(&mut policies);
         let mut permissions = PermissionEngine::new();
         permissions.initialize().unwrap();
 
@@ -1958,6 +3119,7 @@ mod tests {
                     description: "Requires internet".into(),
                     provider: "cloud".into(),
                     capabilities: vec![Capability::Search],
+                    risk: ToolRisk::External,
                     execution_mode: ExecutionMode::Synchronous,
                     estimated_runtime: EstimatedRuntime::Fast,
                     resource_cost: ResourceCost::Low,
@@ -2027,8 +3189,12 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.name == "readme.md" && entry.entry_type == EntryType::File));
-        let plan = response.execution_plan.expect("execution plan");
-        assert_eq!(plan.capabilities(), vec![Capability::Search]);
+        let capability_plan = response.capability_plan.expect("capability plan");
+        assert_eq!(capability_plan.capabilities(), vec![Capability::Search]);
+        let action_plan = response.execution_plan.expect("action execution plan");
+        assert_eq!(action_plan.status(), ExecutionStatus::Completed);
+        assert_eq!(action_plan.planner_intent(), IntentId::ListDirectory);
+        assert!(response.execution_summary.is_some());
     }
 
     #[test]
@@ -2063,7 +3229,7 @@ mod tests {
     }
 
     #[test]
-    fn offline_first_blocks_cloud_only_tool() {
+    fn offline_first_requires_approval_for_cloud_only_tool() {
         let planner = planner_with_tools(|tools, _, _| {
             tools
                 .register_tool(Arc::new(CloudSearchTool::new()))
@@ -2073,10 +3239,166 @@ mod tests {
             .handle(UserRequest::list_directory(temp_dir()))
             .unwrap();
         assert!(response.blocked);
+        assert!(response.awaiting_review);
         assert!(response.entries.is_empty());
         assert_eq!(response.tool_id.as_deref(), Some("cloud_search"));
-        assert!(!response.policy_evaluation.as_ref().unwrap().allowed);
+        assert_eq!(
+            response.policy_evaluation.as_ref().unwrap().decision,
+            PolicyDecision::RequiresApproval
+        );
+        assert!(response.permission_result.is_some());
+        assert!(response.content.contains("I can do that."));
+        assert!(response.content.contains("You can:"));
+        assert!(response.content.contains("Offline First"));
+    }
+
+    #[test]
+    fn approval_flow_resumes_write_after_review() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let path = dir.join("approved.txt");
+        let response = planner
+            .handle(UserRequest::write_file(&path, "hello"))
+            .expect("handle write");
+        assert!(response.awaiting_review);
+        assert!(!path.exists());
+        assert_eq!(
+            response.permission_result.as_ref().unwrap().decision,
+            PermissionDecision::RequiresApproval
+        );
+        let plan_id = response.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .expect("approve");
+        assert!(!resumed.awaiting_review);
+        assert!(!resumed.blocked);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello");
+    }
+
+    #[test]
+    fn denied_flow_explains_and_does_not_execute() {
+        // Internet permission is Denied — use a cloud tool with only Offline First
+        // removed and Privacy Maximum so policy also denies for a clear deny path.
+        let planner = planner_with_tools_and_policies(
+            |tools, _, _| {
+                tools
+                    .register_tool(Arc::new(CloudSearchTool::new()))
+                    .unwrap();
+            },
+            |policies| {
+                policies.initialize().unwrap();
+                policies.active.clear();
+                policies.active.push(jaymi_policies::Policy {
+                    name: "Privacy Maximum".into(),
+                    scope: jaymi_policies::PolicyScope::Global,
+                    builtin: Some(jaymi_policies::BuiltinPolicy::PrivacyMaximum),
+                });
+            },
+        );
+        let response = planner
+            .handle(UserRequest::list_directory(temp_dir()))
+            .unwrap();
+        assert!(response.blocked);
+        assert!(!response.awaiting_review);
+        assert!(response.entries.is_empty());
+        assert_eq!(
+            response.policy_evaluation.as_ref().unwrap().decision,
+            PolicyDecision::Denied
+        );
         assert!(response.permission_result.is_none());
+        assert!(response.content.contains("Denied"));
+        assert!(response.content.contains("Privacy Maximum"));
+        assert_eq!(planner.paused_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn policy_override_privacy_maximum_denies_despite_offline_first_approval_path() {
+        let planner = planner_with_tools_and_policies(
+            |tools, _, _| {
+                tools
+                    .register_tool(Arc::new(CloudSearchTool::new()))
+                    .unwrap();
+            },
+            |policies| {
+                policies.initialize().unwrap();
+                // Offline First is already present from initialize; add Privacy Maximum.
+                policies.active.push(jaymi_policies::Policy {
+                    name: "Privacy Maximum".into(),
+                    scope: jaymi_policies::PolicyScope::Global,
+                    builtin: Some(jaymi_policies::BuiltinPolicy::PrivacyMaximum),
+                });
+            },
+        );
+        let response = planner
+            .handle(UserRequest::list_directory(temp_dir()))
+            .unwrap();
+        assert!(response.blocked);
+        assert!(!response.awaiting_review);
+        assert_eq!(
+            response.policy_evaluation.as_ref().unwrap().decision,
+            PolicyDecision::Denied
+        );
+        assert!(
+            response
+                .policy_evaluation
+                .as_ref()
+                .unwrap()
+                .explanation()
+                .contains("Privacy Maximum"),
+            "policy explanation missing: {:?}",
+            response.policy_evaluation
+        );
+        assert!(response.content.contains("Privacy Maximum"));
+    }
+
+    #[test]
+    fn policy_explanation_surfaces_in_review_and_deny_responses() {
+        let approval_planner = planner_with_tools(|tools, _, _| {
+            tools
+                .register_tool(Arc::new(CloudSearchTool::new()))
+                .unwrap();
+        });
+        let awaiting = approval_planner
+            .handle(UserRequest::list_directory(temp_dir()))
+            .unwrap();
+        assert!(awaiting.awaiting_review);
+        let summary = awaiting
+            .execution_summary
+            .as_ref()
+            .and_then(|summary| summary.error.clone())
+            .unwrap_or_default();
+        assert!(
+            summary.contains("Offline First") || awaiting.content.contains("Offline First"),
+            "expected Offline First explanation, content={} summary={}",
+            awaiting.content,
+            summary
+        );
+
+        let deny_planner = planner_with_tools_and_policies(
+            |tools, _, _| {
+                tools
+                    .register_tool(Arc::new(CloudSearchTool::new()))
+                    .unwrap();
+            },
+            |policies| {
+                policies.initialize().unwrap();
+                policies.active.clear();
+                policies.active.push(jaymi_policies::Policy {
+                    name: "Privacy Maximum".into(),
+                    scope: jaymi_policies::PolicyScope::Global,
+                    builtin: Some(jaymi_policies::BuiltinPolicy::PrivacyMaximum),
+                });
+            },
+        );
+        let denied = deny_planner
+            .handle(UserRequest::list_directory(temp_dir()))
+            .unwrap();
+        assert!(denied.content.starts_with("Denied"));
+        assert!(denied
+            .execution_summary
+            .as_ref()
+            .and_then(|summary| summary.error.as_ref())
+            .is_some_and(|message| message.contains("Privacy Maximum")));
     }
 
     #[test]
@@ -2091,7 +3413,7 @@ mod tests {
         assert!(!response.blocked);
         assert!(response.content.contains("Execution plan"));
 
-        let plan = response.execution_plan.expect("execution plan");
+        let plan = response.capability_plan.expect("capability plan");
         assert_eq!(plan.goal.as_deref(), Some("Help me build an app."));
         assert_eq!(plan.steps.len(), 1);
         assert!(!plan.is_executable());
@@ -2110,7 +3432,7 @@ mod tests {
 
         assert_eq!(response.capability, Some(Capability::Search));
         assert!(response.tool_id.is_none());
-        let plan = response.execution_plan.expect("composed plan");
+        let plan = response.capability_plan.expect("composed plan");
         assert_eq!(plan.steps.len(), 3);
         assert_eq!(
             plan.capabilities(),
@@ -2142,5 +3464,735 @@ mod tests {
                 "git".to_string()
             ]
         );
+    }
+
+    fn planner_with_write() -> Planner {
+        planner_with_tools(|tools, filesystem, _content| {
+            tools
+                .register_tool(Arc::new(jaymi_tools::WriteFileTool::new(Arc::clone(
+                    &filesystem,
+                ))))
+                .unwrap();
+        })
+    }
+
+    fn planner_with_write_and_manage() -> Planner {
+        planner_with_tools(|tools, filesystem, _content| {
+            tools
+                .register_tool(Arc::new(jaymi_tools::WriteFileTool::new(Arc::clone(
+                    &filesystem,
+                ))))
+                .unwrap();
+            tools
+                .register_tool(Arc::new(jaymi_tools::ManagePathTool::new(Arc::clone(
+                    &filesystem,
+                ))))
+                .unwrap();
+        })
+    }
+
+    fn paused_write(planner: &Planner, path: &Path, contents: &str) -> ExecutionPlan {
+        let mut plan = ExecutionPlan::create(ExecutionPlanParams {
+            originating_request: format!("Write {}", path.display()),
+            planner_intent: IntentId::WriteFile,
+            capability: Capability::FileManagement,
+            proposed_tools: vec![jaymi_tools::WRITE_FILE_TOOL_ID.to_string()],
+            steps: vec![ExecutionStep {
+                order: 1,
+                description: "Write file".into(),
+                tool_id: Some(jaymi_tools::WRITE_FILE_TOOL_ID.to_string()),
+                resource: Some(path.display().to_string()),
+            }],
+            estimated_risk: EstimatedRisk::Medium,
+            affected_resources: vec![path.display().to_string()],
+            permissions_required: vec![PlanPermissionRequirement {
+                category: "filesystem".into(),
+                action: "write".into(),
+            }],
+            review_requirement: ReviewRequirement::Required,
+            estimated_reversibility: EstimatedReversibility::PartiallyReversible,
+            expected_outputs: vec!["written file".into()],
+        lineage: Default::default(),
+        });
+        plan.mark_ready().unwrap();
+        plan.mark_awaiting_review().unwrap();
+        planner
+            .pause_execution(PausedExecution {
+                tool_id: jaymi_tools::WRITE_FILE_TOOL_ID.to_string(),
+                provider_id: Some(FILESYSTEM_PROVIDER_ID.to_string()),
+                capability: Capability::FileManagement,
+                tool_input: ToolInput::write_file(path, contents),
+                plan: plan.clone(),
+                policy_evaluation: None,
+                permission_result: None,
+                paused_at: Instant::now(),
+            })
+            .unwrap();
+        plan
+    }
+
+    #[test]
+    fn pause() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let path = dir.join("pause.txt");
+        let plan = paused_write(&planner, &path, "paused");
+        assert!(planner.is_paused(plan.id()).unwrap());
+        assert_eq!(planner.paused_count().unwrap(), 1);
+        assert_eq!(plan.status(), ExecutionStatus::AwaitingReview);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn resume() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let path = dir.join("resume.txt");
+        let plan = paused_write(&planner, &path, "resumed-body");
+        let plan_id = plan.id().clone();
+
+        let response = planner
+            .resolve_review(ReviewIntent::Approve {
+                plan_id: plan_id.clone(),
+            })
+            .expect("resume");
+
+        assert!(!response.awaiting_review);
+        assert!(!response.blocked);
+        let completed = response.execution_plan.expect("plan");
+        assert_eq!(completed.id(), &plan_id);
+        assert_eq!(completed.status(), ExecutionStatus::Completed);
+        assert_eq!(completed.originating_request(), plan.originating_request());
+        assert_eq!(planner.paused_count().unwrap(), 0);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "resumed-body");
+
+        let history = planner.approval_history().unwrap();
+        assert!(history.iter().any(|entry| entry.decision == ApprovalDecision::Approve));
+    }
+
+    #[test]
+    fn paused_snapshots_explain_why_execution_is_paused() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let path = dir.join("diag-pause.txt");
+        let plan = paused_write(&planner, &path, "body");
+
+        let snaps = planner.paused_snapshots().unwrap();
+        assert_eq!(snaps.len(), 1);
+        assert_eq!(snaps[0].plan_id, plan.id().as_str());
+        assert!(snaps[0].pause_explanation.contains("PAUSED"));
+        assert!(snaps[0].resume_explanation.contains("Approve resumes"));
+        assert_eq!(snaps[0].tool_id, jaymi_tools::WRITE_FILE_TOOL_ID);
+    }
+
+    #[test]
+    fn cancel() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let path = dir.join("cancel.txt");
+        let plan = paused_write(&planner, &path, "nope");
+        let plan_id = plan.id().clone();
+
+        let response = planner
+            .resolve_review(ReviewIntent::Cancel {
+                plan_id: plan_id.clone(),
+            })
+            .expect("cancel");
+
+        assert!(response.content.contains("Cancelled"));
+        assert_eq!(
+            response.execution_plan.as_ref().unwrap().status(),
+            ExecutionStatus::Cancelled
+        );
+        assert_eq!(planner.paused_count().unwrap(), 0);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn modify() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let path = dir.join("modify.txt");
+        let next = dir.join("modify-new.txt");
+        let plan = paused_write(&planner, &path, "old");
+        let old_id = plan.id().clone();
+
+        let response = planner
+            .resolve_review(ReviewIntent::Modify {
+                plan_id: old_id.clone(),
+                note: Some(format!("use {}", next.display())),
+            })
+            .expect("modify");
+
+        assert!(response.awaiting_review);
+        assert!(response.content.contains("I revised the plan"));
+        assert!(response.content.contains("Changes in revision"));
+        assert!(response.content.contains("You can:"));
+        let child = response.execution_plan.expect("child plan");
+        assert_ne!(child.id(), &old_id);
+        assert_eq!(child.status(), ExecutionStatus::AwaitingReview);
+        assert_eq!(child.revision(), 2);
+        assert_eq!(child.parent_plan_id(), Some(&old_id));
+        assert!(child
+            .revision_changes()
+            .iter()
+            .any(|change| change.contains("Retargeted") || change.contains("resource")));
+        assert!(planner.is_paused(child.id()).unwrap());
+        assert!(!planner.is_paused(&old_id).unwrap());
+        assert!(!path.exists());
+
+        let history = planner.plan_history().unwrap();
+        assert!(history.iter().any(|entry| &entry.plan_id == child.id()));
+        assert!(history
+            .iter()
+            .any(|entry| &entry.plan_id == child.id() && entry.parent_plan_id.as_ref() == Some(&old_id)));
+    }
+
+    #[test]
+    fn partial_modification_skips_readme() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let readme = dir.join("README.md");
+        let notes = dir.join("notes.txt");
+        let mut plan = ExecutionPlan::create(ExecutionPlanParams {
+            originating_request: "Write project files".into(),
+            planner_intent: IntentId::WriteFile,
+            capability: Capability::FileManagement,
+            proposed_tools: vec![jaymi_tools::WRITE_FILE_TOOL_ID.to_string()],
+            steps: vec![ExecutionStep {
+                order: 1,
+                description: "Write files".into(),
+                tool_id: Some(jaymi_tools::WRITE_FILE_TOOL_ID.to_string()),
+                resource: Some(readme.display().to_string()),
+            }],
+            estimated_risk: EstimatedRisk::Medium,
+            affected_resources: vec![
+                readme.display().to_string(),
+                notes.display().to_string(),
+            ],
+            permissions_required: vec![PlanPermissionRequirement {
+                category: "filesystem".into(),
+                action: "write".into(),
+            }],
+            review_requirement: ReviewRequirement::Required,
+            estimated_reversibility: EstimatedReversibility::PartiallyReversible,
+            expected_outputs: vec!["written file".into()],
+            lineage: PlanLineage::root(),
+        });
+        plan.mark_ready().unwrap();
+        plan.mark_awaiting_review().unwrap();
+        let parent_id = plan.id().clone();
+        let mut input = ToolInput::write_file(&readme, "docs");
+        input.paths = vec![readme.clone(), notes.clone()];
+        planner
+            .pause_execution(PausedExecution {
+                tool_id: jaymi_tools::WRITE_FILE_TOOL_ID.to_string(),
+                provider_id: Some(FILESYSTEM_PROVIDER_ID.to_string()),
+                capability: Capability::FileManagement,
+                tool_input: input,
+                plan: plan.clone(),
+                policy_evaluation: None,
+                permission_result: None,
+                paused_at: Instant::now(),
+            })
+            .unwrap();
+
+        let response = planner
+            .resolve_review(ReviewIntent::Modify {
+                plan_id: parent_id.clone(),
+                note: Some("Skip README".into()),
+            })
+            .expect("partial modify");
+
+        assert!(response.awaiting_review);
+        let child = response.execution_plan.expect("child");
+        assert_eq!(child.revision(), 2);
+        assert!(child
+            .revision_changes()
+            .iter()
+            .any(|change| change.contains("README")));
+        assert!(!child
+            .affected_resources()
+            .iter()
+            .any(|resource| resource.to_lowercase().contains("readme")));
+        assert!(planner.is_paused(child.id()).unwrap());
+    }
+
+    #[test]
+    fn full_modification_rename_instead_of_overwrite() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let path = dir.join("overwrite.txt");
+        let plan = paused_write(&planner, &path, "body");
+        let parent_id = plan.id().clone();
+
+        let response = planner
+            .resolve_review(ReviewIntent::Modify {
+                plan_id: parent_id.clone(),
+                note: Some("Rename instead of overwrite".into()),
+            })
+            .expect("full modify");
+
+        assert!(response.awaiting_review);
+        assert_eq!(
+            response.tool_id.as_deref(),
+            Some(jaymi_tools::MANAGE_PATH_TOOL_ID)
+        );
+        let child = response.execution_plan.expect("child");
+        assert_eq!(child.revision(), 2);
+        assert_eq!(child.parent_plan_id(), Some(&parent_id));
+        assert!(child
+            .revision_changes()
+            .iter()
+            .any(|change| change.to_lowercase().contains("rename")));
+        assert_eq!(
+            child.proposed_tools(),
+            &[jaymi_tools::MANAGE_PATH_TOOL_ID.to_string()]
+        );
+        assert!(planner.is_paused(child.id()).unwrap());
+    }
+
+    #[test]
+    fn approval_after_modification() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let original = dir.join("before.txt");
+        let revised = dir.join("after.txt");
+        let plan = paused_write(&planner, &original, "approved-after-modify");
+        let parent_id = plan.id().clone();
+
+        let modified = planner
+            .resolve_review(ReviewIntent::Modify {
+                plan_id: parent_id.clone(),
+                note: Some(format!("use {}", revised.display())),
+            })
+            .expect("modify");
+        assert!(modified.awaiting_review);
+        let child = modified.execution_plan.expect("child");
+        let child_id = child.id().clone();
+        assert_eq!(child.revision(), 2);
+
+        let approved = planner
+            .resolve_review(ReviewIntent::Approve {
+                plan_id: child_id.clone(),
+            })
+            .expect("approve revised");
+
+        assert!(!approved.awaiting_review);
+        assert!(!approved.blocked);
+        let completed = approved.execution_plan.expect("completed");
+        assert_eq!(completed.id(), &child_id);
+        assert_eq!(completed.status(), ExecutionStatus::Completed);
+        assert_eq!(planner.paused_count().unwrap(), 0);
+        assert!(!original.exists());
+        assert_eq!(
+            fs::read_to_string(&revised).unwrap(),
+            "approved-after-modify"
+        );
+    }
+
+    #[test]
+    fn approval_history_records_searchable_decisions() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let path = dir.join("history.txt");
+        let plan = paused_write(&planner, &path, "body");
+        let plan_id = plan.id().clone();
+
+        planner
+            .resolve_review(ReviewIntent::Approve {
+                plan_id: plan_id.clone(),
+            })
+            .expect("approve");
+
+        let history = planner.approval_history().unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].decision, ApprovalDecision::Approve);
+        assert_eq!(history[0].plan_id, plan_id);
+        assert!(history[0].execution_result.is_some());
+        assert_eq!(
+            history[0].execution_result.as_ref().unwrap().status,
+            "completed"
+        );
+
+        let found = planner
+            .search_approval_history(&ApprovalHistoryQuery {
+                decision: Some(ApprovalDecision::Approve),
+                plan_id: Some(plan_id.clone()),
+                text: Some("completed".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(found.len(), 1);
+
+        let views = planner
+            .search_approval_history_views(
+                &ApprovalHistoryQuery {
+                    plan_id: Some(plan_id),
+                    ..Default::default()
+                },
+                ApprovalHistoryAccess::Restricted,
+            )
+            .unwrap();
+        assert_eq!(views.len(), 1);
+        assert!(views[0].redacted);
+        assert!(views[0].affected_resources.is_empty());
+        assert!(views[0].goal.is_none());
+    }
+
+    #[test]
+    fn approval_history_records_modify_and_cancel() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let path = dir.join("mod-hist.txt");
+        let next = dir.join("mod-hist-next.txt");
+        let plan = paused_write(&planner, &path, "x");
+        let parent_id = plan.id().clone();
+
+        let modified = planner
+            .resolve_review(ReviewIntent::Modify {
+                plan_id: parent_id.clone(),
+                note: Some(format!("use {}", next.display())),
+            })
+            .expect("modify");
+        let child_id = modified.execution_plan.unwrap().id().clone();
+
+        planner
+            .resolve_review(ReviewIntent::Cancel {
+                plan_id: child_id.clone(),
+            })
+            .expect("cancel");
+
+        let history = planner.approval_history().unwrap();
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].decision, ApprovalDecision::Modify);
+        assert_eq!(history[0].modified_plan_id.as_ref(), Some(&child_id));
+        assert!(history[0]
+            .reason
+            .as_ref()
+            .unwrap()
+            .contains(next.file_name().unwrap().to_str().unwrap()));
+        assert_eq!(history[1].decision, ApprovalDecision::Cancel);
+        assert_eq!(history[1].plan_id, child_id);
+
+        let by_text = planner
+            .search_approval_history(&ApprovalHistoryQuery {
+                text: Some("cancel".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(by_text.iter().any(|entry| entry.decision == ApprovalDecision::Cancel));
+    }
+
+    #[test]
+    fn timeout() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let path = dir.join("timeout.txt");
+        let mut plan = ExecutionPlan::create(ExecutionPlanParams {
+            originating_request: "Write timeout".into(),
+            planner_intent: IntentId::WriteFile,
+            capability: Capability::FileManagement,
+            proposed_tools: vec![jaymi_tools::WRITE_FILE_TOOL_ID.to_string()],
+            steps: vec![ExecutionStep {
+                order: 1,
+                description: "Write file".into(),
+                tool_id: Some(jaymi_tools::WRITE_FILE_TOOL_ID.to_string()),
+                resource: Some(path.display().to_string()),
+            }],
+            estimated_risk: EstimatedRisk::Medium,
+            affected_resources: vec![path.display().to_string()],
+            permissions_required: vec![PlanPermissionRequirement {
+                category: "filesystem".into(),
+                action: "write".into(),
+            }],
+            review_requirement: ReviewRequirement::Required,
+            estimated_reversibility: EstimatedReversibility::PartiallyReversible,
+            expected_outputs: vec!["written file".into()],
+        lineage: Default::default(),
+        });
+        plan.mark_ready().unwrap();
+        plan.mark_awaiting_review().unwrap();
+        let plan_id = plan.id().clone();
+        planner.set_pause_ttl(Duration::from_millis(1)).unwrap();
+        planner
+            .pause_execution(PausedExecution {
+                tool_id: jaymi_tools::WRITE_FILE_TOOL_ID.to_string(),
+                provider_id: Some(FILESYSTEM_PROVIDER_ID.to_string()),
+                capability: Capability::FileManagement,
+                tool_input: ToolInput::write_file(&path, "late"),
+                plan,
+                policy_evaluation: None,
+                permission_result: None,
+                paused_at: Instant::now() - Duration::from_secs(5),
+            })
+            .unwrap();
+
+        let response = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .expect("timeout response");
+        assert!(response.content.contains("timed out"));
+        assert!(response.blocked);
+        assert!(!path.exists());
+        assert_eq!(planner.paused_count().unwrap(), 0);
+    }
+
+    #[test]
+    fn duplicate_approval() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let path = dir.join("dup.txt");
+        let plan = paused_write(&planner, &path, "once");
+        let plan_id = plan.id().clone();
+
+        planner
+            .resolve_review(ReviewIntent::Approve {
+                plan_id: plan_id.clone(),
+            })
+            .expect("first approve");
+        let err = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .expect_err("duplicate");
+        assert!(
+            err.message().contains("duplicate") || err.message().contains("unknown"),
+            "unexpected error: {}",
+            err.message()
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "once");
+    }
+
+    #[test]
+    fn modify_tool_risk_requires_review_before_write() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let path = dir.join("needs-review.txt");
+        let response = planner
+            .handle(UserRequest::write_file(&path, "secret"))
+            .expect("handle write");
+        assert!(response.awaiting_review, "Modify risk must pause for review");
+        assert!(response.blocked);
+        assert!(!path.exists(), "must not write before approval");
+        let plan = response.execution_plan.expect("plan");
+        assert_eq!(plan.estimated_risk(), EstimatedRisk::Medium);
+        assert_eq!(plan.review_requirement(), ReviewRequirement::Required);
+        assert_eq!(planner.paused_count().unwrap(), 1);
+
+        let plan_id = plan.id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .expect("approve");
+        assert!(!resumed.awaiting_review);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "secret");
+    }
+
+    #[test]
+    fn workspace_tool_risk_skips_review_for_read() {
+        let planner = planner_with_search_and_read();
+        let dir = temp_dir();
+        let path = dir.join("ok.md");
+        let mut file = File::create(&path).unwrap();
+        write!(file, "hello").unwrap();
+        let response = planner.handle(UserRequest::read_file(&path)).unwrap();
+        assert!(!response.awaiting_review);
+        assert!(!response.blocked);
+        assert_eq!(
+            response.execution_plan.as_ref().unwrap().estimated_risk(),
+            EstimatedRisk::Low
+        );
+    }
+
+    #[test]
+    fn successful_execution_produces_structured_summary() {
+        let dir = temp_dir();
+        let mut file = File::create(dir.join("a.txt")).unwrap();
+        write!(file, "data").unwrap();
+        let planner = planner_with_search_and_read();
+        let response = planner.handle(UserRequest::list_directory(&dir)).unwrap();
+        let summary = response.execution_summary.expect("summary");
+        assert_eq!(summary.status, ExecutionStatus::Completed);
+        assert!(!summary.partial);
+        assert!(!summary.goal.is_empty());
+        assert!(!summary.actions_performed.is_empty());
+        assert!(!summary.resources_changed.is_empty());
+        assert!(summary.errors.is_empty());
+        assert!(!summary.next_suggested_actions.is_empty());
+        assert!(summary.render_conversation().contains("Goal:"));
+        assert!(summary.tools_executed.iter().any(|id| id == "search_files"));
+    }
+
+    #[test]
+    fn partial_execution_summary_marks_partial_and_warnings() {
+        let planner = planner_with_tools(|tools, _, _| {
+            tools
+                .register_tool(Arc::new(PartialSearchTool::new()))
+                .unwrap();
+        });
+        let response = planner
+            .handle(UserRequest::list_directory(temp_dir()))
+            .unwrap();
+        assert!(!response.blocked);
+        let summary = response.execution_summary.expect("summary");
+        assert!(summary.partial);
+        assert_eq!(summary.status, ExecutionStatus::Completed);
+        assert!(summary.warnings.iter().any(|w| w.contains("truncated")));
+        assert!(summary
+            .next_suggested_actions
+            .iter()
+            .any(|a| a.contains("remainder") || a.contains("partial")));
+        assert!(summary.render_conversation().contains("partial"));
+    }
+
+    #[test]
+    fn failure_execution_summary_includes_errors() {
+        let planner = planner_with_tools(|tools, _, _| {
+            tools
+                .register_tool(Arc::new(FailingSearchTool::new()))
+                .unwrap();
+        });
+        let response = planner
+            .handle(UserRequest::list_directory(temp_dir()))
+            .unwrap();
+        assert!(response.blocked);
+        let summary = response.execution_summary.expect("summary");
+        assert_eq!(summary.status, ExecutionStatus::Failed);
+        assert!(!summary.errors.is_empty());
+        assert!(summary.error.as_deref().is_some_and(|e| e.contains("boom")));
+        assert!(summary.render_conversation().contains("Errors:"));
+    }
+
+    #[test]
+    fn cancelled_execution_summary_explains_and_suggests_next() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let path = dir.join("cancel-summary.txt");
+        let response = planner
+            .handle(UserRequest::write_file(&path, "nope"))
+            .unwrap();
+        assert!(response.awaiting_review);
+        let plan_id = response.execution_plan.expect("plan").id().clone();
+        let cancelled = planner
+            .resolve_review(ReviewIntent::Cancel { plan_id })
+            .unwrap();
+        let summary = cancelled.execution_summary.expect("summary");
+        assert_eq!(summary.status, ExecutionStatus::Cancelled);
+        assert!(summary.tools_executed.is_empty());
+        assert!(!summary.errors.is_empty());
+        assert!(!summary.next_suggested_actions.is_empty());
+        assert!(summary.render_conversation().contains("cancelled"));
+        assert!(!path.exists());
+    }
+
+    struct PartialSearchTool {
+        metadata: ToolMetadata,
+    }
+
+    impl PartialSearchTool {
+        fn new() -> Self {
+            Self {
+                metadata: ToolMetadata {
+                    id: "search_files".into(),
+                    name: "Partial Search".into(),
+                    version: "0.1.0".into(),
+                    description: "Returns a partial listing".into(),
+                    provider: "test".into(),
+                    capabilities: vec![Capability::Search],
+                    risk: ToolRisk::Safe,
+                    execution_mode: ExecutionMode::Synchronous,
+                    estimated_runtime: EstimatedRuntime::Fast,
+                    resource_cost: ResourceCost::Low,
+                    memory_usage: MemoryUsage::Small,
+                    gpu_requirements: GpuRequirements::None,
+                    privacy: PrivacyMode::LocalOnly,
+                    internet: InternetRequirement::Never,
+                    reliability: Reliability::Experimental,
+                    result_type: ResultType::SearchResults,
+                },
+            }
+        }
+    }
+
+    impl Tool for PartialSearchTool {
+        fn metadata(&self) -> &ToolMetadata {
+            &self.metadata
+        }
+
+        fn validate(&self, _input: &ToolInput) -> JaymiResult<()> {
+            Ok(())
+        }
+
+        fn execute(&self, input: &ToolInput) -> JaymiResult<ToolOutput> {
+            let path = input
+                .path
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| ".".into());
+            Ok(ToolOutput {
+                success: true,
+                message: Some("partial listing".into()),
+                listed_path: input.path.clone(),
+                metadata: jaymi_tools::ToolExecutionMetadata {
+                    actions_performed: vec![format!("Listed part of {path}")],
+                    resources_changed: vec![path],
+                    warnings: vec!["listing truncated at 1 entry".into()],
+                    partial: true,
+                    next_suggested_actions: vec![
+                        "Review what completed and retry the remainder".into(),
+                    ],
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+        }
+    }
+
+    struct FailingSearchTool {
+        metadata: ToolMetadata,
+    }
+
+    impl FailingSearchTool {
+        fn new() -> Self {
+            Self {
+                metadata: ToolMetadata {
+                    id: "search_files".into(),
+                    name: "Failing Search".into(),
+                    version: "0.1.0".into(),
+                    description: "Always fails".into(),
+                    provider: "test".into(),
+                    capabilities: vec![Capability::Search],
+                    risk: ToolRisk::Safe,
+                    execution_mode: ExecutionMode::Synchronous,
+                    estimated_runtime: EstimatedRuntime::Fast,
+                    resource_cost: ResourceCost::Low,
+                    memory_usage: MemoryUsage::Small,
+                    gpu_requirements: GpuRequirements::None,
+                    privacy: PrivacyMode::LocalOnly,
+                    internet: InternetRequirement::Never,
+                    reliability: Reliability::Experimental,
+                    result_type: ResultType::SearchResults,
+                },
+            }
+        }
+    }
+
+    impl Tool for FailingSearchTool {
+        fn metadata(&self) -> &ToolMetadata {
+            &self.metadata
+        }
+
+        fn validate(&self, _input: &ToolInput) -> JaymiResult<()> {
+            Ok(())
+        }
+
+        fn execute(&self, _input: &ToolInput) -> JaymiResult<ToolOutput> {
+            Ok(ToolOutput {
+                success: false,
+                message: Some("boom: simulated tool failure".into()),
+                metadata: jaymi_tools::ToolExecutionMetadata {
+                    actions_performed: vec!["Attempted directory listing".into()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+        }
     }
 }

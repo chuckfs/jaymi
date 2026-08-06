@@ -55,7 +55,11 @@ Policy Engine (Action Policy)
 
 Action Policies (`jaymi-policies`, lifecycle name `policy_engine`) express preferences for **tool/provider candidates**. They are distinct from **Context Policies** (`jaymi-context`), which decide which Context Providers may contribute during assemble.
 
-Every **tool-backed** request evaluates Action Policy after Capability resolution and Context assemble — never before Capability Selection.
+Every **tool-backed** request creates a Planner-owned Execution Plan after
+Context assemble. Action Policy and Permission checks gate that plan — they
+never run before Capability Selection, and tools never run until the plan is
+Approved (or auto-approved when both Policy and Permission return Allowed and
+ToolRisk does not require review).
 
 ```text
 User Request
@@ -64,12 +68,18 @@ User Request
   → Capability Selection
   → Context Policy → Providers → ContextBundle
   → Behavior                          # Planned — not implemented
-  → Action Policy Engine              # jaymi-policies
-  → Permission Engine
-  → Tool Selection / Execution
+  → Execution Plan                    # jaymi-planner; immutable content
+  → Action Policy Engine              # Allowed / RequiresApproval / Denied
+  → Permission Engine                 # Allowed / RequiresApproval / Denied
+  → Review Card (when RequiresApproval)
+  → Tool Execution                    # Approved plans only
+  → Execution Summary
 ```
 
-Session open/close, PlanWork, and unsupported/chat paths assemble a ContextBundle but do **not** run Action Policy → Tool.
+Offline First requires conversational approval for internet/cloud candidates.
+Privacy Maximum hard-denies non-local candidates and overrides softer policies.
+
+Session open/close, PlanWork, and unsupported/chat paths assemble a ContextBundle but do **not** create an action Execution Plan or run tools.
 
 Policies influence planning and candidate selection.
 

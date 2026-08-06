@@ -11,7 +11,7 @@ use jaymi_providers::{GitProvider, GIT_PROVIDER_ID};
 
 use crate::metadata::{
     EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
-    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata,
+    PrivacyMode, Reliability, ResourceCost, ResultType, ToolMetadata, ToolRisk,
 };
 use crate::tool::{Tool, ToolInput, ToolOutput};
 
@@ -36,6 +36,7 @@ impl GitTool {
                 description: "Inspect and mutate a local Git repository".to_string(),
                 provider: GIT_PROVIDER_ID.to_string(),
                 capabilities: vec![Capability::Code],
+                risk: ToolRisk::Workspace,
                 execution_mode: ExecutionMode::Synchronous,
                 estimated_runtime: EstimatedRuntime::Fast,
                 resource_cost: ResourceCost::VeryLow,

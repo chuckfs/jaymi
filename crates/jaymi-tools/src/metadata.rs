@@ -5,6 +5,97 @@
 
 use jaymi_capabilities::Capability;
 
+use crate::tool::ToolInput;
+
+/// Risk classification declared by every Tool.
+///
+/// The Planner derives review requirements from this classification — not from
+/// hardcoded permission approval rules.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ToolRisk {
+    /// Read-only operations (indexes, inventory, pure retrieval).
+    Safe,
+    /// Window / workspace management: open files, switch projects, browse trees.
+    Workspace,
+    /// Edits local user data (writes, renames, non-destructive mutations).
+    Modify,
+    /// Deletes or permanently changes data (delete, discard, unconstrained shell).
+    Destructive,
+    /// Internet, APIs, email, cloud providers.
+    External,
+}
+
+impl ToolRisk {
+    /// Stable snake_case label for diagnostics and logs.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Safe => "safe",
+            Self::Workspace => "workspace",
+            Self::Modify => "modify",
+            Self::Destructive => "destructive",
+            Self::External => "external",
+        }
+    }
+
+    /// True when conversational review must gate execution.
+    pub fn requires_review(self) -> bool {
+        matches!(self, Self::Modify | Self::Destructive | Self::External)
+    }
+
+    /// Escalate risk for a specific invocation (never de-escalates the base).
+    ///
+    /// Examples: `manage_path` delete → Destructive; git discard → Destructive;
+    /// network-required tools → External.
+    pub fn effective_for(self, input: &ToolInput, internet: InternetRequirement) -> Self {
+        let mut risk = self;
+        if matches!(input.command.as_deref(), Some("delete")) {
+            risk = risk.escalate(Self::Destructive);
+        }
+        if let Some(op) = input.git_operation {
+            if op.is_destructive() {
+                risk = risk.escalate(Self::Destructive);
+            } else if op.is_mutating() {
+                risk = risk.escalate(Self::Modify);
+            }
+        }
+        if input
+            .lsp
+            .as_ref()
+            .is_some_and(|request| request.operation.is_mutating())
+        {
+            risk = risk.escalate(Self::Modify);
+        }
+        if matches!(internet, InternetRequirement::Required) {
+            risk = risk.escalate(Self::External);
+        }
+        risk
+    }
+
+    fn escalate(self, other: Self) -> Self {
+        if other.rank() > self.rank() {
+            other
+        } else {
+            self
+        }
+    }
+
+    fn rank(self) -> u8 {
+        match self {
+            Self::Safe => 0,
+            Self::Workspace => 1,
+            Self::Modify => 2,
+            Self::Destructive => 3,
+            Self::External => 4,
+        }
+    }
+}
+
+impl std::fmt::Display for ToolRisk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
 /// Complete metadata surface for a Tool.
 #[derive(Debug, Clone)]
 pub struct ToolMetadata {
@@ -20,6 +111,8 @@ pub struct ToolMetadata {
     pub provider: String,
     /// Capabilities satisfied by this tool.
     pub capabilities: Vec<Capability>,
+    /// Declared risk classification (review derives from this).
+    pub risk: ToolRisk,
     /// How the tool behaves during execution.
     pub execution_mode: ExecutionMode,
     /// Approximate execution time class.
@@ -161,4 +254,39 @@ pub enum ResultType {
     Diff,
     /// Search / listing results.
     SearchResults,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use jaymi_core::GitOperation;
+
+    #[test]
+    fn review_required_for_modify_destructive_external() {
+        assert!(!ToolRisk::Safe.requires_review());
+        assert!(!ToolRisk::Workspace.requires_review());
+        assert!(ToolRisk::Modify.requires_review());
+        assert!(ToolRisk::Destructive.requires_review());
+        assert!(ToolRisk::External.requires_review());
+    }
+
+    #[test]
+    fn effective_risk_escalates_delete_and_discard() {
+        let delete = ToolInput::manage_path("delete", "/tmp/a", None::<String>);
+        assert_eq!(
+            ToolRisk::Modify.effective_for(&delete, InternetRequirement::Never),
+            ToolRisk::Destructive
+        );
+        let mut discard = ToolInput::default();
+        discard.git_operation = Some(GitOperation::Discard);
+        assert_eq!(
+            ToolRisk::Workspace.effective_for(&discard, InternetRequirement::Never),
+            ToolRisk::Destructive
+        );
+        let read = ToolInput::read_file("/tmp/a");
+        assert_eq!(
+            ToolRisk::Workspace.effective_for(&read, InternetRequirement::Required),
+            ToolRisk::External
+        );
+    }
 }
