@@ -57,7 +57,9 @@ Those responsibilities belong to specialized tools.
 
 The Planner does not assemble memory, project, or search context itself.
 
-That responsibility belongs to the Context Engine.
+That responsibility belongs to the Context Engine. **ContextEngine is the sole
+factory for `ContextBundle`** — the Planner requests assemble / empty / reuse
+bundles; it never constructs them.
 
 The Planner does not own long-lived Memory or Project CRUD APIs.
 
@@ -447,7 +449,8 @@ Review Cards embed it and truncate large bodies with expand.
 - **Modify** regenerates only affected steps into a **child** plan (new id,
   lineage + revision history). The parent is cancelled; the child is re-paused
   for approval. ContextBundle is **not** rebuilt unless the modification
-  requires it. Review Cards show the revision diff.
+  requires it (Planner requests `ContextEngine::empty_bundle()` instead of
+  constructing a bundle). Review Cards show the revision diff.
 - **Cancel** cancels the pause without executing.
 - A **new user request** (any `handle`) also invalidates paused plans.
 - **Timeout** and **duplicate approval** fail deterministically without double-executing.

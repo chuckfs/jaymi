@@ -2102,8 +2102,9 @@ impl Planner {
         self.transition_conversation(conversation_state_for_tool_response(&response));
 
         if !reassemble_context {
-            // Partial / ordinary modifications reuse the existing session context.
-            return Ok(self.finalize_response(response, ContextBundle::default()));
+            // Partial / ordinary modifications skip reassemble; attach an
+            // engine-minted empty bundle so ContextEngine remains the sole factory.
+            return Ok(self.finalize_response(response, self.context.empty_bundle()));
         }
 
         // Assemble a fresh ContextBundle so resume/cancel responses stay on-contract.

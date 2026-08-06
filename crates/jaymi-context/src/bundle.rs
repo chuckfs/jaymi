@@ -374,6 +374,11 @@ pub struct ContextBundle {
 }
 
 impl Default for ContextBundle {
+    /// Empty snapshot via [`ContextBundleBuilder`].
+    ///
+    /// **Production / Planner:** use [`crate::ContextEngine::empty_bundle`] (or
+    /// `assemble_with` / `reuse_bundle`) — ContextEngine is the sole factory for
+    /// request-path bundles. Prefer that over `Default` so ownership stays explicit.
     fn default() -> Self {
         ContextBundleBuilder::new().build()
     }

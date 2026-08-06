@@ -4,6 +4,17 @@
 
 The Context Engine is the sole request-context assembler for the Planner. This document describes shipped behavior.
 
+**ContextEngine is the sole factory for `ContextBundle`.** Bundles are minted only through:
+
+```text
+ContextEngine::assemble_with(request, hints) -> ContextBundle   # request path
+ContextEngine::assemble(request) -> ContextBundle               # test / admin helper
+ContextEngine::empty_bundle() -> ContextBundle                  # empty placeholder (no providers)
+ContextEngine::reuse_bundle(&prior) -> ContextBundle            # attach prior engine-minted snapshot
+```
+
+The Planner may request context, request an empty bundle, or reuse a previously assembled bundle. It must not construct `ContextBundle` itself (`ContextBundle::default()` / `ContextBundleBuilder` are not Planner APIs).
+
 The Context Engine assembles only the knowledge required for the current request.
 
 The Planner calls after Intent and Capability resolution:
@@ -22,8 +33,8 @@ ContextEngine::assemble_with(request, hints) -> ContextBundle
 |-----------|------|----------|
 | **Context Providers** | Contribute their own sections | Decide policy, assemble other providers, execute tools, select capabilities |
 | **Context Policies** | Participate / priority / constraints / sensitivity | Gather context, mutate providers, execute tools |
-| **Context Engine** | Assemble under policy + relevance + budget | Determine Intent, select Capabilities, invent session state, execute tools |
-| **Planner** | Orchestrate Intent → Capability → assemble; then branch (tool-backed Action Policy → Permission → Tools, or session/plan/unsupported return) | Reimplement Context Policy or build parallel context sections |
+| **Context Engine** | Assemble under policy + relevance + budget; **sole factory** for `ContextBundle` | Determine Intent, select Capabilities, invent session state, execute tools |
+| **Planner** | Orchestrate Intent → Capability → assemble; then branch (tool-backed Action Policy → Permission → Tools, or session/plan/unsupported return); may request empty / reuse engine-minted bundles | Reimplement Context Policy, build parallel context sections, or construct `ContextBundle` directly |
 | **Behaviors** | Execute (Planned) | — |
 | **Tools** | Perform work (search / read / write / …) | Run inside Context assemble |
 
@@ -269,6 +280,8 @@ Every bundle records a `PolicyReport`: active policies, per-provider Included/Ex
 `ContextBundle` is the **sole authoritative request-context contract** in Jaymi (**Current**).
 
 It is the first-class, immutable snapshot assembled for a single request. It does **not** search or reason — it is purely data assembled from providers. Once built, fields are private and only accessors are exposed.
+
+**Factory:** every production `ContextBundle` is created by `ContextEngine` (`assemble_with` / `assemble` / `empty_bundle` / `reuse_bundle`). See ownership table above.
 
 Consumers (**Current** / **Planned**):
 

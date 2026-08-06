@@ -164,6 +164,11 @@ Ownership:
 
 It returns a unified `ContextBundle`. The Planner does not assemble these pieces itself.
 
+**ContextEngine is the sole factory for `ContextBundle`.** Production / Planner
+code obtains bundles only via `assemble_with` / `assemble`, `empty_bundle` (when
+review flows intentionally skip reassemble), or `reuse_bundle` (attach a prior
+engine-minted snapshot). The Planner never constructs `ContextBundle` directly.
+
 Recently assembled bundles are cached by project, workspace, conversation, active file, and request type (plus a request fingerprint). The cache is invalidated when files, project, workspace, conversation, or the search index change — performance only; correctness is unchanged. See `docs/context.md`.
 
 Context History retains recent bundles with timestamp, request, providers used, bundle size, and execution duration for debugging and future reasoning transparency.

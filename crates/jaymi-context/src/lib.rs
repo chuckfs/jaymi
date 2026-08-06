@@ -5,6 +5,10 @@
 //! [`ContextEngine::assemble_with`] with [`AssembleHints`]. The engine does
 //! not coordinate Memory, Project, Search, or session workspace state itself.
 //!
+//! **Sole factory:** [`ContextEngine`] is the only production creator of
+//! [`ContextBundle`] (`assemble_with` / `assemble` / `empty_bundle` /
+//! `reuse_bundle`). The Planner requests bundles; it never constructs them.
+//!
 //! Assemble is provider-driven: registered [`ContextProvider`]s contribute
 //! sections to an immutable [`ContextBundle`]. The engine scores relevance,
 //! orders by priority, and assembles within a configurable character/token
@@ -455,6 +459,30 @@ impl ContextEngine {
     /// uses only [`jaymi_core::IntentId::from_structured_request`].
     pub fn assemble(&self, request: &UserRequest) -> JaymiResult<ContextBundle> {
         self.assemble_with(request, None)
+    }
+
+    /// Mint an empty [`ContextBundle`] without running providers.
+    ///
+    /// **Sole-factory contract:** production code outside this crate must obtain
+    /// bundles only through [`Self::assemble_with`], [`Self::assemble`],
+    /// [`Self::empty_bundle`], or [`Self::reuse_bundle`]. The Planner may request
+    /// an empty bundle when review flows intentionally skip reassemble — it must
+    /// never construct [`ContextBundle`] itself.
+    ///
+    /// Behavior matches a freshly built empty builder snapshot (same as the
+    /// historical `ContextBundle::default()` placeholder).
+    pub fn empty_bundle(&self) -> ContextBundle {
+        let _ = self; // instance method so callers go through the engine seam
+        ContextBundleBuilder::new().build()
+    }
+
+    /// Return a previously assembled bundle unchanged (ownership-preserving clone).
+    ///
+    /// Use when the Planner must attach an existing snapshot without reassemble.
+    /// Does not invent sections — the bundle was already minted by this engine.
+    pub fn reuse_bundle(&self, bundle: &ContextBundle) -> ContextBundle {
+        let _ = self;
+        bundle.clone()
     }
 
     /// Assemble context after Planner Intent / Capability resolution.
@@ -1339,6 +1367,19 @@ mod tests {
         let health = engine.health_check();
         assert!(health.dependencies.contains(&"memory_engine".to_string()));
         assert!(!health.healthy);
+    }
+
+    #[test]
+    fn empty_bundle_and_reuse_are_engine_minted() {
+        let engine = ContextEngine::new();
+        let empty = engine.empty_bundle();
+        assert_eq!(empty.assemble_generation(), 0);
+        assert!(empty.sources().is_empty());
+        assert!(empty.user_request().content_preview.is_empty());
+        let reused = engine.reuse_bundle(&empty);
+        assert_eq!(reused, empty);
+        // Same snapshot shape as the historical Default placeholder.
+        assert_eq!(empty, ContextBundle::default());
     }
 
     #[test]
