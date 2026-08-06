@@ -11,6 +11,7 @@ pub mod coding_quick_actions;
 pub mod coding_workspace;
 pub mod command_dispatch;
 pub mod command_palette;
+pub mod context_session;
 pub mod diagnostics;
 pub mod editor_workspace;
 pub mod experience;
@@ -28,7 +29,7 @@ pub use coding_breadcrumb::{
     truncate_breadcrumbs, BreadcrumbAction, BreadcrumbKind, BreadcrumbSegment,
 };
 pub use coding_quick_actions::{
-    dispatch_quick_action, layout_quick_actions, QuickAction, QuickActionIntent, QuickActionLayout,
+    dispatch_quick_action, layout_quick_actions, QuickAction, QuickActionEffect, QuickActionLayout,
 };
 pub use coding_workspace::{
     build_coding_diagnostics_view, coding_panel_lines, coding_shell_summary,

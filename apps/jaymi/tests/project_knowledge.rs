@@ -209,12 +209,11 @@ fn project_knowledge_is_isolated_and_search_is_project_aware() {
         .expect("switch");
     assert_eq!(
         switched
-            .project_context
-            .as_ref()
+            .project()
             .map(|context| context.project.id.as_str()),
         Some(project_b.id.as_str())
     );
-    let beta_context = switched.project_context.expect("beta context");
+    let beta_context = switched.project().cloned().expect("beta context");
     assert!(beta_context
         .tasks
         .iter()

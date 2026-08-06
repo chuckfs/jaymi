@@ -17,15 +17,9 @@ use crate::registry::CapabilityRegistry;
 use crate::Capability;
 
 const NAME: &str = "capability_engine";
-const DEPENDENCIES: &[&str] = &[
-    "configuration",
-    "logging",
-    "database",
-    "policy_engine",
-    "permission_engine",
-    "memory_engine",
-    "context_engine",
-];
+// Catalog/registry only — policy, permission, memory, and context are
+// Planner-orchestrated at request time, not lifecycle peers of this engine.
+const DEPENDENCIES: &[&str] = &["configuration", "logging", "database"];
 
 /// Health snapshot for diagnostics.
 #[derive(Debug, Clone, PartialEq, Eq)]

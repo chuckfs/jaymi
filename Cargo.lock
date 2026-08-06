@@ -2454,9 +2454,6 @@ dependencies = [
 [[package]]
 name = "jaymi-projects"
 version = "0.1.0"
-dependencies = [
- "jaymi-core",
-]
 
 [[package]]
 name = "jaymi-providers"

@@ -1,8 +1,9 @@
 //! Context Engine for Jaymi.
 //!
 //! Assembles only the context required for the current request. The Planner
-//! calls [`ContextEngine::assemble`] and does not coordinate Memory, Project,
-//! Search, or session workspace state itself.
+//! resolves Intent and Capability first, then calls
+//! [`ContextEngine::assemble_with`] with [`AssembleHints`]. The engine does
+//! not coordinate Memory, Project, Search, or session workspace state itself.
 //!
 //! Assemble is provider-driven: registered [`ContextProvider`]s contribute
 //! sections to an immutable [`ContextBundle`]. The engine scores relevance,
@@ -56,9 +57,7 @@ pub use cache::{
     fingerprint_request, CacheIdentity, ContextBundleCache, ContextCacheEntry, ContextCacheKey,
     ContextCacheStats, DEFAULT_CACHE_CAPACITY,
 };
-pub use history::{
-    measure_bundle_size, ContextHistory, ContextHistoryEntry, DEFAULT_HISTORY_CAPACITY,
-};
+pub use history::{ContextHistory, ContextHistoryEntry, DEFAULT_HISTORY_CAPACITY};
 pub use llm::{
     LlmActiveCapabilities, LlmActiveProject, LlmActiveWorkspace, LlmBudgetView, LlmContext,
     LlmContextSection, LlmConversation, LlmCurrentFile, LlmCurrentSelection, LlmDiagnostic,
@@ -68,8 +67,8 @@ pub use llm::{
     LlmSectionId, LlmUserRequest, LLM_CONTEXT_SCHEMA_VERSION,
 };
 pub use policy::{
-    apply_contribution_constraints, default_context_policies, ContextPolicy,
-    ContextPolicyCandidate, ContextPolicyDecision, ContextPolicyDecisionRecord,
+    apply_contribution_constraints, apply_policy_to_contribution, default_context_policies,
+    ContextPolicy, ContextPolicyCandidate, ContextPolicyDecision, ContextPolicyDecisionRecord,
     ContextPolicyEngine, ContextPolicyInputs, ContributionConstraints, JaymiDefaultContextPolicy,
     PolicyDecisionSummary, PolicyReport, Sensitivity, DEFAULT_CONTEXT_POLICY_ID,
 };
@@ -79,13 +78,14 @@ pub use providers::{
     PermissionProvider, ProjectProvider, ProviderDeps, SearchProvider, WorkspaceProvider,
 };
 pub use inspector::{
-    inspect_bundle_sections, ContextInspectorReport, InspectedBundleSection, InspectedProvider,
-    ProviderInspectOutcome,
+    inspect_bundle_sections, measure_bundle_size, ContextInspectorReport, InspectedBundleSection,
+    InspectedProvider, ProviderInspectOutcome,
 };
 pub use relevance::{
-    IntentTag, RelevanceScore, RelevanceSignals, RequestKind, DEFAULT_RELEVANCE_THRESHOLD,
-    RELEVANCE_MAX,
+    AssembleHints, IntentTag, RelevanceScore, RelevanceSignals, RequestKind,
+    DEFAULT_RELEVANCE_THRESHOLD, RELEVANCE_MAX,
 };
+pub use jaymi_core::IntentId;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -97,12 +97,15 @@ use jaymi_project_engine::ProjectEngineApi;
 use jaymi_search::SearchEngineApi;
 
 const NAME: &str = "context_engine";
+/// Lifecycle peers required before `initialize`.
+///
+/// Project Engine and Search Engine are **not** listed here: Application boots
+/// Context after Memory, then binds Project + Search later via
+/// [`ContextEngine::bind_sources`]. Health reports whether sources are bound.
 const DEPENDENCIES: &[&str] = &[
     "configuration",
     "logging",
     "database",
-    "policy_engine",
-    "permission_engine",
     "memory_engine",
 ];
 
@@ -444,7 +447,26 @@ impl ContextEngine {
     /// Recently assembled bundles may be returned from cache when the key
     /// matches; hits still bump `assemble_count` and restamp generation /
     /// request metadata so Planner integrity is unchanged.
+    ///
+    /// Assemble context for a request (test / admin helper).
+    ///
+    /// **Request path:** always use [`Self::assemble_with`] via the Planner so
+    /// Intent and Capability selection stay Planner-owned. This hint-less entry
+    /// uses only [`jaymi_core::IntentId::from_structured_request`].
     pub fn assemble(&self, request: &UserRequest) -> JaymiResult<ContextBundle> {
+        self.assemble_with(request, None)
+    }
+
+    /// Assemble context after Planner Intent / Capability resolution.
+    ///
+    /// `hints` carry Planner-selected [`jaymi_core::IntentId`] and capability ids.
+    /// The engine only assembles — it does not determine Intent, select Capabilities,
+    /// execute tools, or invent session state.
+    pub fn assemble_with(
+        &self,
+        request: &UserRequest,
+        hints: Option<&AssembleHints>,
+    ) -> JaymiResult<ContextBundle> {
         if !self.initialized {
             return Err(JaymiError::new("context engine is not initialized"));
         }
@@ -459,7 +481,7 @@ impl ContextEngine {
 
         let started = Instant::now();
         let session = self.session_inputs();
-        let signals = RelevanceSignals::derive(request, &session);
+        let signals = RelevanceSignals::derive_with(request, &session, hints);
         let threshold = self.relevance_threshold();
         let budget_config = self.budget_config();
         let identity = self
@@ -473,6 +495,7 @@ impl ContextEngine {
             .lock()
             .map(|guard| guard.fingerprint())
             .unwrap_or(0);
+        let hints_fingerprint = hints.map(AssembleHints::fingerprint).unwrap_or(0);
         let cache_key = {
             let epoch = self
                 .cache
@@ -488,6 +511,7 @@ impl ContextEngine {
                 threshold,
                 &budget_config,
                 policy_fingerprint,
+                hints_fingerprint,
             )
         };
 
@@ -507,13 +531,8 @@ impl ContextEngine {
                 inspection.assemble_generation = assemble_generation;
                 inspection.cache_hit = true;
                 inspection.request_preview = bundle.user_request().content_preview.clone();
-                inspection.notes = bundle.planner_metadata().notes.clone();
-                inspection.sources = bundle.sources().to_vec();
-                inspection.budget = bundle.budget().cloned();
-                inspection.policy = bundle.policy().cloned();
-                inspection.sections =
-                    inspect_bundle_sections(&bundle, budget_config.chars_per_token);
                 let duration_ms = started.elapsed().as_millis() as u64;
+                inspection.finalize(duration_ms, &bundle, budget_config.chars_per_token);
                 self.record_history(
                     &bundle,
                     &inspection,
@@ -544,10 +563,13 @@ impl ContextEngine {
             relevance: &signals,
         };
 
-        let project_open = identity
-            .as_ref()
-            .and_then(|id| id.projects.open_project_id())
-            .is_some();
+        // Prefer host-supplied session flag; fall back to live Project Engine identity
+        // so Continue/Open within the same handle (session prepared before open) still works.
+        let project_open = session.project_open
+            || identity
+                .as_ref()
+                .and_then(|id| id.projects.open_project_id())
+                .is_some();
         let policy_inputs = ContextPolicyInputs {
             request,
             session: &session,
@@ -562,9 +584,11 @@ impl ContextEngine {
             Arc<dyn ContextProvider>,
             RelevanceScore,
             ContextPolicyDecision,
+            usize,
         )> = Vec::new();
         let mut skipped_relevance = 0usize;
         let mut skipped_policy = 0usize;
+        let mut skipped_approval = 0usize;
         let mut inspect_providers: Vec<InspectedProvider> = Vec::new();
         let mut policy_summaries: Vec<PolicyDecisionSummary> = Vec::new();
         let mut size_before_characters = 0usize;
@@ -576,14 +600,15 @@ impl ContextEngine {
             .lock()
             .map_err(|_| JaymiError::new("context policy engine lock poisoned"))?;
 
-        for provider in &providers {
+        for (evaluation_order, provider) in providers.iter().enumerate() {
             let score = provider.relevance(&provider_request);
             let estimate = provider.estimate_size(&provider_request);
+            let sensitivity = provider.sensitivity();
             let candidate = ContextPolicyCandidate {
                 provider_id: provider.id(),
                 provider_priority: provider.priority(),
                 relevance: score,
-                sensitivity: provider.sensitivity(),
+                sensitivity,
                 estimate,
                 inputs: &policy_inputs,
             };
@@ -595,13 +620,19 @@ impl ContextEngine {
             if !record.decision.participate {
                 skipped_policy += 1;
                 policy_summaries.push(summary);
-                inspect_providers.push(InspectedProvider {
-                    id: provider.id().to_string(),
-                    priority: provider.priority().value(),
-                    relevance: score.value(),
-                    estimate_characters: estimate.units.characters,
-                    estimate_tokens: estimate.units.estimated_tokens,
-                    outcome: ProviderInspectOutcome::SkippedPolicy {
+                inspect_providers.push(InspectedProvider::new(
+                    evaluation_order,
+                    None,
+                    provider.id(),
+                    provider.priority().value(),
+                    score.value(),
+                    sensitivity.as_str(),
+                    record.decision.requires_user_approval,
+                    "n/a",
+                    record.decision.can_truncate,
+                    estimate.units.characters,
+                    estimate.units.estimated_tokens,
+                    ProviderInspectOutcome::SkippedPolicy {
                         policy: record
                             .applied_policies
                             .first()
@@ -610,7 +641,7 @@ impl ContextEngine {
                         reason: record.decision.reason.clone(),
                         sensitivity: record.sensitivity.as_str().to_string(),
                     },
-                });
+                ));
                 jaymi_logging::info(
                     "context",
                     format!(
@@ -632,14 +663,24 @@ impl ContextEngine {
                     threshold
                 );
                 policy_summaries.push(summary);
-                inspect_providers.push(InspectedProvider {
-                    id: provider.id().to_string(),
-                    priority: record.decision.priority.value(),
-                    relevance: score.value(),
-                    estimate_characters: estimate.units.characters,
-                    estimate_tokens: estimate.units.estimated_tokens,
-                    outcome: ProviderInspectOutcome::SkippedRelevance { threshold },
-                });
+                inspect_providers.push(InspectedProvider::new(
+                    evaluation_order,
+                    None,
+                    provider.id(),
+                    record.decision.priority.value(),
+                    score.value(),
+                    sensitivity.as_str(),
+                    record.decision.requires_user_approval,
+                    if record.decision.requires_user_approval {
+                        "pending"
+                    } else {
+                        "not_required"
+                    },
+                    record.decision.can_truncate,
+                    estimate.units.characters,
+                    estimate.units.estimated_tokens,
+                    ProviderInspectOutcome::SkippedRelevance { threshold },
+                ));
                 jaymi_logging::info(
                     "context",
                     format!(
@@ -654,14 +695,66 @@ impl ContextEngine {
                 continue;
             }
 
+            if record.decision.requires_user_approval
+                && !session
+                    .approved_context_providers
+                    .iter()
+                    .any(|id| id == provider.id())
+            {
+                skipped_approval += 1;
+                summary.included = false;
+                summary.approval_status = "pending".into();
+                summary.reason = format!(
+                    "{} (awaiting user approval for provider '{}')",
+                    summary.reason,
+                    provider.id()
+                );
+                policy_summaries.push(summary);
+                inspect_providers.push(InspectedProvider::new(
+                    evaluation_order,
+                    None,
+                    provider.id(),
+                    record.decision.priority.value(),
+                    score.value(),
+                    sensitivity.as_str(),
+                    true,
+                    "pending",
+                    record.decision.can_truncate,
+                    estimate.units.characters,
+                    estimate.units.estimated_tokens,
+                    ProviderInspectOutcome::SkippedApproval {
+                        reason: record.decision.reason.clone(),
+                        sensitivity: record.sensitivity.as_str().to_string(),
+                    },
+                ));
+                jaymi_logging::info(
+                    "context",
+                    format!(
+                        "provider approval-required id={} reason={}",
+                        provider.id(),
+                        record.decision.reason
+                    ),
+                );
+                continue;
+            }
+
+            if record.decision.requires_user_approval {
+                summary.approval_status = "approved".into();
+            }
+
             size_after_characters =
                 size_after_characters.saturating_add(estimate.units.characters);
             policy_summaries.push(summary);
-            ranked.push((Arc::clone(provider), score, record.decision));
+            ranked.push((
+                Arc::clone(provider),
+                score,
+                record.decision,
+                evaluation_order,
+            ));
         }
         drop(policy_engine);
 
-        ranked.sort_by(|(left, left_score, left_decision), (right, right_score, right_decision)| {
+        ranked.sort_by(|(left, left_score, left_decision, _), (right, right_score, right_decision, _)| {
             right_decision
                 .priority
                 .cmp(&left_decision.priority)
@@ -684,56 +777,175 @@ impl ContextEngine {
             summaries: Vec::new(),
         };
 
-        for (provider, score, decision) in &ranked {
+        for (allocation_order, (provider, score, decision, evaluation_order)) in
+            ranked.iter().enumerate()
+        {
             let remaining = budget_config.remaining_characters(used_characters);
             let estimate = provider.estimate_size(&provider_request);
-            let effective_can_truncate = estimate.can_truncate && decision.can_truncate;
+            let sensitivity = provider.sensitivity().as_str();
+            let approval_status = if decision.requires_user_approval {
+                "approved"
+            } else {
+                "not_required"
+            };
+            let provider_allows_fit = estimate.can_truncate || estimate.can_summarize;
             if remaining == 0 {
                 budget_report.skipped_budget.push(provider.id().to_string());
-                inspect_providers.push(InspectedProvider {
-                    id: provider.id().to_string(),
-                    priority: decision.priority.value(),
-                    relevance: score.value(),
-                    estimate_characters: estimate.units.characters,
-                    estimate_tokens: estimate.units.estimated_tokens,
-                    outcome: ProviderInspectOutcome::SkippedBudget {
+                if let Some(summary) = policy_summaries
+                    .iter_mut()
+                    .find(|item| item.provider_id == provider.id())
+                {
+                    summary.truncation_reason = Some("budget_exhausted".into());
+                }
+                inspect_providers.push(InspectedProvider::new(
+                    *evaluation_order,
+                    Some(allocation_order),
+                    provider.id(),
+                    decision.priority.value(),
+                    score.value(),
+                    sensitivity,
+                    decision.requires_user_approval,
+                    approval_status,
+                    decision.can_truncate,
+                    estimate.units.characters,
+                    estimate.units.estimated_tokens,
+                    ProviderInspectOutcome::SkippedBudget {
                         remaining_characters: 0,
                         estimate_characters: estimate.units.characters,
                         reason: "budget_exhausted".into(),
                     },
-                });
+                ));
                 continue;
             }
 
-            if estimate.units.characters > remaining
-                && !effective_can_truncate
-                && !estimate.can_summarize
-            {
+            if estimate.units.characters > remaining && !decision.can_truncate {
                 budget_report.skipped_budget.push(provider.id().to_string());
-                inspect_providers.push(InspectedProvider {
-                    id: provider.id().to_string(),
-                    priority: decision.priority.value(),
-                    relevance: score.value(),
-                    estimate_characters: estimate.units.characters,
-                    estimate_tokens: estimate.units.estimated_tokens,
-                    outcome: ProviderInspectOutcome::SkippedBudget {
+                if let Some(summary) = policy_summaries
+                    .iter_mut()
+                    .find(|item| item.provider_id == provider.id())
+                {
+                    summary.included = false;
+                    summary.truncation_reason = Some("policy_forbids_truncation".into());
+                    summary.reason = format!(
+                        "{} (omitted: policy forbids truncation; estimate={} remaining={})",
+                        summary.reason, estimate.units.characters, remaining
+                    );
+                }
+                inspect_providers.push(InspectedProvider::new(
+                    *evaluation_order,
+                    Some(allocation_order),
+                    provider.id(),
+                    decision.priority.value(),
+                    score.value(),
+                    sensitivity,
+                    decision.requires_user_approval,
+                    approval_status,
+                    decision.can_truncate,
+                    estimate.units.characters,
+                    estimate.units.estimated_tokens,
+                    ProviderInspectOutcome::SkippedBudget {
+                        remaining_characters: remaining,
+                        estimate_characters: estimate.units.characters,
+                        reason: "policy_forbids_truncation".into(),
+                    },
+                ));
+                continue;
+            }
+
+            if estimate.units.characters > remaining && !provider_allows_fit {
+                budget_report.skipped_budget.push(provider.id().to_string());
+                if let Some(summary) = policy_summaries
+                    .iter_mut()
+                    .find(|item| item.provider_id == provider.id())
+                {
+                    summary.truncation_reason = Some("estimate_exceeds_budget".into());
+                }
+                inspect_providers.push(InspectedProvider::new(
+                    *evaluation_order,
+                    Some(allocation_order),
+                    provider.id(),
+                    decision.priority.value(),
+                    score.value(),
+                    sensitivity,
+                    decision.requires_user_approval,
+                    approval_status,
+                    decision.can_truncate,
+                    estimate.units.characters,
+                    estimate.units.estimated_tokens,
+                    ProviderInspectOutcome::SkippedBudget {
                         remaining_characters: remaining,
                         estimate_characters: estimate.units.characters,
                         reason: "estimate_exceeds_budget".into(),
                     },
-                });
+                ));
                 continue;
             }
 
             match provider.contribute(&provider_request)? {
                 Some(contribution) => {
-                    let contribution =
-                        apply_contribution_constraints(contribution, &decision.constraints);
-                    let (fitted, outcome) = fit_contribution(
-                        contribution,
-                        remaining,
-                        budget_config.chars_per_token,
-                    );
+                    let (contribution, enforced) =
+                        apply_policy_to_contribution(contribution, decision);
+                    if let Some(summary) = policy_summaries
+                        .iter_mut()
+                        .find(|item| item.provider_id == provider.id())
+                    {
+                        summary.constraints = enforced;
+                    }
+
+                    let measured =
+                        measure_contribution(&contribution, budget_config.chars_per_token);
+                    let (fitted, outcome) = if measured.characters > remaining {
+                        if !decision.can_truncate {
+                            budget_report.skipped_budget.push(provider.id().to_string());
+                            if let Some(summary) = policy_summaries
+                                .iter_mut()
+                                .find(|item| item.provider_id == provider.id())
+                            {
+                                summary.included = false;
+                                summary.truncation_reason =
+                                    Some("policy_forbids_truncation".into());
+                                summary.reason = format!(
+                                    "{} (omitted: policy forbids truncation after constraints; size={} remaining={})",
+                                    summary.reason, measured.characters, remaining
+                                );
+                            }
+                            inspect_providers.push(InspectedProvider::new(
+                                *evaluation_order,
+                                Some(allocation_order),
+                                provider.id(),
+                                decision.priority.value(),
+                                score.value(),
+                                sensitivity,
+                                decision.requires_user_approval,
+                                approval_status,
+                                decision.can_truncate,
+                                estimate.units.characters,
+                                estimate.units.estimated_tokens,
+                                ProviderInspectOutcome::SkippedBudget {
+                                    remaining_characters: remaining,
+                                    estimate_characters: measured.characters,
+                                    reason: "policy_forbids_truncation".into(),
+                                },
+                            ));
+                            continue;
+                        }
+                        fit_contribution(
+                            contribution,
+                            remaining,
+                            budget_config.chars_per_token,
+                        )
+                    } else {
+                        (
+                            contribution,
+                            crate::budget::FitOutcome {
+                                truncated: false,
+                                summarized: false,
+                                summary: None,
+                                final_units: measured,
+                                drop: false,
+                            },
+                        )
+                    };
                     if outcome.drop || fitted.is_empty() {
                         budget_report.skipped_budget.push(provider.id().to_string());
                         if let Some(summary) = &outcome.summary {
@@ -741,16 +953,22 @@ impl ContextEngine {
                                 .summaries
                                 .push(format!("{}: {summary}", provider.id()));
                         }
-                        inspect_providers.push(InspectedProvider {
-                            id: provider.id().to_string(),
-                            priority: decision.priority.value(),
-                            relevance: score.value(),
-                            estimate_characters: estimate.units.characters,
-                            estimate_tokens: estimate.units.estimated_tokens,
-                            outcome: ProviderInspectOutcome::Dropped {
+                        inspect_providers.push(InspectedProvider::new(
+                            *evaluation_order,
+                            Some(allocation_order),
+                            provider.id(),
+                            decision.priority.value(),
+                            score.value(),
+                            sensitivity,
+                            decision.requires_user_approval,
+                            approval_status,
+                            decision.can_truncate,
+                            estimate.units.characters,
+                            estimate.units.estimated_tokens,
+                            ProviderInspectOutcome::Dropped {
                                 summary: outcome.summary.clone(),
                             },
-                        });
+                        ));
                         continue;
                     }
 
@@ -763,6 +981,11 @@ impl ContextEngine {
                             .find(|item| item.provider_id == provider.id())
                         {
                             summary.truncated = true;
+                            summary.truncation_reason = Some(if outcome.summarized {
+                                "budget_summarize".into()
+                            } else {
+                                "budget_fit".into()
+                            });
                         }
                     }
                     if let Some(summary) = &outcome.summary {
@@ -774,13 +997,19 @@ impl ContextEngine {
                     used_characters =
                         used_characters.saturating_add(outcome.final_units.characters);
                     contributed += 1;
-                    inspect_providers.push(InspectedProvider {
-                        id: provider.id().to_string(),
-                        priority: decision.priority.value(),
-                        relevance: score.value(),
-                        estimate_characters: estimate.units.characters,
-                        estimate_tokens: estimate.units.estimated_tokens,
-                        outcome: ProviderInspectOutcome::Contributed {
+                    inspect_providers.push(InspectedProvider::new(
+                        *evaluation_order,
+                        Some(allocation_order),
+                        provider.id(),
+                        decision.priority.value(),
+                        score.value(),
+                        sensitivity,
+                        decision.requires_user_approval,
+                        approval_status,
+                        decision.can_truncate,
+                        estimate.units.characters,
+                        estimate.units.estimated_tokens,
+                        ProviderInspectOutcome::Contributed {
                             characters: outcome.final_units.characters,
                             estimated_tokens: outcome.final_units.estimated_tokens,
                             truncated: outcome.truncated,
@@ -788,7 +1017,7 @@ impl ContextEngine {
                             summary: outcome.summary.clone(),
                             sources: fitted.sources.clone(),
                         },
-                    });
+                    ));
                     for source in &fitted.sources {
                         if !included.contains(source) {
                             included.push(*source);
@@ -798,14 +1027,20 @@ impl ContextEngine {
                 }
                 None => {
                     declined += 1;
-                    inspect_providers.push(InspectedProvider {
-                        id: provider.id().to_string(),
-                        priority: decision.priority.value(),
-                        relevance: score.value(),
-                        estimate_characters: estimate.units.characters,
-                        estimate_tokens: estimate.units.estimated_tokens,
-                        outcome: ProviderInspectOutcome::Declined,
-                    });
+                    inspect_providers.push(InspectedProvider::new(
+                        *evaluation_order,
+                        Some(allocation_order),
+                        provider.id(),
+                        decision.priority.value(),
+                        score.value(),
+                        sensitivity,
+                        decision.requires_user_approval,
+                        approval_status,
+                        decision.can_truncate,
+                        estimate.units.characters,
+                        estimate.units.estimated_tokens,
+                        ProviderInspectOutcome::Declined,
+                    ));
                 }
             }
         }
@@ -830,7 +1065,7 @@ impl ContextEngine {
         let assemble_generation = self.assemble_count.fetch_add(1, Ordering::Relaxed) + 1;
         let mut notes = vec![
             format!(
-                "providers contributed={contributed} declined={declined} skipped_relevance={skipped_relevance} skipped_policy={skipped_policy} skipped_budget={} truncated={} threshold={threshold} kind={} budget_chars={}/{}",
+                "providers contributed={contributed} declined={declined} skipped_relevance={skipped_relevance} skipped_policy={skipped_policy} skipped_approval={skipped_approval} skipped_budget={} truncated={} threshold={threshold} kind={} budget_chars={}/{}",
                 budget_report.skipped_budget.len(),
                 budget_report.truncated_providers.len(),
                 signals.request_kind.as_str(),
@@ -838,15 +1073,23 @@ impl ContextEngine {
                 budget_config.provider_character_budget()
             ),
             format!(
-                "policy active=[{}] included=[{}] excluded=[{}] size_before={} size_after={} assembled={}",
+                "policy active=[{}] included=[{}] excluded=[{}] pending_approval=[{}] size_before={} size_after={} assembled={}",
                 policy_report.active_policies.join(","),
                 policy_report.included_providers().join(","),
                 policy_report.excluded_providers().join(","),
+                policy_report.pending_approval_providers().join(","),
                 policy_report.size_before_characters,
                 policy_report.size_after_characters,
                 policy_report.size_assembled_characters
             ),
         ];
+        if let Some(intent) = signals.planner_intent.as_deref() {
+            notes.push(format!(
+                "pipeline intent={intent} intent_id={} capabilities=[{}]",
+                signals.intent.as_str(),
+                signals.active_capabilities.join(",")
+            ));
+        }
         notes.extend(budget_report.summaries.iter().cloned());
         builder = builder.planner_metadata(PlannerMetadataSection {
             assemble_generation,
@@ -858,21 +1101,26 @@ impl ContextEngine {
 
         let bundle = builder.build();
 
-        let inspection = ContextInspectorReport {
+        let mut inspection = ContextInspectorReport {
             assemble_generation: bundle.assemble_generation(),
             request_preview: bundle.user_request().content_preview.clone(),
             request_kind: signals.request_kind.as_str().to_string(),
             workspace_kind: bundle.workspace_kind().map(str::to_string),
             relevance_threshold: threshold,
             providers: inspect_providers,
-            sections: inspect_bundle_sections(&bundle, budget_config.chars_per_token),
-            sources: bundle.sources().to_vec(),
-            budget: bundle.budget().cloned(),
-            notes: bundle.planner_metadata().notes.clone(),
+            contributor_order: Vec::new(),
+            sections: Vec::new(),
+            sources: Vec::new(),
+            budget: None,
+            notes: Vec::new(),
             cache_hit: false,
+            duration_ms: 0,
+            bundle_size_characters: 0,
+            bundle_size_estimated_tokens: 0,
             policy: Some(policy_report),
         };
         let duration_ms = started.elapsed().as_millis() as u64;
+        inspection.finalize(duration_ms, &bundle, budget_config.chars_per_token);
         self.record_history(
             &bundle,
             &inspection,
@@ -977,6 +1225,14 @@ impl jaymi_core::Lifecycle for ContextEngine {
             (
                 "history_len".to_string(),
                 self.history_len().to_string(),
+            ),
+            (
+                "bound_sources".to_string(),
+                if bound {
+                    "memory+project+search (via bind_sources after lifecycle init)".to_string()
+                } else {
+                    "none — call bind_sources after Project/Search boot".to_string()
+                },
             ),
             (
                 "note".to_string(),
@@ -1086,7 +1342,7 @@ mod tests {
     }
 
     #[test]
-    fn assemble_increments_generation_and_includes_memory_source() {
+    fn assemble_increments_generation_and_includes_user_request() {
         let engine = bound_engine();
         assert!(engine.providers_bound());
         assert!(engine.provider_ids().contains(&"memory"));
@@ -1096,6 +1352,8 @@ mod tests {
         let second = engine.assemble(&UserRequest::new("hello again")).unwrap();
         assert_eq!(first.assemble_generation(), 1);
         assert_eq!(second.assemble_generation(), 2);
+        // MemoryProvider contributes an engine snapshot when it participates
+        // (bodies may be empty; promotions still surface).
         assert!(first.sources().contains(&ContextSource::RetrievedMemories));
         assert!(first.sources().contains(&ContextSource::UserRequest));
         assert_eq!(engine.assemble_count(), 2);
@@ -1307,10 +1565,11 @@ mod tests {
                 }],
             },
             permissions: PermissionsSection::default(),
-            active_capabilities: ActiveCapabilitiesSection {
-                capability_ids: vec!["code".into()],
-            },
+            active_capabilities: ActiveCapabilitiesSection::default(),
             search_hits: Vec::new(),
+            approved_context_providers: vec!["editor".into()],
+            project_open: true,
+            project_indexed_documents: None,
         });
 
         let bundle = engine
@@ -1327,7 +1586,8 @@ mod tests {
         assert_eq!(bundle.diagnostics().diagnostics.len(), 1);
         assert_eq!(
             bundle.active_capabilities().capability_ids,
-            vec!["code".to_string()]
+            vec!["read_documents".to_string()],
+            "hint-less assemble uses Intent defaults, not session catalog"
         );
         assert!(bundle.user_request().has_file);
         assert!(bundle.sources().contains(&ContextSource::EditorState));
@@ -1684,14 +1944,41 @@ mod tests {
         assert_eq!(report.assemble_generation, bundle.assemble_generation());
         assert!(report.request_preview.contains("hello inspector"));
         assert!(!report.providers.is_empty());
-        assert!(report.contributed().iter().any(|p| p.id == "memory"));
+        assert!(
+            report.contributed().iter().any(|p| p.id == "conversation")
+                || report.contributed().iter().any(|p| p.id == "permission")
+                || report.contributed().iter().any(|p| p.id == "workspace"),
+            "at least one core provider should contribute"
+        );
         assert!(
             report.omitted().iter().any(|p| p.id == "diagnostics"),
             "diagnostics should be relevance-omitted for plain chat"
         );
         assert!(report.budget.is_some());
         assert!(!report.sections.is_empty());
-        assert!(report.render().contains("Context Inspector"));
+        assert_eq!(report.cache_status(), "miss");
+        assert!(report.bundle_size_characters > 0);
+        assert!(!report.contributor_order.is_empty() || report.contributed().is_empty());
+        assert!(
+            report
+                .providers
+                .windows(2)
+                .all(|pair| pair[0].evaluation_order <= pair[1].evaluation_order),
+            "providers must be sorted by evaluation order"
+        );
+        assert!(report.providers.iter().all(|provider| !provider.sensitivity.is_empty()));
+        assert!(report.providers.iter().all(|provider| {
+            matches!(
+                provider.approval_status.as_str(),
+                "not_required" | "approved" | "pending" | "n/a"
+            )
+        }));
+        let rendered = report.render();
+        assert!(rendered.contains("Context Inspector"));
+        assert!(rendered.contains("duration_ms="));
+        assert!(rendered.contains("final_bundle="));
+        assert!(rendered.contains("provider_order (contributors):"));
+        assert!(rendered.contains("cache=miss"));
         // Bundle identity unchanged by inspector recording.
         assert_eq!(bundle.sources(), report.sources.as_slice());
     }
@@ -1714,6 +2001,9 @@ mod tests {
             .any(|note| note.contains("cache_hit")));
         let inspection = engine.inspect_last().expect("inspection");
         assert!(inspection.cache_hit);
+        assert_eq!(inspection.cache_status(), "hit");
+        assert!(inspection.render().contains("cache=hit"));
+        assert!(inspection.bundle_size_characters > 0);
     }
 
     #[test]
@@ -1767,8 +2057,8 @@ mod tests {
         assert_eq!(entry.assemble_generation, bundle.assemble_generation());
         assert!(entry.timestamp_unix_ms > 0);
         assert!(entry.request.contains("history please"));
-        assert!(!entry.providers_used.is_empty());
-        assert!(entry.providers_used.iter().any(|id| id == "memory"));
+        // Bare assemble may have zero provider contributions when Memory/Conversation
+        // decline and no session workspace is set — UserRequest is engine-stamped.
         assert!(entry.bundle_size_characters > 0);
         // Duration is wall-clock; allow zero on very fast machines.
         assert_eq!(entry.bundle.assemble_generation(), bundle.assemble_generation());
@@ -1895,5 +2185,181 @@ mod tests {
             .decisions
             .iter()
             .any(|d| d.provider_id == "conversation" && !d.included));
+    }
+
+    #[test]
+    fn selection_text_is_omitted_until_editor_approved() {
+        let engine = bound_engine();
+        engine.set_session_inputs(ContextSessionInputs {
+            current_file: CurrentFileSection {
+                path: Some("/proj/main.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            current_selection: CurrentSelectionSection {
+                path: Some("/proj/main.rs".into()),
+                start_line: 1,
+                start_column: 0,
+                end_line: 1,
+                end_column: 8,
+                text: Some("fn hello".into()),
+            },
+            ..ContextSessionInputs::default()
+        });
+        let bundle = engine
+            .assemble(&UserRequest::read_file("/proj/main.rs"))
+            .unwrap();
+        assert!(
+            bundle.current_selection().text.is_none(),
+            "selection text must wait for approval"
+        );
+        let policy = bundle.policy().unwrap();
+        let editor = policy
+            .decisions
+            .iter()
+            .find(|d| d.provider_id == "editor")
+            .expect("editor decision");
+        assert!(!editor.included);
+        assert_eq!(editor.approval_status, "pending");
+        let inspection = engine.inspect_last().unwrap();
+        assert!(inspection.providers.iter().any(|p| {
+            p.id == "editor" && matches!(p.outcome, ProviderInspectOutcome::SkippedApproval { .. })
+        }));
+    }
+
+    #[test]
+    fn policy_forbids_truncation_skips_oversized_provider() {
+        struct FixedBlob;
+        impl ContextProvider for FixedBlob {
+            fn id(&self) -> &'static str {
+                "fixed_blob"
+            }
+            fn priority(&self) -> ProviderPriority {
+                ProviderPriority::new(1)
+            }
+            fn relevance(&self, _: &ProviderRequest<'_>) -> RelevanceScore {
+                RelevanceScore::HIGH
+            }
+            fn estimate_size(&self, _: &ProviderRequest<'_>) -> BudgetEstimate {
+                BudgetEstimate {
+                    units: BudgetUnits {
+                        characters: 50_000,
+                        estimated_tokens: 12_500,
+                    },
+                    can_truncate: true,
+                    can_summarize: true,
+                }
+            }
+            fn contribute(
+                &self,
+                _: &ProviderRequest<'_>,
+            ) -> JaymiResult<Option<ContextContribution>> {
+                Ok(Some(ContextContribution {
+                    sources: vec![ContextSource::UserRequest],
+                    diagnostics: Some(DiagnosticsSection {
+                        diagnostics: vec![BundleDiagnostic {
+                            path: None,
+                            severity: "info".into(),
+                            message: "x".repeat(50_000),
+                            line: None,
+                            column: None,
+                            source: None,
+                        }],
+                    }),
+                    ..ContextContribution::default()
+                }))
+            }
+        }
+
+        struct ForbidTruncate;
+        impl ContextPolicy for ForbidTruncate {
+            fn id(&self) -> &'static str {
+                "forbid_truncate"
+            }
+            fn evaluate(
+                &self,
+                candidate: &ContextPolicyCandidate<'_>,
+            ) -> ContextPolicyDecision {
+                if candidate.provider_id == "fixed_blob" {
+                    let mut decision =
+                        ContextPolicyDecision::allow("allow but no truncate", ProviderPriority::new(1));
+                    decision.can_truncate = false;
+                    decision.bypass_relevance = true;
+                    decision
+                } else {
+                    ContextPolicyDecision::allow("ok", candidate.provider_priority)
+                }
+            }
+        }
+
+        let engine = bound_engine();
+        engine.set_budget_config(ContextBudgetConfig {
+            max_characters: 2_000,
+            max_tokens: Some(500),
+            chars_per_token: DEFAULT_CHARS_PER_TOKEN,
+            reserved_characters: ENGINE_RESERVED_CHARACTERS,
+        });
+        let mut providers = engine
+            .providers
+            .lock()
+            .expect("providers")
+            .clone();
+        providers.push(Arc::new(FixedBlob));
+        engine.bind_providers(providers).unwrap();
+        engine.set_context_policies(vec![Arc::new(ForbidTruncate)]);
+
+        let bundle = engine.assemble(&UserRequest::new("hello truncate policy")).unwrap();
+        let policy = bundle.policy().unwrap();
+        let blob = policy
+            .decisions
+            .iter()
+            .find(|d| d.provider_id == "fixed_blob")
+            .expect("blob decision");
+        assert!(
+            blob.truncation_reason
+                .as_deref()
+                == Some("policy_forbids_truncation")
+                || !blob.included,
+            "expected policy_forbids_truncation, got {:?}",
+            blob
+        );
+        let inspection = engine.inspect_last().unwrap();
+        assert!(inspection.providers.iter().any(|p| {
+            p.id == "fixed_blob"
+                && matches!(
+                    &p.outcome,
+                    ProviderInspectOutcome::SkippedBudget {
+                        reason,
+                        ..
+                    } if reason == "policy_forbids_truncation"
+                )
+        }));
+    }
+
+    #[test]
+    fn permission_summary_constraint_is_enforced_in_bundle() {
+        let engine = bound_engine();
+        engine.set_session_inputs(ContextSessionInputs {
+            permissions: PermissionsSection {
+                entries: vec![BundlePermissionEntry {
+                    category: "fs".into(),
+                    action: "read".into(),
+                    decision: "allowed".into(),
+                    resource: Some("/tmp/secret".into()),
+                    explanation: Some("because".into()),
+                }],
+            },
+            ..ContextSessionInputs::default()
+        });
+        let bundle = engine.assemble(&UserRequest::new("hello")).unwrap();
+        let entry = &bundle.permissions().entries[0];
+        assert!(entry.resource.is_none());
+        assert!(entry.explanation.is_none());
+        let policy = bundle.policy().unwrap();
+        assert!(policy.decisions.iter().any(|d| {
+            d.provider_id == "permission"
+                && d.included
+                && d.constraints.iter().any(|c| c == "permission_summary_only")
+        }));
     }
 }

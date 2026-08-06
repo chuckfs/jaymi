@@ -42,7 +42,9 @@ fn diagnostics_surface_context_inspector_after_handle() {
         .expect("inspection after handle");
     assert!(report.request_preview.contains("hello context inspector"));
     assert!(!report.providers.is_empty());
-    assert!(report.contributed().iter().any(|p| p.id == "memory"));
+    assert!(report.contributed().iter().any(|p| {
+        p.id == "conversation" || p.id == "permission" || p.id == "workspace"
+    }));
     assert!(report
         .omitted()
         .iter()
@@ -52,6 +54,24 @@ fn diagnostics_surface_context_inspector_after_handle() {
                 | ProviderInspectOutcome::SkippedPolicy { .. }
         )));
     assert!(report.budget.is_some());
+    assert_eq!(report.cache_status(), "miss");
+    assert!(report.bundle_size_characters > 0);
+    assert!(
+        report
+            .providers
+            .iter()
+            .all(|provider| !provider.sensitivity.is_empty())
+    );
+    assert!(
+        report
+            .providers
+            .windows(2)
+            .all(|pair| pair[0].evaluation_order <= pair[1].evaluation_order)
+    );
+    let rendered = report.render();
+    assert!(rendered.contains("duration_ms="));
+    assert!(rendered.contains("final_bundle="));
+    assert!(rendered.contains("provider_order (contributors):"));
 
     let snapshot = app.diagnostics().expect("diagnostics");
     let inspector = snapshot
@@ -59,9 +79,11 @@ fn diagnostics_surface_context_inspector_after_handle() {
         .as_ref()
         .expect("snapshot includes context inspector");
     assert_eq!(inspector.assemble_generation, report.assemble_generation);
-    assert!(snapshot
-        .render_dashboard()
-        .contains("Context Inspector"));
+    assert_eq!(inspector.bundle_size_characters, report.bundle_size_characters);
+    assert_eq!(inspector.cache_status(), "miss");
+    let dashboard = snapshot.render_dashboard();
+    assert!(dashboard.contains("Context Inspector"));
+    assert!(dashboard.contains("duration_ms="));
 }
 
 #[test]

@@ -1,8 +1,13 @@
 //! Planner — the orchestration kernel of Jaymi.
 //!
-//! Every request passes through the Planner. It understands goals, gathers
-//! context via the Context Engine, selects capabilities, enforces policy and
-//! permissions, builds an execution plan, and delegates to tools.
+//! Every user-facing request enters [`Planner::handle`]. Canonical stages:
+//! Intent → Capability → Context Policy → Providers → Context Engine →
+//! ContextBundle → Behavior (Planned) → Action Policies → Permissions →
+//! Tool Orchestrator → Providers → Response.
+//!
+//! After Context assemble, paths branch by Intent (tool-backed / session /
+//! PlanWork / unsupported). That is intentional — not an Application→Engine
+//! bypass. See `request_lifecycle` and docs/planner.md.
 //!
 //! The Planner does not own long-lived Memory or Project CRUD APIs. Those
 //! belong to the Memory Engine and Project Engine. Application (or tools)
@@ -25,7 +30,7 @@ use jaymi_capabilities::{
     CapabilityInspectorReport, CapabilityInventory, DiscoveredProvider, DiscoveredTool,
     ExecutionPlan, WorkspaceExpansion,
 };
-use jaymi_context::{ContextBundle, ContextEngine};
+use jaymi_context::{AssembleHints, ContextBundle, ContextEngine};
 use jaymi_core::{
     Citation, Document, FileEntry, GitOperation, GitPathStatus, HealthReport, JaymiError,
     JaymiResult, Lifecycle, LspCompletionItem, LspDiagnostic, LspHover, LspLocation, LspRequest,
@@ -66,6 +71,11 @@ const DEPENDENCIES: &[&str] = &[
 ];
 
 /// Final response produced after the request lifecycle completes.
+///
+/// **Canonical request context:** [`Self::context_bundle`] (via [`Self::context`]).
+/// Behaviors and LLM providers must consume the bundle (or `LlmContext` derived
+/// from it). Parallel `memory_context` / `project_context` / `search_context`
+/// fields are removed — use accessors on the bundle instead.
 #[derive(Debug, Default, Clone)]
 pub struct PlannerResponse {
     /// Human-readable summary of the result.
@@ -90,21 +100,17 @@ pub struct PlannerResponse {
     pub permission_result: Option<PermissionCheckResult>,
     /// True when policy or permission blocked tool execution.
     pub blocked: bool,
-    /// Assembled project context, when a project is the active workspace.
-    pub project_context: Option<ProjectContext>,
-    /// Project closed by a Close intent, when any.
+    /// Project closed by a Close intent, when any (session action result — not request context).
     pub closed_project: Option<Project>,
     /// Capability execution plan selected for the request (never executed here).
     pub execution_plan: Option<ExecutionPlan>,
     /// Workspace expansion requested by the selected capability (conversation stays).
     pub workspace: Option<WorkspaceExpansion>,
-    /// Promotion suggestions from the Memory Engine (never auto-applied).
-    pub promotion_suggestions: Vec<PromotionSuggestion>,
-    /// Whether the Planner should ask the user about promotions.
-    pub promotion_ask: PromotionAskDecision,
-    /// Relevant memories assembled for this request (never a full dump).
-    pub memory_context: Option<AssembledMemoryContext>,
-    /// Immutable Context Engine snapshot for this request (Planner / Behaviors / LLM).
+    /// Immutable Context Engine snapshot for this request.
+    ///
+    /// **Authoritative** request-context contract for Planner execution,
+    /// Behaviors (Planned), and LLM providers (`LlmContext::from_bundle`).
+    /// Always set by `Planner::handle` via `finalize`.
     pub context_bundle: Option<ContextBundle>,
     /// Project-scoped knowledge hits (files, memories, tasks, decisions, …).
     pub project_knowledge: Vec<ProjectKnowledgeHit>,
@@ -150,6 +156,41 @@ pub struct PlannerResponse {
     pub lsp_edits: Vec<LspTextEdit>,
 }
 
+impl PlannerResponse {
+    /// Authoritative request context for this turn (`None` only if `handle` did not run `finalize`).
+    pub fn context(&self) -> Option<&ContextBundle> {
+        self.context_bundle.as_ref()
+    }
+
+    /// Relevant memories from the ContextBundle (never a parallel dump).
+    pub fn memory(&self) -> Option<&AssembledMemoryContext> {
+        self.context_bundle.as_ref().map(ContextBundle::memory)
+    }
+
+    /// Open project workspace from the ContextBundle, when present.
+    pub fn project(&self) -> Option<&ProjectContext> {
+        self.context_bundle
+            .as_ref()
+            .and_then(ContextBundle::project)
+    }
+
+    /// Promotion suggestions from the ContextBundle (never auto-applied).
+    pub fn promotion_suggestions(&self) -> &[PromotionSuggestion] {
+        self.context_bundle
+            .as_ref()
+            .map(ContextBundle::promotion_suggestions)
+            .unwrap_or(&[])
+    }
+
+    /// Promotion ask decision from the ContextBundle.
+    pub fn promotion_ask(&self) -> PromotionAskDecision {
+        self.context_bundle
+            .as_ref()
+            .map(ContextBundle::promotion_ask)
+            .unwrap_or(PromotionAskDecision::Defer)
+    }
+}
+
 /// Dependencies required to construct the Planner from registries.
 #[derive(Clone)]
 pub struct PlannerDeps {
@@ -176,7 +217,7 @@ pub struct PlannerDeps {
 /// Planner kernel.
 ///
 /// The Planner remains deterministic. Reasoning is delegated. Execution is
-/// delegated. Nothing bypasses this component.
+/// delegated. Every user-facing request enters [`Self::handle`].
 pub struct Planner {
     initialized: bool,
     decision: DecisionEngine,
@@ -466,9 +507,10 @@ impl Planner {
     fn handle_open_project_id(&self, project_id: &str) -> JaymiResult<PlannerResponse> {
         let context = self.open_project(project_id)?;
         let content = format_project_context_summary(&context);
+        // Project detail lives on ContextBundle after re-assemble in `handle`.
+        let _ = context;
         Ok(PlannerResponse {
             content,
-            project_context: Some(context),
             ..PlannerResponse::default()
         })
     }
@@ -598,10 +640,15 @@ impl Planner {
         })
     }
 
-    /// Process a user request through the architectural pipeline.
+    /// Process a user request through the canonical architectural pipeline.
     ///
-    /// Request → Context → Capability → Policy → Permission →
-    /// Execution Plan → Tool Engine → Response
+    /// **Current:**
+    /// User Request → Planner → Intent → Capability → Context Policy →
+    /// Context Providers → Context Engine → ContextBundle →
+    /// Action Policies → Permissions → Tool Orchestrator → Providers →
+    /// Planner Response
+    ///
+    /// **Planned:** Behavior stage after ContextBundle (not implemented).
     pub fn handle(&self, request: UserRequest) -> JaymiResult<PlannerResponse> {
         if !self.initialized {
             jaymi_logging::error("planner", "request rejected: planner is not initialized");
@@ -623,39 +670,60 @@ impl Planner {
             ),
         );
 
-        // Context Engine is the sole assembler of request context.
-        let context = self.context.assemble(&request)?;
-        if !context.promotion_suggestions().is_empty() {
-            jaymi_logging::info(
-                "planner",
-                format!(
-                    "promotion suggestions={} ask={:?}",
-                    context.promotion_suggestions().len(),
-                    context.promotion_ask()
-                ),
-            );
-        }
-
+        // 1. Intent Resolution
         let intent = self.decision.determine_intent(&request);
 
-        // Workspace session intents answer after Context assemble (no tool).
+        // 2. Capability Resolution (may be empty for session intents / unknown)
+        let capabilities = self.decision.required_capabilities(&intent);
+        let hints = AssembleHints {
+            intent: intent.id(),
+            capability_ids: capabilities
+                .iter()
+                .map(|capability| capability.id().to_string())
+                .collect(),
+        };
+
+        jaymi_logging::info(
+            "planner",
+            format!(
+                "intent resolved label={} capabilities=[{}]",
+                hints.intent.as_str(),
+                hints.capability_ids.join(",")
+            ),
+        );
+
+        // Workspace session intents mutate project state first, then assemble
+        // so ContextBundle is the sole post-session request-context snapshot.
         match &intent {
             Intent::ContinueProject { name } => {
                 let response = self.handle_continue_project(name)?;
-                return Ok(finalize(response, context.clone()));
+                self.context.invalidate_cache("project_changed");
+                let bundle = self.context.assemble_with(&request, Some(&hints))?;
+                log_promotions(&bundle);
+                return Ok(finalize(response, bundle));
             }
             Intent::OpenProject { project_id } => {
                 let response = self.handle_open_project_id(project_id)?;
-                return Ok(finalize(response, context.clone()));
+                self.context.invalidate_cache("project_changed");
+                let bundle = self.context.assemble_with(&request, Some(&hints))?;
+                log_promotions(&bundle);
+                return Ok(finalize(response, bundle));
             }
             Intent::CloseProject => {
                 let response = self.handle_close_project()?;
-                return Ok(finalize(response, context.clone()));
+                self.context.invalidate_cache("project_changed");
+                let bundle = self.context.assemble_with(&request, Some(&hints))?;
+                log_promotions(&bundle);
+                return Ok(finalize(response, bundle));
             }
             _ => {}
         }
 
-        let Some(capability) = self.decision.required_capability(&intent) else {
+        // 3–6. Context Policy → Providers → Context Engine → ContextBundle
+        let context = self.context.assemble_with(&request, Some(&hints))?;
+        log_promotions(&context);
+
+        let Some(capability) = capabilities.first().copied() else {
             jaymi_logging::warn(
                 "planner",
                 "unsupported request; no capability mapped for intent",
@@ -669,19 +737,11 @@ impl Planner {
             ));
         };
 
-        jaymi_logging::info(
-            "planner",
-            format!("intent resolved capability={}", capability.id()),
-        );
-
         // Planning answers "what would this take" without needing the
         // capability to be fulfillable today.
         if let Intent::PlanWork { capabilities, goal } = &intent {
-            let mut response = self.handle_plan_work(capabilities, goal)?;
-            if response.project_context.is_none() {
-                response.project_context = context.project().cloned();
-            }
-            return Ok(finalize(response, context.clone()));
+            let response = self.handle_plan_work(capabilities, goal)?;
+            return Ok(finalize(response, context));
         }
 
         let availability = self.capabilities.validate(capability);
@@ -790,9 +850,6 @@ impl Planner {
                         capability,
                         format!("capability {} selected for request", capability.id()),
                     );
-                }
-                if response.project_context.is_none() {
-                    response.project_context = context.project().cloned();
                 }
                 Ok(finalize(response, context.clone()))
             }
@@ -1437,7 +1494,7 @@ impl Planner {
         })
     }
 
-    /// Planner → Policy Engine → Permission Engine (tool selected, not yet run).
+    /// Planner → Action Policy Engine → Permission Engine (tool selected, not yet run).
     #[allow(clippy::too_many_arguments)]
     fn prepare_execution(
         &self,
@@ -1605,14 +1662,23 @@ struct PreparedExecution {
 }
 
 fn finalize(mut response: PlannerResponse, bundle: ContextBundle) -> PlannerResponse {
-    response.promotion_suggestions = bundle.promotion_suggestions().to_vec();
-    response.promotion_ask = bundle.promotion_ask();
-    response.memory_context = Some(bundle.memory().clone());
-    if response.project_context.is_none() {
-        response.project_context = bundle.project().cloned();
-    }
+    // ContextBundle is the sole request-context contract. Do not mirror
+    // memory / project / promotions onto parallel response fields.
     response.context_bundle = Some(bundle);
     response
+}
+
+fn log_promotions(bundle: &ContextBundle) {
+    if !bundle.promotion_suggestions().is_empty() {
+        jaymi_logging::info(
+            "planner",
+            format!(
+                "promotion suggestions={} ask={:?}",
+                bundle.promotion_suggestions().len(),
+                bundle.promotion_ask()
+            ),
+        );
+    }
 }
 
 fn permission_category_label(category: PermissionCategory) -> &'static str {

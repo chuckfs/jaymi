@@ -38,7 +38,9 @@ fn context_history_records_after_handle_and_surfaces_in_diagnostics() {
     let entry = &history[0];
     assert!(entry.timestamp_unix_ms > 0);
     assert!(entry.request.contains("hello context history"));
-    assert!(entry.providers_used.iter().any(|id| id == "memory"));
+    assert!(entry.providers_used.iter().any(|id| {
+        id == "conversation" || id == "permission" || id == "workspace"
+    }));
     assert!(entry.bundle_size_characters > 0);
     assert_eq!(entry.bundle.user_request().content_preview, entry.request);
 

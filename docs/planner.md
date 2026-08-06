@@ -26,6 +26,8 @@ It is built around decision making.
 
 **Current:** The Decision Engine routes intents deterministically; the Reasoning Engine is a stub (`is_implemented() == false`).
 
+Canonical identity is `jaymi_core::IntentId`. The Planner's payload-bearing `Intent` maps to that id via `Intent::id()`. Context, Capabilities, Behaviors, and Policies must reference `IntentId` — Context never re-classifies free-text intent independently.
+
 The Planner decides what happens next.
 
 This distinction allows intelligence to improve over time without changing the architecture.
@@ -71,23 +73,39 @@ for context assembly). Continue / Open / Close intents and Application
 
 Request Pipeline
 
-Every tool-backed request follows the same kernel path:
+Every tool-backed request follows the same kernel path (**Current**):
 
-Request
+```text
+User Request
 ↓
-Context Engine (`assemble`)
+Planner
 ↓
-Capability
+Intent Resolution
 ↓
-Policy
+Capability Resolution
 ↓
-Permission
+Context Policy Engine
 ↓
-Execution Plan
+Context Providers
 ↓
-Tool Engine
+Context Engine
 ↓
-Response
+ContextBundle
+↓
+Behavior                          # Planned — not implemented
+↓
+Action Policies
+↓
+Permissions
+↓
+Tool Orchestrator
+↓
+Providers
+↓
+Planner Response
+```
+
+Context Policies decide which context providers may contribute. Action Policies decide whether a tool/provider candidate may execute. They are different engines.
 
 ⸻
 
@@ -103,17 +121,15 @@ Planner
    │
    ├───────────────┐
    │               │
-Decision Engine    Reasoning Engine
+Decision Engine    Reasoning Engine (Stub)
    │               │
    └──────┬────────┘
           │
-     Context Engine  ←── assembles ContextBundle
+   Intent → Capability
           │
-     Memory Engine
-     Project Engine
-     Search Engine (when appropriate)
+   Context Policy → Providers → Context Engine → ContextBundle
           │
- Capability Engine
+   Action Policy → Permission
           │
     Tool Orchestrator
           │
@@ -134,19 +150,20 @@ instances bound at boot — there is no separate ProviderManager.
 
 Decision Engine
 
-The Decision Engine contains deterministic application logic.
+The Decision Engine contains deterministic application logic for **Intent** and
+**Capability** mapping.
 
 It answers questions such as:
 
-* Does this request require reasoning?
-* Which project is active?
-* Is internet access allowed?
-* Does this action require approval?
-* Which capabilities are required?
-* Which tools are available?
-* Has the user already granted permission?
+* What Intent does this request map to?
+* Which capabilities are required for that Intent?
+* Does this Intent need a Reasoning Engine once one is wired? (stub today)
 
 These decisions should never depend on a language model.
+
+Internet access, permission grants, and memory relevance are **not** Decision
+Engine concerns — they belong to Action Policy, Permission Engine, and
+Context Policy / MemoryProvider during assemble.
 
 ⸻
 
@@ -175,35 +192,50 @@ It is replaceable.
 
 Request Lifecycle
 
-Every request follows the same pipeline.
+Every user-facing request enters `Planner::handle` (**Current**). After Intent
+and Capability resolution, every path assembles a `ContextBundle`. Stages after
+assemble **branch** by Intent class:
 
+| Variant | Context assemble | Behavior | Action Policy → Permission → Tool |
+|---------|------------------|----------|-----------------------------------|
+| Tool-backed (search / read / list / …) | Yes | Planned (skipped) | Yes |
+| PlanWork | Yes | Planned (skipped) | No — plan only |
+| Session open / close / continue | Yes (after Project Engine mutate) | Planned (skipped) | No |
+| Unsupported / plain chat | Yes | Planned (skipped) | No |
+
+Canonical stage vocabulary (`RequestStage`):
+
+```text
 Receive Request
 ↓
 Determine Intent
 ↓
-Determine Context Requirements
+Resolve Capability
 ↓
-Retrieve Memory
+Evaluate Context Policy
 ↓
-Retrieve Knowledge
+Collect From Providers
 ↓
-Reason (if necessary)
+Assemble ContextBundle
 ↓
-Build Execution Plan
+Run Behavior                          # Planned — not implemented
 ↓
-Select Capabilities
+Evaluate Action Policy                # tool-backed only
 ↓
-Select Tools
+Check Permissions                     # tool-backed only
 ↓
-Execute
+Execute Tool                          # tool-backed only
 ↓
-Request Approval (if required)
+Invoke Providers                      # inside tool execution (bound providers)
 ↓
 Respond
-↓
-Update Memory (optional)
+```
 
-No request bypasses this process.
+Do not treat older “Retrieve Memory → Select Capabilities” diagrams as Current — Memory/Project/Search contribute only through Context Providers during assemble.
+
+`InvokeProviders` is not a second Planner hop: tools call their bound providers while `ExecuteTool` runs.
+
+No user-facing retrieval bypasses `Planner::handle`. Pipeline **variants** after assemble are intentional — not Application→Engine shortcuts.
 
 User-facing retrieval always enters `Planner::handle`, including:
 
@@ -228,9 +260,9 @@ Resume Project
 
 list / read / search / discover / index
 ↓
-Tool-backed paths through Policy → Permission → Tool
+Tool-backed paths through Action Policy → Permission → Tool
 
-search project knowledge (structured → Cap → Policy → Permission → `search_project_knowledge` tool)
+search project knowledge (structured → Intent → Capability → Context → Action Policy → Permission → `search_project_knowledge` tool)
 ↓
 Project Engine (mediated by Planner)
 
@@ -320,7 +352,8 @@ Examples include:
 * Code (Experimental catalog; Unavailable until coding tools exist)
 * Vision / Embeddings (Experimental; Vision Unavailable without vision tools)
 * OCR (Planned — placeholder provider; not executable)
-* Generate Images / Browse Internet / Terminal / Automation (Planned)
+* Generate Images / Browse Internet / Automate Tasks / Internet / Automation (Planned)
+* File Management / Execute Terminal Commands (Ready)
 * Read Documents / Discover / Index (Ready)
 
 Capabilities are stable.
@@ -406,7 +439,7 @@ The user always makes the final decision.
 
 Memory Integration
 
-**Current:** Context Engine retrieves relevant memories and promotion suggestions for every `handle`. Suggestions are never auto-applied.
+**Current:** Context Engine retrieves relevant memories and promotion suggestions for every `handle` into the `ContextBundle`. Read them via `PlannerResponse.memory()` / `promotion_suggestions()` / `promotion_ask()` — never from parallel response fields. Suggestions are never auto-applied.
 
 **Target:** Richer intent-driven “should this be remembered?” flows and conversational promotion UX.
 

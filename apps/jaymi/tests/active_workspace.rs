@@ -106,8 +106,7 @@ fn open_switch_and_close_keep_one_active_project_and_persist_conversation() {
         .expect("search in alpha");
     assert_eq!(
         search_a
-            .project_context
-            .as_ref()
+            .project()
             .map(|context| context.project.id.as_str()),
         Some(project_a.id.as_str())
     );
@@ -140,7 +139,7 @@ fn open_switch_and_close_keep_one_active_project_and_persist_conversation() {
     let switched = planner
         .handle(UserRequest::new("switch to project Beta"))
         .expect("switch");
-    let beta_context = switched.project_context.expect("beta context");
+    let beta_context = switched.project().cloned().expect("beta context");
     assert_eq!(beta_context.project.id, project_b.id);
     assert!(beta_context.is_open);
     assert_eq!(
@@ -201,7 +200,7 @@ fn open_switch_and_close_keep_one_active_project_and_persist_conversation() {
         .handle(UserRequest::new("close project"))
         .expect("close");
     assert!(closed.content.contains("Closed project \"Beta\""));
-    assert!(closed.project_context.is_none());
+    assert!(closed.project().is_none());
     assert!(app.active_project_id().is_none());
     assert_eq!(
         app.active_conversation_id().as_deref(),

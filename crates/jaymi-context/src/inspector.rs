@@ -26,13 +26,20 @@ pub enum ProviderInspectOutcome {
         /// Provider sensitivity at decision time.
         sensitivity: String,
     },
+    /// Policy allowed the provider, but user approval is still required.
+    SkippedApproval {
+        /// Explainability reason.
+        reason: String,
+        /// Provider sensitivity at decision time.
+        sensitivity: String,
+    },
     /// Remaining budget could not accept the contribution.
     SkippedBudget {
         /// Characters remaining when skipped.
         remaining_characters: usize,
         /// Provider estimate at skip time.
         estimate_characters: usize,
-        /// Short reason (`budget_exhausted`, `estimate_exceeds_budget`, …).
+        /// Short reason (`budget_exhausted`, `estimate_exceeds_budget`, `policy_forbids_truncation`, …).
         reason: String,
     },
     /// Provider returned `Ok(None)`.
@@ -65,6 +72,7 @@ impl ProviderInspectOutcome {
         match self {
             Self::SkippedRelevance { .. } => "skipped_relevance",
             Self::SkippedPolicy { .. } => "skipped_policy",
+            Self::SkippedApproval { .. } => "skipped_approval",
             Self::SkippedBudget { .. } => "skipped_budget",
             Self::Declined => "declined",
             Self::Dropped { .. } => "dropped",
@@ -81,17 +89,54 @@ impl ProviderInspectOutcome {
     pub fn omitted(&self) -> bool {
         !self.contributed()
     }
+
+    /// Truncation / summarize reason when content was fitted or budget-skipped.
+    pub fn truncation_label(&self) -> Option<&'static str> {
+        match self {
+            Self::Contributed {
+                truncated: true,
+                summarized: true,
+                ..
+            } => Some("truncated+summarized"),
+            Self::Contributed {
+                truncated: true, ..
+            } => Some("truncated"),
+            Self::Contributed {
+                summarized: true, ..
+            } => Some("summarized"),
+            Self::SkippedBudget { reason, .. } => Some(match reason.as_str() {
+                "budget_exhausted" => "budget_exhausted",
+                "estimate_exceeds_budget" => "estimate_exceeds_budget",
+                "policy_forbids_truncation" => "policy_forbids_truncation",
+                _ => "budget_skip",
+            }),
+            Self::Dropped { .. } => Some("dropped"),
+            _ => None,
+        }
+    }
 }
 
 /// One provider row in the Context Inspector.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectedProvider {
+    /// Registration / evaluation order (0-based; first pass over providers).
+    pub evaluation_order: usize,
+    /// Budget-allocation order among providers that entered the ranked phase.
+    pub allocation_order: Option<usize>,
     /// Provider id (`memory`, `project`, …).
     pub id: String,
     /// Budget priority (higher first).
     pub priority: u8,
     /// Relevance score for the request (0..=100).
     pub relevance: u8,
+    /// Provider sensitivity at decision time.
+    pub sensitivity: String,
+    /// Whether policy required user approval for this provider.
+    pub requires_user_approval: bool,
+    /// Approval gate: `not_required`, `approved`, `pending`, or `n/a`.
+    pub approval_status: String,
+    /// Whether policy allows truncation of this contribution.
+    pub can_truncate: bool,
     /// Estimated contribution size before contribute (characters).
     pub estimate_characters: usize,
     /// Estimated tokens before contribute.
@@ -101,6 +146,38 @@ pub struct InspectedProvider {
 }
 
 impl InspectedProvider {
+    /// Construct a fully explained provider row.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        evaluation_order: usize,
+        allocation_order: Option<usize>,
+        id: impl Into<String>,
+        priority: u8,
+        relevance: u8,
+        sensitivity: impl Into<String>,
+        requires_user_approval: bool,
+        approval_status: impl Into<String>,
+        can_truncate: bool,
+        estimate_characters: usize,
+        estimate_tokens: usize,
+        outcome: ProviderInspectOutcome,
+    ) -> Self {
+        Self {
+            evaluation_order,
+            allocation_order,
+            id: id.into(),
+            priority,
+            relevance,
+            sensitivity: sensitivity.into(),
+            requires_user_approval,
+            approval_status: approval_status.into(),
+            can_truncate,
+            estimate_characters,
+            estimate_tokens,
+            outcome,
+        }
+    }
+
     /// Compact one-line detail for dashboards.
     pub fn detail(&self) -> String {
         match &self.outcome {
@@ -112,11 +189,18 @@ impl InspectedProvider {
                 ..
             } => {
                 let mut line = format!(
-                    "{} · relevance={} · priority={} · chars={} · truncated={} · summarized={}",
+                    "{} · eval={} · alloc={} · relevance={} · priority={} · sensitivity={} · approval={} · chars={} · truncate_ok={} · truncated={} · summarized={}",
                     self.id,
+                    self.evaluation_order,
+                    self.allocation_order
+                        .map(|order| order.to_string())
+                        .unwrap_or_else(|| "-".into()),
                     self.relevance,
                     self.priority,
+                    self.sensitivity,
+                    self.approval_status,
                     characters,
+                    self.can_truncate,
                     truncated,
                     summarized
                 );
@@ -127,34 +211,68 @@ impl InspectedProvider {
                 line
             }
             ProviderInspectOutcome::SkippedRelevance { threshold } => format!(
-                "{} · relevance={} < threshold={} · omitted",
-                self.id, self.relevance, threshold
+                "{} · eval={} · relevance={} < threshold={} · sensitivity={} · approval={} · omitted",
+                self.id,
+                self.evaluation_order,
+                self.relevance,
+                threshold,
+                self.sensitivity,
+                self.approval_status
             ),
             ProviderInspectOutcome::SkippedPolicy {
                 policy,
                 reason,
                 sensitivity,
             } => format!(
-                "{} · policy={policy} · sensitivity={sensitivity} · excluded · {reason}",
-                self.id
+                "{} · eval={} · policy={policy} · sensitivity={sensitivity} · approval={} · excluded · {reason}",
+                self.id, self.evaluation_order, self.approval_status
+            ),
+            ProviderInspectOutcome::SkippedApproval {
+                reason,
+                sensitivity,
+            } => format!(
+                "{} · eval={} · sensitivity={sensitivity} · approval=pending · awaiting user approval · {reason}",
+                self.id, self.evaluation_order
             ),
             ProviderInspectOutcome::SkippedBudget {
                 remaining_characters,
                 estimate_characters,
                 reason,
             } => format!(
-                "{} · relevance={} · priority={} · omitted ({reason}; estimate={estimate_characters} remaining={remaining_characters})",
-                self.id, self.relevance, self.priority
-            ),
-            ProviderInspectOutcome::Declined => format!(
-                "{} · relevance={} · priority={} · declined",
-                self.id, self.relevance, self.priority
-            ),
-            ProviderInspectOutcome::Dropped { summary } => format!(
-                "{} · relevance={} · priority={} · dropped{}",
+                "{} · eval={} · alloc={} · relevance={} · priority={} · sensitivity={} · approval={} · omitted ({reason}; estimate={estimate_characters} remaining={remaining_characters})",
                 self.id,
+                self.evaluation_order,
+                self.allocation_order
+                    .map(|order| order.to_string())
+                    .unwrap_or_else(|| "-".into()),
                 self.relevance,
                 self.priority,
+                self.sensitivity,
+                self.approval_status
+            ),
+            ProviderInspectOutcome::Declined => format!(
+                "{} · eval={} · alloc={} · relevance={} · priority={} · sensitivity={} · approval={} · declined",
+                self.id,
+                self.evaluation_order,
+                self.allocation_order
+                    .map(|order| order.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                self.relevance,
+                self.priority,
+                self.sensitivity,
+                self.approval_status
+            ),
+            ProviderInspectOutcome::Dropped { summary } => format!(
+                "{} · eval={} · alloc={} · relevance={} · priority={} · sensitivity={} · approval={} · dropped{}",
+                self.id,
+                self.evaluation_order,
+                self.allocation_order
+                    .map(|order| order.to_string())
+                    .unwrap_or_else(|| "-".into()),
+                self.relevance,
+                self.priority,
+                self.sensitivity,
+                self.approval_status,
                 summary
                     .as_ref()
                     .map(|value| format!(" ({value})"))
@@ -190,9 +308,10 @@ pub struct ContextInspectorReport {
     pub workspace_kind: Option<String>,
     /// Relevance threshold used for this assemble.
     pub relevance_threshold: u8,
-    /// Per-provider decisions (registration / evaluation order preserved for omitted;
-    /// contributed rows appear in budget-allocation order among accepted ones).
+    /// Per-provider decisions (sorted by evaluation order).
     pub providers: Vec<InspectedProvider>,
+    /// Contributing provider ids in budget-allocation order.
+    pub contributor_order: Vec<String>,
     /// Bundle section summaries derived from the final snapshot.
     pub sections: Vec<InspectedBundleSection>,
     /// Sources claimed on the final bundle.
@@ -203,11 +322,26 @@ pub struct ContextInspectorReport {
     pub notes: Vec<String>,
     /// True when this report came from a ContextBundle cache hit.
     pub cache_hit: bool,
+    /// Wall-clock assemble duration in milliseconds.
+    pub duration_ms: u64,
+    /// Final assembled bundle size in characters.
+    pub bundle_size_characters: usize,
+    /// Estimated tokens for the final bundle size.
+    pub bundle_size_estimated_tokens: usize,
     /// Context Policy explainability report, when recorded.
     pub policy: Option<PolicyReport>,
 }
 
 impl ContextInspectorReport {
+    /// Cache status label (`hit` / `miss`).
+    pub fn cache_status(&self) -> &'static str {
+        if self.cache_hit {
+            "hit"
+        } else {
+            "miss"
+        }
+    }
+
     /// Providers that contributed to the bundle.
     pub fn contributed(&self) -> Vec<&InspectedProvider> {
         self.providers
@@ -243,6 +377,55 @@ impl ContextInspectorReport {
             .collect()
     }
 
+    /// Providers that required (or still require) user approval.
+    pub fn approval_gated(&self) -> Vec<&InspectedProvider> {
+        self.providers
+            .iter()
+            .filter(|provider| provider.requires_user_approval)
+            .collect()
+    }
+
+    /// Finalize ordering + size/duration after all provider rows are recorded.
+    pub fn finalize(
+        &mut self,
+        duration_ms: u64,
+        bundle: &ContextBundle,
+        chars_per_token: usize,
+    ) {
+        self.providers
+            .sort_by_key(|provider| provider.evaluation_order);
+
+        let mut ordered: Vec<(usize, String)> = self
+            .providers
+            .iter()
+            .filter(|provider| provider.outcome.contributed())
+            .filter_map(|provider| {
+                provider
+                    .allocation_order
+                    .map(|order| (order, provider.id.clone()))
+            })
+            .collect();
+        ordered.sort_by_key(|(order, _)| *order);
+        self.contributor_order = ordered.into_iter().map(|(_, id)| id).collect();
+        if self.contributor_order.is_empty() {
+            self.contributor_order = self
+                .contributed()
+                .into_iter()
+                .map(|provider| provider.id.clone())
+                .collect();
+        }
+
+        let (characters, tokens) = measure_bundle_size(bundle, chars_per_token);
+        self.bundle_size_characters = characters;
+        self.bundle_size_estimated_tokens = tokens;
+        self.duration_ms = duration_ms;
+        self.sections = inspect_bundle_sections(bundle, chars_per_token);
+        self.sources = bundle.sources().to_vec();
+        self.budget = bundle.budget().cloned();
+        self.policy = bundle.policy().cloned();
+        self.notes = bundle.planner_metadata().notes.clone();
+    }
+
     /// One-line summary for diagnostics headers.
     pub fn summary(&self) -> String {
         let contributed = self.contributed().len();
@@ -259,14 +442,18 @@ impl ContextInspectorReport {
             })
             .unwrap_or_else(|| "n/a".into());
         format!(
-            "gen={} · kind={} · workspace={} · contributed={} omitted={} truncated={} · cache_hit={} · budget={}",
+            "gen={} · kind={} · workspace={} · contributed={} omitted={} truncated={} · cache={} · duration_ms={} · bundle={} chars (≈{} tok) · order=[{}] · budget={}",
             self.assemble_generation,
             self.request_kind,
             self.workspace_kind.as_deref().unwrap_or("-"),
             contributed,
             omitted,
             truncated,
-            self.cache_hit,
+            self.cache_status(),
+            self.duration_ms,
+            self.bundle_size_characters,
+            self.bundle_size_estimated_tokens,
+            self.contributor_order.join(","),
             budget
         )
     }
@@ -275,14 +462,39 @@ impl ContextInspectorReport {
     pub fn render(&self) -> String {
         let mut lines = Vec::new();
         lines.push("Context Inspector".to_string());
+        lines.push(
+            "Pipeline (Current): Intent → Capability → Context Policy → Providers → Bundle → Action Policy → Permission → Tool"
+                .to_string(),
+        );
         lines.push(self.summary());
         lines.push(format!("request: {}", self.request_preview));
+        lines.push(format!(
+            "cache={} · duration_ms={} · final_bundle={} chars (≈{} tok) · threshold={}",
+            self.cache_status(),
+            self.duration_ms,
+            self.bundle_size_characters,
+            self.bundle_size_estimated_tokens,
+            self.relevance_threshold
+        ));
+        lines.push(format!(
+            "provider_order (contributors): [{}]",
+            self.contributor_order.join(", ")
+        ));
         lines.push(String::new());
         lines.push(format!(
-            "{:<14} {:<10} {:>8} {:>8} {:>8} {}",
-            "Provider", "Outcome", "Rel", "Pri", "Chars", "Detail"
+            "{:<4} {:<6} {:<14} {:<16} {:>5} {:>5} {:<10} {:<10} {:>6} {}",
+            "Eval",
+            "Alloc",
+            "Provider",
+            "Outcome",
+            "Rel",
+            "Pri",
+            "Sens",
+            "Approval",
+            "Chars",
+            "Detail"
         ));
-        lines.push("-".repeat(88));
+        lines.push("-".repeat(120));
         for provider in &self.providers {
             let chars = match &provider.outcome {
                 ProviderInspectOutcome::Contributed { characters, .. } => {
@@ -290,12 +502,20 @@ impl ContextInspectorReport {
                 }
                 _ => "-".into(),
             };
+            let alloc = provider
+                .allocation_order
+                .map(|order| order.to_string())
+                .unwrap_or_else(|| "-".into());
             lines.push(format!(
-                "{:<14} {:<10} {:>8} {:>8} {:>8} {}",
+                "{:<4} {:<6} {:<14} {:<16} {:>5} {:>5} {:<10} {:<10} {:>6} {}",
+                provider.evaluation_order,
+                alloc,
                 provider.id,
                 provider.outcome.as_str(),
                 provider.relevance,
                 provider.priority,
+                provider.sensitivity,
+                provider.approval_status,
                 chars,
                 provider.detail()
             ));
@@ -317,7 +537,7 @@ impl ContextInspectorReport {
         if let Some(budget) = &self.budget {
             lines.push(String::new());
             lines.push(format!(
-                "Budget: used={} max={} tokens≈{} truncated_providers=[{}] skipped_budget=[{}]",
+                "Budget allocation: used={} max={} tokens≈{} truncated_providers=[{}] skipped_budget=[{}]",
                 budget.used_characters,
                 budget.max_characters,
                 budget.estimated_tokens,
@@ -328,6 +548,24 @@ impl ContextInspectorReport {
                 lines.push(format!("  · {summary}"));
             }
         }
+        let truncated = self.truncated();
+        if !truncated.is_empty() {
+            lines.push(String::new());
+            lines.push(format!(
+                "Truncation: [{}]",
+                truncated
+                    .iter()
+                    .map(|provider| {
+                        format!(
+                            "{}={}",
+                            provider.id,
+                            provider.outcome.truncation_label().unwrap_or("truncated")
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
         if let Some(policy) = &self.policy {
             lines.push(String::new());
             lines.push(policy.render());
@@ -336,8 +574,24 @@ impl ContextInspectorReport {
     }
 }
 
+/// Prefer budget accounting; fall back to inspected section character sums.
+pub fn measure_bundle_size(bundle: &ContextBundle, chars_per_token: usize) -> (usize, usize) {
+    if let Some(budget) = bundle.budget() {
+        return (budget.used_characters, budget.estimated_tokens);
+    }
+    let characters: usize = inspect_bundle_sections(bundle, chars_per_token)
+        .into_iter()
+        .map(|section| section.characters)
+        .sum();
+    let tokens = characters / chars_per_token.max(1);
+    (characters, tokens)
+}
+
 /// Build section summaries from a finished bundle (diagnostics only).
-pub fn inspect_bundle_sections(bundle: &ContextBundle, chars_per_token: usize) -> Vec<InspectedBundleSection> {
+pub fn inspect_bundle_sections(
+    bundle: &ContextBundle,
+    chars_per_token: usize,
+) -> Vec<InspectedBundleSection> {
     let _ = chars_per_token;
     let mut sections = Vec::new();
 
@@ -494,7 +748,11 @@ pub fn inspect_bundle_sections(bundle: &ContextBundle, chars_per_token: usize) -
     sections.push(InspectedBundleSection {
         name: "Active Capabilities".into(),
         present: !caps.capability_ids.is_empty(),
-        characters: caps.capability_ids.iter().map(|id| id.chars().count() + 1).sum(),
+        characters: caps
+            .capability_ids
+            .iter()
+            .map(|id| id.chars().count() + 1)
+            .sum(),
         detail: if caps.capability_ids.is_empty() {
             "-".into()
         } else {
@@ -524,4 +782,3 @@ fn truncate(value: &str, max_chars: usize) -> String {
     let truncated: String = value.chars().take(max_chars.saturating_sub(1)).collect();
     format!("{truncated}…")
 }
-

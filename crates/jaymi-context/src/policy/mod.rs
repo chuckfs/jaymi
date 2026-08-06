@@ -13,9 +13,9 @@ mod sensitivity;
 
 pub use builtin::{default_context_policies, JaymiDefaultContextPolicy, DEFAULT_CONTEXT_POLICY_ID};
 pub use decision::{
-    apply_contribution_constraints, ContextPolicyCandidate, ContextPolicyDecision,
-    ContextPolicyDecisionRecord, ContextPolicyInputs, ContributionConstraints, PolicyDecisionSummary,
-    PolicyReport,
+    apply_contribution_constraints, apply_policy_to_contribution, ContextPolicyCandidate,
+    ContextPolicyDecision, ContextPolicyDecisionRecord, ContextPolicyInputs,
+    ContributionConstraints, PolicyDecisionSummary, PolicyReport,
 };
 pub use sensitivity::Sensitivity;
 

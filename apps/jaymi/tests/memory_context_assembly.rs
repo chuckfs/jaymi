@@ -208,7 +208,7 @@ fn assemble_context_returns_only_relevant_memories_with_limits() {
     let response = planner
         .handle(UserRequest::list_directory(std::env::temp_dir()))
         .expect("handle");
-    let context = response.memory_context.expect("memory context on response");
+    let context = response.memory().cloned().expect("memory context on response");
     assert!(context.len() <= 12);
     assert!(!context
         .records()

@@ -144,7 +144,7 @@ fn project_conversations_attach_load_and_resume_on_reopen() {
     let resumed = planner
         .handle(UserRequest::new("Continue working on Alpha."))
         .expect("continue");
-    let restored = resumed.project_context.expect("context");
+    let restored = resumed.project().cloned().expect("context");
     assert_eq!(restored.project.id, project_a.id);
     assert!(
         restored

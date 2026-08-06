@@ -96,7 +96,7 @@ fn project_engine_assembles_one_project_context_for_planner() {
     let response = planner
         .handle(UserRequest::new("Continue working on Jaymi."))
         .expect("continue");
-    let restored = response.project_context.expect("project context");
+    let restored = response.project().cloned().expect("project context");
     assert_eq!(restored.project.id, project.id);
     assert!(!restored.memories.architecture_decisions.is_empty());
     assert!(response.content.contains("indexed_files="));

@@ -146,10 +146,10 @@ fn promotion_ladder_suggestions_and_intentional_apply() {
         .handle(UserRequest::new("list /tmp"))
         .expect("handle");
     assert!(response
-        .promotion_suggestions
+        .promotion_suggestions()
         .iter()
         .any(|s| s.memory_id == candidate.id.as_str()));
-    assert_eq!(response.promotion_ask, PromotionAskDecision::AskUser);
+    assert_eq!(response.promotion_ask(), PromotionAskDecision::AskUser);
 
     let untouched = app
         .retrieve_memory(&MemoryQuery {

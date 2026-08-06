@@ -11,7 +11,7 @@ use std::time::SystemTime;
 use eframe::egui;
 
 use crate::boot::Application;
-use crate::coding_quick_actions::{dispatch_quick_action, QuickActionIntent};
+use crate::coding_quick_actions::{dispatch_quick_action, QuickActionEffect};
 use crate::coding_workspace::{render_coding_shell, CodingShellEvent, MonacoEditorSurface};
 use crate::command_dispatch::{dispatch_command, CommandDispatchEffect};
 use crate::command_palette::{
@@ -1779,12 +1779,12 @@ impl JaymiApp {
                 }
                 CodingShellEvent::QuickAction(action) => {
                     match dispatch_quick_action(action) {
-                        QuickActionIntent::InsertPlannerPrompt(text) => {
+                        QuickActionEffect::InsertPlannerPrompt(text) => {
                             self.prompt = text.to_string();
                             self.focus_composer = true;
                             Ok(())
                         }
-                        QuickActionIntent::OpenSearchPanel => {
+                        QuickActionEffect::OpenSearchPanel => {
                             let result = self.app.with_coding_state(|coding| {
                                 coding.show_bottom_tab(CodingBottomTab::Search);
                             });
@@ -1793,8 +1793,8 @@ impl JaymiApp {
                             }
                             result
                         }
-                        QuickActionIntent::OpenTerminalPanel
-                        | QuickActionIntent::FocusTerminalPanel => {
+                        QuickActionEffect::OpenTerminalPanel
+                        | QuickActionEffect::FocusTerminalPanel => {
                             let result = self.app.with_coding_state(|coding| {
                                 coding.show_bottom_tab(CodingBottomTab::Terminal);
                             });
@@ -1803,7 +1803,7 @@ impl JaymiApp {
                             }
                             result
                         }
-                        QuickActionIntent::FocusGitPanel => {
+                        QuickActionEffect::FocusGitPanel => {
                             let result = self.app.with_coding_state(|coding| {
                                 coding.show_bottom_tab(CodingBottomTab::Git);
                             });
@@ -2452,6 +2452,14 @@ impl JaymiApp {
             );
             ui.add_space(space::XS);
             ui.label(
+                egui::RichText::new(
+                    "Pipeline (Current): Intent → Capability → Context Policy → Providers → Bundle → Action Policy → Permission → Tool",
+                )
+                .size(type_size::META)
+                .color(self.theme.text_secondary),
+            );
+            ui.add_space(space::XS);
+            ui.label(
                 egui::RichText::new(inspector.summary())
                     .size(type_size::META)
                     .color(self.theme.text_secondary),
@@ -2462,17 +2470,33 @@ impl JaymiApp {
                     .size(type_size::META)
                     .color(self.theme.text_secondary),
             );
+            ui.add_space(space::XS);
+            ui.label(
+                egui::RichText::new(format!(
+                    "cache={} · duration_ms={} · final_bundle={} chars (≈{} tok) · order=[{}]",
+                    inspector.cache_status(),
+                    inspector.duration_ms,
+                    inspector.bundle_size_characters,
+                    inspector.bundle_size_estimated_tokens,
+                    inspector.contributor_order.join(", ")
+                ))
+                .size(type_size::META)
+                .color(self.theme.text_secondary),
+            );
             ui.add_space(space::SM);
             egui::Grid::new("context_inspector_providers")
                 .striped(true)
-                .num_columns(6)
+                .num_columns(9)
                 .spacing([space::MD, space::XS])
-                .min_col_width(70.0)
+                .min_col_width(48.0)
                 .show(ui, |ui| {
+                    ui.strong("Eval");
+                    ui.strong("Alloc");
                     ui.strong("Provider");
                     ui.strong("Outcome");
-                    ui.strong("Relevance");
-                    ui.strong("Priority");
+                    ui.strong("Rel");
+                    ui.strong("Sens");
+                    ui.strong("Approval");
                     ui.strong("Size");
                     ui.strong("Detail");
                     ui.end_row();
@@ -2480,14 +2504,33 @@ impl JaymiApp {
                         let size = match &provider.outcome {
                             jaymi_context::ProviderInspectOutcome::Contributed {
                                 characters,
+                                truncated,
+                                summarized,
                                 ..
-                            } => format!("{characters} ch"),
+                            } => {
+                                let mut label = format!("{characters} ch");
+                                if *truncated {
+                                    label.push_str(" trunc");
+                                }
+                                if *summarized {
+                                    label.push_str(" sum");
+                                }
+                                label
+                            }
                             _ => "—".into(),
                         };
+                        ui.label(provider.evaluation_order.to_string());
+                        ui.label(
+                            provider
+                                .allocation_order
+                                .map(|order| order.to_string())
+                                .unwrap_or_else(|| "—".into()),
+                        );
                         ui.label(&provider.id);
                         ui.label(provider.outcome.as_str());
                         ui.label(provider.relevance.to_string());
-                        ui.label(provider.priority.to_string());
+                        ui.label(&provider.sensitivity);
+                        ui.label(&provider.approval_status);
                         ui.label(size);
                         ui.label(provider.detail());
                         ui.end_row();
@@ -2497,7 +2540,7 @@ impl JaymiApp {
                 ui.add_space(space::SM);
                 ui.label(
                     egui::RichText::new(format!(
-                        "Budget: {} / {} chars (≈{} tok) · truncated=[{}] · skipped=[{}]",
+                        "Budget allocation: {} / {} chars (≈{} tok) · truncated=[{}] · skipped=[{}]",
                         budget.used_characters,
                         budget.max_characters,
                         budget.estimated_tokens,
@@ -2547,24 +2590,40 @@ impl JaymiApp {
                 ui.add_space(space::SM);
                 egui::Grid::new("context_policy_decisions")
                     .striped(true)
-                    .num_columns(4)
+                    .num_columns(6)
                     .spacing([space::MD, space::XS])
-                    .min_col_width(70.0)
+                    .min_col_width(60.0)
                     .show(ui, |ui| {
                         ui.strong("Provider");
                         ui.strong("Status");
+                        ui.strong("Approval");
                         ui.strong("Sensitivity");
+                        ui.strong("Constraints");
                         ui.strong("Reason");
                         ui.end_row();
                         for decision in &policy.decisions {
-                            ui.label(&decision.provider_id);
-                            ui.label(if decision.included {
+                            let status = if decision.included {
                                 "Included"
+                            } else if decision.approval_status == "pending" {
+                                "Pending"
                             } else {
                                 "Excluded"
-                            });
+                            };
+                            ui.label(&decision.provider_id);
+                            ui.label(status);
+                            ui.label(&decision.approval_status);
                             ui.label(&decision.sensitivity);
-                            ui.label(&decision.reason);
+                            ui.label(if decision.constraints.is_empty() {
+                                "-".to_string()
+                            } else {
+                                decision.constraints.join(",")
+                            });
+                            let mut reason = decision.reason.clone();
+                            if let Some(truncation) = &decision.truncation_reason {
+                                reason.push_str(" · trunc=");
+                                reason.push_str(truncation);
+                            }
+                            ui.label(reason);
                             ui.end_row();
                         }
                     });

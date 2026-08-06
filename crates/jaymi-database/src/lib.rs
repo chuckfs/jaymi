@@ -9,13 +9,10 @@
 pub mod content;
 pub mod conversations;
 pub mod embeddings;
-pub mod entities;
-pub mod events;
 pub mod inventory;
 pub mod memory;
 pub mod migrations;
 pub mod projects;
-pub mod relationships;
 
 pub use content::{
     build_fts_and_query, build_fts_match_query, ContentCounts, ContentFtsHit, ContentMetadataHit,

@@ -1,9 +1,11 @@
 //! Deterministic request-aware relevance for [`crate::ContextProvider`]s.
 //!
-//! No AI / model scoring. Heuristics use structured request fields, coarse
-//! intent tags, active capability ids, and workspace kind.
+//! No AI / model scoring. Intent semantics come **only** from canonical
+//! [`jaymi_core::IntentId`] (Planner-supplied via [`AssembleHints`], or the
+//! shared structured classifier when hints are absent). Context never runs a
+//! parallel free-text intent classifier.
 
-use jaymi_core::UserRequest;
+use jaymi_core::{IntentId, UserRequest};
 
 use crate::ContextSessionInputs;
 
@@ -58,16 +60,16 @@ impl std::fmt::Display for RelevanceScore {
     }
 }
 
-/// Coarse request classification derived from structured [`UserRequest`] fields.
+/// Coarse request classification — **derived from [`IntentId`]**, not re-parsed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RequestKind {
-    /// Free-text / chat with no structured tool payload.
+    /// Free-text / chat with no structured tool payload (`IntentId::Unknown`).
     Chat,
     /// Structured or implied file read.
     FileRead,
     /// Structured write / path management.
     FileWrite,
-    /// Search / project-knowledge search.
+    /// Search / project-knowledge search / directory listing.
     Search,
     /// Open / close / switch project session.
     ProjectSession,
@@ -99,32 +101,48 @@ impl RequestKind {
             Self::Index => "index",
         }
     }
+
+    /// Map from canonical Intent identity.
+    pub fn from_intent(intent: IntentId) -> Self {
+        match intent.request_kind() {
+            "file_read" => Self::FileRead,
+            "file_write" => Self::FileWrite,
+            "search" => Self::Search,
+            "project_session" => Self::ProjectSession,
+            "terminal" => Self::Terminal,
+            "git" => Self::Git,
+            "lsp" => Self::Lsp,
+            "discover" => Self::Discover,
+            "index" => Self::Index,
+            _ => Self::Chat,
+        }
+    }
 }
 
-/// Deterministic intent tags used by relevance heuristics.
+/// Relevance facet tags — **derived from [`IntentId`]**, not a parallel intent taxonomy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum IntentTag {
-    /// Conversational / free-text intent.
+    /// Conversational / free-text facet (`Unknown`).
     Chat,
-    /// Search / find intent.
+    /// Search / find facet.
     Search,
-    /// Read document / file intent.
+    /// Read document / file facet.
     Read,
-    /// Write / mutate filesystem intent.
+    /// Write / mutate filesystem facet.
     Write,
-    /// Project open / switch / close intent.
+    /// Project open / switch / close facet.
     Project,
-    /// Terminal intent.
+    /// Terminal facet.
     Terminal,
-    /// Git intent.
+    /// Git facet.
     Git,
-    /// Language server / coding assistance intent.
+    /// Language server / coding assistance facet.
     Lsp,
-    /// Discovery inventory intent.
+    /// Discovery inventory facet.
     Discover,
-    /// Indexing intent.
+    /// Indexing facet.
     Index,
-    /// Software development / coding intent.
+    /// Software development / coding facet.
     Code,
 }
 
@@ -145,152 +163,156 @@ impl IntentTag {
             Self::Code => "code",
         }
     }
+
+    fn from_label(label: &str) -> Option<Self> {
+        match label {
+            "chat" => Some(Self::Chat),
+            "search" => Some(Self::Search),
+            "read" => Some(Self::Read),
+            "write" => Some(Self::Write),
+            "project" => Some(Self::Project),
+            "terminal" => Some(Self::Terminal),
+            "git" => Some(Self::Git),
+            "lsp" => Some(Self::Lsp),
+            "discover" => Some(Self::Discover),
+            "index" => Some(Self::Index),
+            "code" => Some(Self::Code),
+            _ => None,
+        }
+    }
+
+    /// Tags for a canonical Intent.
+    pub fn from_intent(intent: IntentId) -> Vec<Self> {
+        intent
+            .relevance_tags()
+            .iter()
+            .filter_map(|label| Self::from_label(label))
+            .collect()
+    }
+}
+
+/// Planner-resolved Intent + Capability passed into Context assemble.
+///
+/// Lives in `jaymi-context` (not planner) so there is no crate cycle.
+/// Intent is the canonical [`IntentId`] — never a free-form parallel label.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssembleHints {
+    /// Canonical Intent resolved by the Planner (or shared structured classifier).
+    pub intent: IntentId,
+    /// Capability ids selected by the Decision Engine for this request.
+    pub capability_ids: Vec<String>,
+}
+
+impl Default for AssembleHints {
+    fn default() -> Self {
+        Self {
+            intent: IntentId::Unknown,
+            capability_ids: Vec::new(),
+        }
+    }
+}
+
+impl AssembleHints {
+    /// Build hints from a canonical Intent and capability ids.
+    pub fn new(intent: IntentId, capability_ids: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            intent,
+            capability_ids: capability_ids.into_iter().collect(),
+        }
+    }
+
+    /// Fingerprint for cache keys.
+    pub fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.intent.as_str().hash(&mut hasher);
+        for id in &self.capability_ids {
+            id.hash(&mut hasher);
+        }
+        hasher.finish()
+    }
 }
 
 /// Precomputed, deterministic cues for provider relevance.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelevanceSignals {
-    /// Primary structured request kind.
+    /// Canonical Intent for this assemble.
+    pub intent: IntentId,
+    /// Primary request kind derived from [`Self::intent`].
     pub request_kind: RequestKind,
-    /// Coarse intent tags derived from the request.
+    /// Relevance facets derived from [`Self::intent`].
     pub intent_tags: Vec<IntentTag>,
     /// Active UX workspace kind id, when set.
     pub workspace_kind: Option<String>,
-    /// Active capability ids from the session (and inferred from request kind).
+    /// Active capability ids: Planner-selected first, then session, then Intent defaults.
     pub active_capabilities: Vec<String>,
+    /// Canonical Intent label (same as `intent.as_str()`).
+    pub planner_intent: Option<String>,
 }
 
 impl RelevanceSignals {
     /// Build signals from the inbound request and session (no AI).
+    ///
+    /// Without Planner hints, uses [`IntentId::from_structured_request`] only —
+    /// free-text content never invents Intent here.
     pub fn derive(request: &UserRequest, session: &ContextSessionInputs) -> Self {
-        let mut intent_tags = Vec::new();
-        let mut request_kind = RequestKind::Chat;
+        Self::derive_with(request, session, None)
+    }
 
-        if request.close_project || request.open_project_id.is_some() {
-            request_kind = RequestKind::ProjectSession;
-            push_unique(&mut intent_tags, IntentTag::Project);
-        }
-        if request.project_knowledge.is_some() || request.search.is_some() {
-            request_kind = RequestKind::Search;
-            push_unique(&mut intent_tags, IntentTag::Search);
-        }
-        if request.discover || request.discovery_kind.is_some() {
-            request_kind = RequestKind::Discover;
-            push_unique(&mut intent_tags, IntentTag::Discover);
-        }
-        if request.index_root.is_some() {
-            request_kind = RequestKind::Index;
-            push_unique(&mut intent_tags, IntentTag::Index);
-        }
-        if request.lsp.is_some() {
-            request_kind = RequestKind::Lsp;
-            push_unique(&mut intent_tags, IntentTag::Lsp);
-            push_unique(&mut intent_tags, IntentTag::Code);
-        }
-        if request.git.is_some() {
-            request_kind = RequestKind::Git;
-            push_unique(&mut intent_tags, IntentTag::Git);
-            push_unique(&mut intent_tags, IntentTag::Code);
-        }
-        if request.terminal.is_some() {
-            request_kind = RequestKind::Terminal;
-            push_unique(&mut intent_tags, IntentTag::Terminal);
-            push_unique(&mut intent_tags, IntentTag::Code);
-        }
-        if request.write_file.is_some() || request.manage_path.is_some() {
-            request_kind = RequestKind::FileWrite;
-            push_unique(&mut intent_tags, IntentTag::Write);
-            push_unique(&mut intent_tags, IntentTag::Code);
-        }
-        if request.file.is_some() {
-            request_kind = RequestKind::FileRead;
-            push_unique(&mut intent_tags, IntentTag::Read);
-        }
-        if request.directory.is_some() || request.project_tree.is_some() {
-            if matches!(request_kind, RequestKind::Chat) {
-                request_kind = RequestKind::Search;
-            }
-            push_unique(&mut intent_tags, IntentTag::Search);
-        }
-
-        let content = request.content.to_ascii_lowercase();
-        if !content.trim().is_empty() {
-            if contains_any(
-                &content,
-                &[
-                    "search ",
-                    "find ",
-                    "look for",
-                    "where is",
-                    "locate ",
-                    "grep ",
-                ],
-            ) {
-                push_unique(&mut intent_tags, IntentTag::Search);
-            }
-            if contains_any(
-                &content,
-                &[
-                    "continue working",
-                    "switch to project",
-                    "open project",
-                    "close project",
-                    "leave the project",
-                ],
-            ) {
-                push_unique(&mut intent_tags, IntentTag::Project);
-            }
-            if contains_any(&content, &["commit ", "git ", "pull request", "branch "]) {
-                push_unique(&mut intent_tags, IntentTag::Git);
-                push_unique(&mut intent_tags, IntentTag::Code);
-            }
-            if contains_any(&content, &["terminal", "shell", "run command"]) {
-                push_unique(&mut intent_tags, IntentTag::Terminal);
-                push_unique(&mut intent_tags, IntentTag::Code);
-            }
-            if contains_any(
-                &content,
-                &["refactor", "compile", "type error", "lsp", "rust analyzer"],
-            ) {
-                push_unique(&mut intent_tags, IntentTag::Code);
-                push_unique(&mut intent_tags, IntentTag::Lsp);
-            }
-            if matches!(request_kind, RequestKind::Chat)
-                && intent_tags.is_empty()
-                && request.search.is_none()
-                && request.file.is_none()
-            {
-                push_unique(&mut intent_tags, IntentTag::Chat);
-            }
-        }
-
-        if intent_tags.is_empty() {
-            push_unique(&mut intent_tags, IntentTag::Chat);
-        }
+    /// Build signals from Planner-resolved Intent / Capability when hints are set.
+    ///
+    /// When `hints` is `Some`, [`AssembleHints::intent`] and
+    /// [`AssembleHints::capability_ids`] are authoritative — session capability
+    /// ids and workspace heuristics never invent Capabilities.
+    /// When `None`, Intent comes from the shared structured classifier and
+    /// capability ids fall back to [`IntentId::default_capability_ids`] only.
+    pub fn derive_with(
+        request: &UserRequest,
+        session: &ContextSessionInputs,
+        hints: Option<&AssembleHints>,
+    ) -> Self {
+        let intent = match hints {
+            Some(hints) => hints.intent,
+            None => IntentId::from_structured_request(request),
+        };
+        let request_kind = RequestKind::from_intent(intent);
+        let intent_tags = IntentTag::from_intent(intent);
+        let planner_intent = Some(intent.as_str().to_string());
 
         let workspace_kind = session.workspace_kind.clone();
-        let mut active_capabilities = session.active_capabilities.capability_ids.clone();
-        for inferred in inferred_capabilities(request_kind, &intent_tags, workspace_kind.as_deref())
-        {
-            if !active_capabilities.iter().any(|id| id == &inferred) {
-                active_capabilities.push(inferred);
+        let mut active_capabilities = Vec::new();
+
+        match hints {
+            Some(hints) => {
+                // Planner owns capability selection for the request path.
+                for id in &hints.capability_ids {
+                    push_unique_string(&mut active_capabilities, id.clone());
+                }
+            }
+            None => {
+                // Direct ContextEngine tests only — Intent defaults, never session catalog.
+                for id in intent.default_capability_ids() {
+                    push_unique_string(&mut active_capabilities, (*id).to_string());
+                }
             }
         }
 
         Self {
+            intent,
             request_kind,
             intent_tags,
             workspace_kind,
             active_capabilities,
+            planner_intent,
         }
     }
 
-    /// True when the given intent tag was derived.
+    /// True when the given relevance facet was derived from Intent.
     pub fn has_intent(&self, tag: IntentTag) -> bool {
         self.intent_tags.contains(&tag)
     }
 
-    /// True when a capability id is active (session or inferred).
+    /// True when a capability id is active.
     pub fn has_capability(&self, id: &str) -> bool {
         self.active_capabilities.iter().any(|value| value == id)
     }
@@ -309,41 +331,10 @@ impl RelevanceSignals {
     }
 }
 
-fn inferred_capabilities(
-    kind: RequestKind,
-    tags: &[IntentTag],
-    workspace: Option<&str>,
-) -> Vec<String> {
-    let mut out = Vec::new();
-    match kind {
-        RequestKind::Search | RequestKind::Discover => out.push("search".into()),
-        RequestKind::FileRead => out.push("read_documents".into()),
-        RequestKind::FileWrite => out.push("file_management".into()),
-        RequestKind::Terminal => out.push("execute_terminal_commands".into()),
-        RequestKind::Git | RequestKind::Lsp => out.push("code".into()),
-        RequestKind::Index => out.push("index".into()),
-        RequestKind::ProjectSession => out.push("code".into()),
-        RequestKind::Chat => out.push("chat".into()),
+fn push_unique_string(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
     }
-    if tags.contains(&IntentTag::Code) || matches!(workspace, Some("coding") | Some("code")) {
-        if !out.iter().any(|id| id == "code") {
-            out.push("code".into());
-        }
-    }
-    if tags.contains(&IntentTag::Search) && !out.iter().any(|id| id == "search") {
-        out.push("search".into());
-    }
-    out
-}
-
-fn push_unique(tags: &mut Vec<IntentTag>, tag: IntentTag) {
-    if !tags.contains(&tag) {
-        tags.push(tag);
-    }
-}
-
-fn contains_any(haystack: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| haystack.contains(needle))
 }
 
 #[cfg(test)]
@@ -358,9 +349,22 @@ mod tests {
             &UserRequest::search(SearchRequest::free_text("fungi")),
             &ContextSessionInputs::default(),
         );
+        assert_eq!(signals.intent, IntentId::SearchKnowledge);
         assert_eq!(signals.request_kind, RequestKind::Search);
         assert!(signals.has_intent(IntentTag::Search));
         assert!(signals.has_capability("search"));
+    }
+
+    #[test]
+    fn free_text_does_not_invent_search_intent() {
+        let signals = RelevanceSignals::derive(
+            &UserRequest::new("search for fungi please"),
+            &ContextSessionInputs::default(),
+        );
+        assert_eq!(signals.intent, IntentId::Unknown);
+        assert_eq!(signals.request_kind, RequestKind::Chat);
+        assert!(signals.has_intent(IntentTag::Chat));
+        assert!(!signals.has_intent(IntentTag::Search));
     }
 
     #[test]
@@ -369,16 +373,84 @@ mod tests {
             &UserRequest::new("hello there"),
             &ContextSessionInputs::default(),
         );
+        assert_eq!(signals.intent, IntentId::Unknown);
         assert_eq!(signals.request_kind, RequestKind::Chat);
         assert!(signals.has_intent(IntentTag::Chat));
     }
 
     #[test]
-    fn coding_workspace_marks_coding_surface() {
+    fn coding_workspace_marks_coding_surface_without_inventing_capabilities() {
         let mut session = ContextSessionInputs::default();
         session.workspace_kind = Some("coding".into());
         let signals = RelevanceSignals::derive(&UserRequest::new("hi"), &session);
         assert!(signals.coding_workspace());
-        assert!(signals.has_capability("code"));
+        // Without Planner hints, Unknown → chat default only — never invent "code".
+        assert!(signals.has_capability("chat"));
+        assert!(!signals.has_capability("code"));
+    }
+
+    #[test]
+    fn planner_hints_are_authoritative_for_intent_and_capabilities() {
+        let hints = AssembleHints::new(IntentId::Lsp, ["code".into()]);
+        let signals = RelevanceSignals::derive_with(
+            &UserRequest::new("hello"),
+            &ContextSessionInputs::default(),
+            Some(&hints),
+        );
+        assert_eq!(signals.intent, IntentId::Lsp);
+        assert_eq!(signals.planner_intent.as_deref(), Some("lsp"));
+        assert_eq!(signals.request_kind, RequestKind::Lsp);
+        assert_eq!(
+            signals.active_capabilities.first().map(String::as_str),
+            Some("code")
+        );
+        assert!(signals.has_intent(IntentTag::Lsp));
+        assert!(signals.has_intent(IntentTag::Code));
+        // Free-text "hello" must not keep Chat facets when Planner said Lsp.
+        assert!(!signals.has_intent(IntentTag::Chat));
+    }
+
+    #[test]
+    fn planner_capabilities_ignore_session_catalog() {
+        let hints = AssembleHints::new(IntentId::SearchKnowledge, ["search".into()]);
+        let mut session = ContextSessionInputs::default();
+        session.workspace_kind = Some("coding".into());
+        session.active_capabilities.capability_ids =
+            vec!["code".into(), "lsp".into(), "search".into()];
+        let signals = RelevanceSignals::derive_with(
+            &UserRequest::new("hello"),
+            &session,
+            Some(&hints),
+        );
+        assert_eq!(signals.active_capabilities, vec!["search".to_string()]);
+        assert!(!signals.has_capability("code"));
+        assert!(!signals.has_capability("chat"));
+    }
+
+    #[test]
+    fn empty_planner_capabilities_stay_empty() {
+        let hints = AssembleHints::new(IntentId::Unknown, Vec::<String>::new());
+        let mut session = ContextSessionInputs::default();
+        session.active_capabilities.capability_ids = vec!["code".into()];
+        let signals = RelevanceSignals::derive_with(
+            &UserRequest::new("hello"),
+            &session,
+            Some(&hints),
+        );
+        assert!(signals.active_capabilities.is_empty());
+    }
+
+    #[test]
+    fn ownership_search_provider_does_not_need_project_engine() {
+        // Compile-time ownership: SearchProvider::new takes only SearchEngineApi.
+        // Runtime: session.project_indexed_documents drives the hint.
+        let mut session = ContextSessionInputs::default();
+        session.project_indexed_documents = Some(7);
+        let signals = RelevanceSignals::derive(
+            &UserRequest::search(SearchRequest::free_text("x")),
+            &session,
+        );
+        assert_eq!(signals.intent, IntentId::SearchKnowledge);
+        assert_eq!(session.project_indexed_documents, Some(7));
     }
 }

@@ -222,11 +222,11 @@ Instead it asks:
 
 “I need a capability that can search files.”
 
-Then:
+Then (**Current**):
 
-1. Context Engine assembles request context
-2. Capability Engine / Decision Engine select the capability
-3. Tool Orchestrator selects a tool that declares that capability
+1. Decision Engine resolves Intent and selects Capability
+2. Context Policy / Context Engine assemble request context (`assemble_with`)
+3. Action Policy → Permission → Tool Orchestrator selects a tool for that capability
 4. The tool executes using the provider instance bound to it at boot
 
 For planning (no execution), the Capability Engine lists providers whose advertised capabilities match (`providers_for`). The ProviderRegistry supplies that identity metadata; it does not resolve or invoke providers.

@@ -697,10 +697,19 @@ impl ContextBundleBuilder {
 ///
 /// These values are copied into the bundle; the Context Engine does not
 /// discover them by searching the workspace.
+///
+/// **Ownership:** request-selected Capability ids belong on [`crate::AssembleHints`]
+/// (Planner), not here. This struct may carry an empty `active_capabilities`
+/// placeholder for backward-compatible session snapshots; relevance ignores it
+/// when Planner hints are present.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ContextSessionInputs {
     /// Active UX workspace kind id.
     pub workspace_kind: Option<String>,
+    /// True when a project is session-open (host-supplied; Engine does not probe).
+    pub project_open: bool,
+    /// Optional project search-index document count (host-supplied summary).
+    pub project_indexed_documents: Option<u64>,
     /// Current editor file.
     pub current_file: CurrentFileSection,
     /// Current editor selection.
@@ -711,8 +720,16 @@ pub struct ContextSessionInputs {
     pub diagnostics: DiagnosticsSection,
     /// Permission grants attached for the next request.
     pub permissions: PermissionsSection,
-    /// Active capability ids for the next request.
+    /// Deprecated for request selection — leave empty.
+    ///
+    /// Request-selected capability ids are supplied only via [`crate::AssembleHints`].
+    /// Kept so hosts can still round-trip snapshots without a breaking field removal.
     pub active_capabilities: ActiveCapabilitiesSection,
     /// Pre-attached search hits (not queried here).
     pub search_hits: Vec<BundleSearchHit>,
+    /// Provider ids the user has approved for approval-gated context.
+    ///
+    /// When a policy sets `requires_user_approval`, the provider is omitted
+    /// until its id appears here.
+    pub approved_context_providers: Vec<String>,
 }

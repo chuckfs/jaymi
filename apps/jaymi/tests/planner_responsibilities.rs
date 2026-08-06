@@ -94,11 +94,11 @@ fn planner_orchestrates_requests_engines_own_crud() {
         .handle(UserRequest::new("Continue working on Kernel."))
         .expect("handle continue");
     assert!(
-        response.content.contains("Restored project") || response.project_context.is_some(),
+        response.content.contains("Restored project") || response.project().is_some(),
         "expected continue-project orchestration; content={}",
         response.content
     );
-    let context = response.project_context.expect("project context");
+    let context = response.project().cloned().expect("project context");
     assert_eq!(context.project.id, project.id);
 
     let _ = fs::remove_dir_all(&data_dir);

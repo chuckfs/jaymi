@@ -34,7 +34,7 @@ impl ContextPolicy for JaymiDefaultContextPolicy {
             ));
         }
 
-        match candidate.provider_id {
+        let mut decision = match candidate.provider_id {
             "conversation" => evaluate_conversation(candidate),
             "project" => evaluate_project(candidate),
             "workspace" => evaluate_workspace(candidate),
@@ -47,7 +47,16 @@ impl ContextPolicy for JaymiDefaultContextPolicy {
                 format!("No specific rule for '{other}'; retained for extensibility"),
                 candidate.provider_priority,
             ),
+        };
+
+        if decision.participate && candidate.sensitivity >= Sensitivity::Sensitive {
+            decision.requires_user_approval = true;
+            if !decision.reason.contains("user approval") {
+                decision.reason.push_str("; sensitive content requires user approval");
+            }
         }
+
+        decision
     }
 }
 
@@ -69,7 +78,10 @@ fn evaluate_conversation(candidate: &ContextPolicyCandidate<'_>) -> ContextPolic
 
 fn evaluate_project(candidate: &ContextPolicyCandidate<'_>) -> ContextPolicyDecision {
     if candidate.inputs.request.close_project
-        || is_close_project_request(&candidate.inputs.request.content)
+        || matches!(
+            candidate.inputs.signals.intent,
+            jaymi_core::IntentId::CloseProject
+        )
     {
         return ContextPolicyDecision::deny("Close-project request; project context omitted");
     }
@@ -87,7 +99,7 @@ fn evaluate_project(candidate: &ContextPolicyCandidate<'_>) -> ContextPolicyDeci
 
 fn evaluate_workspace(candidate: &ContextPolicyCandidate<'_>) -> ContextPolicyDecision {
     if candidate.inputs.session.workspace_kind.is_none()
-        && candidate.inputs.session.active_capabilities.capability_ids.is_empty()
+        && candidate.inputs.signals.active_capabilities.is_empty()
     {
         return ContextPolicyDecision::deny("No active workspace");
     }
@@ -112,29 +124,44 @@ fn evaluate_editor(candidate: &ContextPolicyCandidate<'_>) -> ContextPolicyDecis
         ProviderPriority::EDITOR,
     );
     decision.constraints.exclude_open_files = true;
+    let has_selection_text = session
+        .current_selection
+        .text
+        .as_ref()
+        .map(|text| !text.trim().is_empty())
+        .unwrap_or(false);
+    if has_selection_text {
+        decision.requires_user_approval = true;
+        decision.reason.push_str("; selection text requires user approval");
+    }
     decision
 }
 
 fn evaluate_search(candidate: &ContextPolicyCandidate<'_>) -> ContextPolicyDecision {
     let signals = candidate.inputs.signals;
-    let request = candidate.inputs.request;
+    // Gate on canonical Intent facets / structured request — never free-text heuristics.
     let needs_retrieval = matches!(
+        signals.intent,
+        jaymi_core::IntentId::SearchKnowledge
+            | jaymi_core::IntentId::SearchProjectKnowledge
+            | jaymi_core::IntentId::DiscoverInventory
+            | jaymi_core::IntentId::ListDirectory
+            | jaymi_core::IntentId::ListProjectTree
+            | jaymi_core::IntentId::ReadFile
+            | jaymi_core::IntentId::IndexRoots
+    ) || matches!(
         signals.request_kind,
         RequestKind::Search | RequestKind::Discover | RequestKind::FileRead | RequestKind::Index
     ) || signals.has_intent(IntentTag::Search)
         || signals.has_intent(IntentTag::Discover)
         || signals.has_intent(IntentTag::Read)
-        || request.search.is_some()
-        || request.project_knowledge.is_some()
-        || request.file.is_some()
-        || references_files_or_symbols(&request.content)
         || !candidate.inputs.session.search_hits.is_empty();
 
     if !needs_retrieval {
         return ContextPolicyDecision::deny("Request does not require retrieval");
     }
     ContextPolicyDecision::allow(
-        "Request requires retrieval / references files or symbols",
+        "Intent requires retrieval / search context",
         ProviderPriority::SEARCH,
     )
 }
@@ -167,7 +194,9 @@ fn evaluate_memory(candidate: &ContextPolicyCandidate<'_>) -> ContextPolicyDecis
         ProviderPriority::MEMORY,
     );
     if candidate.sensitivity >= Sensitivity::Private {
+        // Private memory bodies are redacted in assembly; ids/summaries remain.
         decision.exclude_sensitive = true;
+        decision.constraints.redact_memory_content = true;
     }
     decision
 }
@@ -180,8 +209,7 @@ fn evaluate_diagnostics(candidate: &ContextPolicyCandidate<'_>) -> ContextPolicy
     }) || signals.coding_workspace();
     let debug_intent = signals.has_intent(IntentTag::Lsp)
         || signals.has_intent(IntentTag::Code)
-        || matches!(signals.request_kind, RequestKind::Lsp)
-        || debug_request(&candidate.inputs.request.content);
+        || matches!(signals.request_kind, RequestKind::Lsp);
     let has_diags = !session.diagnostics.diagnostics.is_empty();
 
     if !(coding_capability || debug_intent) {
@@ -225,62 +253,6 @@ fn sensitivity_required(candidate: &ContextPolicyCandidate<'_>) -> bool {
         "memory" => true, // gated by evaluate_memory usefulness
         _ => false,
     }
-}
-
-fn references_files_or_symbols(content: &str) -> bool {
-    let lower = content.to_ascii_lowercase();
-    const CUES: &[&str] = &[
-        "file",
-        "files",
-        "path",
-        "symbol",
-        "function",
-        "class",
-        "struct",
-        "trait",
-        "module",
-        "import",
-        "find ",
-        "search ",
-        "where is",
-        "locate",
-        ".rs",
-        ".ts",
-        ".js",
-        ".py",
-        ".go",
-        ".md",
-    ];
-    CUES.iter().any(|cue| lower.contains(cue))
-}
-
-fn debug_request(content: &str) -> bool {
-    let lower = content.to_ascii_lowercase();
-    const CUES: &[&str] = &[
-        "debug",
-        "debugger",
-        "stack trace",
-        "backtrace",
-        "error:",
-        "panic",
-        "fix bug",
-        "diagnose",
-        "diagnostic",
-        "lint",
-        "compiler error",
-    ];
-    CUES.iter().any(|cue| lower.contains(cue))
-}
-
-fn is_close_project_request(content: &str) -> bool {
-    matches!(
-        content.trim().to_ascii_lowercase().trim_end_matches('.'),
-        "close project"
-            | "close the project"
-            | "close active project"
-            | "leave project"
-            | "leave the project"
-    )
 }
 
 #[cfg(test)]
@@ -391,5 +363,74 @@ mod tests {
         ));
         assert!(decision.participate);
         assert!(decision.constraints.exclude_open_files);
+        assert!(!decision.requires_user_approval);
+    }
+
+    #[test]
+    fn editor_selection_text_requires_approval() {
+        let request = UserRequest::new("look at this");
+        let mut session = ContextSessionInputs::default();
+        session.current_file.path = Some("/tmp/a.rs".into());
+        session.current_selection.path = Some("/tmp/a.rs".into());
+        session.current_selection.text = Some("secret snippet".into());
+        let signals = RelevanceSignals::derive(&request, &session);
+        let inputs = ContextPolicyInputs {
+            request: &request,
+            session: &session,
+            signals: &signals,
+            project_open: true,
+            max_sensitivity: Sensitivity::Sensitive,
+        };
+        let decision = JaymiDefaultContextPolicy.evaluate(&candidate(
+            "editor",
+            &inputs,
+            Sensitivity::Private,
+        ));
+        assert!(decision.participate);
+        assert!(decision.requires_user_approval);
+        assert!(decision.reason.contains("user approval"));
+    }
+
+    #[test]
+    fn memory_marks_exclude_sensitive_with_redact_constraint() {
+        let request = UserRequest::new("remember this");
+        let session = ContextSessionInputs::default();
+        let signals = RelevanceSignals::derive(&request, &session);
+        let inputs = ContextPolicyInputs {
+            request: &request,
+            session: &session,
+            signals: &signals,
+            project_open: false,
+            max_sensitivity: Sensitivity::Sensitive,
+        };
+        let decision = JaymiDefaultContextPolicy.evaluate(&candidate(
+            "memory",
+            &inputs,
+            Sensitivity::Private,
+        ));
+        assert!(decision.participate);
+        assert!(decision.exclude_sensitive);
+        assert!(decision.constraints.redact_memory_content);
+    }
+
+    #[test]
+    fn sensitive_provider_requires_approval() {
+        let request = UserRequest::new("hello");
+        let session = ContextSessionInputs::default();
+        let signals = RelevanceSignals::derive(&request, &session);
+        let inputs = ContextPolicyInputs {
+            request: &request,
+            session: &session,
+            signals: &signals,
+            project_open: false,
+            max_sensitivity: Sensitivity::Sensitive,
+        };
+        let decision = JaymiDefaultContextPolicy.evaluate(&candidate(
+            "custom_sensitive",
+            &inputs,
+            Sensitivity::Sensitive,
+        ));
+        assert!(decision.participate);
+        assert!(decision.requires_user_approval);
     }
 }

@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use jaymi_core::JaymiResult;
-use jaymi_project_engine::ProjectEngineApi;
 use jaymi_search::SearchEngineApi;
 
 use crate::provider::{ContextContribution, ContextProvider, ProviderRequest};
@@ -12,15 +11,17 @@ use crate::relevance::{IntentTag, RelevanceScore, RequestKind};
 use crate::{ContextSource, SearchContextHint, SearchResultsSection};
 
 /// Contributes search coordination hints and any pre-attached session hits.
+///
+/// Never calls [`SearchEngineApi::search`] and never loads Project context —
+/// index summaries are host-supplied on the session.
 pub struct SearchProvider {
     search: Arc<dyn SearchEngineApi>,
-    projects: Arc<dyn ProjectEngineApi>,
 }
 
 impl SearchProvider {
-    /// Create a provider wired to Search + Project (for index summary only).
-    pub fn new(search: Arc<dyn SearchEngineApi>, projects: Arc<dyn ProjectEngineApi>) -> Self {
-        Self { search, projects }
+    /// Create a provider wired to Search Engine (kept for future scoped use).
+    pub fn new(search: Arc<dyn SearchEngineApi>) -> Self {
+        Self { search }
     }
 }
 
@@ -65,8 +66,7 @@ impl ContextProvider for SearchProvider {
                 + hit.preview.as_ref().map(|p| p.chars().count()).unwrap_or(0)
                 + 32;
         }
-        // Project index hint may add a small constant; detail comes from contribute.
-        if self.projects.open_project_id().is_some() {
+        if request.session.project_indexed_documents.is_some() {
             chars += 48;
         }
         BudgetEstimate::flexible(BudgetUnits::from_characters(chars, 4))
@@ -79,18 +79,7 @@ impl ContextProvider for SearchProvider {
         let _ = &self.search; // keep Search Engine wired; do not call search()
 
         let structured = request.request.search.as_ref();
-        let project_indexed = match self.projects.project_context(None) {
-            Ok(Some(ctx)) => Some(ctx.search_index.indexed_file_count),
-            Ok(None) => None,
-            Err(error) => {
-                jaymi_logging::warn(
-                    "context.provider.search",
-                    format!("project index unavailable: {}", error.message()),
-                );
-                None
-            }
-        };
-
+        let project_indexed = request.session.project_indexed_documents;
         let hits = request.session.search_hits.clone();
         let hint = if structured.is_some() || project_indexed.is_some() {
             Some(SearchContextHint {

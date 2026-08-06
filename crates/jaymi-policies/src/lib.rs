@@ -1,7 +1,9 @@
-//! Policy Engine for Jaymi.
+//! Action Policy Engine for Jaymi.
 //!
-//! Fourth subsystem in the deterministic boot sequence.
-//! Policies express preferences. Permissions answer authorization.
+//! Fourth subsystem in the deterministic boot sequence (lifecycle name
+//! `policy_engine`). Action Policies express preferences for tool/provider
+//! candidates. They are distinct from Context Policies in `jaymi-context`.
+//! Permissions answer authorization.
 
 #![forbid(unsafe_code)]
 
@@ -17,7 +19,8 @@ use scope::PolicyScope;
 pub use evaluation::{ExecutionCandidate, PolicyEvaluation};
 
 const NAME: &str = "policy_engine";
-const DEPENDENCIES: &[&str] = &["configuration", "logging", "database"];
+// Preferences only — persistence is Target; no database peer yet.
+const DEPENDENCIES: &[&str] = &["configuration", "logging"];
 
 /// An active policy influencing Planner decisions.
 #[derive(Debug, Clone)]

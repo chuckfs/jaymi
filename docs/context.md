@@ -6,13 +6,30 @@ The Context Engine is the sole request-context assembler for the Planner. This d
 
 The Context Engine assembles only the knowledge required for the current request.
 
-The Planner calls a single method:
+The Planner calls after Intent and Capability resolution:
 
 ```text
-ContextEngine::assemble(request) -> ContextBundle
+ContextEngine::assemble_with(request, hints) -> ContextBundle
 ```
 
-The Planner does not coordinate Memory, Project, Search, or session workspace state itself.
+`hints` carries the canonical [`IntentId`](../crates/jaymi-core/src/intent.rs) and selected capability ids into Context Policy / relevance. Context never invents a second intent taxonomy. The Planner does not coordinate Memory, Project, Search, or session workspace state itself.
+
+---
+
+## Ownership (one purpose each)
+
+| Subsystem | Owns | Must not |
+|-----------|------|----------|
+| **Context Providers** | Contribute their own sections | Decide policy, assemble other providers, execute tools, select capabilities |
+| **Context Policies** | Participate / priority / constraints / sensitivity | Gather context, mutate providers, execute tools |
+| **Context Engine** | Assemble under policy + relevance + budget | Determine Intent, select Capabilities, invent session state, execute tools |
+| **Planner** | Orchestrate Intent → Capability → assemble; then branch (tool-backed Action Policy → Permission → Tools, or session/plan/unsupported return) | Reimplement Context Policy or build parallel context sections |
+| **Behaviors** | Execute (Planned) | — |
+| **Tools** | Perform work (search / read / write / …) | Run inside Context assemble |
+
+Host (`Application`) pushes `ContextSessionInputs` (workspace, editor, diagnostics, permissions, project-open, search hits). Request-selected capabilities arrive only via `AssembleHints`.
+
+**Context Policy** (`jaymi-context`) ≠ **Action Policy** (`jaymi-policies`).
 
 ---
 
@@ -52,7 +69,7 @@ Rules:
 |----------|-------------|----------------|
 | `ConversationProvider` | Conversation summary | No active conversation |
 | `ProjectProvider` | Active project / `ProjectContext` | No open project |
-| `WorkspaceProvider` | Active workspace kind + session capabilities | Neither is set |
+| `WorkspaceProvider` | Active workspace kind + request-selected capabilities (from Planner `AssembleHints`) | Neither is set |
 | `EditorProvider` | Current file / selection / open files | No editor session data |
 | `SearchProvider` | Search coordination hint + session hits (never executes search) | No structured search, index summary, or hits |
 | `MemoryProvider` | Relevant memories + promotions | — (always contributes memory results) |
@@ -170,19 +187,37 @@ LLMs should eventually consume `LlmContext` instead of querying Memory, Project,
 
 The Context Policy Engine filters and prioritizes Context Providers **before** the ContextBundle is assembled. Policies never gather context — they only decide what may participate.
 
+**Current** request pipeline (see also `ARCHITECTURE.md` / `docs/planner.md`):
+
 ```text
-User Request → Planner → Intent
+User Request → Planner → Intent → Capability
         │
         ▼
 Context Policy Engine  →  Select / constrain providers
         │
         ▼
-Context Engine assemble → ContextBundle → Behavior / Future LLM
+Context Providers → Context Engine assemble → ContextBundle
+        │
+        ▼
+Behavior (Planned) → Action Policies → Permissions → Tools → Response
 ```
+
+Planner passes `AssembleHints` (`IntentId` + capability ids) into `assemble_with`. Context derives relevance facets from that Intent only — it never runs a parallel free-text intent classifier.
 
 ### Decision fields
 
 Each policy answers: participate?, why?, priority?, can_truncate?, requires_user_approval?, exclude_sensitive?, contribution constraints.
+
+These fields are **enforced during assemble**:
+
+| Field | Enforcement |
+|-------|-------------|
+| `participate` | Provider omitted (`SkippedPolicy`) |
+| `requires_user_approval` | Omitted until id is in `session.approved_context_providers` (`SkippedApproval`) |
+| `exclude_sensitive` | Expands to redaction constraints (memory bodies, search previews, selection text) |
+| Contribution constraints | Applied after `contribute`, before budget fit |
+| `can_truncate` | When false, oversized contributions are skipped (`policy_forbids_truncation`) instead of fitted |
+| Sensitivity | Providers above `max_sensitivity` denied unless required; `Sensitive` also requires approval |
 
 ### Initial rules (`jaymi_default_context`)
 
@@ -191,19 +226,19 @@ Each policy answers: participate?, why?, priority?, can_truncate?, requires_user
 | Conversation | Always include (recent interaction) |
 | Project | Only when a project is open |
 | Workspace | Active workspace only |
-| Editor | Current file + selection; open editors excluded by default |
+| Editor | Current file + selection; open editors excluded; **selection text requires approval** |
 | Search | Only when retrieval / files / symbols are required |
-| Memory | Only when the request benefits from matching memories |
+| Memory | Matching memories only; **Private bodies redacted** (`exclude_sensitive`) |
 | Diagnostics | Coding capability or debug intent |
-| Permission | Always include summary (no internal implementation details) |
+| Permission | Always include **summary only** (no explanation/resource detail) |
 
 ### Sensitivity
 
-Providers declare `Sensitivity` (`public` < `workspace` < `project` < `private` < `sensitive`). Policies block oversensitive contributions unless required.
+Providers declare `Sensitivity` (`public` < `workspace` < `project` < `private` < `sensitive`). Policies block oversensitive contributions unless required. `Sensitive` contributions additionally require user approval.
 
 ### Explainability
 
-Every bundle records a `PolicyReport`: active policies, per-provider Included/Excluded reasons, sizes before/after filtering, and assembled size. Surfaced in the Context Inspector and Developer Diagnostics.
+Every bundle records a `PolicyReport`: active policies, per-provider Included/Excluded/Pending reasons, approval status, enforced constraints, truncation reasons, sizes before/after filtering, and assembled size. Surfaced in the Context Inspector and Developer Diagnostics.
 
 ### Extensibility
 
@@ -213,9 +248,25 @@ Every bundle records a `PolicyReport`: active policies, per-provider Included/Ex
 
 ## ContextBundle
 
-`ContextBundle` is the first-class, immutable snapshot assembled for a single request. It does **not** search or reason — it is purely data assembled from providers. Once built, fields are private and only accessors are exposed.
+`ContextBundle` is the **sole authoritative request-context contract** in Jaymi (**Current**).
 
-It is the standard object passed into Planner execution, Behaviors, and future LLM providers (`PlannerResponse.context_bundle`).
+It is the first-class, immutable snapshot assembled for a single request. It does **not** search or reason — it is purely data assembled from providers. Once built, fields are private and only accessors are exposed.
+
+Consumers (**Current** / **Planned**):
+
+| Consumer | Contract |
+|----------|----------|
+| Planner execution | `PlannerResponse.context()` / `.context_bundle` |
+| Behaviors | **Planned** — consume `ContextBundle` only |
+| LLM providers | **Planned** — consume `ContextBundle` or `LlmContext` derived via `ContextEngine::to_llm_context` |
+
+`PlannerResponse` no longer carries parallel `memory_context`, `project_context`, or `search_context` fields. Use:
+
+* `response.memory()` → bundle memory
+* `response.project()` → bundle active project detail
+* `response.promotion_suggestions()` / `response.promotion_ask()` → bundle memory promotions
+
+Administrative Memory/Project CRUD APIs on Application remain for store management — they are not request-context substitutes.
 
 ### Sections
 
@@ -239,30 +290,84 @@ It is the standard object passed into Planner execution, Behaviors, and future L
 
 ## Context Inspector
 
-Developer-facing diagnostics for the most recent `ContextBundle` assemble.
+Developer-facing diagnostics for the most recent `ContextBundle` assemble. Every
+Context decision on that assemble is transparent:
+
+| Field | Meaning |
+|-------|---------|
+| Provider order | Evaluation order (`Eval`) for every provider; budget allocation order (`Alloc`) for ranked providers; `contributor_order` lists accepted providers in allocation order |
+| Relevance score | Per-provider score vs assemble threshold |
+| Policy decisions | Full `PolicyReport` (included / excluded / pending, constraints, reasons) |
+| Sensitivity | Per-provider sensitivity at decision time |
+| Approval requirements | `requires_user_approval` + `approval_status` (`not_required` / `approved` / `pending` / `n/a`) |
+| Budget allocation | Used / max characters & tokens, truncated and budget-skipped providers |
+| Truncation | Per-provider truncate / summarize / budget-skip labels |
+| Cache hit/miss | `cache_status()` (`hit` / `miss`) |
+| Assembly duration | Wall-clock `duration_ms` |
+| Final bundle size | `bundle_size_characters` / `bundle_size_estimated_tokens` |
 
 * Recorded automatically after each successful `ContextEngine::assemble`
 * Read via `ContextEngine::inspect_last` / `Application::inspect_context`
 * Surfaced in **Developer Diagnostics** (and the headless diagnostics dashboard)
-* Shows: contributing providers, contribution sizes, relevance scores, priorities, budget allocation, omitted providers, truncation / summary decisions, bundle section presence, and whether the assemble was a **cache hit**
 * **Does not affect execution** — never re-assembles, never calls providers for side effects
+
+---
+
+## Validation Suite
+
+The Context system is covered by a dedicated validation suite (A10.9):
+
+* **Crate:** `cargo test -p jaymi-context --test validation_suite`
+  — deterministic assembly & ordering, inclusion / exclusion, budget,
+  sensitivity, approval, cache invalidation, bundle immutability,
+  provider independence, Context Policy determinism
+* **App / Planner:** `cargo test -p jaymi --test context_validation`
+  — every `handle` assembles once, attaches `ContextBundle`, inspector
+  explainability, include/exclude through Planner, diagnostics
+
+Together with the focused Context unit and integration tests
+(`context_engine`, `context_contract`, `context_policies`,
+`context_inspector`, `context_session_wiring`, `context_history`),
+the Context Engine is one of the best-tested systems in Jaymi.
 
 ---
 
 ## Boot
 
 1. Context Engine initializes after the Memory Engine (lifecycle dependency).
+   Project Engine and Search Engine are **bound later** via `bind_sources`
+   (not lifecycle `DEPENDENCIES` — boot initializes Context before those engines).
 2. After Project Engine and Search Engine are ready, Application binds sources:
    - Memory Engine
    - Project Engine
    - Search Engine  
    which installs the default `ContextProvider` set.
-3. Planner receives `Arc<ContextEngine>` and calls `assemble` at the start of every `handle`.
-4. Application syncs experience workspace into the Context Engine via `prepare_context_session` before `handle`.
+3. Planner receives `Arc<ContextEngine>` and calls `assemble_with` after Intent and Capability resolution on every `handle`.
+4. Application pushes a full [`ContextSessionInputs`] snapshot via `prepare_context_session` before every `handle` (and after workspace expand/close):
+   - active workspace kind
+   - current file / cursor selection / open files (from CodingState when Coding is open)
+   - diagnostics (Problems panel preferred over raw LSP diagnostics)
+   - permission policy summary (synthesized from Permission Engine)
+   - search panel hits (when present)
+   - `active_capabilities` left empty (request-selected ids arrive only via Planner `AssembleHints`)
+   Closing Coding clears editor / diagnostics / search fields so the bundle does not keep stale UI state.
 
 ---
 
-## What this is not
+## Session inputs
+
+`ContextSessionInputs` is the host contract for UI/engine state the Context Engine cannot discover itself. Placeholders are not used — unset fields are empty, never invented paths or fake grants.
+
+| Field | Source |
+|-------|--------|
+| `workspace_kind` | Experience active workspace |
+| `current_file` / `current_selection` / `open_files` | Coding `OpenEditors` (selection = caret until Monaco selection IPC) |
+| `diagnostics` | Coding Problems (else raw diagnostics) |
+| `permissions` | Permission Engine policy matrix summary |
+| `active_capabilities` | **Deprecated / empty** — request-selected capability ids come only from Planner `AssembleHints`, never from a Capability Engine catalog |
+| `search_hits` | Coding Search panel results |
+
+Active project and conversation still come from Project / Memory engines via providers — not duplicated into session inputs.
 
 * Not a Reasoning Engine
 * Not a language model

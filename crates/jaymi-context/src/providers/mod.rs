@@ -42,13 +42,12 @@ pub struct ProviderDeps {
 
 /// Default provider set registered by [`crate::ContextEngine::bind_sources`].
 pub fn default_providers(deps: ProviderDeps) -> Vec<Arc<dyn ContextProvider>> {
-    let _search = Arc::clone(&deps.search);
     vec![
         Arc::new(ConversationProvider::new(Arc::clone(&deps.memory))),
         Arc::new(ProjectProvider::new(Arc::clone(&deps.projects))),
         Arc::new(WorkspaceProvider),
         Arc::new(EditorProvider),
-        Arc::new(SearchProvider::new(_search, Arc::clone(&deps.projects))),
+        Arc::new(SearchProvider::new(deps.search)),
         Arc::new(MemoryProvider::new(deps.memory)),
         Arc::new(DiagnosticsProvider),
         Arc::new(PermissionProvider),

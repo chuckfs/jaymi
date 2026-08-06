@@ -20,7 +20,11 @@ The database should represent knowledge—not just records.
 * conversations (messages, attachments, references)
 * projects
 
-### Target / scaffolding
+### Target (documented; no unused Rust stubs)
+
+Conceptual entity / relationship model below is the product target. Unused
+placeholder graph types (`entities` / `relationships` / `events` modules) were
+removed — implement against real schema tables when productizing the graph.
 
 * Rich entity / relationship knowledge graph APIs
 * First-class artifact / tool / provider tables beyond identity metadata

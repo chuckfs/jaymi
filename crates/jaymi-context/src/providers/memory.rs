@@ -36,12 +36,16 @@ impl ContextProvider for MemoryProvider {
     fn relevance(&self, request: &ProviderRequest<'_>) -> RelevanceScore {
         let signals = request.relevance;
         RelevanceScore::from_parts([
-            35, // memories are broadly useful
+            35, // memories are broadly useful when policy allows
             if signals.has_intent(IntentTag::Chat) { 30 } else { 0 },
             if matches!(signals.request_kind, RequestKind::Chat) { 20 } else { 0 },
             if signals.has_intent(IntentTag::Project) { 20 } else { 0 },
             if signals.coding_workspace() { 15 } else { 0 },
-            if signals.has_capability("chat") || signals.has_capability("code") {
+            if signals.has_capability("chat")
+                || signals.has_capability("code")
+                || signals.has_capability("search")
+                || signals.has_capability("read_documents")
+            {
                 10
             } else {
                 0
@@ -65,6 +69,9 @@ impl ContextProvider for MemoryProvider {
         &self,
         request: &ProviderRequest<'_>,
     ) -> JaymiResult<Option<ContextContribution>> {
+        // Memory Engine retrieve (not a Tool). Always contributes a snapshot
+        // section when called so promotion suggestions can surface even when no
+        // memory bodies matched the request text.
         let memory = self.memory.assemble_context(&AssembleContextRequest {
             text: request.request.content.clone(),
             conversation_id: self.memory.active_conversation_id(),
@@ -81,6 +88,11 @@ impl ContextProvider for MemoryProvider {
         })?;
         let promotion_ask = PromotionAskDecision::from_suggestions(&promotion_suggestions);
 
+        // Always contribute the Memory Engine snapshot when called — including
+        // empty matching sets — so promotion suggestions still surface even when
+        // no memory bodies matched the request text. Decline only if both the
+        // retrieve and promotion APIs failed to produce a section (impossible
+        // after successful calls above); keep the section for explainability.
         let mut sources = vec![ContextSource::RetrievedMemories];
         if !promotion_suggestions.is_empty() {
             sources.push(ContextSource::PromotionSuggestions);

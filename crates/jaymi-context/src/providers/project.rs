@@ -10,7 +10,11 @@ use crate::budget::{BudgetEstimate, BudgetUnits, ProviderPriority};
 use crate::relevance::{IntentTag, RelevanceScore, RequestKind};
 use crate::{ActiveProjectSection, ContextSource};
 
-/// Contributes open-project workspace context when a project is active.
+/// Contributes open-project identity when a project is active.
+///
+/// Loads Project Engine workspace context for this provider's section only
+/// (not a Tool). Search must not call Project Engine — index summaries are
+/// host-supplied on the session.
 pub struct ProjectProvider {
     projects: Arc<dyn ProjectEngineApi>,
 }

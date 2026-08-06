@@ -14,6 +14,7 @@ pub mod error;
 pub mod file_entry;
 pub mod health;
 pub mod id;
+pub mod intent;
 pub mod lifecycle;
 pub mod lsp;
 pub mod request;
@@ -29,6 +30,7 @@ pub use error::JaymiError;
 pub use file_entry::{EntryType, FileEntry};
 pub use health::HealthReport;
 pub use id::EntityId;
+pub use intent::IntentId;
 pub use lifecycle::Lifecycle;
 pub use lsp::{
     LspCompletionItem, LspDiagnostic, LspHover, LspLocation, LspOperation, LspPosition, LspRange,

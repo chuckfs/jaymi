@@ -14,7 +14,10 @@ pub use categories::{PermissionAction, PermissionCategory};
 pub use scope::PermissionScope;
 
 const NAME: &str = "permission_engine";
-const DEPENDENCIES: &[&str] = &["configuration", "logging", "database", "policy_engine"];
+// Permission checks are independent of Action Policy evaluation; the Planner
+// sequences Policy → Permission at request time. Grants are in-memory today
+// (no database peer until persisted permissions land).
+const DEPENDENCIES: &[&str] = &["configuration", "logging"];
 
 /// A request for authorization before a protected action.
 #[derive(Debug, Clone)]

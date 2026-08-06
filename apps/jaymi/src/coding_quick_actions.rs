@@ -88,11 +88,14 @@ impl QuickAction {
     }
 }
 
-/// Result of dispatching a quick action — Planner intent or panel focus.
+/// Result of dispatching a quick action — composer seed or panel focus.
+///
+/// This is a **UI effect**, not Planner [`jaymi_core::IntentId`]. Prompts inserted
+/// into the composer are later classified by the Planner Decision Engine.
 ///
 /// Produced by [`dispatch_quick_action`]; applied by the app shell, never by paint.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QuickActionIntent {
+pub enum QuickActionEffect {
     /// Insert a Planner prompt into the conversation composer.
     InsertPlannerPrompt(&'static str),
     /// Open / focus the Search (Find in Files) dock page.
@@ -105,20 +108,20 @@ pub enum QuickActionIntent {
     FocusGitPanel,
 }
 
-/// Map a bar button to a Planner / dock intent (pure; no UI side effects).
-pub fn dispatch_quick_action(action: QuickAction) -> QuickActionIntent {
+/// Map a bar button to a composer seed or dock focus (pure; no UI side effects).
+pub fn dispatch_quick_action(action: QuickAction) -> QuickActionEffect {
     match action {
         QuickAction::Explain => {
-            QuickActionIntent::InsertPlannerPrompt("Explain the current file")
+            QuickActionEffect::InsertPlannerPrompt("Explain the current file")
         }
-        QuickAction::Edit => QuickActionIntent::InsertPlannerPrompt("Edit the current file"),
+        QuickAction::Edit => QuickActionEffect::InsertPlannerPrompt("Edit the current file"),
         QuickAction::Refactor => {
-            QuickActionIntent::InsertPlannerPrompt("Refactor the selected code")
+            QuickActionEffect::InsertPlannerPrompt("Refactor the selected code")
         }
-        QuickAction::Search => QuickActionIntent::OpenSearchPanel,
-        QuickAction::Run => QuickActionIntent::OpenTerminalPanel,
-        QuickAction::Terminal => QuickActionIntent::FocusTerminalPanel,
-        QuickAction::Git => QuickActionIntent::FocusGitPanel,
+        QuickAction::Search => QuickActionEffect::OpenSearchPanel,
+        QuickAction::Run => QuickActionEffect::OpenTerminalPanel,
+        QuickAction::Terminal => QuickActionEffect::FocusTerminalPanel,
+        QuickAction::Git => QuickActionEffect::FocusGitPanel,
     }
 }
 
@@ -358,31 +361,31 @@ mod tests {
     fn quick_action_dispatch() {
         assert_eq!(
             dispatch_quick_action(QuickAction::Explain),
-            QuickActionIntent::InsertPlannerPrompt("Explain the current file")
+            QuickActionEffect::InsertPlannerPrompt("Explain the current file")
         );
         assert_eq!(
             dispatch_quick_action(QuickAction::Edit),
-            QuickActionIntent::InsertPlannerPrompt("Edit the current file")
+            QuickActionEffect::InsertPlannerPrompt("Edit the current file")
         );
         assert_eq!(
             dispatch_quick_action(QuickAction::Refactor),
-            QuickActionIntent::InsertPlannerPrompt("Refactor the selected code")
+            QuickActionEffect::InsertPlannerPrompt("Refactor the selected code")
         );
         assert_eq!(
             dispatch_quick_action(QuickAction::Search),
-            QuickActionIntent::OpenSearchPanel
+            QuickActionEffect::OpenSearchPanel
         );
         assert_eq!(
             dispatch_quick_action(QuickAction::Run),
-            QuickActionIntent::OpenTerminalPanel
+            QuickActionEffect::OpenTerminalPanel
         );
         assert_eq!(
             dispatch_quick_action(QuickAction::Terminal),
-            QuickActionIntent::FocusTerminalPanel
+            QuickActionEffect::FocusTerminalPanel
         );
         assert_eq!(
             dispatch_quick_action(QuickAction::Git),
-            QuickActionIntent::FocusGitPanel
+            QuickActionEffect::FocusGitPanel
         );
     }
 

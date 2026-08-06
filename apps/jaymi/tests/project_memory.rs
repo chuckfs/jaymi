@@ -126,7 +126,7 @@ fn continue_working_on_jaymi_restores_project_context_with_isolation() {
         "unexpected content: {}",
         restored.content
     );
-    let context = restored.project_context.expect("project context");
+    let context = restored.project().cloned().expect("project context");
     assert_eq!(context.project.id, jaymi.id);
     assert_eq!(context.memories.architecture_decisions.len(), 1);
     assert_eq!(context.memories.tasks.len(), 1);

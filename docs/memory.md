@@ -28,9 +28,13 @@ Every memory should have a purpose.
 
 Memory Architecture
 
-**Current request path** for Planner responses:
+**Current request path** for Planner responses (Memory contributes via Context Provider):
 
-User → Conversation → Planner → Context Engine → Memory Engine → Memory Store
+```text
+User → Conversation → Planner → Intent → Capability
+  → Context Policy → MemoryProvider (among others) → ContextBundle
+  → Action Policy → Permission → Tools → Response
+```
 
 Administrative store / promote / personal CRUD may call the Memory Engine directly (not a request bypass).
 
@@ -41,10 +45,10 @@ User
 Conversation
    │
    ▼
-Planner
+Planner (Intent → Capability)
    │
    ▼
-Context Engine  (assemble)
+Context Engine  (assemble_with → MemoryProvider)
    │
    ▼
 Memory Engine
@@ -57,9 +61,9 @@ Retrieve      Promote
 Memory Store  Memory Store
 ```
 
-The Planner decides when memory is useful for a request (via Context).
-
-The Memory Engine decides how it is stored and retrieved.
+The Planner triggers Context assemble for every request. Context Policy and
+MemoryProvider decide whether memory sections are included; the Memory Engine
+owns how memories are stored and retrieved.
 
 ⸻
 

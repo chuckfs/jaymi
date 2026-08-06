@@ -41,7 +41,7 @@ pub struct ContextCacheKey {
     pub conversation_id: Option<String>,
     /// Active editor file path, when any.
     pub active_file: Option<String>,
-    /// Coarse request type (`chat`, `file_read`, `search`, …).
+    /// Canonical Intent id label (`read_file`, `search_knowledge`, `unknown`, …).
     pub request_type: String,
     /// Fingerprint of request content + structured fields (correctness).
     pub request_fingerprint: u64,
@@ -51,6 +51,8 @@ pub struct ContextCacheKey {
     pub budget_max_characters: usize,
     /// Fingerprint of active context policies.
     pub policy_fingerprint: u64,
+    /// Fingerprint of Planner AssembleHints (intent + capability ids).
+    pub hints_fingerprint: u64,
 }
 
 impl ContextCacheKey {
@@ -64,6 +66,7 @@ impl ContextCacheKey {
         relevance_threshold: u8,
         budget: &ContextBudgetConfig,
         policy_fingerprint: u64,
+        hints_fingerprint: u64,
     ) -> Self {
         let project_id = identity.and_then(|id| id.projects.open_project_id());
         let conversation_id = identity.and_then(|id| id.memory.active_conversation_id());
@@ -73,11 +76,12 @@ impl ContextCacheKey {
             workspace_kind: session.workspace_kind.clone(),
             conversation_id,
             active_file: session.current_file.path.clone(),
-            request_type: signals.request_kind.as_str().to_string(),
+            request_type: signals.intent.as_str().to_string(),
             request_fingerprint: fingerprint_request(request, signals.request_kind),
             relevance_threshold,
             budget_max_characters: budget.max_characters,
             policy_fingerprint,
+            hints_fingerprint,
         }
     }
 }
@@ -266,6 +270,7 @@ mod tests {
             relevance_threshold: 40,
             budget_max_characters: 32_000,
             policy_fingerprint: 0,
+            hints_fingerprint: 0,
         }
     }
 

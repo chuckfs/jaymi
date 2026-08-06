@@ -26,11 +26,11 @@ Registration is not the same as executability. Planned capabilities remain regis
 
 ## Current catalog defaults
 
-**Ready:** Search, Read Documents, Discover, Index
+**Ready:** Search, Read Documents, Discover, Index, File Management, Execute Terminal Commands
 
 **Experimental:** Code, Embeddings, Vision
 
-**Planned:** OCR (placeholder provider only — not executable), Chat, Generate Images, Browse the Web, Organize Files, Execute Terminal Commands, Automate Tasks, File Management, Internet, Automation
+**Planned:** OCR (placeholder provider only — not executable), Chat, Generate Images, Browse the Web, Organize Files, Automate Tasks, Internet, Automation
 
 Effective availability can demote Ready / Experimental to Unavailable when required tools or providers are missing. Planned stays Planned until the product promotes it.
 
@@ -63,7 +63,8 @@ Subsystem diagnostics use a separate readiness vocabulary: **Operational / Exper
 ## Architecture
 
 ```
-Request → Context → Capability (availability) → Policy → Permission → Execution Plan → Tools
+User Request → Intent → Capability → Context Policy → Context Engine → ContextBundle
+  → Behavior (Planned) → Action Policy → Permission → Tools → Providers → Response
 ```
 
 Preserve the Capability Engine as the owner of catalog metadata and availability assessment. Tools remain interchangeable implementations under stable capability ids.

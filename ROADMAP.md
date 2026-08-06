@@ -31,7 +31,7 @@ Progress
 | 8 | Provider Ecosystem | **Partial** (Registry + 3 local providers; plugins Target) |
 | 9 | Daily Driver | **Target** |
 
-Architectural Integrity (orthogonal to layers): Context sole assemble path, Project ownership, Planner responsibilities, Planner integrity (requests via `handle`), Provider simplification (no ProviderManager), Capability availability (Ready / Experimental / Planned / Unavailable), Pipeline consistency (project knowledge via Cap → Policy → Permission → Tool), Session ownership (one project open/close lifecycle), Documentation & Diagnostics (Operational / Experimental / Stub / Disabled) — **Current**.
+Architectural Integrity (orthogonal to layers): Context sole assemble path, ContextBundle sole request-context contract on `PlannerResponse`, Project ownership, Planner responsibilities, Planner integrity (requests via `handle`), Provider simplification (no ProviderManager), Capability availability (Ready / Experimental / Planned / Unavailable), canonical request pipeline (Intent → Capability → Context Policy → assemble → Action Policy → Permission → Tool), Session ownership (one project open/close lifecycle), Documentation & Diagnostics (Operational / Experimental / Stub / Disabled) — **Current**. Behavior stage after ContextBundle — **Planned**.
 
 ⸻
 
@@ -60,7 +60,7 @@ Exit Criteria
 
 Jaymi launches and can execute a simple tool through the planner.
 
-Shipped when: boot sequence completes; list/read/search pipelines pass through Planner → Policy → Permission → Tool.
+Shipped when: boot sequence completes; list/read/search pipelines pass through Planner → Intent → Capability → Context → Action Policy → Permission → Tool.
 
 ⸻
 

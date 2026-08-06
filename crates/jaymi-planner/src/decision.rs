@@ -6,9 +6,15 @@
 use std::path::PathBuf;
 
 use jaymi_capabilities::Capability;
-use jaymi_core::{DiscoveryQueryKind, GitOperation, SearchRequest, TerminalOperation, UserRequest};
+use jaymi_core::{
+    DiscoveryQueryKind, GitOperation, IntentId, SearchRequest, TerminalOperation, UserRequest,
+};
 
 /// Deterministic intents recognized by the Planner.
+///
+/// Payload-bearing resolution of user goals. The shared identity is
+/// [`IntentId`] via [`Intent::id`] — Context and other subsystems must use
+/// that id, never a parallel classifier.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)]
 pub enum Intent {
@@ -120,6 +126,31 @@ pub enum Intent {
     },
     /// Request could not be mapped to a supported intent.
     Unknown,
+}
+
+impl Intent {
+    /// Canonical Intent identity shared with Context / Capabilities / Policies.
+    pub fn id(&self) -> IntentId {
+        match self {
+            Self::ListDirectory { .. } => IntentId::ListDirectory,
+            Self::ListProjectTree { .. } => IntentId::ListProjectTree,
+            Self::ReadFile { .. } => IntentId::ReadFile,
+            Self::WriteFile { .. } => IntentId::WriteFile,
+            Self::ManagePath { .. } => IntentId::ManagePath,
+            Self::RunTerminal { .. } => IntentId::RunTerminal,
+            Self::Git { .. } => IntentId::Git,
+            Self::Lsp { .. } => IntentId::Lsp,
+            Self::DiscoverInventory { .. } => IntentId::DiscoverInventory,
+            Self::SearchKnowledge { .. } => IntentId::SearchKnowledge,
+            Self::IndexRoots { .. } => IntentId::IndexRoots,
+            Self::ContinueProject { .. } => IntentId::ContinueProject,
+            Self::OpenProject { .. } => IntentId::OpenProject,
+            Self::CloseProject => IntentId::CloseProject,
+            Self::SearchProjectKnowledge { .. } => IntentId::SearchProjectKnowledge,
+            Self::PlanWork { .. } => IntentId::PlanWork,
+            Self::Unknown => IntentId::Unknown,
+        }
+    }
 }
 
 /// Deterministic decision-making component of the Planner.
@@ -933,5 +964,40 @@ mod tests {
         let engine = DecisionEngine;
         let request = UserRequest::new("hello");
         assert_eq!(engine.determine_intent(&request), Intent::Unknown);
+    }
+
+    #[test]
+    fn structured_intent_id_matches_shared_classifier() {
+        let engine = DecisionEngine;
+        let cases: Vec<UserRequest> = vec![
+            UserRequest::search(SearchRequest::free_text("fungi")),
+            UserRequest::read_file("/tmp/a.rs"),
+            UserRequest::new("hello"),
+        ];
+        for request in cases {
+            let intent = engine.determine_intent(&request);
+            let structured = IntentId::from_structured_request(&request);
+            // Free-text-only requests: both Unknown. Structured payloads: ids equal.
+            if structured != IntentId::Unknown {
+                assert_eq!(
+                    intent.id(),
+                    structured,
+                    "Planner Intent.id must match IntentId::from_structured_request"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn free_text_search_is_planner_only_not_structured_classifier() {
+        let engine = DecisionEngine;
+        let request = UserRequest::new("search fungi");
+        let intent = engine.determine_intent(&request);
+        assert_eq!(intent.id(), IntentId::SearchKnowledge);
+        assert_eq!(
+            IntentId::from_structured_request(&request),
+            IntentId::Unknown,
+            "Context must not invent free-text search without Planner hints"
+        );
     }
 }

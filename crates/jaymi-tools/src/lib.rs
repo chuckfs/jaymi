@@ -46,15 +46,11 @@ pub use write_file::{WriteFileTool, WRITE_FILE_TOOL_ID};
 use jaymi_core::{HealthReport, JaymiResult, Lifecycle};
 
 const NAME: &str = "tool_registry";
+// Registry only — policy/permission/memory/context are Planner concerns.
 const DEPENDENCIES: &[&str] = &[
     "configuration",
     "logging",
     "database",
-    "policy_engine",
-    "permission_engine",
-    "memory_engine",
-    "context_engine",
-    "capability_engine",
     "provider_registry",
 ];
 

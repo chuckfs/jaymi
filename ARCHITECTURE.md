@@ -49,17 +49,18 @@ System Overview
                      ▼
              Planner (Kernel)
                      │
-                     ▼
+          Intent → Capability
+                     │
+         Context Policy Engine
+                     │
+          Context Providers
+                     │
               Context Engine
            (sole assemble path)
                      │
-     ┌───────────────┼────────────────┐
-     │               │                │
- Memory Engine  Project Engine  Search Engine
-     │               │                │
-     └───────────────┼────────────────┘
+              ContextBundle
                      │
-      Capability / Policy / Permission
+      Action Policy / Permission
                      │
              Tool Orchestrator
                      │
@@ -73,6 +74,8 @@ Every **user request** follows this architecture through `Planner::handle`.
 There are no shortcuts for request handling.
 
 Administrative Memory/Project CRUD may resolve owning engines directly (see Planner section).
+
+**Planned (not Current):** a Behavior stage after `ContextBundle` and before Action Policies.
 
 ### Target Architecture (periphery)
 
@@ -98,23 +101,44 @@ It does not own long-lived Memory or Project CRUD APIs.
 
 Those belong to the Memory Engine and Project Engine. Application calls those engines directly for administrative work.
 
-Instead, the Planner orchestrates:
+Instead, the Planner orchestrates the **canonical request pipeline** (**Current**):
 
-Request → Context → Capability → Policy → Permission → Execution Plan → Tool Engine → Response
+```text
+User Request
+  → Planner
+  → Intent Resolution
+  → Capability Resolution
+  → Context Policy Engine
+  → Context Providers
+  → Context Engine
+  → ContextBundle
+  → Behavior                          # Planned — not implemented
+  → Action Policies
+  → Permissions
+  → Tool Orchestrator
+  → Providers
+  → Planner Response
+```
+
+Context Policies (which providers may contribute) are distinct from Action Policies (whether a tool/provider candidate may run).
 
 It decides:
 
-* What is the user trying to accomplish?
-* What information is required?
-* Which memories are relevant?
+* What is the user trying to accomplish? (Intent)
 * Which capabilities are needed?
-* Which tools should be used?
-* Does this require user approval?
+* Which tools should be used? (via Capability → Tool Orchestrator on tool-backed paths)
 * What should happen next?
 
-Nothing bypasses it for request handling.
+Context Policy + providers decide which memories / project / search sections
+are relevant during assemble. Action Policy + Permission decide whether a
+tool candidate may run and whether user approval is required.
 
-Project knowledge search is a Planner-mediated request (`UserRequest::search_project_knowledge` → `handle` → Cap → Policy → Permission → `search_project_knowledge` tool → Project Engine).
+Every user-facing request enters `Planner::handle`. After Context assemble,
+paths **branch** (tool-backed vs session vs PlanWork vs unsupported) — see
+[docs/planner.md](docs/planner.md#request-lifecycle). That is not an
+Application→Engine bypass.
+
+Project knowledge search is a Planner-mediated request (`UserRequest::search_project_knowledge` → `handle` → Intent → Capability → Context assemble → Action Policy → Permission → `search_project_knowledge` tool → Project Engine).
 
 Project session open/close has one lifecycle: Application delegates → Planner orchestrates → Project Engine owns open state (Memory mirrors the id). There is no Application→Engine session bypass.
 
@@ -126,18 +150,17 @@ Context Engine
 
 Status: **Current**
 
-The Context Engine determines what Jaymi should know before responding.
+The Context Engine **assembles** only the context required for the current request.
 
-Rather than loading everything into a model, it builds only the context required for the current request.
+The Planner calls `ContextEngine::assemble_with` **after** Intent and Capability resolution, passing `AssembleHints` (`IntentId` + capability ids). Context Policy and providers derive relevance from that Intent only — they do not re-classify free-text intent.
 
-The Planner calls exactly one method: `ContextEngine::assemble`.
+Ownership:
 
-The Context Engine coordinates:
-
-* Memory Engine (relevant memories and promotion suggestions)
-* Project Engine (open project workspace)
-* Search Engine (coordination hints when appropriate — tools still execute search)
-* Active workspace / session state
+* **Providers** contribute their own sections (Memory / Project / Search coordination / session-backed editor data)
+* **Context Policies** decide participation only
+* **Context Engine** orchestrates providers under policy + relevance + budget — it does not determine Intent, select Capabilities, invent session state, or execute tools
+* **Host** pushes `ContextSessionInputs` before assemble
+* **Tools** perform search / filesystem work after Action Policy + Permission
 
 It returns a unified `ContextBundle`. The Planner does not assemble these pieces itself.
 
@@ -147,7 +170,7 @@ Context History retains recent bundles with timestamp, request, providers used, 
 
 The LLM-facing Context API (`ContextEngine::to_llm_context` → `LlmContext`) converts a bundle into a stable, deterministically serializable structure for future model consumers — no model calls, no prompts. See `docs/context.md`.
 
-Context Policies (`ContextPolicyEngine`) decide which providers may participate before assemble — relevant, minimal, privacy-aware, deterministic, and explainable. Independent of the action Policy Engine and of any LLM.
+Context Policies (`ContextPolicyEngine`) decide which providers may participate before assemble — relevant, minimal, privacy-aware, deterministic, and explainable. Independent of the **Action Policy Engine** (`jaymi-policies`, lifecycle name `policy_engine`) and of any LLM.
 
 ### Context Providers
 
@@ -159,7 +182,7 @@ Initial providers: Conversation, Project, Workspace, Editor, Search, Memory, Dia
 
 First-class sections: Conversation, Active Project, Active Workspace, Current File, Current Selection, Open Files, Search Results, Memory Results, Diagnostics, Permissions, Planner Metadata, Active Capabilities, User Request Metadata.
 
-The bundle never searches or reasons — Planner execution, Behaviors, and future LLM providers consume it as a frozen snapshot (`PlannerResponse.context_bundle`).
+The bundle never searches or reasons — Planner execution, Behaviors (**Planned**), and future LLM providers consume it as a frozen snapshot (`PlannerResponse.context()` / `context_bundle`). Parallel `memory_context` / `project_context` / `search_context` response fields are removed; use bundle accessors.
 
 ### Target context sources (not yet assembled)
 
@@ -295,11 +318,11 @@ The user remains in control.
 
 ⸻
 
-Policy Engine
+Action Policy Engine
 
-Status: **Partial**
+Status: **Partial** (`jaymi-policies`, lifecycle name `policy_engine`)
 
-Policies constrain tool candidates before permissions.
+Action Policies constrain **tool/provider candidates** after Capability resolution and Context assemble — before Permission checks. Distinct from Context Policies (`jaymi-context`).
 
 ### Current enforced (boot-active)
 

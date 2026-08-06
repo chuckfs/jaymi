@@ -49,23 +49,29 @@ Instead, those decisions emerge from active policies.
 
 ⸻
 
-Policy Engine
+Policy Engine (Action Policy)
 
-Every request passes through the Policy Engine before execution.
+**Status: Partial** — Offline First and Privacy Maximum enforced · other builtins declared
 
-User
-↓
-Planner
-↓
-Policy Engine
-↓
-Capability Selection
-↓
-Tool Selection
-↓
-Execution
+Action Policies (`jaymi-policies`, lifecycle name `policy_engine`) express preferences for **tool/provider candidates**. They are distinct from **Context Policies** (`jaymi-context`), which decide which Context Providers may contribute during assemble.
 
-Policies influence planning.
+Every **tool-backed** request evaluates Action Policy after Capability resolution and Context assemble — never before Capability Selection.
+
+```text
+User Request
+  → Planner
+  → Intent
+  → Capability Selection
+  → Context Policy → Providers → ContextBundle
+  → Behavior                          # Planned — not implemented
+  → Action Policy Engine              # jaymi-policies
+  → Permission Engine
+  → Tool Selection / Execution
+```
+
+Session open/close, PlanWork, and unsupported/chat paths assemble a ContextBundle but do **not** run Action Policy → Tool.
+
+Policies influence planning and candidate selection.
 
 They never perform work themselves.
 

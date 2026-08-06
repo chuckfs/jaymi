@@ -125,7 +125,7 @@ fn project_knowledge_and_user_requests_traverse_the_planner() {
     assert_eq!(planner.handle_count(), handles_before + 4);
 
     let continued = app.continue_project("Integrity").expect("continue");
-    assert!(continued.project_context.is_some());
+    assert!(continued.project().is_some());
     assert_eq!(planner.handle_count(), handles_before + 5);
     assert_eq!(context.assemble_count(), assembles_before + 5);
 

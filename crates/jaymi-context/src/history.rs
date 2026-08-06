@@ -7,7 +7,7 @@ use std::collections::VecDeque;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::bundle::ContextBundle;
-use crate::inspector::{inspect_bundle_sections, ContextInspectorReport};
+use crate::inspector::{measure_bundle_size, ContextInspectorReport};
 
 /// Default number of recent assembles retained.
 pub const DEFAULT_HISTORY_CAPACITY: usize = 32;
@@ -162,19 +162,6 @@ impl ContextHistory {
         }
         lines.join("\n")
     }
-}
-
-/// Prefer budget accounting; fall back to inspected section character sums.
-pub fn measure_bundle_size(bundle: &ContextBundle, chars_per_token: usize) -> (usize, usize) {
-    if let Some(budget) = bundle.budget() {
-        return (budget.used_characters, budget.estimated_tokens);
-    }
-    let characters: usize = inspect_bundle_sections(bundle, chars_per_token)
-        .into_iter()
-        .map(|section| section.characters)
-        .sum();
-    let tokens = characters / chars_per_token.max(1);
-    (characters, tokens)
 }
 
 fn unix_now_ms() -> u64 {

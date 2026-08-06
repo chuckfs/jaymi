@@ -85,7 +85,7 @@ Jaymi’s architectural kernel is shipped through Layers 0–6, with foundation 
 
 The Context Engine assembles request context for every Planner request.
 
-Administrative Memory and Project CRUD resolve owning engines directly; user retrieval (search, list, read, discover, continue, open/close project, project knowledge) always goes through the Planner. Project knowledge uses Cap → Policy → Permission → Tool. Project session open/close has one Planner-orchestrated lifecycle (Project Engine owns open state).
+Administrative Memory and Project CRUD resolve owning engines directly; user retrieval (search, list, read, discover, continue, open/close project, project knowledge) always goes through the Planner. Project knowledge follows the canonical pipeline through Action Policy → Permission → Tool. Project session open/close has one Planner-orchestrated lifecycle (Project Engine owns open state).
 
 ⸻
 

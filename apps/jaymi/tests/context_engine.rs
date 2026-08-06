@@ -54,7 +54,7 @@ fn every_planner_request_flows_through_context_engine() {
 }
 
 #[test]
-fn context_bundle_includes_memory_and_optional_workspace() {
+fn context_bundle_includes_workspace_and_user_request() {
     let data_dir = temp_dir("context-bundle");
     let app = Application::boot_with_data_dir(&data_dir).expect("boot");
     let context = app
@@ -67,22 +67,21 @@ fn context_bundle_includes_memory_and_optional_workspace() {
         .assemble(&UserRequest::new("remember this workspace"))
         .expect("assemble");
 
-    assert!(bundle.sources().contains(&ContextSource::RetrievedMemories));
+    assert!(
+        bundle.sources().contains(&ContextSource::RetrievedMemories),
+        "MemoryProvider contributes a Memory Engine snapshot when it participates"
+    );
     assert!(bundle.sources().contains(&ContextSource::ActiveWorkspace));
     assert_eq!(bundle.workspace_kind(), Some("coding"));
     assert!(bundle.assemble_generation() >= 1);
 
-    // Public Planner response still carries memory context from the bundle.
+    // Canonical contract: memory accessor is on ContextBundle only (may be empty bodies).
     let response = app
         .handle(UserRequest::new("unsupported unique phrase xyzzy"))
         .expect("handle");
-    assert!(response.memory_context.is_some());
-    assert!(
-        response.context_bundle.is_some(),
-        "PlannerResponse must carry the immutable ContextBundle"
-    );
-    let bundle = response.context_bundle.as_ref().unwrap();
-    assert!(bundle.sources().contains(&ContextSource::RetrievedMemories));
+    assert!(response.context().is_some(), "handle must attach ContextBundle");
+    assert!(response.memory().is_some());
+    let bundle = response.context().unwrap();
     assert!(bundle.sources().contains(&ContextSource::UserRequest));
 }
 

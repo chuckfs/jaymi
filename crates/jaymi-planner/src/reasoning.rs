@@ -13,8 +13,8 @@ impl ReasoningEngine {
         false
     }
 
-    /// Honest status label for diagnostics.
+    /// Honest status label for diagnostics (`stub` — no backend wired yet).
     pub fn status_label(&self) -> &'static str {
-        "not_implemented"
+        "stub"
     }
 }

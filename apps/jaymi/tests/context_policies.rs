@@ -92,3 +92,26 @@ fn plain_chat_excludes_search_via_policy_or_relevance() {
         search.outcome
     );
 }
+
+#[test]
+fn policy_report_exposes_approval_and_constraint_fields() {
+    let data_dir = temp_dir("approval");
+    let app = Application::boot_with_data_dir(&data_dir).expect("boot");
+    let _ = app
+        .handle(UserRequest::new("hello policy enforcement"))
+        .expect("handle");
+
+    let report = app.inspect_context().expect("inspect").expect("report");
+    let policy = report.policy.as_ref().expect("policy");
+    assert!(policy.decisions.iter().any(|d| {
+        d.provider_id == "permission"
+            && d.included
+            && d.constraints.iter().any(|c| c == "permission_summary_only")
+    }));
+    assert!(policy.decisions.iter().any(|d| {
+        d.provider_id == "memory" && d.exclude_sensitive && !d.constraints.is_empty()
+    }));
+    let rendered = report.render();
+    assert!(rendered.contains("pending_approval=") || rendered.contains("Approval"));
+    assert!(rendered.contains("Constraints") || rendered.contains("permission_summary_only"));
+}

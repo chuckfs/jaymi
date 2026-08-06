@@ -5,9 +5,12 @@ use jaymi_core::JaymiResult;
 use crate::provider::{ContextContribution, ContextProvider, ProviderRequest};
 use crate::budget::{BudgetEstimate, BudgetUnits, ProviderPriority};
 use crate::relevance::RelevanceScore;
-use crate::{ActiveWorkspaceSection, ContextSource};
+use crate::{ActiveCapabilitiesSection, ActiveWorkspaceSection, ContextSource};
 
-/// Contributes the active UX workspace kind (and optional capability ids).
+/// Contributes the active UX workspace kind and **request-selected** capabilities.
+///
+/// Capability ids come from Planner [`crate::AssembleHints`] via relevance signals —
+/// never from a host capability catalog.
 pub struct WorkspaceProvider;
 
 impl ContextProvider for WorkspaceProvider {
@@ -21,14 +24,13 @@ impl ContextProvider for WorkspaceProvider {
 
     fn relevance(&self, request: &ProviderRequest<'_>) -> RelevanceScore {
         let session = request.session;
-        if session.workspace_kind.is_none() && session.active_capabilities.capability_ids.is_empty()
-        {
+        let signals = request.relevance;
+        if session.workspace_kind.is_none() && signals.active_capabilities.is_empty() {
             return RelevanceScore::NONE;
         }
-        let signals = request.relevance;
         RelevanceScore::from_parts([
             if session.workspace_kind.is_some() { 70 } else { 0 },
-            if !session.active_capabilities.capability_ids.is_empty() { 40 } else { 0 },
+            if !signals.active_capabilities.is_empty() { 40 } else { 0 },
             if signals.coding_workspace() { 15 } else { 0 },
         ])
     }
@@ -39,9 +41,8 @@ impl ContextProvider for WorkspaceProvider {
             chars += kind.chars().count() + 16;
         }
         chars += request
-            .session
+            .relevance
             .active_capabilities
-            .capability_ids
             .iter()
             .map(|id| id.chars().count() + 1)
             .sum::<usize>();
@@ -53,8 +54,8 @@ impl ContextProvider for WorkspaceProvider {
         request: &ProviderRequest<'_>,
     ) -> JaymiResult<Option<ContextContribution>> {
         let kind = request.session.workspace_kind.clone();
-        let capabilities = request.session.active_capabilities.clone();
-        if kind.is_none() && capabilities.capability_ids.is_empty() {
+        let capability_ids = request.relevance.active_capabilities.clone();
+        if kind.is_none() && capability_ids.is_empty() {
             return Ok(None);
         }
 
@@ -65,11 +66,11 @@ impl ContextProvider for WorkspaceProvider {
                 kind_id: Some(kind_id),
             }
         });
-        let active_capabilities = if capabilities.capability_ids.is_empty() {
+        let active_capabilities = if capability_ids.is_empty() {
             None
         } else {
             sources.push(ContextSource::ActiveCapabilities);
-            Some(capabilities)
+            Some(ActiveCapabilitiesSection { capability_ids })
         };
 
         Ok(Some(ContextContribution {

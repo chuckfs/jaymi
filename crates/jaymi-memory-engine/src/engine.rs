@@ -36,13 +36,9 @@ use crate::types::{
 };
 
 const NAME: &str = "memory_engine";
-const DEPENDENCIES: &[&str] = &[
-    "configuration",
-    "logging",
-    "database",
-    "policy_engine",
-    "permission_engine",
-];
+// Persistence engine — Action Policy / Permission are Planner gates, not
+// Memory Engine lifecycle dependencies.
+const DEPENDENCIES: &[&str] = &["configuration", "logging", "database"];
 
 /// Consumer-facing Memory Engine API (Planner-facing surface).
 pub trait MemoryEngineApi: Send + Sync {

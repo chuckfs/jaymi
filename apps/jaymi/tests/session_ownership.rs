@@ -88,7 +88,7 @@ fn project_session_has_one_planner_orchestrated_lifecycle() {
     let continued = app
         .handle(UserRequest::new("Continue working on Alpha."))
         .expect("continue");
-    assert!(continued.project_context.is_some());
+    assert!(continued.project().is_some());
     assert_eq!(planner.handle_count(), handles_before + 3);
     assert_eq!(
         projects.active_project_id().as_deref(),

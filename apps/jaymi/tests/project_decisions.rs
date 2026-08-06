@@ -160,7 +160,7 @@ fn project_decisions_persist_and_planner_retrieves_them() {
             "Remind me why we chose the planner for orchestration whydidwechooseplanner99",
         ))
         .expect("planner handle");
-    let memory = response.memory_context.expect("memory context");
+    let memory = response.memory().cloned().expect("memory context");
     assert!(
         memory.records().iter().any(|record| {
             record.summary.contains("Planner owns orchestration")
@@ -169,7 +169,7 @@ fn project_decisions_persist_and_planner_retrieves_them() {
                     .contains("All user goals route through the Planner")
                 || record.metadata_json.contains("whydidwechooseplanner99")
         }),
-        "expected decision recalled in memory_context; records={:?}",
+        "expected decision recalled in ContextBundle memory; records={:?}",
         memory
             .records()
             .iter()

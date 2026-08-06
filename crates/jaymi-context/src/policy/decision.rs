@@ -54,7 +54,7 @@ pub struct ContextPolicyDecision {
     pub priority: ProviderPriority,
     /// Whether the engine may truncate this contribution to fit budget.
     pub can_truncate: bool,
-    /// Whether surfacing this context should ask the user (future UI).
+    /// Whether surfacing this context requires prior user approval.
     pub requires_user_approval: bool,
     /// Whether high-sensitivity fields must be stripped from contributions.
     pub exclude_sensitive: bool,
@@ -87,7 +87,7 @@ impl ContextPolicyDecision {
             priority: ProviderPriority::new(0),
             can_truncate: true,
             requires_user_approval: false,
-            exclude_sensitive: true,
+            exclude_sensitive: false,
             bypass_relevance: false,
             constraints: ContributionConstraints::default(),
         }
@@ -107,6 +107,8 @@ pub struct ContributionConstraints {
     pub redact_memory_content: bool,
     /// Drop search hit previews.
     pub redact_search_previews: bool,
+    /// Drop current selection text (keep range metadata).
+    pub redact_selection_text: bool,
 }
 
 impl ContributionConstraints {
@@ -117,6 +119,7 @@ impl ContributionConstraints {
             self.permission_summary_only || other.permission_summary_only;
         self.redact_memory_content = self.redact_memory_content || other.redact_memory_content;
         self.redact_search_previews = self.redact_search_previews || other.redact_search_previews;
+        self.redact_selection_text = self.redact_selection_text || other.redact_selection_text;
     }
 
     /// Labels of active constraints for explainability.
@@ -134,6 +137,9 @@ impl ContributionConstraints {
         if self.redact_search_previews {
             labels.push("redact_search_previews".into());
         }
+        if self.redact_selection_text {
+            labels.push("redact_selection_text".into());
+        }
         labels
     }
 }
@@ -150,6 +156,7 @@ pub fn apply_contribution_constraints(
         if let Some(permissions) = contribution.permissions.as_mut() {
             for entry in &mut permissions.entries {
                 entry.explanation = None;
+                entry.resource = None;
             }
         }
     }
@@ -167,7 +174,32 @@ pub fn apply_contribution_constraints(
             }
         }
     }
+    if constraints.redact_selection_text {
+        if let Some(selection) = contribution.current_selection.as_mut() {
+            selection.text = None;
+        }
+    }
     contribution
+}
+
+/// Apply a full policy decision to a contribution (constraints + exclude_sensitive).
+///
+/// Returns the shaped contribution and the constraint labels that actually ran.
+pub fn apply_policy_to_contribution(
+    contribution: ContextContribution,
+    decision: &ContextPolicyDecision,
+) -> (ContextContribution, Vec<String>) {
+    let mut constraints = decision.constraints.clone();
+    if decision.exclude_sensitive {
+        constraints.redact_memory_content = true;
+        constraints.redact_search_previews = true;
+        constraints.redact_selection_text = true;
+    }
+    let labels = constraints.labels();
+    (
+        apply_contribution_constraints(contribution, &constraints),
+        labels,
+    )
 }
 
 /// Per-provider policy evaluation record for explainability.
@@ -250,6 +282,15 @@ impl PolicyReport {
             .collect()
     }
 
+    /// Providers omitted pending user approval.
+    pub fn pending_approval_providers(&self) -> Vec<&str> {
+        self.decisions
+            .iter()
+            .filter(|decision| decision.approval_status == "pending")
+            .map(|decision| decision.provider_id.as_str())
+            .collect()
+    }
+
     /// Plain-text render for diagnostics.
     pub fn render(&self) -> String {
         let mut lines = Vec::new();
@@ -262,26 +303,41 @@ impl PolicyReport {
             self.size_assembled_characters
         ));
         lines.push(format!(
-            "included=[{}] · excluded=[{}]",
+            "included=[{}] · excluded=[{}] · pending_approval=[{}]",
             self.included_providers().join(","),
-            self.excluded_providers().join(",")
+            self.excluded_providers().join(","),
+            self.pending_approval_providers().join(",")
         ));
         lines.push(String::new());
         lines.push(format!(
-            "{:<14} {:<10} {}",
-            "Provider", "Status", "Reason"
+            "{:<14} {:<10} {:<10} {:<12} {}",
+            "Provider", "Status", "Approval", "Constraints", "Reason"
         ));
-        lines.push("-".repeat(72));
+        lines.push("-".repeat(96));
         for decision in &self.decisions {
+            let status = if decision.included {
+                "Included"
+            } else if decision.approval_status == "pending" {
+                "Pending"
+            } else {
+                "Excluded"
+            };
+            let constraints = if decision.constraints.is_empty() {
+                "-".to_string()
+            } else {
+                decision.constraints.join(",")
+            };
+            let mut reason = decision.reason.clone();
+            if decision.exclude_sensitive {
+                reason.push_str(" · exclude_sensitive");
+            }
+            if let Some(truncation) = &decision.truncation_reason {
+                reason.push_str(" · truncated=");
+                reason.push_str(truncation);
+            }
             lines.push(format!(
-                "{:<14} {:<10} {}",
-                decision.provider_id,
-                if decision.included {
-                    "Included"
-                } else {
-                    "Excluded"
-                },
-                decision.reason
+                "{:<14} {:<10} {:<10} {:<12} {}",
+                decision.provider_id, status, decision.approval_status, constraints, reason
             ));
         }
         lines.join("\n")
@@ -293,27 +349,54 @@ impl PolicyReport {
 pub struct PolicyDecisionSummary {
     /// Provider id.
     pub provider_id: String,
-    /// Included or excluded.
+    /// Included in the assembled bundle (after approval / relevance gates).
     pub included: bool,
-    /// Explanation.
+    /// Explanation (exclusion, approval, or allow reason).
     pub reason: String,
     /// Sensitivity label.
     pub sensitivity: String,
     /// Effective priority.
     pub priority: u8,
-    /// Whether truncation is allowed.
+    /// Whether truncation is allowed by policy.
     pub can_truncate: bool,
-    /// Whether user approval would be required.
+    /// Whether user approval is required before contribution.
     pub requires_user_approval: bool,
+    /// Approval gate status: `not_required`, `approved`, `pending`, or `n/a`.
+    pub approval_status: String,
+    /// Whether high-sensitivity fields must be stripped.
+    pub exclude_sensitive: bool,
+    /// Whether relevance threshold was bypassed.
+    pub bypass_relevance: bool,
     /// Whether the contribution was truncated during fitting.
     pub truncated: bool,
-    /// Applied contribution constraint labels.
+    /// Why truncation happened (or why it was refused), when applicable.
+    pub truncation_reason: Option<String>,
+    /// Enforced contribution constraint labels.
     pub constraints: Vec<String>,
 }
 
 impl PolicyDecisionSummary {
-    /// Build from a full decision record (truncated filled later).
+    /// Build from a full decision record (enforcement fields filled during assemble).
     pub fn from_record(record: &ContextPolicyDecisionRecord) -> Self {
+        let approval_status = if !record.decision.participate {
+            "n/a".to_string()
+        } else if record.decision.requires_user_approval {
+            "pending".to_string() // updated to approved when session allows
+        } else {
+            "not_required".to_string()
+        };
+        let mut constraints = record.decision.constraints.labels();
+        if record.decision.exclude_sensitive {
+            for label in [
+                "redact_memory_content",
+                "redact_search_previews",
+                "redact_selection_text",
+            ] {
+                if !constraints.iter().any(|existing| existing == label) {
+                    constraints.push(label.to_string());
+                }
+            }
+        }
         Self {
             provider_id: record.provider_id.clone(),
             included: record.decision.participate,
@@ -322,8 +405,146 @@ impl PolicyDecisionSummary {
             priority: record.decision.priority.value(),
             can_truncate: record.decision.can_truncate,
             requires_user_approval: record.decision.requires_user_approval,
+            approval_status,
+            exclude_sensitive: record.decision.exclude_sensitive,
+            bypass_relevance: record.decision.bypass_relevance,
             truncated: false,
-            constraints: record.decision.constraints.labels(),
+            truncation_reason: None,
+            constraints,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::budget::ProviderPriority;
+    use crate::provider::ContextContribution;
+    use crate::{
+        BundlePermissionEntry, BundleSearchHit, CurrentSelectionSection, MemoryResultsSection,
+        PermissionsSection, SearchResultsSection,
+    };
+    use jaymi_memory_engine::{
+        AssembledMemoryContext, MemoryRecord, MemoryScope, MemoryStatus, RelevantMemory,
+    };
+
+    fn sample_memory_contribution(content: &str) -> ContextContribution {
+        ContextContribution {
+            memory_results: Some(MemoryResultsSection {
+                memory: AssembledMemoryContext {
+                    memories: vec![RelevantMemory {
+                        record: MemoryRecord {
+                            id: jaymi_core::EntityId::new("m1"),
+                            scope: MemoryScope::Personal,
+                            summary: "sum".into(),
+                            content: content.into(),
+                            conversation_id: None,
+                            project_id: None,
+                            importance: 50,
+                            confidence: 50,
+                            tags: Vec::new(),
+                            source: None,
+                            kind: None,
+                            metadata_json: "{}".into(),
+                            status: MemoryStatus::Active,
+                            created_at: 0,
+                            updated_at: 0,
+                            archived_at: None,
+                        },
+                        score: 10,
+                        reasons: Vec::new(),
+                        why: "test".into(),
+                    }],
+                    project_id: None,
+                    conversation_id: None,
+                    candidate_count: 1,
+                    truncated: false,
+                },
+                promotion_suggestions: Vec::new(),
+                promotion_ask: jaymi_memory_engine::PromotionAskDecision::Defer,
+            }),
+            ..ContextContribution::default()
+        }
+    }
+
+    #[test]
+    fn exclude_sensitive_redacts_memory_search_and_selection() {
+        let mut contribution = sample_memory_contribution("SECRET BODY");
+        contribution.search_results = Some(SearchResultsSection {
+            hint: None,
+            hits: vec![BundleSearchHit {
+                item_id: "1".into(),
+                title: "t".into(),
+                path: None,
+                score: None,
+                match_reason: None,
+                preview: Some("preview secret".into()),
+                line: None,
+                column: None,
+            }],
+        });
+        contribution.current_selection = Some(CurrentSelectionSection {
+            path: Some("/a.rs".into()),
+            start_line: 1,
+            start_column: 0,
+            end_line: 1,
+            end_column: 4,
+            text: Some("sel".into()),
+        });
+
+        let mut decision = ContextPolicyDecision::allow("test", ProviderPriority::MEMORY);
+        decision.exclude_sensitive = true;
+        let (shaped, labels) = apply_policy_to_contribution(contribution, &decision);
+        assert!(labels.iter().any(|l| l == "redact_memory_content"));
+        assert!(labels.iter().any(|l| l == "redact_search_previews"));
+        assert!(labels.iter().any(|l| l == "redact_selection_text"));
+        assert_eq!(
+            shaped
+                .memory_results
+                .as_ref()
+                .unwrap()
+                .memory
+                .memories[0]
+                .record
+                .content,
+            ""
+        );
+        assert!(shaped
+            .search_results
+            .as_ref()
+            .unwrap()
+            .hits[0]
+            .preview
+            .is_none());
+        assert!(shaped
+            .current_selection
+            .as_ref()
+            .unwrap()
+            .text
+            .is_none());
+    }
+
+    #[test]
+    fn permission_summary_only_clears_resource_and_explanation() {
+        let contribution = ContextContribution {
+            permissions: Some(PermissionsSection {
+                entries: vec![BundlePermissionEntry {
+                    category: "fs".into(),
+                    action: "read".into(),
+                    decision: "allowed".into(),
+                    resource: Some("/secret".into()),
+                    explanation: Some("why".into()),
+                }],
+            }),
+            ..ContextContribution::default()
+        };
+        let mut decision = ContextPolicyDecision::allow("perm", ProviderPriority::PERMISSION);
+        decision.constraints.permission_summary_only = true;
+        let (shaped, labels) = apply_policy_to_contribution(contribution, &decision);
+        assert!(labels.iter().any(|l| l == "permission_summary_only"));
+        let entry = &shaped.permissions.as_ref().unwrap().entries[0];
+        assert!(entry.resource.is_none());
+        assert!(entry.explanation.is_none());
+        assert_eq!(entry.decision, "allowed");
     }
 }

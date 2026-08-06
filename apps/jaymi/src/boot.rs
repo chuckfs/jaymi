@@ -460,19 +460,51 @@ impl Application {
         Ok(())
     }
 
-    /// Sync experience session workspace into the Context Engine before handle.
+    /// Sync live UI / engine state into the Context Engine before handle.
+    ///
+    /// Pushes a full [`ContextSessionInputs`] snapshot (workspace, editor,
+    /// diagnostics, permissions, project-open, search hits) — never placeholders.
+    /// Request-selected capabilities are **not** pushed here; the Planner supplies
+    /// them via [`jaymi_context::AssembleHints`].
     fn prepare_context_session(&self) -> JaymiResult<()> {
         let context = self.container.resolve::<Arc<ContextEngine>>()?;
-        let workspace = self
+        let workspace_kind = self
             .experience()
             .ok()
             .and_then(|session| session.active_workspace_kind())
             .map(|kind| kind.id().to_string());
-        context.set_session_workspace(workspace);
+
+        let coding = self
+            .with_coding_state(|coding| coding.clone())
+            .ok();
+
+        let (project_open, project_indexed_documents) = self
+            .container
+            .resolve::<Arc<ProjectEngine>>()
+            .map(|projects| {
+                let open = projects.open_project_id().is_some();
+                let indexed = projects
+                    .project_context(None)
+                    .ok()
+                    .flatten()
+                    .map(|ctx| ctx.search_index.indexed_file_count);
+                (open, indexed)
+            })
+            .unwrap_or((false, None));
+
+        let permissions = self.container.resolve::<Arc<PermissionEngine>>()?;
+        let inputs = crate::context_session::build_context_session_inputs(
+            workspace_kind,
+            coding.as_ref(),
+            permissions.as_ref(),
+            project_open,
+            project_indexed_documents,
+        );
+        context.set_session_inputs(inputs);
         Ok(())
     }
 
-    /// Route a user request through the Planner (Context Engine assembles first).
+    /// Route a user request through the Planner (Intent → Capability → Context assemble).
     pub fn handle(&self, request: UserRequest) -> JaymiResult<PlannerResponse> {
         self.prepare_context_session()?;
         let planner = self.container.resolve::<Planner>()?;
@@ -675,6 +707,9 @@ impl Application {
     }
 
     /// Assemble relevant memory context through the Memory Engine.
+    ///
+    /// **Administrative / transitional** — not the request-context path.
+    /// Request handling uses `PlannerResponse.context()` (`ContextBundle`) only.
     pub fn assemble_memory_context(
         &self,
         request: &AssembleContextRequest,
@@ -845,7 +880,10 @@ impl Application {
     /// from Application.
     pub fn open_project(&self, project_id: &str) -> JaymiResult<ProjectContext> {
         let response = self.handle(UserRequest::open_project(project_id))?;
-        response.project_context.ok_or_else(|| {
+        response
+            .project()
+            .cloned()
+            .ok_or_else(|| {
             JaymiError::new(format!(
                 "open project did not return context: {}",
                 response.content
@@ -896,12 +934,18 @@ impl Application {
     }
 
     /// Request one assembled ProjectContext from the Project Engine.
+    ///
+    /// **Administrative / transitional** — not the request-context path.
+    /// Request handling exposes project detail only via `PlannerResponse.project()`
+    /// on the ContextBundle.
     pub fn project_context(&self, project_id: Option<&str>) -> JaymiResult<Option<ProjectContext>> {
         let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
         projects.project_context(project_id)
     }
 
     /// Assemble project context for a known project id.
+    ///
+    /// **Administrative / transitional** — prefer `PlannerResponse.context()` for requests.
     pub fn assemble_project_context(&self, project_id: &str) -> JaymiResult<ProjectContext> {
         let projects = self.container.resolve::<Arc<ProjectEngine>>()?;
         projects.assemble_context(project_id)
@@ -1013,11 +1057,6 @@ impl Application {
     pub fn get_project_decision(&self, memory_id: &str) -> JaymiResult<Option<ProjectDecision>> {
         let memory = self.container.resolve::<Arc<MemoryEngine>>()?;
         memory.get_project_decision(memory_id)
-    }
-
-    /// Restore / assemble project context through the Project Engine.
-    pub fn restore_project_context(&self, project_id: &str) -> JaymiResult<ProjectContext> {
-        self.assemble_project_context(project_id)
     }
 
     /// Continue working on a named project (restores project memory automatically).
@@ -3006,8 +3045,7 @@ impl Application {
                 .as_ref()
                 .map(|evaluation| evaluation.summary()),
             memory_hits: response
-                .memory_context
-                .as_ref()
+                .memory()
                 .map(|context| context.memories.len())
                 .unwrap_or(0),
         };
