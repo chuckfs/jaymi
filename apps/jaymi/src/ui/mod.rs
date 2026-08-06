@@ -404,14 +404,14 @@ fn status_color(theme: &Theme, status: OperationalStatus) -> egui::Color32 {
     }
 }
 
-/// Day bucket label for conversation timestamp separators (UTC calendar day).
+/// Day + clock label for conversation timestamp separators (UTC).
 fn format_day_separator(created_at: i64) -> String {
     let today = SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64 / 86_400)
         .unwrap_or(0);
     let day = created_at.div_euclid(86_400);
-    match today - day {
+    let day_label = match today - day {
         0 => "Today".to_string(),
         1 => "Yesterday".to_string(),
         delta if delta > 1 && delta < 7 => format!("{delta} days ago"),
@@ -421,10 +421,11 @@ fn format_day_separator(created_at: i64) -> String {
             let (year, month, day) = civil_from_days(days);
             format!("{year:04}-{month:02}-{day:02}")
         }
-    }
+    };
+    format!("{day_label} · {}", format_message_time(created_at))
 }
 
-/// Clock time on a message bubble (UTC HH:MM — presentation stamp).
+/// Clock time for the day separator (UTC HH:MM — presentation stamp).
 fn format_message_time(created_at: i64) -> String {
     let secs = created_at.rem_euclid(86_400) as u32;
     let hours = secs / 3600;
@@ -1038,7 +1039,6 @@ impl JaymiApp {
                                     ui,
                                     turn.role,
                                     &body,
-                                    turn.created_at,
                                     turn.is_streaming(),
                                 );
                                 if let Some(review) = &turn.review {
@@ -1239,33 +1239,44 @@ impl JaymiApp {
         ui: &mut egui::Ui,
         role: MessageRole,
         content: &str,
-        created_at: i64,
         streaming: bool,
     ) {
+        // Cap only — short messages shrink-wrap; long ones wrap at this width.
         let max_bubble = (ui.available_width() * 0.78).clamp(240.0, 720.0);
 
         match role {
             MessageRole::User => {
-                // Dock to the conversation column's right edge (workspace growth
-                // shrinks that column). Content stays left-aligned inside the bubble.
-                ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                let pad_x = space::MD;
+                let pad_y = space::SM + space::XS;
+                let max_inner = (max_bubble - pad_x * 2.0).max(48.0);
+                let color = self.theme.on_accent();
+                let body_font = egui::FontId::proportional(type_size::BODY);
+
+                // Measure intrinsic width so the bubble shrink-wraps (cap at max_inner).
+                let inner_w = ui.fonts(|fonts| {
+                    fonts
+                        .layout(content.to_string(), body_font, color, max_inner)
+                        .size()
+                        .x
+                        .clamp(1.0, max_inner)
+                });
+
+                // Dock to the conversation column's right edge; text right-aligned.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                     egui::Frame::new()
                         .corner_radius(radius::XL)
-                        .inner_margin(inset(space::MD, space::SM + space::XS))
+                        .inner_margin(inset(pad_x, pad_y))
                         .fill(self.theme.accent)
                         .show(ui, |ui| {
-                            ui.set_max_width(max_bubble);
-                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                                ui.label(
-                                    egui::RichText::new(format_message_time(created_at))
-                                        .size(type_size::META)
-                                        .color(self.theme.on_accent()),
-                                );
-                                ui.add_space(space::XS);
-                                ui.label(
-                                    egui::RichText::new(content)
-                                        .size(type_size::BODY)
-                                        .color(self.theme.on_accent()),
+                            ui.set_width(inner_w);
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(content)
+                                            .size(type_size::BODY)
+                                            .color(color),
+                                    )
+                                    .wrap(),
                                 );
                             });
                         });
@@ -1283,11 +1294,6 @@ impl JaymiApp {
                         egui::RichText::new(label)
                             .size(type_size::META)
                             .strong()
-                            .color(self.theme.text_secondary),
-                    );
-                    ui.label(
-                        egui::RichText::new(format_message_time(created_at))
-                            .size(type_size::META)
                             .color(self.theme.text_secondary),
                     );
                     if streaming {
