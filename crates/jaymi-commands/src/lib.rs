@@ -14,7 +14,7 @@ mod search;
 
 pub use descriptor::{CommandCategory, CommandDescriptor, CommandSource};
 pub use registry::CommandRegistry;
-pub use search::{command_score, filter_commands};
+pub use search::{command_score, filter_commands, score_text};
 
 /// Built-in command ids shipped with Jaymi (stable for plugins to depend on).
 pub mod ids {
@@ -24,10 +24,20 @@ pub mod ids {
     pub const OPEN_FOLDER: &str = "jaymi.workbench.openFolder";
     /// Search project files by name / text.
     pub const SEARCH_FILES: &str = "jaymi.workbench.searchFiles";
-    /// Quick Open — fuzzy filename jump (⌘P).
+    /// Quick Open — opens the global Command Palette (⌘P).
     pub const QUICK_OPEN: &str = "jaymi.workbench.quickOpen";
     /// Find in Files — project content search + replace panel (⌘⇧F).
     pub const FIND_IN_FILES: &str = "jaymi.workbench.findInFiles";
+    /// Open / focus the Terminal dock page.
+    pub const OPEN_TERMINAL: &str = "jaymi.workbench.openTerminal";
+    /// Open / focus the Git dock page.
+    pub const OPEN_GIT: &str = "jaymi.workbench.openGit";
+    /// Open Settings (workspace diagnostics / preferences surface).
+    pub const OPEN_SETTINGS: &str = "jaymi.workbench.openSettings";
+    /// Switch to another project (folder picker).
+    pub const SWITCH_PROJECT: &str = "jaymi.workbench.switchProject";
+    /// Continue the active conversation (focus composer).
+    pub const CONTINUE_CONVERSATION: &str = "jaymi.conversation.continue";
     /// Show or hide the Project Explorer.
     pub const TOGGLE_EXPLORER: &str = "jaymi.workbench.toggleExplorer";
     /// Show or hide the Terminal panel.
@@ -84,15 +94,29 @@ pub fn builtin_descriptors() -> Vec<CommandDescriptor> {
             .with_keywords(["open", "file", "edit"]),
         CommandDescriptor::builtin(OPEN_FOLDER, "Open Project", CommandCategory::File)
             .with_keywords(["open", "folder", "project", "directory"]),
+        CommandDescriptor::builtin(SWITCH_PROJECT, "Switch Project", CommandCategory::Project)
+            .with_keywords(["switch", "change", "project", "folder"]),
         CommandDescriptor::builtin(SEARCH_FILES, "Search Files", CommandCategory::Search)
             .with_keywords(["find", "file", "fuzzy", "quick open"])
             .with_argument_prompt("Search files"),
-        CommandDescriptor::builtin(QUICK_OPEN, "Quick Open", CommandCategory::Search)
-            .with_keywords(["quick open", "go to file", "fuzzy", "file"])
+        CommandDescriptor::builtin(QUICK_OPEN, "Command Palette", CommandCategory::Search)
+            .with_keywords(["command palette", "quick open", "go to", "search"])
             .with_keybinding("⌘P"),
         CommandDescriptor::builtin(FIND_IN_FILES, "Find in Files", CommandCategory::Search)
             .with_keywords(["find", "replace", "grep", "search", "project"])
             .with_keybinding("⌘⇧F"),
+        CommandDescriptor::builtin(OPEN_TERMINAL, "Open Terminal", CommandCategory::View)
+            .with_keywords(["terminal", "shell", "console", "open"]),
+        CommandDescriptor::builtin(OPEN_GIT, "Open Git", CommandCategory::View)
+            .with_keywords(["git", "source control", "scm", "open"]),
+        CommandDescriptor::builtin(OPEN_SETTINGS, "Open Settings", CommandCategory::View)
+            .with_keywords(["settings", "preferences", "config"]),
+        CommandDescriptor::builtin(
+            CONTINUE_CONVERSATION,
+            "Continue Conversation",
+            CommandCategory::Workspace,
+        )
+        .with_keywords(["continue", "chat", "conversation", "composer"]),
         CommandDescriptor::builtin(TOGGLE_EXPLORER, "Toggle Explorer", CommandCategory::View)
             .with_keywords(["explorer", "sidebar", "files"]),
         CommandDescriptor::builtin(TOGGLE_TERMINAL, "Toggle Terminal", CommandCategory::View)

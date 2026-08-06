@@ -123,7 +123,7 @@ fn find_in_files_seeds_search_panel_and_shows_it() {
 
     dispatch_command(&app, ids::FIND_IN_FILES, Some("needle")).expect("find in files");
     let (query, bottom_tab) = app
-        .with_coding_state(|coding| (coding.search.query.clone(), coding.bottom_tab))
+        .with_coding_state(|coding| (coding.search.query.clone(), coding.bottom_tab()))
         .expect("state");
     assert_eq!(query, "needle");
     assert_eq!(bottom_tab, jaymi_capabilities::CodingBottomTab::Search);
@@ -154,7 +154,7 @@ fn search_files_populates_search_panel_results() {
 
     dispatch_command(&app, ids::SEARCH_FILES, Some("widget_alpha")).expect("search files");
     let (results, bottom_tab) = app
-        .with_coding_state(|coding| (coding.search.results.clone(), coding.bottom_tab))
+        .with_coding_state(|coding| (coding.search.results.clone(), coding.bottom_tab()))
         .expect("state");
     assert!(
         !results.is_empty(),

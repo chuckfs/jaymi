@@ -37,7 +37,8 @@ pub fn filter_commands(commands: &[CommandDescriptor], query: &str) -> Vec<Comma
     scored.into_iter().map(|(_, command)| command).collect()
 }
 
-fn score_text(haystack: &str, needle: &str) -> u32 {
+/// Score how well `needle` (already lowercased) matches `haystack` (higher is better; 0 = no match).
+pub fn score_text(haystack: &str, needle: &str) -> u32 {
     let hay = haystack.to_ascii_lowercase();
     if hay == needle {
         return 1000;

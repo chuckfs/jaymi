@@ -23,7 +23,7 @@ pub fn dispatch_command(
             let query = required_argument(argument, "Search Files")?;
             search_files(app, query)
         }
-        ids::QUICK_OPEN => Ok(CommandDispatchEffect::OpenQuickOpen),
+        ids::QUICK_OPEN => Ok(CommandDispatchEffect::OpenCommandPalette),
         ids::FIND_IN_FILES => {
             ensure_coding(app)?;
             if let Some(query) = argument.map(str::trim).filter(|value| !value.is_empty()) {
@@ -36,11 +36,24 @@ pub fn dispatch_command(
             })?;
             Ok(CommandDispatchEffect::None)
         }
+        ids::OPEN_TERMINAL => show_bottom_tab(app, CodingBottomTab::Terminal),
+        ids::OPEN_GIT => show_bottom_tab(app, CodingBottomTab::Git),
+        ids::OPEN_SETTINGS => {
+            ensure_coding(app)?;
+            app.with_coding_state(|coding| {
+                coding.show_bottom_tab(CodingBottomTab::Diagnostics);
+            })?;
+            let _ = app.persist_coding_editor_workspace();
+            Ok(CommandDispatchEffect::None)
+        }
+        ids::SWITCH_PROJECT => Ok(CommandDispatchEffect::PickAndOpenFolder),
+        ids::CONTINUE_CONVERSATION => Ok(CommandDispatchEffect::ContinueConversation),
         ids::TOGGLE_EXPLORER => {
             ensure_coding(app)?;
             app.with_coding_state(|coding| {
-                coding.explorer_visible = !coding.explorer_visible;
+                coding.toggle_explorer();
             })?;
+            let _ = app.persist_coding_editor_workspace();
             Ok(CommandDispatchEffect::None)
         }
         ids::TOGGLE_TERMINAL => toggle_bottom_tab(app, CodingBottomTab::Terminal),
@@ -76,6 +89,7 @@ pub fn dispatch_command(
         ids::TOGGLE_PANEL => {
             ensure_coding(app)?;
             app.with_coding_state(|coding| coding.toggle_bottom_dock())?;
+            let _ = app.persist_coding_editor_workspace();
             Ok(CommandDispatchEffect::None)
         }
         ids::CREATE_FILE => {
@@ -155,8 +169,10 @@ pub enum CommandDispatchEffect {
     PickAndOpenFolder,
     /// Surface a search summary into the UI error/status line.
     Status(String),
-    /// Open the Quick Open filename modal.
-    OpenQuickOpen,
+    /// Open the global Command Palette (⌘P).
+    OpenCommandPalette,
+    /// Focus the conversation composer (continue chatting).
+    ContinueConversation,
 }
 
 fn required_argument<'a>(argument: Option<&'a str>, label: &str) -> JaymiResult<&'a str> {
@@ -180,6 +196,17 @@ fn toggle_bottom_tab(
 ) -> JaymiResult<CommandDispatchEffect> {
     ensure_coding(app)?;
     app.with_coding_state(|coding| coding.toggle_bottom_tab(tab))?;
+    let _ = app.persist_coding_editor_workspace();
+    Ok(CommandDispatchEffect::None)
+}
+
+fn show_bottom_tab(
+    app: &Application,
+    tab: CodingBottomTab,
+) -> JaymiResult<CommandDispatchEffect> {
+    ensure_coding(app)?;
+    app.with_coding_state(|coding| coding.show_bottom_tab(tab))?;
+    let _ = app.persist_coding_editor_workspace();
     Ok(CommandDispatchEffect::None)
 }
 

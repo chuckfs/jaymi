@@ -99,7 +99,7 @@ pub fn render_nav_rail(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut
         let projects_resp = section_row(
             ui,
             ctx.theme,
-            NavTab::Projects.label(),
+            NavTab::Projects,
             ctx.tab == NavTab::Projects,
             Some(projects_open),
         );
@@ -117,7 +117,7 @@ pub fn render_nav_rail(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut
         if section_row(
             ui,
             ctx.theme,
-            NavTab::Knowledge.label(),
+            NavTab::Knowledge,
             ctx.tab == NavTab::Knowledge,
             None,
         )
@@ -138,7 +138,7 @@ pub fn render_nav_rail(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut
         if section_row(
             ui,
             ctx.theme,
-            NavTab::Media.label(),
+            NavTab::Media,
             ctx.tab == NavTab::Media,
             None,
         )
@@ -159,7 +159,7 @@ pub fn render_nav_rail(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut
         let conversations_resp = section_row(
             ui,
             ctx.theme,
-            NavTab::Conversations.label(),
+            NavTab::Conversations,
             ctx.tab == NavTab::Conversations,
             Some(conversations_open),
         );
@@ -189,12 +189,13 @@ pub fn render_nav_rail(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut
 fn section_row(
     ui: &mut egui::Ui,
     theme: &Theme,
-    label: &str,
+    tab: NavTab,
     selected: bool,
     expandable: Option<bool>,
 ) -> egui::Response {
-    let (rect, response) =
+    let (rect, mut response) =
         ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), egui::Sense::click());
+    response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
     let hovered = response.hovered();
     let bg = if selected {
@@ -209,35 +210,160 @@ fn section_row(
             .rect_filled(rect, egui::CornerRadius::same(radius::SM as u8), bg);
     }
 
-    let text_color = if selected || hovered {
+    let color = if selected || hovered {
         theme.text_primary
     } else {
         theme.text_secondary
     };
 
-    let mut row = ui.new_child(
-        egui::UiBuilder::new()
-            .max_rect(rect.shrink2(egui::vec2(space::SM, 0.0)))
-            .layout(egui::Layout::left_to_right(egui::Align::Center)),
+    let pad = space::SM;
+    let icon_size = 16.0;
+    let icon_center = egui::pos2(rect.left() + pad + icon_size * 0.5, rect.center().y);
+    paint_nav_icon(ui.painter(), tab, icon_center, icon_size, color);
+
+    let text_x = rect.left() + pad + icon_size + space::SM;
+    ui.painter().text(
+        egui::pos2(text_x, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        tab.label(),
+        egui::FontId::proportional(type_size::UI),
+        color,
     );
-    row.label(
-        egui::RichText::new(label)
-            .size(type_size::UI)
-            .strong()
-            .color(text_color),
-    );
+
     if let Some(expanded) = expandable {
-        row.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let chevron = if expanded { "▾" } else { "›" };
-            ui.label(
-                egui::RichText::new(chevron)
-                    .size(type_size::META)
-                    .color(theme.text_secondary),
-            );
-        });
+        let chevron_center = egui::pos2(rect.right() - pad - 5.0, rect.center().y);
+        paint_nav_chevron(ui.painter(), chevron_center, expanded, theme.text_secondary);
     }
 
     response
+}
+
+/// Lucide-style monochrome marks — stroke only, theme-colored.
+fn paint_nav_icon(
+    painter: &egui::Painter,
+    tab: NavTab,
+    center: egui::Pos2,
+    size: f32,
+    color: egui::Color32,
+) {
+    let stroke = egui::Stroke::new(1.25, color);
+    let r = size * 0.5;
+    match tab {
+        NavTab::Projects => paint_icon_folder(painter, center, r, stroke, color),
+        NavTab::Knowledge => paint_icon_book(painter, center, r, stroke),
+        NavTab::Media => paint_icon_image(painter, center, r, stroke, color),
+        NavTab::Conversations => paint_icon_chat(painter, center, r, stroke, color),
+    }
+}
+
+fn paint_icon_folder(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    r: f32,
+    stroke: egui::Stroke,
+    color: egui::Color32,
+) {
+    let body = egui::Rect::from_center_size(center + egui::vec2(0.0, 1.0), egui::vec2(r * 1.7, r * 1.2));
+    let tab = egui::Rect::from_min_size(
+        egui::pos2(body.left(), body.top() - r * 0.35),
+        egui::vec2(r * 0.7, r * 0.4),
+    );
+    painter.rect_stroke(body, egui::CornerRadius::same(1), stroke, egui::StrokeKind::Outside);
+    painter.rect_filled(tab, egui::CornerRadius::same(1), color);
+}
+
+fn paint_icon_book(painter: &egui::Painter, center: egui::Pos2, r: f32, stroke: egui::Stroke) {
+    // Open book — two pages with a spine.
+    let left = [
+        center + egui::vec2(-r * 0.85, -r * 0.7),
+        center + egui::vec2(-0.5, -r * 0.55),
+        center + egui::vec2(-0.5, r * 0.75),
+        center + egui::vec2(-r * 0.85, r * 0.6),
+    ];
+    let right = [
+        center + egui::vec2(r * 0.85, -r * 0.7),
+        center + egui::vec2(0.5, -r * 0.55),
+        center + egui::vec2(0.5, r * 0.75),
+        center + egui::vec2(r * 0.85, r * 0.6),
+    ];
+    painter.add(egui::Shape::closed_line(left.to_vec(), stroke));
+    painter.add(egui::Shape::closed_line(right.to_vec(), stroke));
+    painter.line_segment(
+        [center + egui::vec2(0.0, -r * 0.55), center + egui::vec2(0.0, r * 0.75)],
+        stroke,
+    );
+}
+
+fn paint_icon_image(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    r: f32,
+    stroke: egui::Stroke,
+    color: egui::Color32,
+) {
+    let frame = egui::Rect::from_center_size(center, egui::vec2(r * 1.7, r * 1.35));
+    painter.rect_stroke(frame, egui::CornerRadius::same(2), stroke, egui::StrokeKind::Outside);
+    // Sun / focus point.
+    painter.circle_filled(frame.left_top() + egui::vec2(r * 0.45, r * 0.4), 1.4, color);
+    // Mountain silhouette.
+    painter.add(egui::Shape::closed_line(
+        vec![
+            egui::pos2(frame.left() + 2.0, frame.bottom() - 2.0),
+            egui::pos2(frame.left() + r * 0.7, frame.center().y),
+            egui::pos2(frame.center().x + 1.0, frame.bottom() - 2.0),
+        ],
+        stroke,
+    ));
+    painter.add(egui::Shape::closed_line(
+        vec![
+            egui::pos2(frame.center().x - 1.0, frame.bottom() - 2.0),
+            egui::pos2(frame.right() - r * 0.55, frame.center().y - 1.0),
+            egui::pos2(frame.right() - 2.0, frame.bottom() - 2.0),
+        ],
+        stroke,
+    ));
+}
+
+fn paint_icon_chat(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    r: f32,
+    stroke: egui::Stroke,
+    _color: egui::Color32,
+) {
+    let bubble = egui::Rect::from_center_size(center + egui::vec2(0.0, -0.5), egui::vec2(r * 1.7, r * 1.2));
+    painter.rect_stroke(bubble, egui::CornerRadius::same(3), stroke, egui::StrokeKind::Outside);
+    // Tail.
+    painter.add(egui::Shape::closed_line(
+        vec![
+            egui::pos2(bubble.left() + r * 0.35, bubble.bottom()),
+            egui::pos2(bubble.left() + r * 0.15, bubble.bottom() + r * 0.45),
+            egui::pos2(bubble.left() + r * 0.7, bubble.bottom()),
+        ],
+        stroke,
+    ));
+}
+
+fn paint_nav_chevron(painter: &egui::Painter, center: egui::Pos2, expanded: bool, color: egui::Color32) {
+    let s = 3.5;
+    let points = if expanded {
+        [
+            center + egui::vec2(-s, -s * 0.35),
+            center + egui::vec2(s, -s * 0.35),
+            center + egui::vec2(0.0, s * 0.55),
+        ]
+    } else {
+        [
+            center + egui::vec2(-s * 0.35, -s),
+            center + egui::vec2(s * 0.55, 0.0),
+            center + egui::vec2(-s * 0.35, s),
+        ]
+    };
+    painter.add(egui::Shape::convex_polygon(
+        points.to_vec(),
+        color,
+        egui::Stroke::NONE,
+    ));
 }
 
 fn render_projects_section(

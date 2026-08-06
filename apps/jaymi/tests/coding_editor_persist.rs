@@ -209,7 +209,7 @@ fn shell_chrome_sizes_survive_close_and_reopen() {
         .expect("coding kind")
         .clone();
     assert_eq!(coding.explorer_width, DEFAULT_EXPLORER_WIDTH);
-    assert_eq!(coding.bottom_panel_height, DEFAULT_BOTTOM_PANEL_HEIGHT);
+    assert_eq!(coding.bottom_panel_height(), DEFAULT_BOTTOM_PANEL_HEIGHT);
     assert_eq!(coding.workspace_panel_width, DEFAULT_WORKSPACE_PANEL_WIDTH);
 
     app.with_coding_state(|coding| {
@@ -231,7 +231,7 @@ fn shell_chrome_sizes_survive_close_and_reopen() {
         .expect("coding kind")
         .clone();
     assert_eq!(coding.explorer_width, 260.0);
-    assert_eq!(coding.bottom_panel_height, 230.0);
+    assert_eq!(coding.bottom_panel_height(), 230.0);
     assert_eq!(coding.workspace_panel_width, 710.0);
 }
 

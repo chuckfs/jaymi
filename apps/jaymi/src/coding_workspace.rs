@@ -15,11 +15,15 @@ use eframe::egui;
 use jaymi_capabilities::{
     CodingBottomTab, CodingState, EditorLayoutNode, EditorPaneId, EditorSession, ExplorerNode,
     ExplorerStatus, ProblemIssue, ProblemSeverity, SplitDirection, TerminalSessionState,
-    WorkspaceExpansion, WorkspacePanel, COLLAPSED_BOTTOM_TAB_HEIGHT, DEFAULT_BOTTOM_PANEL_HEIGHT,
-    DEFAULT_EXPLORER_WIDTH, MAX_BOTTOM_PANEL_HEIGHT, MAX_EXPLORER_WIDTH, MIN_BOTTOM_PANEL_HEIGHT,
-    MIN_EXPLORER_WIDTH,
+    WorkspaceExpansion, WorkspacePanel, WorkspacePanels, COLLAPSED_BOTTOM_TAB_HEIGHT,
+    DEFAULT_BOTTOM_PANEL_HEIGHT, DEFAULT_EXPLORER_WIDTH, MAX_BOTTOM_PANEL_HEIGHT,
+    MAX_EXPLORER_WIDTH, MIN_BOTTOM_PANEL_HEIGHT, MIN_EXPLORER_WIDTH,
 };
 
+use crate::coding_breadcrumb::{self, BreadcrumbAction, BREADCRUMB_BAR_HEIGHT};
+use crate::coding_quick_actions::{
+    self, QuickAction, QuickActionBarEvent, QUICK_ACTION_BAR_HEIGHT, QUICK_ACTION_PAD_X,
+};
 use crate::diagnostics::DiagnosticsSnapshot;
 use crate::experience::ExperienceSession;
 use crate::monaco_host::{language_for_path, MonacoDocument, MonacoViewport};
@@ -485,9 +489,9 @@ pub enum CodingShellEvent {
     SaveActive,
     /// Save a specific open tab.
     SaveTab(String),
-    /// Open the Command Palette (⌘⇧P).
+    /// Open the Command Palette (⌘P / ⌘⇧P).
     OpenCommandPalette,
-    /// Open Quick Open (⌘P).
+    /// Open the Command Palette (legacy Quick Open shortcut path).
     OpenQuickOpen,
     /// Open Find in Files (bottom Search dock).
     OpenSearch,
@@ -524,6 +528,8 @@ pub enum CodingShellEvent {
     /// Resize the Project Explorer column (drag divider between editor and explorer).
     /// `commit` is true once on drag release, telling the caller to persist to disk.
     SetExplorerWidth { width: f32, commit: bool },
+    /// Show or hide the Project Explorer (collapsed state keeps width).
+    SetExplorerVisible { visible: bool, commit: bool },
     /// Resize the bottom auxiliary panel height (drag divider above the panel).
     /// `commit` is true once on drag release, telling the caller to persist to disk.
     SetBottomPanelHeight { height: f32, commit: bool },
@@ -591,6 +597,15 @@ pub enum CodingShellEvent {
     },
     /// Recompute the Problems panel from every registered source.
     ProblemsRefresh,
+    /// Select + reveal a path in Project Explorer (breadcrumb / jump targets).
+    RevealInExplorer {
+        /// Absolute filesystem path to select.
+        path: String,
+        /// Expand the path itself when it is a directory.
+        is_dir: bool,
+    },
+    /// Quick Action Bar button — shell maps via [`crate::coding_quick_actions::dispatch_quick_action`].
+    QuickAction(QuickAction),
 }
 
 /// Pure text summary of the Coding shell for tests and headless checks.
@@ -890,7 +905,8 @@ fn placeholder_for(panel: WorkspacePanel) -> &'static str {
 /// │ Terminal / Problems / Git      │
 /// └───────────────────────────────┘
 /// ```
-/// - [`TopBottomPanel`] top — workspace toolbar
+/// - [`TopBottomPanel`] top — Quick Action Bar (Planner intents)
+/// - [`TopBottomPanel`] top — breadcrumb
 /// - [`TopBottomPanel`] top — editor tabs (focused pane; full width)
 /// - [`TopBottomPanel`] bottom — dock (Terminal / Problems / Search / Git / …)
 /// - [`SidePanel`] right — Explorer (beside Monaco only)
@@ -921,17 +937,49 @@ pub fn render_coding_shell(
         .map(|coding| matches!(coding.editors.layout, EditorLayoutNode::Leaf { .. }))
         .unwrap_or(true);
 
-    // --- Top Toolbar -------------------------------------------------------
-    egui::TopBottomPanel::top("coding_toolbar")
-        .exact_height(CODING_TOOLBAR_HEIGHT)
+    // --- Quick Action Bar (Planner intents; not a VS Code toolbar) ----------
+    egui::TopBottomPanel::top("coding_quick_actions")
+        .exact_height(QUICK_ACTION_BAR_HEIGHT)
         .show_separator_line(true)
         .frame(region_frame(
             theme,
-            egui::Margin::symmetric(TOOLBAR_PAD_X as i8, 0),
+            egui::Margin::symmetric(QUICK_ACTION_PAD_X as i8, 0),
         ))
         .show_inside(ui, |ui| {
-            render_coding_toolbar(ui, theme, state, open_error, events);
+            for event in coding_quick_actions::render_quick_action_bar(ui, theme, open_error) {
+                match event {
+                    QuickActionBarEvent::CloseWorkspace => {
+                        events.push(CodingShellEvent::CloseWorkspace);
+                    }
+                    QuickActionBarEvent::Action(action) => {
+                        events.push(CodingShellEvent::QuickAction(action));
+                    }
+                }
+            }
         });
+
+    // --- Breadcrumb (under toolbar; derived from CodingState only) ---------
+    if let Some(coding) = state {
+        egui::TopBottomPanel::top("coding_breadcrumb")
+            .exact_height(BREADCRUMB_BAR_HEIGHT)
+            .show_separator_line(false)
+            .frame(egui::Frame::new().fill(theme.surface_alt))
+            .show_inside(ui, |ui| {
+                let actions = coding_breadcrumb::render_coding_breadcrumb(ui, theme, coding);
+                for action in actions {
+                    match action {
+                        BreadcrumbAction::FocusEditor => {
+                            events.push(CodingShellEvent::FocusPane(
+                                coding.editors.focused_pane.0.clone(),
+                            ));
+                        }
+                        BreadcrumbAction::RevealInExplorer { path, is_dir } => {
+                            events.push(CodingShellEvent::RevealInExplorer { path, is_dir });
+                        }
+                    }
+                }
+            });
+    }
 
     // --- Editor tabs (full width, above Monaco | Explorer) -----------------
     // Single-pane: hoist tabs here so Monaco is the uninterrupted centerpiece.
@@ -951,17 +999,20 @@ pub fn render_coding_shell(
 
     // --- Bottom Dock (full width under Monaco + Explorer) ------------------
     let bottom_tab = state
-        .map(|coding| coding.bottom_tab)
+        .map(|coding| coding.bottom_tab())
         .unwrap_or(CodingBottomTab::Hidden);
     let bottom_open = bottom_tab.is_page();
     let bottom_panel_height = state
-        .map(|coding| coding.bottom_panel_height)
+        .map(|coding| coding.bottom_panel_height())
         .unwrap_or(DEFAULT_BOTTOM_PANEL_HEIGHT);
 
     if bottom_open {
         let tab_bar_h = DOCK_TAB_BAR_HEIGHT;
         let dock_height = tab_bar_h + bottom_panel_height;
-        let bottom_response = egui::TopBottomPanel::bottom("coding_dock")
+        let panel_id = egui::Id::new(DOCK_PANEL_ID);
+        sync_dock_panel_height(ui.ctx(), panel_id, dock_height);
+
+        let bottom_response = egui::TopBottomPanel::bottom(panel_id)
             .default_height(dock_height)
             .height_range(
                 (tab_bar_h + MIN_BOTTOM_PANEL_HEIGHT)..=(tab_bar_h + MAX_BOTTOM_PANEL_HEIGHT),
@@ -1008,7 +1059,15 @@ pub fn render_coding_shell(
         let rendered_h = bottom_response.response.rect.height();
         let content_h =
             (rendered_h - tab_bar_h).clamp(MIN_BOTTOM_PANEL_HEIGHT, MAX_BOTTOM_PANEL_HEIGHT);
-        if (content_h - bottom_panel_height).abs() > 1.0 {
+
+        // Double-click the egui resize divider to reset to the default height.
+        if dock_divider_double_clicked(ui, bottom_response.response.rect) {
+            events.push(CodingShellEvent::SetBottomPanelHeight {
+                height: DEFAULT_BOTTOM_PANEL_HEIGHT,
+                commit: true,
+            });
+            clear_dock_panel_state(ui.ctx(), panel_id);
+        } else if (content_h - bottom_panel_height).abs() > 1.0 {
             let commit = !ui.ctx().input(|input| input.pointer.primary_down());
             events.push(CodingShellEvent::SetBottomPanelHeight {
                 height: content_h,
@@ -1019,19 +1078,43 @@ pub fn render_coding_shell(
 
     // --- Right Explorer (beside Monaco only) -------------------------------
     if explorer_visible {
-        let explorer_response = egui::SidePanel::right("coding_explorer")
+        let panel_id = egui::Id::new(EXPLORER_PANEL_ID);
+        sync_explorer_panel_width(ui.ctx(), panel_id, explorer_width);
+
+        let explorer_response = egui::SidePanel::right(panel_id)
             .default_width(explorer_width)
             .width_range(MIN_EXPLORER_WIDTH..=MAX_EXPLORER_WIDTH)
             .resizable(true)
             .show_separator_line(true)
             .frame(region_frame(theme, inset(space::SM, space::SM)))
             .show_inside(ui, |ui| {
-                ui.label(
-                    egui::RichText::new("Explorer")
-                        .strong()
-                        .size(type_size::UI)
-                        .color(theme.text_primary),
-                );
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("Explorer")
+                            .strong()
+                            .size(type_size::UI)
+                            .color(theme.text_primary),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let collapse = ui
+                            .add(
+                                egui::Button::new(
+                                    egui::RichText::new("›")
+                                        .size(type_size::UI)
+                                        .color(theme.text_secondary),
+                                )
+                                .frame(false)
+                                .min_size(egui::vec2(18.0, 18.0)),
+                            )
+                            .on_hover_text("Collapse Explorer");
+                        if collapse.clicked() {
+                            events.push(CodingShellEvent::SetExplorerVisible {
+                                visible: false,
+                                commit: true,
+                            });
+                        }
+                    });
+                });
                 ui.add_space(space::SM);
                 egui::ScrollArea::vertical()
                     .id_salt("coding_explorer_scroll")
@@ -1052,8 +1135,17 @@ pub fn render_coding_shell(
                     });
             });
 
-        let rendered_w = explorer_response.response.rect.width();
-        if (rendered_w - explorer_width).abs() > 1.0 {
+        let panel_rect = explorer_response.response.rect;
+        let rendered_w = panel_rect.width();
+
+        // Double-click the egui resize divider to reset to the default width.
+        if explorer_divider_double_clicked(ui, panel_rect) {
+            events.push(CodingShellEvent::SetExplorerWidth {
+                width: DEFAULT_EXPLORER_WIDTH,
+                commit: true,
+            });
+            clear_explorer_panel_state(ui.ctx(), panel_id);
+        } else if (rendered_w - explorer_width).abs() > 1.0 {
             let commit = !ui.ctx().input(|input| input.pointer.primary_down());
             events.push(CodingShellEvent::SetExplorerWidth {
                 width: rendered_w.clamp(MIN_EXPLORER_WIDTH, MAX_EXPLORER_WIDTH),
@@ -1180,131 +1272,8 @@ fn region_frame(theme: &Theme, margin: egui::Margin) -> egui::Frame {
         .stroke(egui::Stroke::NONE)
 }
 
-/// Coding Workspace title toolbar — quiet identity + discoverability.
-///
-/// Layout: `[icon · Coding · project/path]  ……  [Search · ⌘P]`
-/// Panel, Save, Close, and ⌘⇧P live in the Command Palette.
-fn render_coding_toolbar(
-    ui: &mut egui::Ui,
-    theme: &Theme,
-    state: Option<&CodingState>,
-    open_error: Option<&str>,
-    events: &mut Vec<CodingShellEvent>,
-) {
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), CODING_TOOLBAR_HEIGHT),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.set_min_height(CODING_TOOLBAR_HEIGHT);
-            ui.set_max_height(CODING_TOOLBAR_HEIGHT);
-
-            coding_workspace_icon(ui, theme);
-            ui.add_space(TOOLBAR_GAP);
-
-            ui.label(
-                egui::RichText::new("Coding")
-                    .strong()
-                    .size(type_size::BODY)
-                    .color(theme.text_primary),
-            );
-
-            if let Some(root) = state.and_then(|coding| coding.explorer.project_root.as_deref()) {
-                let project_name = project_name_from_root(root);
-                let location = if root.ends_with(&project_name) || root.ends_with('/') {
-                    format!("{project_name}/")
-                } else {
-                    format!("{project_name}  ·  {root}")
-                };
-                ui.add_space(TOOLBAR_GAP);
-                let path_max = (ui.available_width() - TOOLBAR_RIGHT_RESERVE)
-                    .clamp(80.0, 520.0)
-                    .max(0.0);
-                if path_max > 40.0 {
-                    ui.add_sized(
-                        egui::vec2(path_max, 20.0),
-                        egui::Label::new(
-                            egui::RichText::new(location)
-                                .size(type_size::UI)
-                                .color(theme.text_secondary),
-                        )
-                        .truncate()
-                        .sense(egui::Sense::hover()),
-                    )
-                    .on_hover_text(root);
-                }
-            }
-
-            if let Some(error) = open_error {
-                ui.add_space(TOOLBAR_GAP);
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(error)
-                            .size(type_size::UI)
-                            .color(theme.error),
-                    )
-                    .truncate(),
-                );
-            }
-
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui
-                    .add(toolbar_button(theme, "⌘P"))
-                    .on_hover_text("Quick Open (⌘P)")
-                    .clicked()
-                {
-                    events.push(CodingShellEvent::OpenQuickOpen);
-                }
-                ui.add_space(TOOLBAR_ACTION_GAP);
-                if ui
-                    .add(toolbar_button(theme, "Search"))
-                    .on_hover_text("Find in Files (⌘⇧F) · more commands via ⌘⇧P")
-                    .clicked()
-                {
-                    events.push(CodingShellEvent::OpenSearch);
-                }
-            });
-        },
-    );
-}
-
-/// Compact Coding glyph — accent tile with monospaced braces (no emoji).
-fn coding_workspace_icon(ui: &mut egui::Ui, theme: &Theme) {
-    let size = egui::vec2(24.0, 24.0);
-    let (rect, _response) = ui.allocate_exact_size(size, egui::Sense::hover());
-    ui.painter().rect_filled(
-        rect,
-        egui::CornerRadius::same(radius::SM as u8),
-        theme.accent,
-    );
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        "{}",
-        egui::FontId::monospace(type_size::META),
-        theme.on_accent(),
-    );
-}
-
-fn project_name_from_root(root: &str) -> String {
-    std::path::Path::new(root)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .unwrap_or(root)
-        .to_string()
-}
-
-fn toolbar_button(theme: &Theme, label: &str) -> egui::Button<'static> {
-    egui::Button::new(
-        egui::RichText::new(label.to_owned())
-            .size(type_size::UI)
-            .color(theme.text_primary),
-    )
-    .frame(false)
-    .min_size(egui::vec2(28.0, 24.0))
-}
-
 /// Bottom dock tab strip — one page visible; active tab is highlighted.
+/// Clicking the active tab collapses the dock (VS Code panel behavior).
 fn render_bottom_dock_tabs(
     ui: &mut egui::Ui,
     theme: &Theme,
@@ -1313,20 +1282,28 @@ fn render_bottom_dock_tabs(
 ) {
     ui.horizontal(|ui| {
         ui.set_min_height(DOCK_TAB_BAR_HEIGHT - 4.0);
-        for &tab in CodingBottomTab::pages() {
+        ui.spacing_mut().item_spacing.x = space::SM;
+        for &tab in WorkspacePanels::dock_tabs() {
             let selected = bottom_tab == tab;
-            let label = egui::RichText::new(tab.label()).color(if selected {
-                theme.text_primary
-            } else {
-                theme.text_secondary
-            });
+            let label = egui::RichText::new(tab.label())
+                .size(type_size::UI)
+                .color(if selected {
+                    theme.text_primary
+                } else {
+                    theme.text_secondary
+                });
             let response = ui
-                .selectable_label(selected, label)
+                .add(
+                    egui::Button::new(label)
+                        .frame(false)
+                        .min_size(egui::vec2(0.0, 22.0)),
+                )
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .on_hover_text(format!("Show {} panel", tab.label()));
             if selected {
                 ui.painter().line_segment(
                     [response.rect.left_bottom(), response.rect.right_bottom()],
-                    egui::Stroke::new(stroke::HAIRLINE, theme.accent),
+                    egui::Stroke::new(1.5, theme.accent),
                 );
             }
             if response.clicked() {
@@ -1341,7 +1318,14 @@ fn render_bottom_dock_tabs(
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
-                .small_button("Hide")
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new("Hide")
+                            .size(type_size::META)
+                            .color(theme.text_secondary),
+                    )
+                    .frame(false),
+                )
                 .on_hover_text("Hide Panel")
                 .clicked()
             {
@@ -1423,20 +1407,98 @@ fn render_output_panel(ui: &mut egui::Ui, theme: &Theme) {
         });
 }
 
-/// Coding workspace title toolbar height (5 × 8px).
-const CODING_TOOLBAR_HEIGHT: f32 = 40.0;
 /// Full-width editor tab strip under the toolbar.
 const EDITOR_TAB_STRIP_HEIGHT: f32 = 32.0;
 /// Dock tab strip height when the bottom dock is open.
 const DOCK_TAB_BAR_HEIGHT: f32 = COLLAPSED_BOTTOM_TAB_HEIGHT;
-/// Horizontal padding inside the toolbar frame.
-const TOOLBAR_PAD_X: f32 = space::MD;
-/// Gap between left-side identity elements.
-const TOOLBAR_GAP: f32 = space::SM;
-/// Gap between right-side action buttons.
-const TOOLBAR_ACTION_GAP: f32 = space::SM;
-/// Space reserved for the right action cluster when sizing the path.
-const TOOLBAR_RIGHT_RESERVE: f32 = 140.0;
+/// Stable egui SidePanel id for the Project Explorer (right).
+const EXPLORER_PANEL_ID: &str = "coding_explorer";
+/// Stable egui TopBottomPanel id for the bottom dock.
+const DOCK_PANEL_ID: &str = "coding_dock";
+
+/// When CodingState dock height diverges from egui's persisted panel size
+/// (restore / double-click reset) and the user is not dragging, drop PanelState
+/// so `default_height` from CodingState wins on the next layout.
+fn sync_dock_panel_height(ctx: &egui::Context, panel_id: egui::Id, height: f32) {
+    let resizing = ctx
+        .read_response(panel_id.with("__resize"))
+        .is_some_and(|response| response.dragged());
+    if resizing {
+        return;
+    }
+    if let Some(panel) = egui::containers::panel::PanelState::load(ctx, panel_id) {
+        if (panel.rect.height() - height).abs() > 1.0 {
+            clear_dock_panel_state(ctx, panel_id);
+        }
+    }
+}
+
+fn clear_dock_panel_state(ctx: &egui::Context, panel_id: egui::Id) {
+    ctx.data_mut(|data| {
+        data.remove::<egui::containers::panel::PanelState>(panel_id);
+    });
+}
+
+/// Double-click on the TopBottomPanel resize divider (egui grab strip).
+fn dock_divider_double_clicked(ui: &egui::Ui, panel_rect: egui::Rect) -> bool {
+    let grab = ui.style().interaction.resize_grab_radius_side;
+    let resize_y = panel_rect.top();
+    let resize_rect = egui::Rect::from_x_y_ranges(
+        panel_rect.x_range(),
+        (resize_y - grab)..=(resize_y + grab),
+    );
+    ui.input(|input| {
+        input
+            .pointer
+            .button_double_clicked(egui::PointerButton::Primary)
+            && input
+                .pointer
+                .interact_pos()
+                .is_some_and(|pos| resize_rect.contains(pos))
+    })
+}
+
+/// When CodingState width diverges from egui's persisted panel size (restore /
+/// double-click reset) and the user is not dragging, drop PanelState so
+/// `default_width` from CodingState wins on the next layout.
+fn sync_explorer_panel_width(ctx: &egui::Context, panel_id: egui::Id, width: f32) {
+    let resizing = ctx
+        .read_response(panel_id.with("__resize"))
+        .is_some_and(|response| response.dragged());
+    if resizing {
+        return;
+    }
+    if let Some(panel) = egui::containers::panel::PanelState::load(ctx, panel_id) {
+        if (panel.rect.width() - width).abs() > 1.0 {
+            clear_explorer_panel_state(ctx, panel_id);
+        }
+    }
+}
+
+fn clear_explorer_panel_state(ctx: &egui::Context, panel_id: egui::Id) {
+    ctx.data_mut(|data| {
+        data.remove::<egui::containers::panel::PanelState>(panel_id);
+    });
+}
+
+/// Double-click on the SidePanel resize divider (egui grab strip).
+fn explorer_divider_double_clicked(ui: &egui::Ui, panel_rect: egui::Rect) -> bool {
+    let grab = ui.style().interaction.resize_grab_radius_side;
+    let resize_x = panel_rect.left();
+    let resize_rect = egui::Rect::from_x_y_ranges(
+        (resize_x - grab)..=(resize_x + grab),
+        panel_rect.y_range(),
+    );
+    ui.input(|input| {
+        input
+            .pointer
+            .button_double_clicked(egui::PointerButton::Primary)
+            && input
+                .pointer
+                .interact_pos()
+                .is_some_and(|pos| resize_rect.contains(pos))
+    })
+}
 
 fn truncate_path(path: &str, max_chars: usize) -> String {
     let chars: Vec<char> = path.chars().collect();
@@ -2790,7 +2852,7 @@ mod tests {
     use super::*;
     use jaymi_capabilities::{
         DiagnosticState, ExplorerNode, ExplorerState, ExplorerStatus, GitStatusState, OpenEditors,
-        TerminalSessionState,
+        TerminalSessionState, WorkspacePanels,
     };
     use std::collections::BTreeSet;
 
@@ -2855,7 +2917,10 @@ mod tests {
                 end_column: Some(1),
                 message: "unused import".into(),
             }],
-            bottom_tab: CodingBottomTab::Terminal,
+            panels: WorkspacePanels {
+                active: CodingBottomTab::Terminal,
+                ..WorkspacePanels::default()
+            },
             ..CodingState::default()
         };
         let summary = coding_shell_summary(&state, None);

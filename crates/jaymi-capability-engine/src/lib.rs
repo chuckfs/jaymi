@@ -58,7 +58,7 @@ pub use state::{
     CodingBottomTab, CodingState, CreationState, DiagnosticState, ExplorerNode, ExplorerPending,
     ExplorerState, ExplorerStatus, GeneratedAssetState, GitFileEntry, GitStatusState,
     OpenFileState, ResearchNoteState, ResearchSourceState, ResearchState, SearchPanelState,
-    SearchResultEntry, TerminalSessionState, COLLAPSED_BOTTOM_TAB_HEIGHT,
+    SearchResultEntry, TerminalSessionState, WorkspacePanels, COLLAPSED_BOTTOM_TAB_HEIGHT,
     DEFAULT_BOTTOM_PANEL_HEIGHT, DEFAULT_CONVERSATION_FRACTION, DEFAULT_EXPLORER_WIDTH,
     DEFAULT_WORKSPACE_PANEL_WIDTH, MAX_BOTTOM_PANEL_HEIGHT, MAX_CONVERSATION_FRACTION,
     MAX_EXPLORER_WIDTH, MAX_WORKSPACE_PANEL_WIDTH, MIN_BOTTOM_PANEL_HEIGHT, MIN_CONVERSATION_WIDTH,

@@ -11,15 +11,18 @@ use std::time::SystemTime;
 use eframe::egui;
 
 use crate::boot::Application;
+use crate::coding_quick_actions::{dispatch_quick_action, QuickActionIntent};
 use crate::coding_workspace::{render_coding_shell, CodingShellEvent, MonacoEditorSurface};
 use crate::command_dispatch::{dispatch_command, CommandDispatchEffect};
-use crate::command_palette::{render_command_palette, CommandPaletteOutcome, CommandPaletteState};
+use crate::command_palette::{
+    gather_palette_items, render_command_palette, CommandPaletteOutcome, CommandPaletteState,
+    PaletteAction, PaletteCommandRef, PaletteGatherInput,
+};
 use crate::diagnostics::{DiagnosticsSnapshot, OperationalStatus};
 use crate::experience::ExperienceSession;
 use crate::monaco_host::{
     language_for_path, resolve_monaco_assets, MonacoDocument, MonacoHost, MonacoIpcMessage,
 };
-use crate::quick_open::{render_quick_open, QuickOpenOutcome, QuickOpenState};
 use crate::theme::{inset, radius, space, stroke, type_size, Theme};
 use crate::ui::explorer::ExplorerEvent;
 use crate::ui::nav_rail::{
@@ -73,6 +76,7 @@ pub fn run_diagnostics(
                 list_path_input: initial_list_path,
                 read_path_input: initial_read_path,
                 prompt: String::new(),
+                focus_composer: false,
                 experience,
                 show_diagnostics: false,
                 error: None,
@@ -80,7 +84,6 @@ pub fn run_diagnostics(
                 monaco: None,
                 monaco_last_error: None,
                 command_palette: CommandPaletteState::default(),
-                quick_open: QuickOpenState::default(),
                 workspace_was_expanded: false,
                 workspace_anim_start: None,
                 workspace_anim_from: MIN_WORKSPACE_PANEL_WIDTH,
@@ -117,7 +120,7 @@ fn paint_hamburger(painter: &egui::Painter, rect: egui::Rect, color: egui::Color
 
 /// Accent send control with a painted up-chevron (no Unicode icon glyphs).
 fn paint_send_button(ui: &mut egui::Ui, theme: &Theme) -> egui::Response {
-    let size = egui::vec2(40.0, 40.0);
+    let size = egui::vec2(32.0, 32.0);
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
     let fill = if response.hovered() {
         theme.accent.gamma_multiply(0.92)
@@ -125,12 +128,12 @@ fn paint_send_button(ui: &mut egui::Ui, theme: &Theme) -> egui::Response {
         theme.accent
     };
     ui.painter()
-        .rect_filled(rect, egui::CornerRadius::same(radius::LG as u8), fill);
+        .rect_filled(rect, egui::CornerRadius::same(radius::MD as u8), fill);
     let c = rect.center();
     let arrow = [
-        c + egui::vec2(0.0, -6.0),
-        c + egui::vec2(6.0, 3.0),
-        c + egui::vec2(-6.0, 3.0),
+        c + egui::vec2(0.0, -5.0),
+        c + egui::vec2(5.0, 2.5),
+        c + egui::vec2(-5.0, 2.5),
     ];
     ui.painter().add(egui::Shape::convex_polygon(
         arrow.to_vec(),
@@ -138,6 +141,81 @@ fn paint_send_button(ui: &mut egui::Ui, theme: &Theme) -> egui::Response {
         egui::Stroke::NONE,
     ));
     response
+}
+
+/// Compact composer toolbar control — monochrome icon tile.
+fn composer_icon_button(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    paint: impl FnOnce(&egui::Painter, egui::Pos2, egui::Color32),
+) -> egui::Response {
+    let size = egui::vec2(28.0, 28.0);
+    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click());
+    response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let color = if response.hovered() {
+        theme.text_primary
+    } else {
+        theme.text_secondary
+    };
+    if response.hovered() {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(radius::SM as u8),
+            theme.selection(),
+        );
+    }
+    paint(ui.painter(), rect.center(), color);
+    response
+}
+
+/// Text chip in the composer toolbar (`@Project`, `⌘P`).
+fn composer_chip(ui: &mut egui::Ui, theme: &Theme, label: &str) -> egui::Response {
+    let galley = ui.fonts(|f| {
+        f.layout_no_wrap(
+            label.to_string(),
+            egui::FontId::proportional(type_size::META),
+            theme.text_secondary,
+        )
+    });
+    let pad_x = space::SM;
+    let size = egui::vec2(galley.size().x + pad_x * 2.0, 28.0);
+    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click());
+    response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let hovered = response.hovered();
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius::same(radius::SM as u8),
+        if hovered {
+            theme.selection()
+        } else {
+            theme.surface_alt
+        },
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        egui::FontId::proportional(type_size::META),
+        if hovered {
+            theme.text_primary
+        } else {
+            theme.text_secondary
+        },
+    );
+    response
+}
+
+fn paint_composer_plus(painter: &egui::Painter, center: egui::Pos2, color: egui::Color32) {
+    let stroke = egui::Stroke::new(1.6, color);
+    let arm = 5.0;
+    painter.line_segment(
+        [center + egui::vec2(-arm, 0.0), center + egui::vec2(arm, 0.0)],
+        stroke,
+    );
+    painter.line_segment(
+        [center + egui::vec2(0.0, -arm), center + egui::vec2(0.0, arm)],
+        stroke,
+    );
 }
 
 /// Prefer system proportional fonts so UI text never falls back to tofu squares.
@@ -205,6 +283,8 @@ struct JaymiApp {
     list_path_input: String,
     read_path_input: String,
     prompt: String,
+    /// Request focus on the conversation composer after a Quick Action insert.
+    focus_composer: bool,
     experience: ExperienceSession,
     show_diagnostics: bool,
     /// Hard failure message (composer + recoverable actions).
@@ -215,10 +295,8 @@ struct JaymiApp {
     monaco: Option<MonacoHost>,
     /// Last Monaco host error (assets / webview create).
     monaco_last_error: Option<String>,
-    /// VS Code–style Command Palette (⌘⇧P).
+    /// VS Code–style Command Palette (⌘P).
     command_palette: CommandPaletteState,
-    /// Quick Open filename jump (⌘P).
-    quick_open: QuickOpenState,
     /// Whether the workspace SidePanel was expanded on the previous frame
     /// (drives the expand-in animation on the false → true transition).
     workspace_was_expanded: bool,
@@ -317,24 +395,20 @@ impl eframe::App for JaymiApp {
             self.experience = session;
         }
 
-        // ⌘⇧P Command Palette · ⌘P Quick Open · ⌘⇧F Find in Files
-        let (open_palette, open_quick_open, find_in_files) = ctx.input(|input| {
+        // ⌘P / ⌘⇧P Command Palette · ⌘⇧F Find in Files
+        let (open_palette, find_in_files) = ctx.input(|input| {
             let command = input.modifiers.command || input.modifiers.mac_cmd;
             let shift = input.modifiers.shift;
             let p_pressed = input.key_pressed(egui::Key::P);
             let f_pressed = input.key_pressed(egui::Key::F);
             (
-                command && shift && p_pressed,
-                command && !shift && p_pressed,
+                command && p_pressed, // ⌘P and ⌘⇧P both open the global palette
                 command && shift && f_pressed,
             )
         });
         if open_palette {
             self.command_palette.open();
-        }
-        if open_quick_open {
-            self.quick_open.open();
-            self.run_quick_open_search();
+            self.refresh_command_palette();
         }
         if find_in_files {
             self.open_find_in_files();
@@ -494,18 +568,10 @@ impl eframe::App for JaymiApp {
             });
 
         if let Ok(registry) = self.app.command_registry() {
-            let outcome = render_command_palette(
-                ctx,
-                &mut self.command_palette,
-                registry.as_ref(),
-                self.theme.overlay_scrim(),
-            );
+            let _ = registry;
+            let outcome = render_command_palette(ctx, &mut self.command_palette, &self.theme);
             self.handle_command_palette_outcome(outcome);
         }
-
-        let quick_open_outcome =
-            render_quick_open(ctx, &mut self.quick_open, self.theme.overlay_scrim());
-        self.handle_quick_open_outcome(quick_open_outcome);
 
         self.sync_monaco(ctx, frame, coding_open, monaco_surface.as_ref());
     }
@@ -535,10 +601,231 @@ impl JaymiApp {
     }
 
     fn handle_command_palette_outcome(&mut self, outcome: CommandPaletteOutcome) {
-        let CommandPaletteOutcome::Run { id, argument } = outcome else {
+        match outcome {
+            CommandPaletteOutcome::None => {}
+            CommandPaletteOutcome::QueryChanged(_) => self.refresh_command_palette(),
+            CommandPaletteOutcome::Execute(action) => self.dispatch_palette_action(action),
+        }
+    }
+
+    fn refresh_command_palette(&mut self) {
+        let query = self.command_palette.query().to_string();
+        let Ok(registry) = self.app.command_registry() else {
+            self.command_palette.set_results(Vec::new());
             return;
         };
-        match dispatch_command(&self.app, &id, argument.as_deref()) {
+        let commands = match registry.list() {
+            Ok(list) => list
+                .into_iter()
+                .map(|command| PaletteCommandRef {
+                    id: command.id.clone(),
+                    title: command.title.clone(),
+                    category: command.category.label().to_string(),
+                    keywords: command.keywords.clone(),
+                    keybinding: command.keybinding.clone(),
+                    argument_prompt: command.argument_prompt.clone(),
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+
+        let projects: Vec<(String, String)> = self
+            .app
+            .list_projects()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|project| {
+                let label = if !project.name.trim().is_empty() {
+                    project.name.clone()
+                } else {
+                    project
+                        .root_directory
+                        .as_ref()
+                        .and_then(|root| {
+                            root.file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                        })
+                        .unwrap_or_else(|| project.id.to_string())
+                };
+                (project.id.to_string(), label)
+            })
+            .collect();
+
+        let conversations: Vec<(String, String)> = self
+            .project_conversations()
+            .into_iter()
+            .map(|meta| {
+                let title = meta
+                    .title
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| "Conversation".to_string());
+                (meta.id.to_string(), title)
+            })
+            .collect();
+
+        let capabilities: Vec<(String, String)> = jaymi_capabilities::Capability::all()
+            .iter()
+            .map(|capability| {
+                let descriptor = jaymi_capabilities::capability_descriptor(*capability);
+                (capability.id().to_string(), descriptor.name.to_string())
+            })
+            .collect();
+
+        let mut files = Vec::new();
+        let mut knowledge = Vec::new();
+        if !query.trim().is_empty() {
+            let mut request = jaymi_core::SearchRequest::filename(&query);
+            if let Some(root) = self.app.active_project_root_path() {
+                request.folder = Some(root);
+            }
+            if let Ok(results) = self.app.project_search(request) {
+                files = results
+                    .into_iter()
+                    .take(24)
+                    .enumerate()
+                    .map(|(index, result)| {
+                        let title = if result.title.is_empty() {
+                            std::path::Path::new(&result.path)
+                                .file_name()
+                                .map(|name| name.to_string_lossy().into_owned())
+                                .unwrap_or_else(|| result.path.clone())
+                        } else {
+                            result.title
+                        };
+                        // Prefer earlier Search Engine hits.
+                        let score = 200u32.saturating_sub(index as u32 * 5);
+                        (result.path, title, score)
+                    })
+                    .collect();
+            }
+            if let Some(project_id) = self.app.active_project_id() {
+                if let Ok(hits) = self
+                    .app
+                    .search_project_knowledge(&project_id, &query, Some(16))
+                {
+                    knowledge = hits
+                        .into_iter()
+                        .map(|hit| {
+                            (
+                                hit.title,
+                                hit.detail,
+                                hit.path.map(|path| path.to_string_lossy().into_owned()),
+                                hit.score,
+                            )
+                        })
+                        .collect();
+                }
+            }
+        }
+
+        let items = gather_palette_items(&PaletteGatherInput {
+            commands,
+            projects,
+            conversations,
+            capabilities,
+            files,
+            knowledge,
+            query,
+        });
+        self.command_palette.set_results(items);
+    }
+
+    fn dispatch_palette_action(&mut self, action: PaletteAction) {
+        match action {
+            PaletteAction::RunCommand { id, argument } => {
+                if argument.is_none() {
+                    if let Ok(registry) = self.app.command_registry() {
+                        if let Ok(Some(command)) = registry.get(&id) {
+                            if let Some(prompt) = command.argument_prompt.clone() {
+                                self.command_palette.prompt_argument(
+                                    command.id.clone(),
+                                    command.title.clone(),
+                                    prompt,
+                                );
+                                return;
+                            }
+                        }
+                    }
+                }
+                self.command_palette.close();
+                self.run_dispatched_command(&id, argument.as_deref());
+            }
+            PaletteAction::OpenProject { project_id } => {
+                self.command_palette.close();
+                self.open_project_by_id(&project_id);
+            }
+            PaletteAction::OpenFile { path } => {
+                self.command_palette.close();
+                match self.app.open_search_result(&path, None, None) {
+                    Ok(()) => {
+                        self.error = None;
+                        if let Ok(session) = self.app.experience() {
+                            self.experience = session;
+                        }
+                    }
+                    Err(error) => self.error = Some(error.message().to_string()),
+                }
+            }
+            PaletteAction::OpenConversation { conversation_id } => {
+                self.command_palette.close();
+                match self.app.switch_to_conversation(&conversation_id) {
+                    Ok(()) => {
+                        self.error = None;
+                        if let Ok(session) = self.app.experience() {
+                            self.experience = session;
+                        }
+                    }
+                    Err(error) => self.error = Some(error.message().to_string()),
+                }
+            }
+            PaletteAction::ContinueConversation { prompt } => {
+                self.command_palette.close();
+                if let Some(text) = prompt {
+                    self.prompt = text;
+                }
+                self.focus_composer = true;
+                self.status = Some("Continue the conversation…".into());
+            }
+            PaletteAction::OpenCapability { capability_id } => {
+                self.command_palette.close();
+                match self.app.resolve_capability(&capability_id) {
+                    Ok(Some(descriptor)) => {
+                        self.error = None;
+                        self.status = Some(format!(
+                            "{} — {}",
+                            descriptor.name, descriptor.description
+                        ));
+                    }
+                    Ok(None) => {
+                        self.status = Some(format!("Capability: {capability_id}"));
+                    }
+                    Err(error) => self.error = Some(error.message().to_string()),
+                }
+            }
+            PaletteAction::OpenKnowledge { title, path, query } => {
+                self.command_palette.close();
+                if let Some(path) = path {
+                    match self.app.open_search_result(&path, None, None) {
+                        Ok(()) => {
+                            self.error = None;
+                            if let Ok(session) = self.app.experience() {
+                                self.experience = session;
+                            }
+                        }
+                        Err(error) => self.error = Some(error.message().to_string()),
+                    }
+                } else {
+                    self.prompt = format!("Search knowledge for “{query}” ({title})");
+                    self.focus_composer = true;
+                    self.status = Some(format!("Knowledge: {title}"));
+                }
+            }
+        }
+    }
+
+    fn run_dispatched_command(&mut self, id: &str, argument: Option<&str>) {
+        match dispatch_command(&self.app, id, argument) {
             Ok(CommandDispatchEffect::None) => {
                 self.error = None;
                 self.status = None;
@@ -566,36 +853,17 @@ impl JaymiApp {
                 }
                 self.status = Some(message);
             }
-            Ok(CommandDispatchEffect::OpenQuickOpen) => {
-                self.quick_open.open();
-                self.run_quick_open_search();
+            Ok(CommandDispatchEffect::OpenCommandPalette) => {
+                self.command_palette.open();
+                self.refresh_command_palette();
+            }
+            Ok(CommandDispatchEffect::ContinueConversation) => {
+                self.focus_composer = true;
+                self.status = Some("Continue the conversation…".into());
             }
             Err(error) => {
                 self.status = None;
                 self.error = Some(error.message().to_string());
-            }
-        }
-    }
-
-    /// Re-run the Quick Open filename search from the current query.
-    fn run_quick_open_search(&mut self) {
-        let query = self.quick_open.query().trim();
-        if query.is_empty() {
-            self.quick_open.set_results(Vec::new());
-            return;
-        }
-        let mut request = jaymi_core::SearchRequest::filename(query);
-        if let Some(root) = self.app.active_project_root_path() {
-            request.folder = Some(root);
-        }
-        match self.app.project_search(request) {
-            Ok(results) => {
-                self.quick_open.clear_error();
-                self.quick_open.set_results(results);
-            }
-            Err(error) => {
-                self.quick_open.set_results(Vec::new());
-                self.quick_open.set_error(error.message().to_string());
             }
         }
     }
@@ -621,22 +889,6 @@ impl JaymiApp {
                 self.status = None;
                 self.error = Some(error.message().to_string());
             }
-        }
-    }
-
-    fn handle_quick_open_outcome(&mut self, outcome: QuickOpenOutcome) {
-        match outcome {
-            QuickOpenOutcome::None => {}
-            QuickOpenOutcome::QueryChanged(_) => self.run_quick_open_search(),
-            QuickOpenOutcome::Open(path) => match self.app.open_search_result(&path, None, None) {
-                Ok(()) => {
-                    self.error = None;
-                    if let Ok(session) = self.app.experience() {
-                        self.experience = session;
-                    }
-                }
-                Err(error) => self.error = Some(error.message().to_string()),
-            },
         }
     }
 
@@ -845,42 +1097,173 @@ impl JaymiApp {
             ui.add_space(space::SM);
         }
 
-        let send_clicked = egui::Frame::new()
+        let mut attach_clicked = false;
+        let mut quick_open_clicked = false;
+        let mut send_clicked = false;
+
+        const MAX_COMPOSER_ROWS: usize = 8;
+        // Rough width of ⌘P chip + send + gaps on the trailing edge.
+        const TRAILING_CONTROLS_W: f32 = 108.0;
+        const LEADING_PLUS_W: f32 = 28.0;
+
+        egui::Frame::new()
             .corner_radius(radius::XL)
-            .inner_margin(egui::Margin::symmetric(space::MD as i8, space::MD as i8))
+            .inner_margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8))
             .fill(self.theme.surface)
             .shadow(self.theme.elevation_shadow())
             .stroke(egui::Stroke::NONE)
             .show(ui, |ui| {
-                ui.set_min_height(56.0);
-                ui.horizontal_centered(|ui| {
-                    let response = ui.add(
-                        egui::TextEdit::multiline(&mut self.prompt)
-                            .desired_width(ui.available_width() - 56.0)
-                            .desired_rows(2)
-                            .hint_text(
-                                egui::RichText::new("Message Jaymi…")
-                                    .color(self.theme.text_secondary),
-                            )
-                            .text_color(self.theme.text_primary)
-                            .frame(false),
-                    );
-                    let enter_send = response.lost_focus()
+                let font_id = egui::FontId::proportional(type_size::BODY);
+                let line_h = ui.fonts(|f| f.row_height(&font_id)).max(type_size::BODY + 4.0);
+                let available = ui.available_width();
+                let inline_edit_w =
+                    (available - LEADING_PLUS_W - space::SM - TRAILING_CONTROLS_W).max(96.0);
+
+                // Measure wrapped height at the inline width (first-row layout).
+                let measure_rows = |text: &str, wrap_w: f32| -> usize {
+                    if text.is_empty() {
+                        return 1;
+                    }
+                    let galley = ui.fonts(|f| {
+                        f.layout(
+                            text.to_string(),
+                            font_id.clone(),
+                            self.theme.text_primary,
+                            wrap_w,
+                        )
+                    });
+                    ((galley.size().y / line_h).ceil() as usize).max(1)
+                };
+
+                let inline_rows = measure_rows(&self.prompt, inline_edit_w);
+                let full_rows = measure_rows(&self.prompt, available);
+                // Stack once the first row would wrap / contain a newline — text
+                // sits above a locked + / ⌘P / send bar.
+                let stacked = self.prompt.contains('\n') || inline_rows > 1 || full_rows > 1;
+
+                let edit_id = egui::Id::new("jaymi_composer_input");
+                // Shift+Enter inserts a newline; plain Enter sends.
+                let newline_key = egui::KeyboardShortcut::new(
+                    egui::Modifiers::SHIFT,
+                    egui::Key::Enter,
+                );
+                let mut edit_response = None;
+
+                if stacked {
+                    let content_rows = full_rows.max(self.prompt.lines().count().max(1));
+                    let visible_rows = content_rows.min(MAX_COMPOSER_ROWS);
+                    let max_h = line_h * MAX_COMPOSER_ROWS as f32 + space::XS;
+
+                    egui::ScrollArea::vertical()
+                        .id_salt("jaymi_composer_scroll")
+                        .max_height(max_h)
+                        .auto_shrink([false, true])
+                        .stick_to_bottom(true)
+                        .show(ui, |ui| {
+                            let response = ui.add(
+                                egui::TextEdit::multiline(&mut self.prompt)
+                                    .id(edit_id)
+                                    .desired_width(ui.available_width())
+                                    .desired_rows(visible_rows)
+                                    .return_key(Some(newline_key))
+                                    .hint_text(
+                                        egui::RichText::new("Message Jaymi…")
+                                            .color(self.theme.text_secondary),
+                                    )
+                                    .text_color(self.theme.text_primary)
+                                    .frame(false),
+                            );
+                            edit_response = Some(response);
+                        });
+
+                    ui.add_space(space::XS);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = space::SM;
+                        let attach = composer_icon_button(ui, &self.theme, paint_composer_plus)
+                            .on_hover_text("Attach files (soon)");
+                        if attach.clicked() {
+                            attach_clicked = true;
+                        }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = space::SM;
+                            let send =
+                                paint_send_button(ui, &self.theme).on_hover_text("Send (Enter)");
+                            if send.clicked() {
+                                send_clicked = true;
+                            }
+                            let quick = composer_chip(ui, &self.theme, "⌘P")
+                                .on_hover_text("Command Palette (⌘P)");
+                            if quick.clicked() {
+                                quick_open_clicked = true;
+                            }
+                        });
+                    });
+                } else {
+                    // First row: [+] Message Jaymi… …… [⌘P] [↑]
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = space::SM;
+                        ui.set_min_height(32.0);
+
+                        let attach = composer_icon_button(ui, &self.theme, paint_composer_plus)
+                            .on_hover_text("Attach files (soon)");
+                        if attach.clicked() {
+                            attach_clicked = true;
+                        }
+
+                        let response = ui.add(
+                            egui::TextEdit::multiline(&mut self.prompt)
+                                .id(edit_id)
+                                .desired_width(inline_edit_w)
+                                .desired_rows(1)
+                                .return_key(Some(newline_key))
+                                .hint_text(
+                                    egui::RichText::new("Message Jaymi…")
+                                        .color(self.theme.text_secondary),
+                                )
+                                .text_color(self.theme.text_primary)
+                                .frame(false),
+                        );
+                        edit_response = Some(response);
+
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = space::SM;
+                            let send =
+                                paint_send_button(ui, &self.theme).on_hover_text("Send (Enter)");
+                            if send.clicked() {
+                                send_clicked = true;
+                            }
+                            let quick = composer_chip(ui, &self.theme, "⌘P")
+                                .on_hover_text("Command Palette (⌘P)");
+                            if quick.clicked() {
+                                quick_open_clicked = true;
+                            }
+                        });
+                    });
+                }
+
+                if let Some(response) = edit_response {
+                    if self.focus_composer {
+                        response.request_focus();
+                        self.focus_composer = false;
+                    }
+                    let enter_send = response.has_focus()
                         && ui.input(|input| {
                             input.key_pressed(egui::Key::Enter) && !input.modifiers.shift
                         });
-
-                    let send = paint_send_button(ui, &self.theme).on_hover_text("Send (Enter)");
-
                     if enter_send {
-                        response.request_focus();
+                        send_clicked = true;
                     }
-                    send.clicked() || enter_send
-                })
-                .inner
-            })
-            .inner;
+                }
+            });
 
+        if attach_clicked {
+            self.status = Some("Attach files coming soon.".to_string());
+            self.error = None;
+        }
+        if quick_open_clicked {
+            self.command_palette.open();
+            self.refresh_command_palette();
+        }
         if send_clicked {
             self.send_prompt();
         }
@@ -1175,8 +1558,8 @@ impl JaymiApp {
                     Ok(())
                 }
                 CodingShellEvent::OpenQuickOpen => {
-                    self.quick_open.open();
-                    self.run_quick_open_search();
+                    self.command_palette.open();
+                    self.refresh_command_palette();
                     Ok(())
                 }
                 CodingShellEvent::CloseWorkspace => {
@@ -1259,6 +1642,15 @@ impl JaymiApp {
                     let result = self
                         .app
                         .with_coding_state(|coding| coding.set_explorer_width(width));
+                    if commit && result.is_ok() {
+                        let _ = self.app.persist_coding_editor_workspace();
+                    }
+                    result
+                }
+                CodingShellEvent::SetExplorerVisible { visible, commit } => {
+                    let result = self
+                        .app
+                        .with_coding_state(|coding| coding.set_explorer_visible(visible));
                     if commit && result.is_ok() {
                         let _ = self.app.persist_coding_editor_workspace();
                     }
@@ -1380,6 +1772,48 @@ impl JaymiApp {
                     self.app.open_search_result(&path, line, column)
                 }
                 CodingShellEvent::ProblemsRefresh => self.app.refresh_coding_problems(),
+                CodingShellEvent::RevealInExplorer { path, is_dir } => {
+                    self.app.with_coding_state(|coding| {
+                        crate::apply_breadcrumb_reveal(coding, &path, is_dir);
+                    })
+                }
+                CodingShellEvent::QuickAction(action) => {
+                    match dispatch_quick_action(action) {
+                        QuickActionIntent::InsertPlannerPrompt(text) => {
+                            self.prompt = text.to_string();
+                            self.focus_composer = true;
+                            Ok(())
+                        }
+                        QuickActionIntent::OpenSearchPanel => {
+                            let result = self.app.with_coding_state(|coding| {
+                                coding.show_bottom_tab(CodingBottomTab::Search);
+                            });
+                            if result.is_ok() {
+                                let _ = self.app.persist_coding_editor_workspace();
+                            }
+                            result
+                        }
+                        QuickActionIntent::OpenTerminalPanel
+                        | QuickActionIntent::FocusTerminalPanel => {
+                            let result = self.app.with_coding_state(|coding| {
+                                coding.show_bottom_tab(CodingBottomTab::Terminal);
+                            });
+                            if result.is_ok() {
+                                let _ = self.app.persist_coding_editor_workspace();
+                            }
+                            result
+                        }
+                        QuickActionIntent::FocusGitPanel => {
+                            let result = self.app.with_coding_state(|coding| {
+                                coding.show_bottom_tab(CodingBottomTab::Git);
+                            });
+                            if result.is_ok() {
+                                let _ = self.app.persist_coding_editor_workspace();
+                            }
+                            result
+                        }
+                    }
+                }
             };
             if let Err(error) = result {
                 self.error = Some(error.message().to_string());
@@ -1666,7 +2100,7 @@ impl JaymiApp {
         let zoom = ctx.pixels_per_point();
         // Native WKWebView paints above egui — hide it while modal overlays own
         // the foreground so Quick Open / Command Palette are not covered by code.
-        let overlay_blocking = self.command_palette.is_open() || self.quick_open.is_open();
+        let overlay_blocking = self.command_palette.is_open();
         let document = surface
             .filter(|_| !overlay_blocking)
             .map(|surface| self.monaco_document_from_state(surface));
@@ -2003,6 +2437,200 @@ impl JaymiApp {
                         } else {
                             entry.required_providers.join(", ")
                         });
+                        ui.end_row();
+                    }
+                });
+        }
+
+        if let Some(inspector) = &self.snapshot.context_inspector {
+            ui.add_space(space::MD);
+            ui.label(
+                egui::RichText::new("Context Inspector")
+                    .strong()
+                    .size(type_size::UI)
+                    .color(self.theme.text_primary),
+            );
+            ui.add_space(space::XS);
+            ui.label(
+                egui::RichText::new(inspector.summary())
+                    .size(type_size::META)
+                    .color(self.theme.text_secondary),
+            );
+            ui.add_space(space::XS);
+            ui.label(
+                egui::RichText::new(format!("request: {}", inspector.request_preview))
+                    .size(type_size::META)
+                    .color(self.theme.text_secondary),
+            );
+            ui.add_space(space::SM);
+            egui::Grid::new("context_inspector_providers")
+                .striped(true)
+                .num_columns(6)
+                .spacing([space::MD, space::XS])
+                .min_col_width(70.0)
+                .show(ui, |ui| {
+                    ui.strong("Provider");
+                    ui.strong("Outcome");
+                    ui.strong("Relevance");
+                    ui.strong("Priority");
+                    ui.strong("Size");
+                    ui.strong("Detail");
+                    ui.end_row();
+                    for provider in &inspector.providers {
+                        let size = match &provider.outcome {
+                            jaymi_context::ProviderInspectOutcome::Contributed {
+                                characters,
+                                ..
+                            } => format!("{characters} ch"),
+                            _ => "—".into(),
+                        };
+                        ui.label(&provider.id);
+                        ui.label(provider.outcome.as_str());
+                        ui.label(provider.relevance.to_string());
+                        ui.label(provider.priority.to_string());
+                        ui.label(size);
+                        ui.label(provider.detail());
+                        ui.end_row();
+                    }
+                });
+            if let Some(budget) = &inspector.budget {
+                ui.add_space(space::SM);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "Budget: {} / {} chars (≈{} tok) · truncated=[{}] · skipped=[{}]",
+                        budget.used_characters,
+                        budget.max_characters,
+                        budget.estimated_tokens,
+                        budget.truncated_providers.join(", "),
+                        budget.skipped_budget.join(", ")
+                    ))
+                    .size(type_size::META)
+                    .color(self.theme.text_secondary),
+                );
+                for summary in &budget.summaries {
+                    ui.label(
+                        egui::RichText::new(format!("· {summary}"))
+                            .size(type_size::META)
+                            .color(self.theme.text_secondary),
+                    );
+                }
+            }
+            if let Some(policy) = &inspector.policy {
+                ui.add_space(space::SM);
+                ui.label(
+                    egui::RichText::new("Context Policy")
+                        .strong()
+                        .size(type_size::UI)
+                        .color(self.theme.text_primary),
+                );
+                ui.add_space(space::XS);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "active=[{}] · before={} · after={} · assembled={} chars",
+                        policy.active_policies.join(","),
+                        policy.size_before_characters,
+                        policy.size_after_characters,
+                        policy.size_assembled_characters
+                    ))
+                    .size(type_size::META)
+                    .color(self.theme.text_secondary),
+                );
+                ui.label(
+                    egui::RichText::new(format!(
+                        "included=[{}] · excluded=[{}]",
+                        policy.included_providers().join(","),
+                        policy.excluded_providers().join(",")
+                    ))
+                    .size(type_size::META)
+                    .color(self.theme.text_secondary),
+                );
+                ui.add_space(space::SM);
+                egui::Grid::new("context_policy_decisions")
+                    .striped(true)
+                    .num_columns(4)
+                    .spacing([space::MD, space::XS])
+                    .min_col_width(70.0)
+                    .show(ui, |ui| {
+                        ui.strong("Provider");
+                        ui.strong("Status");
+                        ui.strong("Sensitivity");
+                        ui.strong("Reason");
+                        ui.end_row();
+                        for decision in &policy.decisions {
+                            ui.label(&decision.provider_id);
+                            ui.label(if decision.included {
+                                "Included"
+                            } else {
+                                "Excluded"
+                            });
+                            ui.label(&decision.sensitivity);
+                            ui.label(&decision.reason);
+                            ui.end_row();
+                        }
+                    });
+            }
+            if !inspector.sections.is_empty() {
+                ui.add_space(space::SM);
+                egui::Grid::new("context_inspector_sections")
+                    .striped(true)
+                    .num_columns(4)
+                    .spacing([space::MD, space::XS])
+                    .min_col_width(80.0)
+                    .show(ui, |ui| {
+                        ui.strong("Section");
+                        ui.strong("Present");
+                        ui.strong("Chars");
+                        ui.strong("Detail");
+                        ui.end_row();
+                        for section in &inspector.sections {
+                            ui.label(&section.name);
+                            ui.label(if section.present { "yes" } else { "no" });
+                            ui.label(section.characters.to_string());
+                            ui.label(&section.detail);
+                            ui.end_row();
+                        }
+                    });
+            }
+        }
+
+        if !self.snapshot.context_history.is_empty() {
+            ui.add_space(space::MD);
+            ui.label(
+                egui::RichText::new("Context History")
+                    .strong()
+                    .size(type_size::UI)
+                    .color(self.theme.text_primary),
+            );
+            ui.add_space(space::XS);
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} recent assembles retained",
+                    self.snapshot.context_history.len()
+                ))
+                .size(type_size::META)
+                .color(self.theme.text_secondary),
+            );
+            ui.add_space(space::SM);
+            egui::Grid::new("context_history_entries")
+                .striped(true)
+                .num_columns(6)
+                .spacing([space::MD, space::XS])
+                .min_col_width(60.0)
+                .show(ui, |ui| {
+                    ui.strong("Gen");
+                    ui.strong("ms");
+                    ui.strong("Size");
+                    ui.strong("Providers");
+                    ui.strong("Cache");
+                    ui.strong("Request");
+                    ui.end_row();
+                    for entry in self.snapshot.context_history.iter().take(12) {
+                        ui.label(entry.assemble_generation.to_string());
+                        ui.label(entry.duration_ms.to_string());
+                        ui.label(format!("{} ch", entry.bundle_size_characters));
+                        ui.label(entry.providers_used.join(","));
+                        ui.label(if entry.cache_hit { "hit" } else { "miss" });
+                        ui.label(&entry.request);
                         ui.end_row();
                     }
                 });

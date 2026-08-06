@@ -131,7 +131,25 @@
         }
         const options = {};
         if (typeof minimap === "boolean") {
-          options.minimap = { enabled: minimap };
+          options.minimap = {
+            enabled: minimap,
+            side: "right",
+            showSlider: "mouseover",
+          };
+          // Monaco paints the vertical scrollbar to the right of the minimap.
+          // Hide it while the minimap is on so the minimap sits flush against
+          // the Explorer; scrolling still works via wheel / trackpad / minimap.
+          options.scrollbar = minimap
+            ? {
+                vertical: "hidden",
+                verticalScrollbarSize: 0,
+                horizontalScrollbarSize: 10,
+              }
+            : {
+                vertical: "auto",
+                verticalScrollbarSize: 10,
+                horizontalScrollbarSize: 10,
+              };
         }
         if (typeof wordWrap === "boolean") {
           options.wordWrap = wordWrap ? "on" : "off";
@@ -171,7 +189,17 @@
           theme: "vs",
           automaticLayout: true,
           lineNumbers: "on",
-          minimap: { enabled: true },
+          minimap: {
+            enabled: true,
+            side: "right",
+            showSlider: "mouseover",
+          },
+          // Keep the minimap as the rightmost chrome (flush to Explorer).
+          scrollbar: {
+            vertical: "hidden",
+            verticalScrollbarSize: 0,
+            horizontalScrollbarSize: 10,
+          },
           wordWrap: "off",
           multiCursorModifier: "alt",
           fontSize: 13,

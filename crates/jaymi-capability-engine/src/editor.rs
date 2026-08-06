@@ -518,6 +518,9 @@ pub struct EditorWorkspaceSnapshot {
     /// Project Explorer column width (points). Restored with serde defaults when absent.
     #[serde(default)]
     pub explorer_width: Option<f32>,
+    /// Whether the Project Explorer column is visible. Absent → leave default / current.
+    #[serde(default)]
+    pub explorer_visible: Option<bool>,
     /// Bottom auxiliary panel height when open (points).
     #[serde(default)]
     pub bottom_panel_height: Option<f32>,
@@ -544,6 +547,7 @@ impl Default for EditorWorkspaceSnapshot {
             layout: None,
             focused_pane: None,
             explorer_width: None,
+            explorer_visible: None,
             bottom_panel_height: None,
             workspace_panel_width: None,
             bottom_tab: None,
@@ -1174,6 +1178,7 @@ impl OpenEditors {
             layout: Some(self.layout.clone()),
             focused_pane: Some(self.focused_pane.clone()),
             explorer_width: None,
+            explorer_visible: None,
             bottom_panel_height: None,
             workspace_panel_width: None,
             bottom_tab: None,

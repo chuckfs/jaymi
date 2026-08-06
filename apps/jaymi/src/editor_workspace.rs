@@ -90,7 +90,8 @@ mod tests {
             panes: Vec::new(),
             layout: None,
             focused_pane: None,
-            explorer_width: Some(230.0),
+            explorer_width: Some(300.0),
+            explorer_visible: Some(true),
             bottom_panel_height: Some(220.0),
             workspace_panel_width: Some(700.0),
             bottom_tab: Some("terminal".into()),
@@ -105,7 +106,8 @@ mod tests {
         assert!(!loaded.settings.minimap);
         assert_eq!(loaded.tabs[0].view.scroll_top, 12.0);
         assert_eq!(loaded.tabs[0].view.folded_regions.len(), 1);
-        assert_eq!(loaded.explorer_width, Some(230.0));
+        assert_eq!(loaded.explorer_width, Some(300.0));
+        assert_eq!(loaded.explorer_visible, Some(true));
         assert_eq!(loaded.bottom_panel_height, Some(220.0));
         assert_eq!(loaded.workspace_panel_width, Some(700.0));
         assert_eq!(loaded.bottom_tab.as_deref(), Some("terminal"));

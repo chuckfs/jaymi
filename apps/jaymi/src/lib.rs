@@ -6,6 +6,8 @@
 #![deny(unsafe_code)]
 
 pub mod boot;
+pub mod coding_breadcrumb;
+pub mod coding_quick_actions;
 pub mod coding_workspace;
 pub mod command_dispatch;
 pub mod command_palette;
@@ -21,6 +23,13 @@ pub mod theme;
 pub mod ui;
 
 pub use boot::Application;
+pub use coding_breadcrumb::{
+    apply_breadcrumb_reveal, breadcrumb_action, breadcrumbs_from_coding_state,
+    truncate_breadcrumbs, BreadcrumbAction, BreadcrumbKind, BreadcrumbSegment,
+};
+pub use coding_quick_actions::{
+    dispatch_quick_action, layout_quick_actions, QuickAction, QuickActionIntent, QuickActionLayout,
+};
 pub use coding_workspace::{
     build_coding_diagnostics_view, coding_panel_lines, coding_shell_summary,
     CodingDiagnosticsSection, CodingDiagnosticsView, CodingShellEvent, LastPlannerActivity,
