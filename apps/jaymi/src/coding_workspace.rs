@@ -206,6 +206,18 @@ pub fn build_coding_diagnostics_view(
     });
 
     sections.push(CodingDiagnosticsSection {
+        title: "Conversational reasoning".into(),
+        lines: match &snapshot.reasoning_inspector {
+            Some(report) => report
+                .labeled_values()
+                .into_iter()
+                .map(|(label, value)| format!("{label}={value}"))
+                .collect(),
+            None => vec!["reasoning inspector unavailable".into()],
+        },
+    });
+
+    sections.push(CodingDiagnosticsSection {
         title: "Tool execution".into(),
         lines: {
             let mut lines = Vec::new();

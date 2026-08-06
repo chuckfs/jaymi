@@ -3,6 +3,10 @@
 //! Conversation is permanent. Workspaces are temporary expansions controlled
 //! by capabilities. Closing a workspace never destroys the conversation, and
 //! capability runtime state disappears with the workspace unless promoted.
+//!
+//! **Sprint B1.13.7:** [`ConversationState`] is mirrored from the Planner only.
+//! Streaming helpers update transcript + turn [`StreamingLifecycle`] — they
+//! never invent runtime phase transitions.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,7 +16,10 @@ use jaymi_capabilities::{
 };
 use jaymi_core::{JaymiError, JaymiResult};
 use jaymi_memory::{ConversationMessage, MessageRole};
-use jaymi_planner::{ExecutionSummary, PlannerResponse, ReviewCardModel, ReviewIntent};
+use jaymi_planner::{
+    ConversationState, ExecutionSummary, PlannerResponse, ReviewCardModel, ReviewIntent,
+};
+use jaymi_reasoning::StreamingLifecycle;
 
 /// Persistent conversation turn kept across workspace open/close.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -27,6 +34,8 @@ pub struct ConversationTurn {
     pub review: Option<ReviewCardModel>,
     /// Optional structured Execution Summary embedded in the conversation.
     pub execution_summary: Option<ExecutionSummary>,
+    /// Streaming lifecycle when this turn was / is being generated.
+    pub stream_lifecycle: Option<StreamingLifecycle>,
 }
 
 impl ConversationTurn {
@@ -38,6 +47,7 @@ impl ConversationTurn {
             created_at: unix_now(),
             review: None,
             execution_summary: None,
+            stream_lifecycle: None,
         }
     }
 
@@ -49,6 +59,7 @@ impl ConversationTurn {
             created_at: unix_now(),
             review: None,
             execution_summary: None,
+            stream_lifecycle: None,
         }
     }
 
@@ -60,6 +71,7 @@ impl ConversationTurn {
             created_at: unix_now(),
             review: Some(review),
             execution_summary: None,
+            stream_lifecycle: None,
         }
     }
 
@@ -74,7 +86,23 @@ impl ConversationTurn {
             created_at: unix_now(),
             review: None,
             execution_summary: Some(summary),
+            stream_lifecycle: None,
         }
+    }
+
+    /// True when this assistant turn is still streaming.
+    pub fn is_streaming(&self) -> bool {
+        self.stream_lifecycle
+            .map(StreamingLifecycle::is_active)
+            .unwrap_or(false)
+    }
+
+    /// True when generation ended in cancel or failure.
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self.stream_lifecycle,
+            Some(StreamingLifecycle::Cancelled) | Some(StreamingLifecycle::Failed)
+        )
     }
 }
 
@@ -100,6 +128,8 @@ pub struct ExperienceSession {
     conversation_id: Option<String>,
     /// Most recent Review Card intent communicated by the user (not executed here).
     last_review_intent: Option<ReviewIntent>,
+    /// Mirrored Planner conversation runtime state (Experience never invents transitions).
+    conversation_state: ConversationState,
 }
 
 impl ExperienceSession {
@@ -133,6 +163,55 @@ impl ExperienceSession {
     /// Immutable conversation transcript.
     pub fn conversation(&self) -> &[ConversationTurn] {
         &self.conversation
+    }
+
+    /// Prior turns for [`jaymi_reasoning::ReasoningRequest::history`].
+    ///
+    /// Experience remains the durable owner of the transcript. This converts a
+    /// snapshot for the Planner — it does not store a second history.
+    ///
+    /// Skips empty turns (including streaming placeholders). When `exclude_goal`
+    /// is set, drops a trailing user turn that duplicates the current goal.
+    pub fn to_reasoning_history(
+        &self,
+        exclude_goal: Option<&str>,
+    ) -> Vec<jaymi_reasoning::ConversationTurn> {
+        let mut turns = Vec::new();
+        for turn in &self.conversation {
+            if turn.content.trim().is_empty() {
+                continue;
+            }
+            let role = match turn.role {
+                MessageRole::User => jaymi_reasoning::ConversationRole::User,
+                MessageRole::Assistant => jaymi_reasoning::ConversationRole::Assistant,
+                MessageRole::System => jaymi_reasoning::ConversationRole::System,
+            };
+            let mut content = turn.content.clone();
+            if let Some(summary) = &turn.execution_summary {
+                let rendered = summary.render_conversation();
+                if !rendered.trim().is_empty() && !content.contains(rendered.trim()) {
+                    content.push_str("\n\n");
+                    content.push_str(&rendered);
+                }
+            }
+            turns.push(jaymi_reasoning::ConversationTurn {
+                role,
+                content,
+                tool_name: None,
+                turn_id: None,
+            });
+        }
+        jaymi_planner::prepare_reasoning_history(turns, exclude_goal.unwrap_or(""))
+    }
+
+    /// Mirrored Planner conversation runtime state.
+    pub fn conversation_state(&self) -> ConversationState {
+        self.conversation_state
+    }
+
+    /// Mirror a Planner-owned conversation state (Experience never invents transitions).
+    pub fn mirror_conversation_state(&mut self, state: ConversationState) {
+        self.conversation_state = state;
     }
 
     /// Display title for the conversation surface.
@@ -373,6 +452,7 @@ impl ExperienceSession {
     /// Completed / failed / cancelled / partial Execution Summaries are folded
     /// into the conversation naturally (structured field + readable text).
     pub fn apply_planner_response(&mut self, response: &PlannerResponse) {
+        self.mirror_conversation_state(response.conversation_state);
         if response.awaiting_review {
             if let Some(plan) = &response.execution_plan {
                 let explanation = response
@@ -405,7 +485,9 @@ impl ExperienceSession {
                 summary.clone(),
             ));
         } else if !response.content.trim().is_empty() {
-            self.append_turn(ConversationTurn::assistant(response.content.clone()));
+            let mut turn = ConversationTurn::assistant(response.content.clone());
+            turn.stream_lifecycle = response.stream_lifecycle;
+            self.append_turn(turn);
         }
         if let Some(workspace) = &response.workspace {
             if workspace.expands() {
@@ -419,6 +501,171 @@ impl ExperienceSession {
         self.append_turn(ConversationTurn::user(content));
     }
 
+    /// Begin an empty assistant turn in Thinking lifecycle (incremental streaming).
+    ///
+    /// Updates transcript + turn [`StreamingLifecycle`] only. Conversation runtime
+    /// phase stays Planner-owned — call [`Self::mirror_conversation_state`] after
+    /// Planner transitions (Sprint B1.13.7).
+    ///
+    /// Returns the turn index for subsequent [`Self::append_stream_token`] /
+    /// [`Self::set_stream_lifecycle`] / [`Self::finalize_streaming_turn`] calls.
+    pub fn begin_streaming_assistant(&mut self) -> usize {
+        let mut turn = ConversationTurn::assistant("");
+        turn.stream_lifecycle = Some(StreamingLifecycle::Thinking);
+        self.conversation.push(turn);
+        self.conversation.len() - 1
+    }
+
+    /// Append a visible token to an in-progress streaming assistant turn.
+    ///
+    /// Does **not** invent [`ConversationState`] — only turn content / lifecycle.
+    pub fn append_stream_token(&mut self, turn_index: usize, token: &str) -> JaymiResult<()> {
+        let turn = self
+            .conversation
+            .get_mut(turn_index)
+            .ok_or_else(|| JaymiError::new("streaming turn index out of range"))?;
+        if !matches!(turn.role, MessageRole::Assistant) {
+            return Err(JaymiError::new("streaming turn is not an assistant turn"));
+        }
+        turn.content.push_str(token);
+        if !matches!(
+            turn.stream_lifecycle,
+            Some(StreamingLifecycle::Streaming) | Some(StreamingLifecycle::Completed)
+        ) {
+            turn.stream_lifecycle = Some(StreamingLifecycle::Streaming);
+        }
+        Ok(())
+    }
+
+    /// Update streaming lifecycle for an in-progress assistant turn.
+    ///
+    /// Turn-scoped only. Runtime phase is mirrored from Planner separately.
+    pub fn set_stream_lifecycle(
+        &mut self,
+        turn_index: usize,
+        lifecycle: StreamingLifecycle,
+    ) -> JaymiResult<()> {
+        let turn = self
+            .conversation
+            .get_mut(turn_index)
+            .ok_or_else(|| JaymiError::new("streaming turn index out of range"))?;
+        turn.stream_lifecycle = Some(lifecycle);
+        Ok(())
+    }
+
+    /// Finalize a streaming assistant turn with terminal content + lifecycle.
+    ///
+    /// Turn-scoped only. Runtime phase is mirrored from Planner separately.
+    pub fn finalize_streaming_turn(
+        &mut self,
+        turn_index: usize,
+        content: impl Into<String>,
+        lifecycle: StreamingLifecycle,
+    ) -> JaymiResult<()> {
+        let turn = self
+            .conversation
+            .get_mut(turn_index)
+            .ok_or_else(|| JaymiError::new("streaming turn index out of range"))?;
+        turn.content = content.into();
+        turn.stream_lifecycle = Some(lifecycle);
+        Ok(())
+    }
+
+    /// Apply a conversation stream event to an in-progress assistant turn.
+    pub fn apply_stream_event(
+        &mut self,
+        turn_index: usize,
+        event: &jaymi_reasoning::ConversationStreamEvent,
+    ) -> JaymiResult<()> {
+        use jaymi_reasoning::ConversationStreamEvent;
+        match event {
+            ConversationStreamEvent::Lifecycle(lifecycle) => {
+                self.set_stream_lifecycle(turn_index, *lifecycle)
+            }
+            ConversationStreamEvent::Token(token) => self.append_stream_token(turn_index, token),
+            ConversationStreamEvent::Thought(_) => Ok(()),
+            ConversationStreamEvent::Completed(response) => self.finalize_streaming_turn(
+                turn_index,
+                response.content.clone(),
+                StreamingLifecycle::Completed,
+            ),
+            ConversationStreamEvent::Cancelled {
+                partial, reason, ..
+            } => {
+                let content = if partial.trim().is_empty() {
+                    format!("Generation cancelled ({})", reason.as_str())
+                } else {
+                    partial.clone()
+                };
+                self.finalize_streaming_turn(turn_index, content, StreamingLifecycle::Cancelled)
+            }
+            ConversationStreamEvent::Failed { partial, error, .. } => {
+                let content = if partial.trim().is_empty() {
+                    format!("I couldn't finish reasoning about that ({})", error.message())
+                } else {
+                    partial.clone()
+                };
+                self.finalize_streaming_turn(turn_index, content, StreamingLifecycle::Failed)
+            }
+        }
+    }
+
+    /// Index of the in-progress streaming assistant turn, when any.
+    pub fn active_streaming_turn_index(&self) -> Option<usize> {
+        self.conversation
+            .iter()
+            .rposition(|turn| turn.is_streaming())
+    }
+
+    /// True when any assistant turn is actively streaming tokens / thinking.
+    pub fn has_streaming_turn(&self) -> bool {
+        self.active_streaming_turn_index().is_some()
+    }
+
+    /// Content of the most recent user turn.
+    pub fn last_user_content(&self) -> Option<&str> {
+        self.conversation
+            .iter()
+            .rev()
+            .find(|turn| matches!(turn.role, MessageRole::User))
+            .map(|turn| turn.content.as_str())
+    }
+
+    /// Drop the last assistant turn (for regenerate) and return its former index.
+    pub fn remove_last_assistant_turn(&mut self) -> Option<usize> {
+        let index = self
+            .conversation
+            .iter()
+            .rposition(|turn| matches!(turn.role, MessageRole::Assistant))?;
+        self.conversation.remove(index);
+        Some(index)
+    }
+
+    /// Reset an assistant turn for retry (clear content, Thinking lifecycle).
+    ///
+    /// Does **not** invent [`ConversationState`] — Planner transitions, then
+    /// [`Self::mirror_conversation_state`].
+    pub fn reset_assistant_for_retry(&mut self, turn_index: usize) -> JaymiResult<()> {
+        let turn = self
+            .conversation
+            .get_mut(turn_index)
+            .ok_or_else(|| JaymiError::new("retry turn index out of range"))?;
+        if !matches!(turn.role, MessageRole::Assistant) {
+            return Err(JaymiError::new("retry turn is not an assistant turn"));
+        }
+        turn.content.clear();
+        turn.stream_lifecycle = Some(StreamingLifecycle::Thinking);
+        Ok(())
+    }
+
+    /// Remove a turn by index (regenerate / edit flows).
+    pub fn remove_turn_at(&mut self, index: usize) -> JaymiResult<ConversationTurn> {
+        if index >= self.conversation.len() {
+            return Err(JaymiError::new("turn index out of range"));
+        }
+        Ok(self.conversation.remove(index))
+    }
+
     /// Seed turns from a loaded conversation transcript.
     pub fn load_messages(&mut self, messages: &[ConversationMessage]) {
         self.conversation.clear();
@@ -429,6 +676,7 @@ impl ExperienceSession {
                 created_at: message.created_at,
                 review: None,
                 execution_summary: None,
+                stream_lifecycle: None,
             });
         }
     }
@@ -472,6 +720,89 @@ mod tests {
         plan.mark_ready().unwrap();
         plan.mark_awaiting_review().unwrap();
         plan
+    }
+
+    #[test]
+    fn streaming_assistant_turn_updates_incrementally() {
+        let mut session = ExperienceSession::new();
+        session.record_user_message("Hello");
+        // Runtime phase stays Idle until Planner mirror (B1.13.7).
+        assert_eq!(session.conversation_state(), ConversationState::Idle);
+        let index = session.begin_streaming_assistant();
+        assert_eq!(session.conversation_state(), ConversationState::Idle);
+        assert_eq!(
+            session.conversation()[index].stream_lifecycle,
+            Some(StreamingLifecycle::Thinking)
+        );
+        session.mirror_conversation_state(ConversationState::Reasoning);
+        session.append_stream_token(index, "Hi").unwrap();
+        session.append_stream_token(index, " there").unwrap();
+        assert_eq!(session.conversation()[index].content, "Hi there");
+        assert_eq!(
+            session.conversation()[index].stream_lifecycle,
+            Some(StreamingLifecycle::Streaming)
+        );
+        // Tokens must not invent Streaming — still mirrored Reasoning until Planner says so.
+        assert_eq!(session.conversation_state(), ConversationState::Reasoning);
+        session.mirror_conversation_state(ConversationState::Streaming);
+        session
+            .finalize_streaming_turn(index, "Hi there!", StreamingLifecycle::Completed)
+            .unwrap();
+        assert_eq!(session.conversation()[index].content, "Hi there!");
+        assert!(!session.conversation()[index].is_streaming());
+        assert_eq!(session.conversation_state(), ConversationState::Streaming);
+        session.mirror_conversation_state(ConversationState::Completed);
+        assert_eq!(session.conversation_state(), ConversationState::Completed);
+    }
+
+    #[test]
+    fn streaming_helpers_never_invent_conversation_state() {
+        let mut session = ExperienceSession::new();
+        session.mirror_conversation_state(ConversationState::PreparingContext);
+        let index = session.begin_streaming_assistant();
+        assert_eq!(
+            session.conversation_state(),
+            ConversationState::PreparingContext
+        );
+        session.append_stream_token(index, "x").unwrap();
+        assert_eq!(
+            session.conversation_state(),
+            ConversationState::PreparingContext
+        );
+        session
+            .set_stream_lifecycle(index, StreamingLifecycle::Failed)
+            .unwrap();
+        assert_eq!(
+            session.conversation_state(),
+            ConversationState::PreparingContext
+        );
+        session.reset_assistant_for_retry(index).unwrap();
+        assert_eq!(
+            session.conversation_state(),
+            ConversationState::PreparingContext
+        );
+    }
+
+    #[test]
+    fn apply_planner_response_mirrors_conversation_state() {
+        let mut session = ExperienceSession::new();
+        session.apply_planner_response(&PlannerResponse {
+            content: "done".into(),
+            conversation_state: ConversationState::Completed,
+            ..PlannerResponse::default()
+        });
+        assert_eq!(session.conversation_state(), ConversationState::Completed);
+        session.apply_planner_response(&PlannerResponse {
+            content: String::new(),
+            awaiting_review: true,
+            conversation_state: ConversationState::WaitingForReview,
+            execution_plan: Some(awaiting_plan()),
+            ..PlannerResponse::default()
+        });
+        assert_eq!(
+            session.conversation_state(),
+            ConversationState::WaitingForReview
+        );
     }
 
     #[test]
@@ -589,5 +920,60 @@ mod tests {
         assert!(session
             .communicate_review_intent(ReviewIntent::Approve { plan_id })
             .is_err());
+    }
+
+    #[test]
+    fn retry_and_regenerate_helpers_preserve_conversation_first() {
+        let mut session = ExperienceSession::new();
+        session.record_user_message("Explain ownership");
+        let index = session.begin_streaming_assistant();
+        session
+            .finalize_streaming_turn(index, "partial…", StreamingLifecycle::Cancelled)
+            .unwrap();
+        assert!(session.conversation()[index].is_retryable());
+        session.reset_assistant_for_retry(index).unwrap();
+        assert_eq!(session.conversation()[index].content, "");
+        assert_eq!(
+            session.conversation()[index].stream_lifecycle,
+            Some(StreamingLifecycle::Thinking)
+        );
+        assert_eq!(session.last_user_content(), Some("Explain ownership"));
+        session
+            .finalize_streaming_turn(index, "Ownership is…", StreamingLifecycle::Completed)
+            .unwrap();
+        let removed = session.remove_last_assistant_turn();
+        assert_eq!(removed, Some(index));
+        assert_eq!(session.turn_count(), 1);
+        assert!(session.active_streaming_turn_index().is_none());
+    }
+
+    #[test]
+    fn reasoning_history_maps_prior_turns_and_excludes_goal() {
+        let mut session = ExperienceSession::new();
+        session.record_user_message("earlier");
+        session.append_turn(ConversationTurn::assistant("prior reply"));
+        session.record_user_message("latest goal");
+        let history = session.to_reasoning_history(Some("latest goal"));
+        assert_eq!(history.len(), 2);
+        assert_eq!(history[0].content, "earlier");
+        assert_eq!(
+            history[0].role,
+            jaymi_reasoning::ConversationRole::User
+        );
+        assert_eq!(history[1].content, "prior reply");
+        assert_eq!(
+            history[1].role,
+            jaymi_reasoning::ConversationRole::Assistant
+        );
+    }
+
+    #[test]
+    fn reasoning_history_skips_empty_streaming_placeholder() {
+        let mut session = ExperienceSession::new();
+        session.record_user_message("hi");
+        let _ = session.begin_streaming_assistant();
+        let history = session.to_reasoning_history(None);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].content, "hi");
     }
 }

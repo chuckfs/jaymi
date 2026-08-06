@@ -1,6 +1,6 @@
 # Experience
 
-**Status: Current Implementation** (conversation shell + Coding Workspace shell + expansion model) · **Target:** full IDE / canvas / research surfaces
+**Status: Current Implementation** (conversation shell + Coding Workspace shell + expansion model) · **Partial:** conversation state machine + streaming (B1.6–B1.7) · **Target:** full IDE / canvas / research surfaces
 
 ## Conversation First
 
@@ -11,6 +11,8 @@ The conversation is the primary interface.
 Users should never feel like they are switching applications.
 
 Instead, the conversation expands into specialized workspaces as tasks become more complex.
+
+**Current (B1.7–B1.13.8):** The Planner owns `ConversationState` (Idle → Preparing Context → Reasoning / Streaming / Waiting For Review / Executing → terminal). Experience mirrors that state only — streaming helpers update transcript + turn lifecycle, never invent runtime transitions. The UI shows a typing indicator, streaming caret, Stop/cancel, Copy / Retry / Regenerate, and pump-driven smooth streaming. Pumpable and blocking delivery share the generation pipeline; see [conversation-ux.md](conversation-ux.md#dual-delivery-b1138).
 
 ---
 

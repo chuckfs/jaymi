@@ -39,6 +39,8 @@ jaymi-policies = { workspace = true }
 jaymi-project-engine = { workspace = true }
 jaymi-projects = { workspace = true }
 jaymi-providers = { workspace = true }
+jaymi-reasoning = { workspace = true }
+jaymi-reasoning-ollama = { workspace = true }
 jaymi-search = { workspace = true }
 jaymi-tools = { workspace = true }
 jaymi-understanding = { workspace = true }

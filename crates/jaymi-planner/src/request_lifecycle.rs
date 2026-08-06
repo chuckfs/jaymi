@@ -2,7 +2,8 @@
 //!
 //! Canonical vocabulary matches `Planner::handle` and architecture docs.
 //! Every user-facing request enters the Planner; stages after Context
-//! assemble branch by Intent class (tool-backed / session / plan / unsupported).
+//! assemble branch by Intent class (tool-backed / session / plan /
+//! conversational).
 
 /// Ordered stages of Planner request handling.
 ///
@@ -13,8 +14,10 @@
 /// **Tool-backed** intents create an Execution Plan, optionally wait for
 /// review, then run Action Policy → Permission (during plan gating) → Tool,
 /// and finally produce an Execution Summary.
-/// Session / PlanWork / unsupported paths assemble a ContextBundle and
-/// return without action-plan execution.
+/// Session / PlanWork assemble a ContextBundle and return without
+/// action-plan execution. Conversational / unknown intents assemble a
+/// ContextBundle, then invoke the Reasoning Engine (never tools, never
+/// providers directly).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RequestStage {
     /// Inbound user request enters the Planner.

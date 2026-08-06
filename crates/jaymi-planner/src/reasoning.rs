@@ -1,20 +1,10 @@
-//! Reasoning Engine — language understanding delegated to interchangeable models.
+//! Reasoning Engine — re-exported from `jaymi-reasoning`.
 //!
-//! Used for ambiguous requests, summarization, complex planning, explanation,
-//! and natural-language generation. Fully replaceable.
+//! The orchestration implementation lives in [`jaymi_reasoning::ReasoningEngine`].
+//! This module keeps the Planner's historical import path stable.
 
-/// Replaceable reasoning component of the Planner.
-#[derive(Debug, Default)]
-pub struct ReasoningEngine;
-
-impl ReasoningEngine {
-    /// Whether a reasoning backend is wired and usable.
-    pub fn is_implemented(&self) -> bool {
-        false
-    }
-
-    /// Honest status label for diagnostics (`stub` — no backend wired yet).
-    pub fn status_label(&self) -> &'static str {
-        "stub"
-    }
-}
+pub use jaymi_reasoning::{
+    CancelReason, ConversationStream, ConversationStreamDiagnostics, ConversationStreamEvent,
+    ReasoningEngine, ReasoningEngineConfig, StreamingLifecycle, StreamingResponse,
+    DEFAULT_REASONING_TIMEOUT_MS,
+};

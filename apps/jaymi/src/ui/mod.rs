@@ -12,13 +12,17 @@ use std::time::SystemTime;
 
 use eframe::egui;
 
-use crate::boot::Application;
+use crate::boot::{Application, BeginGeneration, PumpGeneration};
 use crate::coding_quick_actions::{dispatch_quick_action, QuickActionEffect};
 use crate::coding_workspace::{render_coding_shell, CodingShellEvent, MonacoEditorSurface};
 use crate::command_dispatch::{dispatch_command, CommandDispatchEffect};
 use crate::command_palette::{
     gather_palette_items, render_command_palette, CommandPaletteOutcome, CommandPaletteState,
     PaletteAction, PaletteCommandRef, PaletteGatherInput,
+};
+use crate::conversation_ux::{
+    action_accessibility_label, caret_blink_on, display_content, loading_opacity,
+    progress_accessibility_label, show_typing_indicator, turn_actions,
 };
 use crate::diagnostics::{DiagnosticsSnapshot, OperationalStatus};
 use crate::experience::ExperienceSession;
@@ -38,7 +42,6 @@ use jaymi_capabilities::{
     MAX_WORKSPACE_PANEL_WIDTH, MIN_CONVERSATION_WIDTH, MIN_WORKSPACE_PANEL_WIDTH,
 };
 use jaymi_config::{Config, Theme as ThemePreference};
-use jaymi_core::UserRequest;
 use jaymi_memory::{ConversationMeta, MessageRole};
 use jaymi_planner::ReviewIntent;
 
@@ -95,6 +98,8 @@ pub fn run_diagnostics(
                 workspace_anim_from: MIN_WORKSPACE_PANEL_WIDTH,
                 workspace_anim_target: DEFAULT_WORKSPACE_PANEL_WIDTH,
                 awaiting_reply: false,
+                loading_started_at: None,
+                last_clipboard: None,
                 theme,
                 nav_open: false,
                 nav_tab: NavTab::Conversations,
@@ -146,6 +151,24 @@ fn paint_send_button(ui: &mut egui::Ui, theme: &Theme) -> egui::Response {
         theme.on_accent(),
         egui::Stroke::NONE,
     ));
+    response
+}
+
+/// Stop generation control — square icon on accent (mirrors send affordance).
+fn paint_stop_button(ui: &mut egui::Ui, theme: &Theme) -> egui::Response {
+    let size = egui::vec2(32.0, 32.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let fill = if response.hovered() {
+        theme.accent.gamma_multiply(0.92)
+    } else {
+        theme.accent
+    };
+    ui.painter()
+        .rect_filled(rect, egui::CornerRadius::same(radius::MD as u8), fill);
+    let inset = 10.0;
+    let stop = egui::Rect::from_center_size(rect.center(), egui::vec2(inset, inset));
+    ui.painter()
+        .rect_filled(stop, egui::CornerRadius::same(2), theme.on_accent());
     response
 }
 
@@ -316,8 +339,12 @@ struct JaymiApp {
     workspace_anim_from: f32,
     /// Width the expand animation eases toward the remembered/default width.
     workspace_anim_target: f32,
-    /// True while waiting for Jaymi to respond (typing indicator).
+    /// True while waiting for Jaymi to respond (typing indicator / Stop affordance).
     awaiting_reply: bool,
+    /// When the current loading indicator started (opacity transition).
+    loading_started_at: Option<std::time::Instant>,
+    /// Last text copied to the clipboard (tests / status).
+    last_clipboard: Option<String>,
     /// Active application theme (drives egui visuals + Monaco Jaymi themes).
     theme: Theme,
     /// Whether the left navigation rail is open (or animating open).
@@ -400,9 +427,17 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
 impl eframe::App for JaymiApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.sync_theme(ctx);
+        self.pump_active_generation(ctx);
 
         if let Ok(session) = self.app.experience() {
             self.experience = session;
+        }
+
+        // Escape cancels an in-flight generation (Conversation First).
+        if self.awaiting_reply
+            && ctx.input(|input| input.key_pressed(egui::Key::Escape))
+        {
+            let _ = self.app.cancel_generation();
         }
 
         // ⌘P / ⌘⇧P Command Palette · ⌘⇧F Find in Files
@@ -926,8 +961,20 @@ impl JaymiApp {
         // Open history on the window background — no title, no surrounding frame.
         let available = ui.available_height();
         let turns: Vec<_> = self.experience.conversation().to_vec();
-        let empty = turns.is_empty() && !self.awaiting_reply;
+        let conversation_state = self.experience.conversation_state();
+        let has_streaming = self.experience.has_streaming_turn();
+        let show_progress = self.awaiting_reply
+            || show_typing_indicator(conversation_state, has_streaming)
+            || matches!(
+                conversation_state,
+                jaymi_planner::ConversationState::WaitingForReview
+            );
+        let empty = turns.is_empty() && !show_progress;
         let mut review_intent: Option<ReviewIntent> = None;
+        let mut copy_index: Option<usize> = None;
+        let mut retry_index: Option<usize> = None;
+        let mut regenerate_index: Option<usize> = None;
+        let caret_on = caret_blink_on(ui.input(|input| input.time));
         egui::ScrollArea::vertical()
             .id_salt("conversation_scroll")
             .animated(true)
@@ -947,17 +994,19 @@ impl JaymiApp {
                         ui.vertical(|ui| {
                             ui.set_max_width((ui.available_width() - space::LG).max(120.0));
                             let mut last_day: Option<i64> = None;
-                            for turn in &turns {
+                            for (index, turn) in turns.iter().enumerate() {
                                 let day = turn.created_at.div_euclid(86_400);
                                 if last_day != Some(day) {
                                     self.render_timestamp_separator(ui, turn.created_at);
                                     last_day = Some(day);
                                 }
+                                let body = display_content(turn, caret_on);
                                 self.render_chat_bubble(
                                     ui,
                                     turn.role,
-                                    &turn.content,
+                                    &body,
                                     turn.created_at,
+                                    turn.is_streaming(),
                                 );
                                 if let Some(review) = &turn.review {
                                     ui.add_space(space::SM);
@@ -980,9 +1029,72 @@ impl JaymiApp {
                                         review_intent = Some(intent);
                                     }
                                 }
+                                let actions = turn_actions(turn);
+                                if actions.any() {
+                                    ui.add_space(space::XS);
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = space::SM;
+                                        if actions.copy {
+                                            let response = ui
+                                                .add(
+                                                    egui::Button::new(
+                                                        egui::RichText::new("Copy")
+                                                            .size(type_size::META)
+                                                            .color(self.theme.text_secondary),
+                                                    )
+                                                    .frame(false),
+                                                )
+                                                .on_hover_text(action_accessibility_label(
+                                                    "Copy response",
+                                                    &turn.content,
+                                                ));
+                                            if response.clicked() {
+                                                copy_index = Some(index);
+                                            }
+                                        }
+                                        if actions.retry {
+                                            let response = ui
+                                                .add(
+                                                    egui::Button::new(
+                                                        egui::RichText::new("Retry")
+                                                            .size(type_size::META)
+                                                            .color(self.theme.text_secondary),
+                                                    )
+                                                    .frame(false),
+                                                )
+                                                .on_hover_text(action_accessibility_label(
+                                                    "Retry response",
+                                                    &turn.content,
+                                                ));
+                                            if response.clicked() {
+                                                retry_index = Some(index);
+                                            }
+                                        }
+                                        if actions.regenerate {
+                                            let response = ui
+                                                .add(
+                                                    egui::Button::new(
+                                                        egui::RichText::new("Regenerate")
+                                                            .size(type_size::META)
+                                                            .color(self.theme.text_secondary),
+                                                    )
+                                                    .frame(false),
+                                                )
+                                                .on_hover_text(action_accessibility_label(
+                                                    "Regenerate response",
+                                                    &turn.content,
+                                                ));
+                                            if response.clicked() {
+                                                regenerate_index = Some(index);
+                                            }
+                                        }
+                                    });
+                                }
                                 ui.add_space(space::LG);
                             }
-                            if self.awaiting_reply {
+                            if show_typing_indicator(conversation_state, has_streaming)
+                                || (self.awaiting_reply && !has_streaming)
+                            {
                                 self.render_typing_indicator(ui);
                             }
                             // Breathing room above the floating composer.
@@ -994,6 +1106,18 @@ impl JaymiApp {
             });
         if let Some(intent) = review_intent {
             self.handle_review_intent(intent);
+        }
+        if let Some(index) = copy_index {
+            self.copy_assistant_turn(ui.ctx(), index);
+        }
+        if retry_index.is_some() {
+            self.retry_response();
+        }
+        if regenerate_index.is_some() {
+            self.regenerate_response();
+        }
+        if has_streaming || self.awaiting_reply {
+            ui.ctx().request_repaint();
         }
     }
 
@@ -1038,16 +1162,42 @@ impl JaymiApp {
     }
 
     fn render_typing_indicator(&self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.add_space(space::SM);
-            ui.label(
-                egui::RichText::new("Jaymi is typing…")
-                    .italics()
-                    .size(type_size::BODY)
-                    .color(self.theme.text_secondary),
-            );
-        });
+        let state = self.experience.conversation_state();
+        let label = if state.shows_progress_indicator() || state.is_active() {
+            let text = state.status_label();
+            if text.is_empty() {
+                "Working…"
+            } else {
+                text
+            }
+        } else {
+            "Preparing context…"
+        };
+        let progress = self
+            .loading_started_at
+            .map(|started| (started.elapsed().as_secs_f32() / 0.28).clamp(0.0, 1.0))
+            .unwrap_or(1.0);
+        let opacity = loading_opacity(progress);
+        let secondary = self.theme.text_secondary;
+        let faded = egui::Color32::from_rgba_unmultiplied(
+            secondary.r(),
+            secondary.g(),
+            secondary.b(),
+            (opacity * 255.0) as u8,
+        );
+        let response = ui
+            .horizontal(|ui| {
+                ui.spinner();
+                ui.add_space(space::SM);
+                ui.label(
+                    egui::RichText::new(label)
+                        .italics()
+                        .size(type_size::BODY)
+                        .color(faded),
+                );
+            })
+            .response;
+        response.on_hover_text(progress_accessibility_label(state));
         ui.add_space(space::MD);
     }
 
@@ -1057,6 +1207,7 @@ impl JaymiApp {
         role: MessageRole,
         content: &str,
         created_at: i64,
+        streaming: bool,
     ) {
         let max_bubble = (ui.available_width() * 0.78).clamp(240.0, 720.0);
 
@@ -1103,6 +1254,13 @@ impl JaymiApp {
                             .size(type_size::META)
                             .color(self.theme.text_secondary),
                     );
+                    if streaming {
+                        ui.label(
+                            egui::RichText::new("streaming")
+                                .size(type_size::META)
+                                .color(self.theme.text_secondary),
+                        );
+                    }
                 });
                 ui.add_space(space::XS);
                 ui.set_max_width(max_bubble);
@@ -1135,6 +1293,8 @@ impl JaymiApp {
         let mut attach_clicked = false;
         let mut quick_open_clicked = false;
         let mut send_clicked = false;
+        let mut stop_clicked = false;
+        let generation_active = self.awaiting_reply || self.app.generation_active();
 
         const MAX_COMPOSER_ROWS: usize = 8;
         // Rough width of ⌘P chip + send + gaps on the trailing edge.
@@ -1221,10 +1381,18 @@ impl JaymiApp {
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.spacing_mut().item_spacing.x = space::SM;
-                            let send =
-                                paint_send_button(ui, &self.theme).on_hover_text("Send (Enter)");
-                            if send.clicked() {
-                                send_clicked = true;
+                            if generation_active {
+                                let stop = paint_stop_button(ui, &self.theme)
+                                    .on_hover_text("Stop generating (Esc)");
+                                if stop.clicked() {
+                                    stop_clicked = true;
+                                }
+                            } else {
+                                let send = paint_send_button(ui, &self.theme)
+                                    .on_hover_text("Send (Enter)");
+                                if send.clicked() {
+                                    send_clicked = true;
+                                }
                             }
                             let quick = composer_chip(ui, &self.theme, "⌘P")
                                 .on_hover_text("Command Palette (⌘P)");
@@ -1262,10 +1430,18 @@ impl JaymiApp {
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.spacing_mut().item_spacing.x = space::SM;
-                            let send =
-                                paint_send_button(ui, &self.theme).on_hover_text("Send (Enter)");
-                            if send.clicked() {
-                                send_clicked = true;
+                            if generation_active {
+                                let stop = paint_stop_button(ui, &self.theme)
+                                    .on_hover_text("Stop generating (Esc)");
+                                if stop.clicked() {
+                                    stop_clicked = true;
+                                }
+                            } else {
+                                let send = paint_send_button(ui, &self.theme)
+                                    .on_hover_text("Send (Enter)");
+                                if send.clicked() {
+                                    send_clicked = true;
+                                }
                             }
                             let quick = composer_chip(ui, &self.theme, "⌘P")
                                 .on_hover_text("Command Palette (⌘P)");
@@ -1281,7 +1457,8 @@ impl JaymiApp {
                         response.request_focus();
                         self.focus_composer = false;
                     }
-                    let enter_send = response.has_focus()
+                    let enter_send = !generation_active
+                        && response.has_focus()
                         && ui.input(|input| {
                             input.key_pressed(egui::Key::Enter) && !input.modifiers.shift
                         });
@@ -1298,6 +1475,9 @@ impl JaymiApp {
         if quick_open_clicked {
             self.command_palette.open();
             self.refresh_command_palette();
+        }
+        if stop_clicked {
+            let _ = self.app.cancel_generation();
         }
         if send_clicked {
             self.send_prompt();
@@ -2334,27 +2514,152 @@ impl JaymiApp {
         Ok(())
     }
 
+    fn pump_active_generation(&mut self, ctx: &egui::Context) {
+        if !self.app.generation_active() {
+            if self.awaiting_reply && !self.app.generation_active() {
+                // Sync path already finished inside begin_generation.
+            }
+            return;
+        }
+        match self.app.pump_generation(24) {
+            Ok(PumpGeneration::Active { .. }) => {
+                self.awaiting_reply = true;
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
+                }
+                ctx.request_repaint();
+            }
+            Ok(PumpGeneration::Finished(_response)) => {
+                self.awaiting_reply = false;
+                self.loading_started_at = None;
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
+                }
+                self.error = None;
+            }
+            Ok(PumpGeneration::Idle) => {
+                self.awaiting_reply = false;
+                self.loading_started_at = None;
+            }
+            Err(error) => {
+                self.awaiting_reply = false;
+                self.loading_started_at = None;
+                self.error = Some(error.message().to_string());
+                let _ = self.app.cancel_generation();
+            }
+        }
+    }
+
     fn send_prompt(&mut self) {
         let prompt = self.prompt.trim().to_string();
-        if prompt.is_empty() {
+        if prompt.is_empty() || self.awaiting_reply || self.app.generation_active() {
             return;
         }
         self.prompt.clear();
         self.awaiting_reply = true;
-        match self.app.handle_with_workspace(UserRequest::new(prompt)) {
-            Ok(_) => {
+        self.loading_started_at = Some(std::time::Instant::now());
+        // Do not invent ConversationState — sync from Application after Planner runs.
+        match self.app.begin_generation(prompt) {
+            Ok(BeginGeneration::Started) => {
                 self.error = None;
                 self.status = None;
                 if let Ok(session) = self.app.experience() {
                     self.experience = session;
                 }
             }
-            Err(error) => {
+            Ok(BeginGeneration::Completed(response)) => {
+                self.awaiting_reply = false;
+                self.loading_started_at = None;
+                self.error = None;
                 self.status = None;
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
+                } else {
+                    self.experience
+                        .mirror_conversation_state(response.conversation_state);
+                }
+            }
+            Err(error) => {
+                self.awaiting_reply = false;
+                self.loading_started_at = None;
+                self.status = None;
+                self.error = Some(error.message().to_string());
+                // Mirror Planner if available — never invent Failed in the UI.
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
+                }
+            }
+        }
+    }
+
+    fn copy_assistant_turn(&mut self, ctx: &egui::Context, turn_index: usize) {
+        match self.app.assistant_turn_text(turn_index) {
+            Ok(text) => {
+                ctx.copy_text(text.clone());
+                self.last_clipboard = Some(text);
+                self.status = Some("Copied response.".into());
+                self.error = None;
+            }
+            Err(error) => {
                 self.error = Some(error.message().to_string());
             }
         }
-        self.awaiting_reply = false;
+    }
+
+    fn retry_response(&mut self) {
+        self.awaiting_reply = true;
+        self.loading_started_at = Some(std::time::Instant::now());
+        match self.app.retry_generation(false) {
+            Ok(BeginGeneration::Started) => {
+                self.error = None;
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
+                }
+            }
+            Ok(BeginGeneration::Completed(response)) => {
+                self.awaiting_reply = false;
+                self.loading_started_at = None;
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
+                } else {
+                    self.experience
+                        .mirror_conversation_state(response.conversation_state);
+                }
+            }
+            Err(error) => {
+                self.awaiting_reply = false;
+                self.loading_started_at = None;
+                self.error = Some(error.message().to_string());
+            }
+        }
+    }
+
+    fn regenerate_response(&mut self) {
+        self.awaiting_reply = true;
+        self.loading_started_at = Some(std::time::Instant::now());
+        match self.app.regenerate_response() {
+            Ok(BeginGeneration::Started) => {
+                self.error = None;
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
+                }
+            }
+            Ok(BeginGeneration::Completed(response)) => {
+                self.awaiting_reply = false;
+                self.loading_started_at = None;
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
+                } else {
+                    self.experience
+                        .mirror_conversation_state(response.conversation_state);
+                }
+            }
+            Err(error) => {
+                self.awaiting_reply = false;
+                self.loading_started_at = None;
+                self.error = Some(error.message().to_string());
+            }
+        }
     }
 
     /// Apply a Review Card button: record intent, then Planner pause/resume.
@@ -2784,6 +3089,77 @@ impl JaymiApp {
                             ui.label(if section.present { "yes" } else { "no" });
                             ui.label(section.characters.to_string());
                             ui.label(&section.detail);
+                            ui.end_row();
+                        }
+                    });
+            }
+        }
+
+        if let Some(inspector) = &self.snapshot.reasoning_inspector {
+            ui.add_space(space::MD);
+            ui.label(
+                egui::RichText::new("Conversational Reasoning")
+                    .strong()
+                    .size(type_size::UI)
+                    .color(self.theme.text_primary),
+            );
+            ui.add_space(space::XS);
+            ui.label(
+                egui::RichText::new(
+                    "Lifecycle: Idle → Preparing Context → Reasoning / Streaming → Completed | Cancelled | Failed",
+                )
+                .size(type_size::META)
+                .color(self.theme.text_secondary),
+            );
+            ui.add_space(space::XS);
+            ui.label(
+                egui::RichText::new(inspector.summary_line())
+                    .size(type_size::META)
+                    .color(self.theme.text_secondary),
+            );
+            ui.add_space(space::SM);
+            egui::Grid::new("reasoning_inspector_fields")
+                .striped(true)
+                .num_columns(2)
+                .spacing([space::MD, space::XS])
+                .min_col_width(120.0)
+                .show(ui, |ui| {
+                    ui.strong("Field");
+                    ui.strong("Value");
+                    ui.end_row();
+                    for (label, value) in inspector.labeled_values() {
+                        ui.label(label);
+                        ui.label(value);
+                        ui.end_row();
+                    }
+                });
+            if !inspector.prompt_sections.is_empty() {
+                ui.add_space(space::SM);
+                egui::Grid::new("reasoning_inspector_prompt_sections")
+                    .striped(true)
+                    .num_columns(5)
+                    .spacing([space::MD, space::XS])
+                    .min_col_width(64.0)
+                    .show(ui, |ui| {
+                        ui.strong("Section");
+                        ui.strong("Chars");
+                        ui.strong("Tokens");
+                        ui.strong("State");
+                        ui.strong("Note");
+                        ui.end_row();
+                        for section in &inspector.prompt_sections {
+                            let state = if section.truncated {
+                                "trunc"
+                            } else if section.included {
+                                "included"
+                            } else {
+                                "omitted"
+                            };
+                            ui.label(section.id.as_str());
+                            ui.label(section.characters.to_string());
+                            ui.label(section.estimated_tokens.to_string());
+                            ui.label(state);
+                            ui.label(section.note.as_deref().unwrap_or("-"));
                             ui.end_row();
                         }
                     });

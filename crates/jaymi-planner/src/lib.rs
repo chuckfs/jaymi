@@ -10,9 +10,13 @@
 //! before any tool runs. Tools never generate plans; providers never see them.
 //!
 //! After Context assemble, tool-backed intents dispatch through a registered
-//! [`ToolRouteTable`] (Intent → tool). Session / PlanWork / Unknown stay
-//! special-cased. That is intentional — not an Application→Engine bypass.
-//! See `dispatch`, `request_lifecycle`, and docs/planner.md.
+//! [`ToolRouteTable`] (Intent → tool). Session / PlanWork stay special-cased.
+//! Unknown / conversational intents invoke the Reasoning Engine after
+//! ContextBundle assemble — never bypassing Planner or Context.
+//! Conversation runtime phase is a Planner-owned [`ConversationState`]
+//! machine (Idle → Preparing Context → Reasoning / Streaming /
+//! Waiting For Review / Executing → terminal).
+//! See `dispatch`, `request_lifecycle`, `conversation_state`, and docs/planner.md.
 //!
 //! The Planner does not own long-lived Memory or Project CRUD APIs. Those
 //! belong to the Memory Engine and Project Engine. Application (or tools)
@@ -21,9 +25,13 @@
 #![forbid(unsafe_code)]
 
 pub mod approval_history;
+pub mod conversation_history;
+pub mod conversation_state;
+pub mod conversational;
 pub mod decision;
 pub mod dispatch;
 pub mod execution_plan;
+pub mod model_selection;
 pub mod paused_execution;
 pub mod plan_revision;
 pub mod reasoning;
@@ -34,6 +42,16 @@ mod routes;
 pub use approval_history::{
     ApprovalDecision, ApprovalExecutionResult, ApprovalHistoryAccess, ApprovalHistoryEntry,
     ApprovalHistoryQuery, ApprovalHistoryStore, ApprovalHistoryView,
+};
+pub use conversation_history::prepare_reasoning_history;
+pub use conversation_state::{ConversationState, ConversationTransitionError};
+pub use conversational::{
+    ConversationalAssemble, ConversationalTerminal, conversation_state_for_lifecycle,
+    conversational_terminal_from_event, conversational_terminal_from_response,
+    lifecycle_from_reasoning_response, planner_response_from_terminal,
+};
+pub use model_selection::{
+    prepare_reasoning_model, ModelSelection, ModelSelectionKind,
 };
 pub use dispatch::{
     DispatchSupport, ExecutionMeta, IntentToolHandler, PreparedToolCall, ToolRoute, ToolRouteTable,
@@ -62,7 +80,7 @@ use jaymi_capabilities::{
     CapabilityInspectorReport, CapabilityInventory, CapabilityPlan, DiscoveredProvider,
     DiscoveredTool, WorkspaceExpansion,
 };
-use jaymi_context::{AssembleHints, ContextBundle, ContextEngine};
+use jaymi_context::{AssembleHints, ContextBundle, ContextEngine, LlmContext};
 use jaymi_core::{
     ActionPreview, Citation, DeletionMethod, Document, FileEntry, GitPathStatus, HealthReport,
     IntentId, JaymiError, JaymiResult, Lifecycle, LspCompletionItem, LspDiagnostic, LspHover,
@@ -83,9 +101,20 @@ use jaymi_tools::{
     WRITE_FILE_TOOL_ID,
 };
 use reasoning::ReasoningEngine;
+use jaymi_reasoning::{
+    ConversationStream, ConversationStreamEvent, ReasoningRequest, StreamingLifecycle,
+};
 use plan_revision::apply_modification_note;
 
 const NAME: &str = "planner";
+
+/// Snapshot of the last conversational model resolution (Planner-owned).
+#[derive(Debug, Clone, Default)]
+struct LastModelSelection {
+    configured: Option<jaymi_reasoning::ModelIdentifier>,
+    provider: Option<jaymi_reasoning::ModelIdentifier>,
+    fallback: bool,
+}
 const DEPENDENCIES: &[&str] = &[
     "configuration",
     "logging",
@@ -190,6 +219,24 @@ pub struct PlannerResponse {
     pub lsp_references: Vec<LspLocation>,
     /// Rename / workspace text edits.
     pub lsp_edits: Vec<LspTextEdit>,
+    /// True when this turn invoked the Reasoning Engine (conversational path).
+    pub reasoning_used: bool,
+    /// Reasoning provider id when reasoning ran successfully.
+    pub reasoning_provider_id: Option<String>,
+    /// Final streaming lifecycle for conversational turns.
+    pub stream_lifecycle: Option<jaymi_reasoning::StreamingLifecycle>,
+    /// Reasoning metrics (latency, tokens/sec, cancel reason, …) when reasoning ran.
+    pub reasoning_metrics: Option<jaymi_reasoning::ReasoningMetrics>,
+    /// Prompt diagnostics from the last conversational assemble (budget / sections).
+    pub prompt_diagnostics: Option<jaymi_reasoning::PromptDiagnostics>,
+    /// Registry / preferred model configured for this turn (B1.13.6).
+    pub configured_model: Option<jaymi_reasoning::ModelIdentifier>,
+    /// Model id attached onto `ReasoningRequest` for the provider (B1.13.6).
+    pub provider_model: Option<jaymi_reasoning::ModelIdentifier>,
+    /// True when the Planner fell back after a missing / unavailable model.
+    pub model_fallback: bool,
+    /// Conversation runtime state at response time (Planner-owned).
+    pub conversation_state: ConversationState,
 }
 
 impl PlannerResponse {
@@ -250,6 +297,10 @@ pub struct PlannerDeps {
     pub context: Arc<ContextEngine>,
     /// Intent → tool route table (compile-time registration; no reflection).
     pub routes: ToolRouteTable,
+    /// Optional reasoning backend (`ReasoningProvider`).
+    pub reasoning: Option<Arc<dyn jaymi_reasoning::ReasoningProvider>>,
+    /// Optional Model Registry — populates `ReasoningRequest.model` (B1.13.6).
+    pub model_registry: Option<Arc<jaymi_reasoning::ModelRegistry>>,
 }
 
 /// Planner kernel.
@@ -276,6 +327,12 @@ pub struct Planner {
     context: Arc<ContextEngine>,
     /// Intent → tool handlers (registration-based execution routing).
     routes: ToolRouteTable,
+    /// Model Registry for resolving `ReasoningRequest.model` (optional).
+    model_registry: Option<Arc<jaymi_reasoning::ModelRegistry>>,
+    /// Explicit preferred model override (host / UX selection).
+    preferred_model: Mutex<Option<jaymi_reasoning::ModelIdentifier>>,
+    /// Last model resolution for conversational diagnostics (B1.13.6).
+    last_model_selection: Mutex<Option<LastModelSelection>>,
     /// How many times [`Self::handle`] has been entered (integrity tests).
     handle_count: AtomicU64,
     /// Plans waiting on conversational review (resume without replan).
@@ -284,15 +341,21 @@ pub struct Planner {
     plan_history: Mutex<Vec<PlanHistoryEntry>>,
     /// Review Card decisions for transparency, reasoning, and diagnostics.
     approval_history: Mutex<ApprovalHistoryStore>,
+    /// User-visible conversation runtime phase (Planner-owned transitions).
+    conversation_state: Mutex<ConversationState>,
 }
 
 impl Planner {
     /// Construct a Planner that discovers capabilities through registries.
     pub fn new(deps: PlannerDeps) -> Self {
+        let reasoning = match deps.reasoning {
+            Some(provider) => ReasoningEngine::with_provider(provider),
+            None => ReasoningEngine::new(),
+        };
         Self {
             initialized: false,
             decision: DecisionEngine,
-            reasoning: ReasoningEngine,
+            reasoning,
             capabilities: deps.capabilities,
             providers: deps.providers,
             tools: deps.tools,
@@ -303,11 +366,179 @@ impl Planner {
             projects: deps.projects,
             context: deps.context,
             routes: deps.routes,
+            model_registry: deps.model_registry,
+            preferred_model: Mutex::new(None),
+            last_model_selection: Mutex::new(None),
             handle_count: AtomicU64::new(0),
             paused: Mutex::new(PausedPlanStore::default()),
             plan_history: Mutex::new(Vec::new()),
             approval_history: Mutex::new(ApprovalHistoryStore::new()),
+            conversation_state: Mutex::new(ConversationState::Idle),
         }
+    }
+
+    /// Set or clear an explicit preferred reasoning model (overrides registry default).
+    pub fn set_preferred_model(
+        &self,
+        model: Option<jaymi_reasoning::ModelIdentifier>,
+    ) -> JaymiResult<()> {
+        let mut guard = self
+            .preferred_model
+            .lock()
+            .map_err(|_| JaymiError::new("preferred model lock poisoned"))?;
+        *guard = model;
+        Ok(())
+    }
+
+    /// Current explicit preferred model, when set.
+    pub fn preferred_model(&self) -> Option<jaymi_reasoning::ModelIdentifier> {
+        self.preferred_model
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    /// Model Registry wired into this Planner, when any.
+    pub fn model_registry(&self) -> Option<Arc<jaymi_reasoning::ModelRegistry>> {
+        self.model_registry.clone()
+    }
+
+    /// Build a conversational [`ReasoningRequest`] with history + registry model.
+    fn build_reasoning_request(
+        &self,
+        goal: &str,
+        llm: LlmContext,
+        history: Vec<jaymi_reasoning::ConversationTurn>,
+    ) -> JaymiResult<ReasoningRequest> {
+        let history = prepare_reasoning_history(history, goal);
+        let mut request = ReasoningRequest::new(goal, llm).with_history(history);
+        let configured = self.preferred_model().or_else(|| {
+            self.model_registry
+                .as_ref()
+                .and_then(|registry| registry.default_model())
+        });
+        let mut provider = None;
+        let mut fallback = false;
+        if let Some(registry) = self.model_registry.as_ref() {
+            let preferred = self.preferred_model();
+            match prepare_reasoning_model(registry, preferred.as_ref()) {
+                Ok(selection) => {
+                    fallback = selection.used_fallback();
+                    provider = Some(selection.id().clone());
+                    request = request.with_model(selection.id().clone());
+                    if fallback {
+                        jaymi_logging::info(
+                            "planner",
+                            format!(
+                                "model fallback → {} ({})",
+                                selection.id().display(),
+                                match &selection.kind {
+                                    ModelSelectionKind::Fallback { reason, .. } => reason.as_str(),
+                                    _ => "fallback",
+                                }
+                            ),
+                        );
+                    }
+                }
+                Err(err) => {
+                    jaymi_logging::warn(
+                        "planner",
+                        format!("model registry resolution failed: {}", err.message()),
+                    );
+                }
+            }
+        }
+        if let Ok(mut guard) = self.last_model_selection.lock() {
+            *guard = Some(LastModelSelection {
+                configured,
+                provider: provider.clone(),
+                fallback,
+            });
+        }
+        Ok(request)
+    }
+
+    fn take_model_selection_fields(
+        &self,
+    ) -> (
+        Option<jaymi_reasoning::ModelIdentifier>,
+        Option<jaymi_reasoning::ModelIdentifier>,
+        bool,
+    ) {
+        self.last_model_selection
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+            .map(|selection| {
+                (
+                    selection.configured,
+                    selection.provider,
+                    selection.fallback,
+                )
+            })
+            .unwrap_or((None, None, false))
+    }
+
+    /// Current conversation runtime state (Planner-owned).
+    pub fn conversation_state(&self) -> ConversationState {
+        self.conversation_state
+            .lock()
+            .map(|guard| *guard)
+            .unwrap_or(ConversationState::Idle)
+    }
+
+    /// Transition the conversation state machine. Illegal transitions are logged and ignored
+    /// in production paths that must still return a response; use [`Self::try_transition_conversation`]
+    /// when a hard failure is required.
+    pub fn transition_conversation(&self, next: ConversationState) {
+        if let Err(error) = self.try_transition_conversation(next) {
+            jaymi_logging::warn("planner", error.to_string());
+        }
+    }
+
+    /// Fallible conversation state transition.
+    pub fn try_transition_conversation(
+        &self,
+        next: ConversationState,
+    ) -> Result<(), ConversationTransitionError> {
+        let mut guard = self
+            .conversation_state
+            .lock()
+            .map_err(|_| ConversationTransitionError {
+                from: ConversationState::Idle,
+                to: next,
+            })?;
+        let from = *guard;
+        if !ConversationState::can_transition(from, next) {
+            return Err(ConversationTransitionError { from, to: next });
+        }
+        if from != next {
+            jaymi_logging::info(
+                "planner",
+                format!(
+                    "conversation state {} → {}",
+                    from.as_str(),
+                    next.as_str()
+                ),
+            );
+            *guard = next;
+        }
+        Ok(())
+    }
+
+    /// Attach the current conversation state onto a response.
+    fn with_conversation_state(&self, mut response: PlannerResponse) -> PlannerResponse {
+        response.conversation_state = self.conversation_state();
+        response
+    }
+
+    /// Finalize a response with ContextBundle + current conversation state.
+    fn finalize_response(
+        &self,
+        response: PlannerResponse,
+        bundle: ContextBundle,
+    ) -> PlannerResponse {
+        self.with_conversation_state(finalize(response, bundle))
     }
 
     /// Registered tool routes (Intent → tool) for diagnostics and tests.
@@ -542,9 +773,14 @@ impl Planner {
         self.reasoning.status_label()
     }
 
-    /// Whether a reasoning backend is wired.
+    /// Whether a reasoning backend is wired and currently usable.
     pub fn reasoning_implemented(&self) -> bool {
         self.reasoning.is_implemented()
+    }
+
+    /// Access the Reasoning Engine (prompt build / provider calls).
+    pub fn reasoning(&self) -> &ReasoningEngine {
+        &self.reasoning
     }
 
     fn ensure_ready(&self) -> JaymiResult<()> {
@@ -798,6 +1034,7 @@ impl Planner {
         // A new user request (not resolve_review) invalidates any paused plan —
         // editing the request must never resume a stale plan.
         self.invalidate_paused("new user request")?;
+        self.transition_conversation(ConversationState::PreparingContext);
 
         jaymi_logging::info(
             "planner",
@@ -842,21 +1079,24 @@ impl Planner {
                 self.context.invalidate_cache("project_changed");
                 let bundle = self.context.assemble_with(&request, Some(&hints))?;
                 log_promotions(&bundle);
-                return Ok(finalize(response, bundle));
+                self.transition_conversation(ConversationState::Completed);
+                return Ok(self.finalize_response(response, bundle));
             }
             Intent::OpenProject { project_id } => {
                 let response = self.handle_open_project_id(project_id)?;
                 self.context.invalidate_cache("project_changed");
                 let bundle = self.context.assemble_with(&request, Some(&hints))?;
                 log_promotions(&bundle);
-                return Ok(finalize(response, bundle));
+                self.transition_conversation(ConversationState::Completed);
+                return Ok(self.finalize_response(response, bundle));
             }
             Intent::CloseProject => {
                 let response = self.handle_close_project()?;
                 self.context.invalidate_cache("project_changed");
                 let bundle = self.context.assemble_with(&request, Some(&hints))?;
                 log_promotions(&bundle);
-                return Ok(finalize(response, bundle));
+                self.transition_conversation(ConversationState::Completed);
+                return Ok(self.finalize_response(response, bundle));
             }
             _ => {}
         }
@@ -866,24 +1106,25 @@ impl Planner {
         log_promotions(&context);
 
         let Some(capability) = capabilities.first().copied() else {
-            jaymi_logging::warn(
-                "planner",
-                "unsupported request; no capability mapped for intent",
-            );
-            return Ok(finalize(
-                PlannerResponse {
-                    content: "Unsupported request. Try: list <directory>, read <file>, search <query>, index <path>, or ask what files exist".to_string(),
-                    ..PlannerResponse::default()
-                },
+            // No capability ⇒ conversational / unknown. Never tool-dispatch.
+            // ContextBundle is already assembled — reason through the engine.
+            // History is empty on the generic handle path; Application
+            // conversational UX passes prior turns via
+            // handle_conversational_with_observer / start_conversation_stream.
+            return self.handle_conversational_request(
+                &request,
                 context,
-            ));
+                &intent,
+                Vec::new(),
+            );
         };
 
         // Planning answers "what would this take" without needing the
         // capability to be fulfillable today.
         if let Intent::PlanWork { capabilities, goal } = &intent {
             let response = self.handle_plan_work(capabilities, goal)?;
-            return Ok(finalize(response, context));
+            self.transition_conversation(ConversationState::Completed);
+            return Ok(self.finalize_response(response, context));
         }
 
         let availability = self.capabilities.validate(capability);
@@ -894,14 +1135,12 @@ impl Planner {
                 availability.as_str()
             );
             jaymi_logging::error("planner", &message);
+            self.transition_conversation(ConversationState::Failed);
             return Err(JaymiError::new(message));
         }
 
-        // Reasoning Engine is intentionally unused for these deterministic paths.
-        let _ = &self.reasoning;
-
         // Tool-backed intents resolve through the registered route table.
-        // Session / PlanWork / Unknown stay special-cased above.
+        // Session / PlanWork / conversational stay special-cased above.
         let result = self.dispatch_tool_backed(intent, capability, &request.content);
 
         let result = match result {
@@ -915,9 +1154,13 @@ impl Planner {
                         format!("capability {} selected for request", capability.id()),
                     );
                 }
-                Ok(finalize(response, context.clone()))
+                self.transition_conversation(conversation_state_for_tool_response(&response));
+                Ok(self.finalize_response(response, context.clone()))
             }
-            Err(error) => Err(error),
+            Err(error) => {
+                self.transition_conversation(ConversationState::Failed);
+                Err(error)
+            }
         };
 
         match &result {
@@ -940,6 +1183,298 @@ impl Planner {
         }
 
         result
+    }
+
+    /// Conversational / unknown request path.
+    ///
+    /// Always runs **after** ContextBundle assemble. Streams through
+    /// [`ConversationStream`] (Idle → Thinking → Streaming → terminal).
+    /// Never tools, never providers directly.
+    fn handle_conversational_request(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+        intent: &Intent,
+        history: Vec<jaymi_reasoning::ConversationTurn>,
+    ) -> JaymiResult<PlannerResponse> {
+        self.handle_conversational_request_with_observer(
+            request,
+            context,
+            intent,
+            history,
+            |_| {},
+        )
+    }
+
+    /// Conversational path with incremental stream observer (tokens / lifecycle).
+    ///
+    /// Blocking delivery mode: collects the shared [`ConversationStream`] to a
+    /// terminal [`PlannerResponse`] in one call. See `conversational` module and
+    /// docs/reasoning.md (dual delivery) for why this stays separate from the
+    /// pumpable UI path.
+    ///
+    /// `history` is prior Experience turns (request-scoped). The Planner does
+    /// not retain a parallel transcript — PromptBuilder formats these turns.
+    pub fn handle_conversational_with_observer<F>(
+        &self,
+        request: UserRequest,
+        history: Vec<jaymi_reasoning::ConversationTurn>,
+        on_event: F,
+    ) -> JaymiResult<PlannerResponse>
+    where
+        F: FnMut(ConversationStreamEvent),
+    {
+        if !self.initialized {
+            return Err(JaymiError::new("planner is not initialized"));
+        }
+        let assembled = self.begin_conversational_assemble(&request)?;
+        if conversational::is_tool_backed(&assembled.capability_ids) {
+            // Not a conversational turn — fall back to full handle.
+            return self.handle(request);
+        }
+        self.handle_conversational_request_with_observer(
+            &request,
+            assembled.context,
+            &assembled.intent,
+            history,
+            on_event,
+        )
+    }
+
+    /// Begin a pumpable conversational stream after Context assemble.
+    ///
+    /// Pumpable delivery mode: callers drive [`ConversationStream::pump`] for
+    /// incremental UI updates, then [`Self::complete_conversation_stream`].
+    /// Shares assemble + stream start + terminal mapping with the blocking path;
+    /// does not soft-fail on missing backends (host bridges to observer).
+    ///
+    /// `history` is prior conversation turns for PromptBuilder (not including
+    /// the current `request` goal).
+    pub fn start_conversation_stream(
+        &self,
+        request: &UserRequest,
+        history: Vec<jaymi_reasoning::ConversationTurn>,
+    ) -> JaymiResult<(
+        ContextBundle,
+        ConversationStream,
+        jaymi_reasoning::PromptDiagnostics,
+    )> {
+        if !self.initialized {
+            return Err(JaymiError::new("planner is not initialized"));
+        }
+        let assembled = self.begin_conversational_assemble(request)?;
+        if conversational::is_tool_backed(&assembled.capability_ids) {
+            return Err(JaymiError::new(
+                "start_conversation_stream requires a conversational / unknown request",
+            ));
+        }
+        let context = assembled.context;
+        if !self.reasoning.is_implemented() {
+            return Err(JaymiError::new("no reasoning backend is available"));
+        }
+        let llm = LlmContext::from_bundle(&context);
+        let reasoning_request =
+            self.build_reasoning_request(request.content.trim(), llm, history)?;
+        self.transition_conversation(ConversationState::Reasoning);
+        let stream = ConversationStream::start(self.reasoning.clone(), reasoning_request)
+            .map_err(|err| JaymiError::new(err.message()))?;
+        // Diagnostics from the Prompt attached for delivery — not a discarded pre-build.
+        let prompt_diagnostics = stream
+            .prompt_diagnostics()
+            .cloned()
+            .ok_or_else(|| JaymiError::new("conversation stream missing prompt diagnostics"))?;
+        Ok((context, stream, prompt_diagnostics))
+    }
+
+    /// Finalize a pump-driven conversational stream into a [`PlannerResponse`].
+    ///
+    /// Uses the same terminal → response mapping as the blocking observer path.
+    pub fn complete_conversation_stream(
+        &self,
+        context: ContextBundle,
+        event: ConversationStreamEvent,
+        prompt_diagnostics: Option<jaymi_reasoning::PromptDiagnostics>,
+    ) -> JaymiResult<PlannerResponse> {
+        let terminal = conversational::conversational_terminal_from_event(event)?;
+        self.transition_conversation(terminal.conversation_state());
+        let (configured_model, provider_model, model_fallback) =
+            self.take_model_selection_fields();
+        Ok(self.finalize_response(
+            conversational::planner_response_from_terminal(
+                terminal,
+                prompt_diagnostics,
+                configured_model,
+                provider_model,
+                model_fallback,
+            ),
+            context,
+        ))
+    }
+
+    /// Shared Intent → AssembleHints → ContextBundle prelude for both delivery modes.
+    fn begin_conversational_assemble(
+        &self,
+        request: &UserRequest,
+    ) -> JaymiResult<conversational::ConversationalAssemble> {
+        self.invalidate_paused("new user request")?;
+        self.transition_conversation(ConversationState::PreparingContext);
+        let intent = self.decision.determine_intent(request);
+        let capabilities = self.decision.required_capabilities(&intent);
+        let capability_ids: Vec<String> = capabilities
+            .iter()
+            .map(|capability| capability.id().to_string())
+            .collect();
+        let hints = conversational::conversational_assemble_hints(&intent, capability_ids.clone());
+        let context = self.context.assemble_with(request, Some(&hints))?;
+        Ok(conversational::ConversationalAssemble {
+            intent,
+            capability_ids,
+            context,
+        })
+    }
+
+    /// Resume Reasoning after a stream retry / reconnect (Planner-owned).
+    ///
+    /// Legal from Streaming, Cancelled, or Failed. Experience/UI must only
+    /// [`Self::conversation_state`] mirror afterward — never invent the phase.
+    pub fn resume_reasoning_after_retry(&self) {
+        self.transition_conversation(ConversationState::Reasoning);
+    }
+
+    /// Mirror Planner conversation state onto an active stream lifecycle event.
+    pub fn mirror_stream_lifecycle(&self, lifecycle: StreamingLifecycle) {
+        if let Some(state) = ConversationState::from_streaming_lifecycle(lifecycle) {
+            if state.is_active() || state.is_terminal() {
+                if !matches!(state, ConversationState::Idle) {
+                    self.transition_conversation(state);
+                }
+            }
+        }
+    }
+
+    fn handle_conversational_request_with_observer<F>(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+        intent: &Intent,
+        history: Vec<jaymi_reasoning::ConversationTurn>,
+        mut on_event: F,
+    ) -> JaymiResult<PlannerResponse>
+    where
+        F: FnMut(ConversationStreamEvent),
+    {
+        if !matches!(intent, Intent::Unknown) {
+            jaymi_logging::warn(
+                "planner",
+                format!(
+                    "empty capabilities for non-unknown intent={}; treating as conversational",
+                    intent.id().as_str()
+                ),
+            );
+        }
+
+        jaymi_logging::info(
+            "planner",
+            "conversational request → ConversationStream (after ContextBundle)",
+        );
+
+        if !self.reasoning.is_implemented() {
+            self.transition_conversation(ConversationState::Completed);
+            return Ok(self.finalize_response(
+                conversational::no_backend_soft_response(),
+                context,
+            ));
+        }
+
+        let llm = LlmContext::from_bundle(&context);
+        let reasoning_request =
+            self.build_reasoning_request(request.content.trim(), llm, history)?;
+        let (configured_model, provider_model, model_fallback) =
+            self.take_model_selection_fields();
+
+        self.transition_conversation(ConversationState::Reasoning);
+        let stream = match ConversationStream::start(self.reasoning.clone(), reasoning_request) {
+            Ok(stream) => stream,
+            Err(error) => {
+                jaymi_logging::warn(
+                    "planner",
+                    format!("conversational stream start failed: {}", error.message()),
+                );
+                self.transition_conversation(ConversationState::Failed);
+                return Ok(self.finalize_response(
+                    conversational::stream_start_failed_response(
+                        &error.message(),
+                        configured_model,
+                        provider_model,
+                        model_fallback,
+                    ),
+                    context,
+                ));
+            }
+        };
+        let prompt_diagnostics = stream.prompt_diagnostics().cloned();
+
+        match stream.run_with_observer(|event| {
+            if let ConversationStreamEvent::Lifecycle(lifecycle) = &event {
+                if let Some(state) = ConversationState::from_streaming_lifecycle(*lifecycle) {
+                    if state.is_active() || state.is_terminal() {
+                        // Skip Idle from stream; PreparingContext→Reasoning already set.
+                        if !matches!(state, ConversationState::Idle) {
+                            self.transition_conversation(state);
+                        }
+                    }
+                }
+            }
+            on_event(event);
+        }) {
+            Ok(response) => {
+                let terminal = conversational::conversational_terminal_from_response(response);
+                let conversation_state = terminal.conversation_state();
+                self.transition_conversation(conversation_state);
+                jaymi_logging::info(
+                    "planner",
+                    format!(
+                        "conversational stream lifecycle={} conversation={} provider={:?} attempts={} model={:?}",
+                        terminal.lifecycle.as_str(),
+                        conversation_state.as_str(),
+                        terminal.provider_id,
+                        terminal
+                            .metrics
+                            .as_ref()
+                            .map(|metrics| metrics.attempts)
+                            .unwrap_or(0),
+                        provider_model.as_ref().map(|m| m.display())
+                    ),
+                );
+                Ok(self.finalize_response(
+                    conversational::planner_response_from_terminal(
+                        terminal,
+                        prompt_diagnostics,
+                        configured_model,
+                        provider_model,
+                        model_fallback,
+                    ),
+                    context,
+                ))
+            }
+            Err(error) => {
+                jaymi_logging::warn(
+                    "planner",
+                    format!("conversational stream failed: {}", error.message()),
+                );
+                self.transition_conversation(ConversationState::Failed);
+                Ok(self.finalize_response(
+                    conversational::stream_collect_failed_response(
+                        &error.message(),
+                        prompt_diagnostics,
+                        configured_model,
+                        provider_model,
+                        model_fallback,
+                    ),
+                    context,
+                ))
+            }
+        }
     }
 
     /// Constrain search to the active workspace so projects stay isolated.
@@ -1438,6 +1973,7 @@ impl Planner {
             .to_string();
         plan.mark_executing()
             .map_err(|error| JaymiError::new(error.to_string()))?;
+        self.transition_conversation(ConversationState::Executing);
         jaymi_logging::info(
             "planner",
             format!("execution plan {} executing tool={}", plan.id(), tool_id),
@@ -1530,6 +2066,25 @@ impl Planner {
             ),
         );
 
+        // Review is only valid while WaitingForReview (or after a prior terminal reset).
+        match &intent {
+            ReviewIntent::Approve { .. } => {
+                // resume_paused → execute_approved_plan transitions to Executing.
+                if matches!(
+                    self.conversation_state(),
+                    ConversationState::Idle | ConversationState::Completed
+                ) {
+                    // Resume after process restart / tests that never set WaitingForReview.
+                    self.transition_conversation(ConversationState::PreparingContext);
+                    self.transition_conversation(ConversationState::WaitingForReview);
+                }
+            }
+            ReviewIntent::Cancel { .. } => {}
+            ReviewIntent::Modify { .. } => {
+                self.transition_conversation(ConversationState::WaitingForReview);
+            }
+        }
+
         let (response, reassemble_context) = match &intent {
             ReviewIntent::Approve { plan_id } => (self.resume_paused(plan_id.clone())?, true),
             ReviewIntent::Cancel { plan_id } => (
@@ -1544,10 +2099,11 @@ impl Planner {
         };
 
         self.record_approval_from_resolve(&intent, &response)?;
+        self.transition_conversation(conversation_state_for_tool_response(&response));
 
         if !reassemble_context {
             // Partial / ordinary modifications reuse the existing session context.
-            return Ok(finalize(response, ContextBundle::default()));
+            return Ok(self.finalize_response(response, ContextBundle::default()));
         }
 
         // Assemble a fresh ContextBundle so resume/cancel responses stay on-contract.
@@ -1564,7 +2120,7 @@ impl Planner {
         };
         let request = UserRequest::new("");
         let bundle = self.context.assemble_with(&request, Some(&hints))?;
-        Ok(finalize(response, bundle))
+        Ok(self.finalize_response(response, bundle))
     }
 
     /// Modify a paused plan: cancel parent, create child revision, re-pause.
@@ -2075,7 +2631,42 @@ fn finalize(mut response: PlannerResponse, bundle: ContextBundle) -> PlannerResp
     // ContextBundle is the sole request-context contract. Do not mirror
     // memory / project / promotions onto parallel response fields.
     response.context_bundle = Some(bundle);
+    // conversation_state is stamped by Planner::finalize_response.
     response
+}
+
+fn conversation_state_for_tool_response(response: &PlannerResponse) -> ConversationState {
+    if response.awaiting_review {
+        ConversationState::WaitingForReview
+    } else if response.blocked {
+        // Denied / cancelled without execution.
+        if response
+            .execution_summary
+            .as_ref()
+            .map(|summary| matches!(summary.status, ExecutionStatus::Cancelled))
+            .unwrap_or(false)
+        {
+            ConversationState::Cancelled
+        } else {
+            ConversationState::Failed
+        }
+    } else if response
+        .execution_summary
+        .as_ref()
+        .map(|summary| matches!(summary.status, ExecutionStatus::Failed))
+        .unwrap_or(false)
+    {
+        ConversationState::Failed
+    } else if response
+        .execution_summary
+        .as_ref()
+        .map(|summary| matches!(summary.status, ExecutionStatus::Cancelled))
+        .unwrap_or(false)
+    {
+        ConversationState::Cancelled
+    } else {
+        ConversationState::Completed
+    }
 }
 
 fn log_promotions(bundle: &ContextBundle) {
@@ -2333,6 +2924,175 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+    use std::sync::atomic::{AtomicU32, Ordering as AtomicOrdering};
+    use jaymi_reasoning::{
+        ReasoningCapabilities, ReasoningHealth, ReasoningModelInfo, ReasoningProvider,
+        ReasoningResponse, ReasoningResult, ReasoningStream, StreamingChunk,
+    };
+    use jaymi_reasoning::ModelIdentifier;
+
+    struct CountingReasoningProvider {
+        id: String,
+        complete_calls: AtomicU32,
+        stream_calls: AtomicU32,
+        last_history_len: AtomicU32,
+        last_prompt_has_prior_user: std::sync::Mutex<Option<bool>>,
+        last_model: std::sync::Mutex<Option<ModelIdentifier>>,
+        models: Vec<&'static str>,
+    }
+
+    impl CountingReasoningProvider {
+        fn new(id: &str) -> Self {
+            Self {
+                id: id.into(),
+                complete_calls: AtomicU32::new(0),
+                stream_calls: AtomicU32::new(0),
+                last_history_len: AtomicU32::new(0),
+                last_prompt_has_prior_user: std::sync::Mutex::new(None),
+                last_model: std::sync::Mutex::new(None),
+                models: vec!["mock-model"],
+            }
+        }
+
+        fn with_models(mut self, models: Vec<&'static str>) -> Self {
+            self.models = models;
+            self
+        }
+
+        fn complete_calls(&self) -> u32 {
+            self.complete_calls.load(AtomicOrdering::SeqCst)
+        }
+
+        fn stream_calls(&self) -> u32 {
+            self.stream_calls.load(AtomicOrdering::SeqCst)
+        }
+
+        fn last_history_len(&self) -> u32 {
+            self.last_history_len.load(AtomicOrdering::SeqCst)
+        }
+
+        fn last_model(&self) -> Option<ModelIdentifier> {
+            self.last_model.lock().ok().and_then(|guard| guard.clone())
+        }
+
+        fn record_request(&self, request: &jaymi_reasoning::ReasoningRequest) {
+            self.last_history_len
+                .store(request.history.len() as u32, AtomicOrdering::SeqCst);
+            *self.last_model.lock().expect("lock") = request.model.clone();
+            let has_prior = request.prompt.as_ref().map(|prompt| {
+                prompt.text.contains("user: earlier")
+                    || request
+                        .history
+                        .iter()
+                        .any(|turn| turn.content.contains("earlier"))
+            });
+            *self.last_prompt_has_prior_user.lock().expect("lock") = has_prior;
+        }
+    }
+
+    struct ScriptedTokenStream {
+        tokens: Vec<String>,
+        index: usize,
+        cancelled: bool,
+        provider_id: String,
+        model: Option<ModelIdentifier>,
+    }
+
+    impl ReasoningStream for ScriptedTokenStream {
+        fn next_chunk(&mut self) -> ReasoningResult<Option<StreamingChunk>> {
+            if self.cancelled {
+                return Ok(Some(StreamingChunk::cancelled(self.index as u64)));
+            }
+            if self.index < self.tokens.len() {
+                let text = self.tokens[self.index].clone();
+                let chunk = StreamingChunk::token(self.index as u64, text);
+                self.index += 1;
+                return Ok(Some(chunk));
+            }
+            if self.index == self.tokens.len() {
+                let mut metrics = jaymi_reasoning::ReasoningMetrics::timed(1)
+                    .with_provider_id(self.provider_id.clone())
+                    .with_tokens(Some(1), Some(self.tokens.len() as u64));
+                if let Some(model) = self.model.clone() {
+                    metrics = metrics.with_model(model);
+                }
+                let chunk = StreamingChunk::completed(self.index as u64, metrics);
+                self.index += 1;
+                return Ok(Some(chunk));
+            }
+            Ok(None)
+        }
+
+        fn cancel(&mut self) {
+            self.cancelled = true;
+        }
+    }
+
+    impl ReasoningProvider for CountingReasoningProvider {
+        fn id(&self) -> &str {
+            &self.id
+        }
+
+        fn display_name(&self) -> &str {
+            &self.id
+        }
+
+        fn capabilities(&self) -> ReasoningCapabilities {
+            ReasoningCapabilities::full()
+        }
+
+        fn health(&self) -> ReasoningHealth {
+            ReasoningHealth::Ready
+        }
+
+        fn list_models(&self) -> ReasoningResult<Vec<ReasoningModelInfo>> {
+            Ok(self
+                .models
+                .iter()
+                .map(|name| {
+                    ReasoningModelInfo::new(ModelIdentifier::new(&self.id, *name), *name)
+                        .with_context_tokens(8_192)
+                })
+                .collect())
+        }
+
+        fn complete(
+            &self,
+            request: jaymi_reasoning::ReasoningRequest,
+        ) -> ReasoningResult<ReasoningResponse> {
+            self.complete_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            self.record_request(&request);
+            let mut response = ReasoningResponse::completed(format!(
+                "{}:{}",
+                self.id, request.goal
+            ));
+            if let Some(model) = request.model.clone() {
+                response = response.with_model(model.clone()).with_metrics(
+                    jaymi_reasoning::ReasoningMetrics::timed(1)
+                        .with_provider_id(self.id.clone())
+                        .with_model(model),
+                );
+            }
+            Ok(response)
+        }
+
+        fn stream(
+            &self,
+            request: jaymi_reasoning::ReasoningRequest,
+        ) -> ReasoningResult<Box<dyn ReasoningStream>> {
+            self.stream_calls.fetch_add(1, AtomicOrdering::SeqCst);
+            self.record_request(&request);
+            // Emit goal as a single token so conversational collect matches complete content.
+            Ok(Box::new(ScriptedTokenStream {
+                tokens: vec![format!("{}:{}", self.id, request.goal)],
+                index: 0,
+                cancelled: false,
+                provider_id: self.id.clone(),
+                model: request.model.clone(),
+            }))
+        }
+    }
+
     fn test_memory_engine() -> Arc<dyn MemoryEngineApi> {
         let mut engine = MemoryEngine::with_store(Arc::new(InMemoryMemoryStore::new()));
         engine.initialize().unwrap();
@@ -2390,6 +3150,87 @@ mod tests {
         register: F,
         configure_policies: P,
         routes: ToolRouteTable,
+    ) -> Planner
+    where
+        F: FnOnce(&mut ToolRegistry, Arc<FilesystemProvider>, Arc<ContentIntelligenceApi>),
+        P: FnOnce(&mut PolicyEngine),
+    {
+        planner_with_tools_policies_routes_and_reasoning(
+            register,
+            configure_policies,
+            routes,
+            None,
+        )
+    }
+
+    fn planner_with_reasoning(
+        reasoning: Arc<dyn jaymi_reasoning::ReasoningProvider>,
+    ) -> Planner {
+        planner_with_tools_policies_routes_reasoning_and_registry(
+            |tools, filesystem, content_api| {
+                tools
+                    .register_tool(Arc::new(SearchFilesTool::new(Arc::clone(&filesystem))))
+                    .unwrap();
+                tools
+                    .register_tool(Arc::new(ReadFileTool::new(content_api)))
+                    .unwrap();
+            },
+            |policies| {
+                policies.initialize().unwrap();
+            },
+            ToolRouteTable::builtin(),
+            Some(reasoning),
+            None,
+        )
+    }
+
+    fn planner_with_reasoning_and_registry(
+        reasoning: Arc<dyn jaymi_reasoning::ReasoningProvider>,
+        registry: Arc<jaymi_reasoning::ModelRegistry>,
+    ) -> Planner {
+        planner_with_tools_policies_routes_reasoning_and_registry(
+            |tools, filesystem, content_api| {
+                tools
+                    .register_tool(Arc::new(SearchFilesTool::new(Arc::clone(&filesystem))))
+                    .unwrap();
+                tools
+                    .register_tool(Arc::new(ReadFileTool::new(content_api)))
+                    .unwrap();
+            },
+            |policies| {
+                policies.initialize().unwrap();
+            },
+            ToolRouteTable::builtin(),
+            Some(reasoning),
+            Some(registry),
+        )
+    }
+
+    fn planner_with_tools_policies_routes_and_reasoning<F, P>(
+        register: F,
+        configure_policies: P,
+        routes: ToolRouteTable,
+        reasoning: Option<Arc<dyn jaymi_reasoning::ReasoningProvider>>,
+    ) -> Planner
+    where
+        F: FnOnce(&mut ToolRegistry, Arc<FilesystemProvider>, Arc<ContentIntelligenceApi>),
+        P: FnOnce(&mut PolicyEngine),
+    {
+        planner_with_tools_policies_routes_reasoning_and_registry(
+            register,
+            configure_policies,
+            routes,
+            reasoning,
+            None,
+        )
+    }
+
+    fn planner_with_tools_policies_routes_reasoning_and_registry<F, P>(
+        register: F,
+        configure_policies: P,
+        routes: ToolRouteTable,
+        reasoning: Option<Arc<dyn jaymi_reasoning::ReasoningProvider>>,
+        model_registry: Option<Arc<jaymi_reasoning::ModelRegistry>>,
     ) -> Planner
     where
         F: FnOnce(&mut ToolRegistry, Arc<FilesystemProvider>, Arc<ContentIntelligenceApi>),
@@ -2469,6 +3310,8 @@ mod tests {
             projects,
             context: Arc::new(context),
             routes,
+            reasoning,
+            model_registry,
         });
         planner.initialize().unwrap();
         planner
@@ -2609,6 +3452,596 @@ mod tests {
         assert!(response.document.is_none());
         assert!(response.capability.is_none());
         assert!(!response.blocked);
+        assert!(!response.content.contains("Unsupported request"));
+        assert!(response.context_bundle.is_some());
+    }
+
+    #[test]
+    fn conversational_request_invokes_reasoning() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let planner = planner_with_reasoning(provider.clone());
+        let response = planner
+            .handle(UserRequest::new("What is a good way to learn Rust?"))
+            .unwrap();
+        assert!(response.reasoning_used);
+        assert_eq!(response.reasoning_provider_id.as_deref(), Some("chat-mock"));
+        assert!(response.content.contains("chat-mock:"));
+        assert_eq!(
+            response.stream_lifecycle,
+            Some(jaymi_reasoning::StreamingLifecycle::Completed)
+        );
+        assert!(response.capability.is_none());
+        assert!(response.tool_id.is_none());
+        assert!(!response.awaiting_review);
+        assert!(!response.blocked);
+        assert_eq!(provider.stream_calls(), 1);
+        assert_eq!(provider.complete_calls(), 0);
+        assert!(response.context_bundle.is_some());
+    }
+
+    #[test]
+    fn default_registry_model_populates_reasoning_request() {
+        let provider = Arc::new(
+            CountingReasoningProvider::new("chat-mock").with_models(vec!["llama", "mistral"]),
+        );
+        let registry = jaymi_reasoning::ModelRegistry::with_provider(
+            Arc::clone(&provider) as Arc<dyn jaymi_reasoning::ReasoningProvider>,
+        );
+        registry.refresh().unwrap();
+        registry
+            .set_default(Some(ModelIdentifier::new("chat-mock", "mistral")))
+            .unwrap();
+        let planner =
+            planner_with_reasoning_and_registry(provider.clone(), Arc::new(registry));
+        let response = planner
+            .handle(UserRequest::new("hello from default model"))
+            .unwrap();
+        assert!(response.reasoning_used);
+        assert_eq!(
+            provider.last_model().map(|m| m.display()),
+            Some("chat-mock/mistral".into())
+        );
+        assert_eq!(
+            response.provider_model.as_ref().map(|m| m.display()),
+            Some("chat-mock/mistral".into())
+        );
+        assert_eq!(
+            response.configured_model.as_ref().map(|m| m.display()),
+            Some("chat-mock/mistral".into())
+        );
+        assert!(!response.model_fallback);
+    }
+
+    #[test]
+    fn explicit_preferred_model_populates_reasoning_request() {
+        let provider = Arc::new(
+            CountingReasoningProvider::new("chat-mock").with_models(vec!["llama", "mistral"]),
+        );
+        let registry = jaymi_reasoning::ModelRegistry::with_provider(
+            Arc::clone(&provider) as Arc<dyn jaymi_reasoning::ReasoningProvider>,
+        );
+        registry.refresh().unwrap();
+        registry
+            .set_default(Some(ModelIdentifier::new("chat-mock", "llama")))
+            .unwrap();
+        let planner =
+            planner_with_reasoning_and_registry(provider.clone(), Arc::new(registry));
+        planner
+            .set_preferred_model(Some(ModelIdentifier::new("chat-mock", "mistral")))
+            .unwrap();
+        let response = planner
+            .handle(UserRequest::new("hello from explicit model"))
+            .unwrap();
+        assert_eq!(
+            provider.last_model().map(|m| m.display()),
+            Some("chat-mock/mistral".into())
+        );
+        assert_eq!(
+            response.configured_model.as_ref().map(|m| m.display()),
+            Some("chat-mock/mistral".into())
+        );
+        assert!(!response.model_fallback);
+    }
+
+    #[test]
+    fn unavailable_model_falls_back_to_available() {
+        struct OfflineProvider {
+            inner: CountingReasoningProvider,
+        }
+        impl ReasoningProvider for OfflineProvider {
+            fn id(&self) -> &str {
+                self.inner.id()
+            }
+            fn display_name(&self) -> &str {
+                self.inner.display_name()
+            }
+            fn capabilities(&self) -> ReasoningCapabilities {
+                self.inner.capabilities()
+            }
+            fn health(&self) -> ReasoningHealth {
+                ReasoningHealth::Unavailable {
+                    reason: "offline".into(),
+                }
+            }
+            fn list_models(&self) -> ReasoningResult<Vec<ReasoningModelInfo>> {
+                self.inner.list_models()
+            }
+            fn complete(
+                &self,
+                request: jaymi_reasoning::ReasoningRequest,
+            ) -> ReasoningResult<ReasoningResponse> {
+                self.inner.complete(request)
+            }
+            fn stream(
+                &self,
+                request: jaymi_reasoning::ReasoningRequest,
+            ) -> ReasoningResult<Box<dyn ReasoningStream>> {
+                self.inner.stream(request)
+            }
+        }
+        let offline = Arc::new(OfflineProvider {
+            inner: CountingReasoningProvider::new("down").with_models(vec!["dead"]),
+        });
+        let up = Arc::new(CountingReasoningProvider::new("up").with_models(vec!["alive"]));
+        let mut registry = jaymi_reasoning::ModelRegistry::with_provider(
+            Arc::clone(&offline) as Arc<dyn jaymi_reasoning::ReasoningProvider>,
+        );
+        registry.register_provider(Arc::clone(&up) as Arc<dyn jaymi_reasoning::ReasoningProvider>);
+        registry.refresh().unwrap();
+        registry
+            .set_default(Some(ModelIdentifier::new("down", "dead")))
+            .unwrap();
+        let planner = planner_with_reasoning_and_registry(up.clone(), Arc::new(registry));
+        let response = planner
+            .handle(UserRequest::new("fallback please"))
+            .unwrap();
+        assert!(response.model_fallback);
+        assert_eq!(
+            response.provider_model.as_ref().map(|m| m.display()),
+            Some("up/alive".into())
+        );
+        assert_eq!(
+            up.last_model().map(|m| m.display()),
+            Some("up/alive".into())
+        );
+    }
+
+    #[test]
+    fn missing_explicit_model_falls_back() {
+        let provider = Arc::new(
+            CountingReasoningProvider::new("chat-mock").with_models(vec!["llama"]),
+        );
+        let registry = jaymi_reasoning::ModelRegistry::with_provider(
+            Arc::clone(&provider) as Arc<dyn jaymi_reasoning::ReasoningProvider>,
+        );
+        registry.refresh().unwrap();
+        let planner =
+            planner_with_reasoning_and_registry(provider.clone(), Arc::new(registry));
+        planner
+            .set_preferred_model(Some(ModelIdentifier::new("chat-mock", "missing")))
+            .unwrap();
+        let response = planner
+            .handle(UserRequest::new("missing model"))
+            .unwrap();
+        assert!(response.model_fallback);
+        assert_eq!(
+            provider.last_model().map(|m| m.display()),
+            Some("chat-mock/llama".into())
+        );
+    }
+
+    #[test]
+    fn conversational_stream_updates_incrementally() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let planner = planner_with_reasoning(provider.clone());
+        let mut tokens = Vec::new();
+        let mut lifecycles = Vec::new();
+        let response = planner
+            .handle_conversational_with_observer(
+                UserRequest::new("Explain ownership briefly."),
+                Vec::new(),
+                |event| match event {
+                    jaymi_reasoning::ConversationStreamEvent::Token(text) => tokens.push(text),
+                    jaymi_reasoning::ConversationStreamEvent::Lifecycle(lifecycle) => {
+                        lifecycles.push(lifecycle);
+                    }
+                    _ => {}
+                },
+            )
+            .unwrap();
+        assert!(response.reasoning_used);
+        assert!(!tokens.is_empty());
+        assert!(lifecycles.contains(&jaymi_reasoning::StreamingLifecycle::Thinking));
+        assert!(lifecycles.contains(&jaymi_reasoning::StreamingLifecycle::Streaming));
+        assert_eq!(
+            response.stream_lifecycle,
+            Some(jaymi_reasoning::StreamingLifecycle::Completed)
+        );
+        assert_eq!(response.conversation_state, ConversationState::Completed);
+        assert_eq!(planner.conversation_state(), ConversationState::Completed);
+    }
+
+    #[test]
+    fn conversation_state_transitions_for_streaming_completion() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let planner = planner_with_reasoning(provider);
+        assert_eq!(planner.conversation_state(), ConversationState::Idle);
+        let mut seen = Vec::new();
+        let response = planner
+            .handle_conversational_with_observer(UserRequest::new("hello there"), Vec::new(), |event| {
+                if let jaymi_reasoning::ConversationStreamEvent::Lifecycle(_) = &event {
+                    seen.push(planner.conversation_state());
+                }
+            })
+            .unwrap();
+        assert!(seen.contains(&ConversationState::Reasoning) || seen.contains(&ConversationState::Streaming));
+        assert_eq!(response.conversation_state, ConversationState::Completed);
+        assert!(!response.awaiting_review);
+    }
+
+    #[test]
+    fn single_turn_history_is_empty_on_first_message() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let planner = planner_with_reasoning(provider.clone());
+        let _ = planner
+            .handle_conversational_with_observer(
+                UserRequest::new("first message"),
+                Vec::new(),
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(provider.last_history_len(), 0);
+    }
+
+    #[test]
+    fn multi_turn_history_reaches_reasoning_request() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let planner = planner_with_reasoning(provider.clone());
+        let history = vec![
+            jaymi_reasoning::ConversationTurn::user("earlier"),
+            jaymi_reasoning::ConversationTurn::assistant("prior reply"),
+        ];
+        let response = planner
+            .handle_conversational_with_observer(
+                UserRequest::new("follow up"),
+                history,
+                |_| {},
+            )
+            .unwrap();
+        assert!(response.reasoning_used);
+        assert_eq!(provider.last_history_len(), 2);
+        assert_eq!(
+            *provider
+                .last_prompt_has_prior_user
+                .lock()
+                .expect("lock"),
+            Some(true)
+        );
+        let diagnostics = response.prompt_diagnostics.expect("prompt diagnostics");
+        let conversation = diagnostics
+            .sections
+            .iter()
+            .find(|section| section.id == jaymi_reasoning::PromptSectionId::Conversation)
+            .expect("conversation section");
+        assert!(conversation.included);
+        assert!(conversation
+            .note
+            .as_deref()
+            .is_none_or(|note| !note.contains("no conversation")));
+    }
+
+    #[test]
+    fn conversation_continuity_keeps_prior_turns_across_stream_start() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let planner = planner_with_reasoning(provider.clone());
+        let history = vec![
+            jaymi_reasoning::ConversationTurn::system("Stay concise."),
+            jaymi_reasoning::ConversationTurn::user("earlier"),
+            jaymi_reasoning::ConversationTurn::assistant("ack"),
+        ];
+        let (bundle, stream, prompt_diagnostics) = planner
+            .start_conversation_stream(&UserRequest::new("next question"), history)
+            .unwrap();
+        assert!(bundle.assemble_generation() >= 1);
+        assert!(prompt_diagnostics
+            .sections
+            .iter()
+            .any(|section| section.id == jaymi_reasoning::PromptSectionId::Conversation
+                && section.included));
+        let response = stream.collect().unwrap();
+        assert!(response.content.contains("next question"));
+        assert_eq!(provider.last_history_len(), 3);
+    }
+
+    /// B1.13.8 — blocking observer and pumpable complete share terminal mapping.
+    #[test]
+    fn pumpable_and_blocking_share_terminal_core_fields() {
+        let goal = "Explain ownership briefly.";
+        let blocking_provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let blocking_planner = planner_with_reasoning(blocking_provider.clone());
+        let blocking = blocking_planner
+            .handle_conversational_with_observer(UserRequest::new(goal), Vec::new(), |_| {})
+            .unwrap();
+
+        let pump_provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let pump_planner = planner_with_reasoning(pump_provider.clone());
+        let (context, mut stream, prompt_diagnostics) = pump_planner
+            .start_conversation_stream(&UserRequest::new(goal), Vec::new())
+            .unwrap();
+        let mut terminal = None;
+        for _ in 0..64 {
+            match stream.pump().unwrap() {
+                Some(event) if event.is_terminal() => {
+                    terminal = Some(event);
+                    break;
+                }
+                Some(_) => {}
+                None => break,
+            }
+        }
+        let pumpable = pump_planner
+            .complete_conversation_stream(
+                context,
+                terminal.expect("pumpable stream must terminate"),
+                Some(prompt_diagnostics),
+            )
+            .unwrap();
+
+        assert_eq!(blocking.reasoning_used, pumpable.reasoning_used);
+        assert_eq!(blocking.stream_lifecycle, pumpable.stream_lifecycle);
+        assert_eq!(blocking.conversation_state, pumpable.conversation_state);
+        assert_eq!(
+            blocking.reasoning_provider_id,
+            pumpable.reasoning_provider_id
+        );
+        assert_eq!(
+            blocking.stream_lifecycle,
+            Some(jaymi_reasoning::StreamingLifecycle::Completed)
+        );
+        assert_eq!(blocking.conversation_state, ConversationState::Completed);
+        assert!(blocking.content.contains(goal));
+        assert!(pumpable.content.contains(goal));
+        let blocking_diag = blocking.prompt_diagnostics.expect("blocking diagnostics");
+        let pump_diag = pumpable.prompt_diagnostics.expect("pumpable diagnostics");
+        assert_eq!(blocking_diag.conversation_turns, pump_diag.conversation_turns);
+        assert!(!blocking_diag.sections.is_empty());
+        assert_eq!(blocking_diag.sections.len(), pump_diag.sections.len());
+    }
+
+    #[test]
+    fn dual_delivery_retains_prompt_diagnostics_on_both_paths() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let planner = planner_with_reasoning(provider);
+        let blocking = planner
+            .handle_conversational_with_observer(
+                UserRequest::new("diagnostics check"),
+                Vec::new(),
+                |_| {},
+            )
+            .unwrap();
+        assert!(blocking.prompt_diagnostics.is_some());
+        assert!(blocking.reasoning_metrics.is_some());
+
+        let planner = planner_with_reasoning(Arc::new(CountingReasoningProvider::new("chat-mock")));
+        let (context, stream, diagnostics) = planner
+            .start_conversation_stream(&UserRequest::new("diagnostics check"), Vec::new())
+            .unwrap();
+        let collected = stream.collect().unwrap();
+        let pumpable = planner
+            .complete_conversation_stream(
+                context,
+                jaymi_reasoning::ConversationStreamEvent::Completed(collected),
+                Some(diagnostics),
+            )
+            .unwrap();
+        assert!(pumpable.prompt_diagnostics.is_some());
+        assert!(pumpable.reasoning_metrics.is_some());
+        assert_eq!(
+            pumpable.stream_lifecycle,
+            Some(jaymi_reasoning::StreamingLifecycle::Completed)
+        );
+    }
+
+    #[test]
+    fn start_conversation_stream_hard_errors_without_backend() {
+        let planner = planner_with_tools_policies_routes_and_reasoning(
+            |tools, filesystem, content_api| {
+                tools
+                    .register_tool(Arc::new(SearchFilesTool::new(Arc::clone(&filesystem))))
+                    .unwrap();
+                tools
+                    .register_tool(Arc::new(ReadFileTool::new(content_api)))
+                    .unwrap();
+            },
+            |policies| {
+                policies.initialize().unwrap();
+            },
+            ToolRouteTable::builtin(),
+            None,
+        );
+        let err = match planner
+            .start_conversation_stream(&UserRequest::new("hello"), Vec::new())
+        {
+            Ok(_) => panic!("pumpable path must hard-error without backend"),
+            Err(error) => error,
+        };
+        assert!(err.message().contains("no reasoning backend"));
+
+        let soft = planner
+            .handle_conversational_with_observer(UserRequest::new("hello"), Vec::new(), |_| {})
+            .unwrap();
+        assert!(!soft.reasoning_used);
+        assert_eq!(
+            soft.stream_lifecycle,
+            Some(jaymi_reasoning::StreamingLifecycle::Idle)
+        );
+        assert!(soft.content.contains("no reasoning backend"));
+    }
+
+    #[test]
+    fn long_conversation_history_is_budgeted_not_dropped_silently() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let planner = planner_with_reasoning(provider.clone());
+        let mut history = Vec::new();
+        for index in 0..40 {
+            history.push(jaymi_reasoning::ConversationTurn::user(format!(
+                "user turn {index} with enough text to pressure the conversation budget section"
+            )));
+            history.push(jaymi_reasoning::ConversationTurn::assistant(format!(
+                "assistant turn {index} continuing the long conversation with more content"
+            )));
+        }
+        let response = planner
+            .handle_conversational_with_observer(
+                UserRequest::new("summarize our thread"),
+                history,
+                |_| {},
+            )
+            .unwrap();
+        assert_eq!(provider.last_history_len(), 80);
+        let diagnostics = response.prompt_diagnostics.expect("diagnostics");
+        let conversation = diagnostics
+            .sections
+            .iter()
+            .find(|section| section.id == jaymi_reasoning::PromptSectionId::Conversation)
+            .expect("conversation");
+        // Either included fully, truncated, or budgeted — never silently missing.
+        assert!(matches!(
+            conversation.disposition,
+            jaymi_reasoning::PromptSectionDisposition::Included
+                | jaymi_reasoning::PromptSectionDisposition::Truncated
+                | jaymi_reasoning::PromptSectionDisposition::Budgeted
+        ));
+    }
+
+    #[test]
+    fn conversation_state_waiting_for_review_on_gated_write() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let planner = planner_with_tools_policies_routes_and_reasoning(
+            |tools, filesystem, _| {
+                tools
+                    .register_tool(Arc::new(jaymi_tools::WriteFileTool::new(filesystem)))
+                    .unwrap();
+            },
+            |policies| {
+                policies.initialize().unwrap();
+            },
+            ToolRouteTable::builtin(),
+            Some(provider),
+        );
+        let path = temp_dir().join("state.txt");
+        let response = planner
+            .handle(UserRequest::write_file(&path, "hello"))
+            .unwrap();
+        if response.awaiting_review {
+            assert_eq!(
+                response.conversation_state,
+                ConversationState::WaitingForReview
+            );
+            assert_eq!(
+                planner.conversation_state(),
+                ConversationState::WaitingForReview
+            );
+            let plan_id = response.execution_plan.expect("plan").id().clone();
+            let cancelled = planner
+                .resolve_review(ReviewIntent::Cancel { plan_id })
+                .unwrap();
+            assert_eq!(cancelled.conversation_state, ConversationState::Cancelled);
+            assert_eq!(planner.conversation_state(), ConversationState::Cancelled);
+        }
+    }
+
+    #[test]
+    fn conversation_state_tool_path_reaches_completed() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let planner = planner_with_reasoning(provider);
+        let dir = temp_dir();
+        let response = planner.handle(UserRequest::list_directory(&dir)).unwrap();
+        assert!(!response.reasoning_used);
+        assert_eq!(response.conversation_state, ConversationState::Completed);
+        assert_eq!(planner.conversation_state(), ConversationState::Completed);
+    }
+
+    #[test]
+    fn conversation_state_rejects_illegal_transition() {
+        let planner = planner_with_search_and_read();
+        assert_eq!(planner.conversation_state(), ConversationState::Idle);
+        let err = planner
+            .try_transition_conversation(ConversationState::Streaming)
+            .unwrap_err();
+        assert_eq!(err.from, ConversationState::Idle);
+        assert_eq!(err.to, ConversationState::Streaming);
+        assert_eq!(planner.conversation_state(), ConversationState::Idle);
+    }
+
+    #[test]
+    fn unknown_request_without_backend_is_not_unsupported() {
+        let planner = planner_with_search_and_read();
+        let response = planner.handle(UserRequest::new("tell me a joke")).unwrap();
+        assert!(!response.reasoning_used);
+        assert!(!response.content.contains("Unsupported request"));
+        assert!(response.content.contains("no reasoning backend"));
+        assert!(response.context_bundle.is_some());
+    }
+
+    #[test]
+    fn tool_request_does_not_invoke_reasoning() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let planner = planner_with_reasoning(provider.clone());
+        let dir = temp_dir();
+        let response = planner.handle(UserRequest::list_directory(&dir)).unwrap();
+        assert!(!response.reasoning_used);
+        assert!(response.reasoning_provider_id.is_none());
+        assert!(response.capability.is_some());
+        assert!(response.tool_id.is_some());
+        assert_eq!(provider.complete_calls(), 0);
+        assert_eq!(provider.stream_calls(), 0);
+    }
+
+    #[test]
+    fn planning_request_does_not_invoke_reasoning() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let planner = planner_with_reasoning(provider.clone());
+        let response = planner
+            .handle(UserRequest::new("Help me build an app."))
+            .unwrap();
+        assert!(!response.reasoning_used);
+        assert!(response.capability_plan.is_some());
+        assert!(response.tool_id.is_none());
+        assert_eq!(provider.complete_calls(), 0);
+    }
+
+    #[test]
+    fn execution_review_path_does_not_invoke_reasoning() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        // Write requires approval → execution plan / review, not reasoning.
+        let planner = planner_with_tools_policies_routes_and_reasoning(
+            |tools, filesystem, _| {
+                tools
+                    .register_tool(Arc::new(jaymi_tools::WriteFileTool::new(filesystem)))
+                    .unwrap();
+            },
+            |policies| {
+                policies.initialize().unwrap();
+            },
+            ToolRouteTable::builtin(),
+            Some(provider.clone()),
+        );
+        let path = temp_dir().join("exec.txt");
+        let response = planner
+            .handle(UserRequest::write_file(&path, "hello"))
+            .unwrap();
+        assert!(response.awaiting_review || response.execution_plan.is_some() || response.blocked);
+        assert!(!response.reasoning_used);
+        assert_eq!(provider.complete_calls(), 0);
+        if response.awaiting_review {
+            let plan_id = response.execution_plan.expect("plan").id().clone();
+            let resumed = planner
+                .resolve_review(ReviewIntent::Approve { plan_id })
+                .unwrap();
+            assert!(!resumed.reasoning_used);
+            assert_eq!(provider.complete_calls(), 0);
+        }
     }
 
     #[test]

@@ -1,6 +1,6 @@
 Planner
 
-**Status: Current Implementation** (orchestration kernel) · **Partial:** Reasoning Engine stub
+**Status: Current Implementation** (orchestration kernel) · **Partial:** Conversation state machine + streaming Reasoning (Sprint B1.1–B1.7); tool calling through the model still later
 
 The Planner is the orchestration kernel of Jaymi.
 
@@ -24,7 +24,7 @@ It is built around decision making.
 
 **Target:** Language models help Jaymi reason.
 
-**Current:** The Decision Engine routes intents deterministically; the Reasoning Engine is a stub (`is_implemented() == false`).
+**Current:** The Decision Engine routes intents deterministically. Unknown / conversational requests go Planner → ContextBundle → Reasoning Engine → response. The Reasoning Engine orchestrates PromptBuilder → provider selection → stream/complete with timeouts, cancellation, metrics, and retry. Ollama may be wired at boot. Tool-backed, PlanWork, Review, and execution paths do not call Reasoning. See [docs/reasoning.md](reasoning.md).
 
 Canonical identity is `jaymi_core::IntentId`. The Planner's payload-bearing `Intent` maps to that id via `Intent::id()`. Context, Capabilities, Behaviors, and Policies must reference `IntentId` — Context never re-classifies free-text intent independently.
 
@@ -123,7 +123,7 @@ Planner
    │
    ├───────────────┐
    │               │
-Decision Engine    Reasoning Engine (Stub)
+Decision Engine    Reasoning Engine (conversational / unknown after Context)
    │               │
    └──────┬────────┘
           │
@@ -159,7 +159,7 @@ It answers questions such as:
 
 * What Intent does this request map to?
 * Which capabilities are required for that Intent?
-* Does this Intent need a Reasoning Engine once one is wired? (stub today)
+* Does this Intent need the Reasoning Engine? (empty capabilities → conversational)
 
 These decisions should never depend on a language model.
 
@@ -171,12 +171,13 @@ Context Policy / MemoryProvider during assemble.
 
 Reasoning Engine
 
-**Status: Stub / Target**
+**Status: Partial** (Sprint B1.1–B1.7: contracts, Prompt Builder, Ollama, engine orchestration, conversational streaming, conversation state machine)
 
 The Reasoning Engine exists to solve problems that require language understanding.
 
-Examples include (Target once wired):
+Examples include:
 
+* Conversational / unknown requests (**Current** — after Context assemble)
 * Understanding ambiguous requests
 * Summarizing information
 * Planning complex workflows
@@ -188,7 +189,32 @@ The Reasoning Engine may use any compatible language model.
 
 It is replaceable.
 
-**Current:** present as an architectural dependency; `is_implemented()` is false; deterministic intents do not call it.
+**Current:** Unknown / conversational intents stream through `ConversationStream` after `ContextBundle` assemble. Prior Experience turns are passed as `ReasoningRequest.history` (Sprint B1.13.3) so PromptBuilder can format multi-turn context. The Planner owns a conversation runtime state machine (`ConversationState`): Idle → Preparing Context → Reasoning / Streaming / Waiting For Review / Executing → Completed / Cancelled / Failed. Experience / UI mirror that state; they never invent transitions (enforced Sprint **B1.13.7**). Pumpable (`start`/`pump`/`complete`) and blocking (`run_with_observer`) delivery share assemble + terminal mapping; intentional host differences are documented in Sprint **B1.13.8**. See [docs/reasoning.md](reasoning.md) and [docs/experience.md](experience.md).
+
+⸻
+
+Conversation State Machine
+
+**Status: Current** (Sprint B1.7)
+
+```text
+Idle
+  → Preparing Context
+  → Reasoning | Streaming | Waiting For Review | Executing
+  → Completed | Cancelled | Failed
+```
+
+| State | When |
+|-------|------|
+| Idle | No active request |
+| Preparing Context | Intent resolved; Context assemble in progress |
+| Reasoning | Generation started; waiting for first visible token |
+| Streaming | Tokens arriving into the conversation |
+| Waiting For Review | Execution Plan paused on a Review Card |
+| Executing | Approved plan running tools |
+| Completed / Cancelled / Failed | Terminal for the turn |
+
+`StreamingLifecycle` remains the generation sub-machine under Reasoning / Streaming. `ExecutionStatus` remains plan-scoped. `PlannerResponse.conversation_state` is authoritative.
 
 ⸻
 
@@ -203,7 +229,7 @@ assemble **branch** by Intent class:
 | Tool-backed (search / read / list / …) | Yes | Planned (skipped) | Yes |
 | PlanWork | Yes | Planned (skipped) | No — capability plan only |
 | Session open / close / continue | Yes (after Project Engine mutate) | Planned (skipped) | No |
-| Unsupported / plain chat | Yes | Planned (skipped) | No |
+| Conversational / unknown | Yes | Planned (skipped) → ConversationStream → Response | No |
 
 Canonical stage vocabulary (`RequestStage`):
 
@@ -221,6 +247,7 @@ Collect From Providers
 Assemble ContextBundle
 ↓
 Run Behavior                          # Planned — not implemented
+                                      # conversational / unknown → Reasoning Engine here
 ↓
 Create Execution Plan                 # tool-backed only
 ↓
@@ -341,7 +368,7 @@ Context
 
 Context is assembled intentionally through the Context Engine (`assemble`).
 
-**Current:** The Planner does not ask the Reasoning Engine to think for shipped intents.
+**Current:** Only conversational / unknown requests invoke the Reasoning Engine (after Context assemble). Tool, PlanWork, Review, and execution paths do not.
 
 Possible sources include:
 

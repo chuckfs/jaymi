@@ -40,7 +40,11 @@ fn diagnostics_dashboard_reports_honest_subsystem_states() {
         ("Memory Status", OperationalStatus::Operational),
         ("Context Engine", OperationalStatus::Operational),
         ("Project Status", OperationalStatus::Operational),
-        ("Reasoning Status", OperationalStatus::Stub),
+        (
+            "Reasoning Status",
+            // Ollama may be offline in CI; registry is always wired → never Stub.
+            OperationalStatus::Disabled,
+        ),
     ];
 
     assert_eq!(snapshot.subsystems.len(), expected.len());
@@ -48,9 +52,27 @@ fn diagnostics_dashboard_reports_honest_subsystem_states() {
         let row = snapshot
             .subsystem(name)
             .unwrap_or_else(|| panic!("missing subsystem row: {name}"));
-        assert_eq!(row.status, status, "unexpected status for {name}");
+        if name == "Reasoning Status" {
+            assert_ne!(row.status, OperationalStatus::Stub, "Reasoning Status");
+            assert!(matches!(
+                row.status,
+                OperationalStatus::Disabled | OperationalStatus::Operational
+            ));
+        } else {
+            assert_eq!(row.status, status, "unexpected status for {name}");
+        }
         assert!(!row.detail.is_empty(), "empty detail for {name}");
     }
+
+    let reasoning = snapshot
+        .reasoning_inspector
+        .as_ref()
+        .expect("reasoning inspector");
+    assert!(!reasoning.reasoning_health.is_empty());
+    assert!(!reasoning.conversation_runtime_state.is_empty());
+    assert!(snapshot
+        .render_dashboard()
+        .contains("Conversational Reasoning"));
 
     let rendered = snapshot.render_dashboard();
     assert!(rendered.contains("Jaymi Diagnostics"));

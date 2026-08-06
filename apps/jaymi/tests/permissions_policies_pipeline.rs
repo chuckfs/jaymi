@@ -270,6 +270,8 @@ fn planner_with_only_cloud_search(privacy_maximum: bool) -> Planner {
         projects,
         context: Arc::new(context),
         routes: ToolRouteTable::builtin(),
+        reasoning: None,
+        model_registry: None,
     });
     planner.initialize().unwrap();
     planner

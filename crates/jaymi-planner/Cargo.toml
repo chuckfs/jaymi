@@ -14,6 +14,7 @@ jaymi-core = { workspace = true }
 jaymi-memory-engine = { workspace = true }
 jaymi-project-engine = { workspace = true }
 jaymi-providers = { workspace = true }
+jaymi-reasoning = { workspace = true }
 jaymi-tools = { workspace = true }
 jaymi-logging = { workspace = true }
 jaymi-permissions = { workspace = true }

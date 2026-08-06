@@ -181,6 +181,24 @@ Rules:
 
 LLMs should eventually consume `LlmContext` instead of querying Memory, Project, Search, or other subsystems directly.
 
+Architectural path into Reasoning (Sprint B1.1–B1.13.5):
+
+```text
+ContextBundle → LlmContext → PromptBuilder → ReasoningRequest.prompt
+  → ReasoningProvider → ConversationStream → ReasoningResponse
+```
+
+Orchestrated by `ReasoningEngine` / `ConversationStream`. PromptBuilder adapts to
+`context_window − reserved_completion` and is the sole source of generation text.
+Every `LlmSectionId` is traced into a prompt disposition (included / excluded /
+truncated / filtered / budgeted) — see [docs/prompt.md](prompt.md). Providers
+perform transport only. Conversational / unknown Planner requests stream after
+assemble. See [docs/reasoning.md](reasoning.md).
+
+`LlmContext` remains structured data only — it does **not** build prompts.
+Prompt assembly is owned by `PromptBuilder`; the engine attaches the `Prompt`
+onto the request before every provider call.
+
 ---
 
 ## Context Policies
@@ -258,7 +276,7 @@ Consumers (**Current** / **Planned**):
 |----------|----------|
 | Planner execution | `PlannerResponse.context()` / `.context_bundle` |
 | Behaviors | **Planned** — consume `ContextBundle` only |
-| LLM providers | **Planned** — consume `ContextBundle` or `LlmContext` derived via `ContextEngine::to_llm_context` |
+| LLM / Reasoning | **Partial** — conversational path + model-aware prompt budgeting ([docs/prompt.md](prompt.md)) |
 
 `PlannerResponse` no longer carries parallel `memory_context`, `project_context`, or `search_context` fields. Use:
 
@@ -343,7 +361,7 @@ the Context Engine is one of the best-tested systems in Jaymi.
    - Search Engine  
    which installs the default `ContextProvider` set.
 3. Planner receives `Arc<ContextEngine>` and calls `assemble_with` after Intent and Capability resolution on every `handle`.
-4. Application pushes a full [`ContextSessionInputs`] snapshot via `prepare_context_session` before every `handle` (and after workspace expand/close):
+4. Application pushes a full [`ContextSessionInputs`] snapshot via `prepare_context_session` before **every** Planner assemble path — tool-backed `handle`, conversational `begin_generation` / `handle_streaming_with_workspace`, and after workspace expand/close. There is no alternate preparation path for conversation:
    - active workspace kind
    - current file / cursor selection / open files (from CodingState when Coding is open)
    - diagnostics (Problems panel preferred over raw LSP diagnostics)
@@ -351,6 +369,7 @@ the Context Engine is one of the best-tested systems in Jaymi.
    - search panel hits (when present)
    - `active_capabilities` left empty (request-selected ids arrive only via Planner `AssembleHints`)
    Closing Coding clears editor / diagnostics / search fields so the bundle does not keep stale UI state.
+   Future Workspace Intelligence enrichments land in the same `prepare_context_session` so conversation automatically receives them.
 
 ---
 

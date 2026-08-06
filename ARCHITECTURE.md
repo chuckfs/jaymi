@@ -134,7 +134,7 @@ are relevant during assemble. Action Policy + Permission decide whether a
 tool candidate may run and whether user approval is required.
 
 Every user-facing request enters `Planner::handle`. After Context assemble,
-paths **branch** (tool-backed vs session vs PlanWork vs unsupported) — see
+paths **branch** (tool-backed vs session vs PlanWork vs conversational) — see
 [docs/planner.md](docs/planner.md#request-lifecycle). That is not an
 Application→Engine bypass.
 
@@ -142,7 +142,7 @@ Project knowledge search is a Planner-mediated request (`UserRequest::search_pro
 
 Project session open/close has one lifecycle: Application delegates → Planner orchestrates → Project Engine owns open state (Memory mirrors the id). There is no Application→Engine session bypass.
 
-**Partial / Stub:** Reasoning Engine (language-model backends) is not implemented (`is_implemented() == false`).
+**Partial:** Reasoning Engine + conversation state machine; conversational / unknown requests share `prepare_context_session` with tool-backed paths, then Context assemble → PromptBuilder → provider; diagnostics inspect delivered prompt; Model Registry populates `ReasoningRequest.model`; Experience/UI mirror Planner `ConversationState` only; pumpable and blocking delivery share assemble/terminal mapping with intentional host differences (Sprint B1.1–B1.13.8). See [docs/reasoning.md](docs/reasoning.md) and [docs/planner.md](docs/planner.md).
 
 ⸻
 
@@ -363,7 +363,7 @@ The developer dashboard reports subsystem readiness with four honest labels:
 | **Stub** | Lifecycle-wired placeholder / architecture only |
 | **Disabled** | Intentionally off, not wired, or failing |
 
-Examples: OCR Provider and Reasoning are **Stub**; Policies and local lexical Embeddings are **Experimental**; Index / Watcher report **Disabled** when indexing is turned off. Subsystems must not overstate readiness.
+Examples: OCR Provider is **Stub**; Reasoning is **Partial** (Ollama + conversational Planner path — see [docs/ollama.md](docs/ollama.md) / [docs/reasoning.md](docs/reasoning.md)); Policies and local lexical Embeddings are **Experimental**; Index / Watcher report **Disabled** when indexing is turned off. Subsystems must not overstate readiness.
 
 ⸻
 
@@ -438,7 +438,7 @@ The system functions without cloud services.
 
 AI Models
 
-Status: **Target** (interchangeability designed; Reasoning stub)
+Status: **Partial** — Ollama backend + Reasoning Engine + conversation state machine + Model Registry + Conversational Reasoning diagnostics + Prompt → Provider handoff + Context section coverage + multi-turn history + shared conversational context prep + delivered-prompt diagnostics + registry→request model loop + Planner-owned runtime mirrored by UI + dual delivery clarity (`ConversationState`, Sprint B1.1–B1.13.8)
 
 Models are interchangeable.
 

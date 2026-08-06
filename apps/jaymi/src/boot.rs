@@ -19,7 +19,7 @@ use jaymi_capabilities::{
 };
 
 use jaymi_config::Config;
-use jaymi_context::{ContextEngine, ContextHistoryEntry, ContextInspectorReport};
+use jaymi_context::{ContextBundle, ContextEngine, ContextHistoryEntry, ContextInspectorReport};
 use jaymi_core::{
     AppState, DiscoveryQueryKind, EntryType, GitOperation, HealthReport, JaymiError, JaymiResult,
     Lifecycle, SearchRequest, ServiceContainer, UserRequest,
@@ -50,6 +50,11 @@ use jaymi_providers::{
     OcrProvider, PlaceholderOcrProvider, Provider, ProviderRegistry, TerminalProvider,
     DEFAULT_TERMINAL_SESSION_ID,
 };
+use jaymi_reasoning::{
+    ConversationStream, ConversationStreamEvent, ModelRegistry, ReasoningDiagnosticsInput,
+    ReasoningDiagnosticsReport, ReasoningProvider,
+};
+use jaymi_reasoning_ollama::OllamaReasoningProvider;
 use jaymi_search::{EmbeddingQueue, SearchEngine, SearchEngineApi, SemanticDeps};
 use jaymi_tools::{
     GitTool, LanguageServerTool, ListProjectTreeTool, ManagePathTool, QueryInventoryTool,
@@ -64,9 +69,42 @@ use jaymi_understanding::{
 use crate::coding_workspace::{
     build_coding_diagnostics_view, CodingDiagnosticsView, LastPlannerActivity,
 };
-use crate::diagnostics::DiagnosticsSnapshot;
+use crate::diagnostics::{DiagnosticsSnapshot, LastReasoningTurn};
 use crate::editor_workspace::{load_editor_workspace, save_editor_workspace};
 use crate::experience::{ConversationTurn, ExperienceSession};
+
+/// In-flight pumpable conversational generation (Sprint B1.11).
+struct ActiveGeneration {
+    stream: ConversationStream,
+    context: ContextBundle,
+    turn_index: usize,
+    prompt_diagnostics: jaymi_reasoning::PromptDiagnostics,
+    #[allow(dead_code)] // retained for regenerate / diagnostics context
+    user_text: String,
+}
+
+/// Outcome of starting a prompt (sync tool path vs pumpable stream).
+#[derive(Debug)]
+pub enum BeginGeneration {
+    /// Conversational stream started — call [`Application::pump_generation`].
+    Started,
+    /// Non-conversational / soft path completed synchronously.
+    Completed(PlannerResponse),
+}
+
+/// Result of pumping an active generation.
+#[derive(Debug)]
+pub enum PumpGeneration {
+    /// Still active; Experience was updated with incremental events.
+    Active {
+        /// Number of stream events applied this pump.
+        events: usize,
+    },
+    /// Terminal event applied; generation cleared.
+    Finished(PlannerResponse),
+    /// No active generation.
+    Idle,
+}
 
 /// Owns the process service container and application state.
 pub struct Application {
@@ -77,6 +115,10 @@ pub struct Application {
     experience: Mutex<ExperienceSession>,
     /// Last Planner turn for Coding Diagnostics (activity / timing).
     last_planner_activity: Mutex<Option<LastPlannerActivity>>,
+    /// Last conversational reasoning turn for Reasoning Diagnostics (B1.10).
+    last_reasoning: Mutex<Option<LastReasoningTurn>>,
+    /// Active pumpable conversational generation (B1.11).
+    active_generation: Mutex<Option<ActiveGeneration>>,
 }
 
 impl Application {
@@ -88,6 +130,8 @@ impl Application {
             health_reports: Vec::new(),
             experience: Mutex::new(ExperienceSession::new()),
             last_planner_activity: Mutex::new(None),
+            last_reasoning: Mutex::new(None),
+            active_generation: Mutex::new(None),
         }
     }
 
@@ -380,6 +424,15 @@ impl Application {
         let tools = Arc::new(tools);
         self.container.register(Arc::clone(&tools));
 
+        let ollama = Arc::new(OllamaReasoningProvider::local());
+        self.container.register(Arc::clone(&ollama));
+
+        let registry =
+            ModelRegistry::with_provider(Arc::clone(&ollama) as Arc<dyn ReasoningProvider>);
+        let _ = registry.refresh();
+        let registry = Arc::new(registry);
+        self.container.register(Arc::clone(&registry));
+
         let orchestrator = ToolOrchestrator::new(Arc::clone(&tools));
         let mut planner = Planner::new(PlannerDeps {
             capabilities: Arc::clone(&capabilities) as Arc<dyn CapabilityEngineApi>,
@@ -392,6 +445,8 @@ impl Application {
             projects: Arc::clone(&projects) as Arc<dyn ProjectEngineApi>,
             context: Arc::clone(&context),
             routes: ToolRouteTable::builtin(),
+            reasoning: Some(Arc::clone(&ollama) as Arc<dyn ReasoningProvider>),
+            model_registry: Some(Arc::clone(&registry)),
         });
         self.initialize_service(&mut planner)?;
         self.container.register(planner);
@@ -464,9 +519,17 @@ impl Application {
     /// Sync live UI / engine state into the Context Engine before handle.
     ///
     /// Pushes a full [`ContextSessionInputs`] snapshot (workspace, editor,
-    /// diagnostics, permissions, project-open, search hits) — never placeholders.
+    /// Push a live host session snapshot into the Context Engine.
+    ///
+    /// **Required before every Planner path that assembles context** — including
+    /// conversational generation (`begin_generation` / streaming). This is the
+    /// sole Application preparation entrypoint: workspace, Coding editor,
+    /// diagnostics, permissions, project-open, search hits. Never placeholders.
     /// Request-selected capabilities are **not** pushed here; the Planner supplies
     /// them via [`jaymi_context::AssembleHints`].
+    ///
+    /// Future Workspace Intelligence enrichments land here so conversation and
+    /// tool-backed requests share one preparation path.
     fn prepare_context_session(&self) -> JaymiResult<()> {
         let context = self.container.resolve::<Arc<ContextEngine>>()?;
         let workspace_kind = self
@@ -1076,6 +1139,7 @@ impl Application {
                 created_at: message.created_at,
                 review: None,
                 execution_summary: None,
+                stream_lifecycle: None,
             })
             .collect();
         let mut experience = self
@@ -2993,15 +3057,362 @@ impl Application {
         Ok(())
     }
 
+    /// Snapshot Experience turns for ReasoningRequest.history (request-scoped).
+    fn collect_reasoning_history(
+        &self,
+        exclude_goal: Option<&str>,
+    ) -> JaymiResult<Vec<jaymi_reasoning::ConversationTurn>> {
+        let experience = self
+            .experience
+            .lock()
+            .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+        Ok(experience.to_reasoning_history(exclude_goal))
+    }
+
     /// Handle a user request and apply any capability workspace expansion.
     pub fn handle_with_workspace(&self, request: UserRequest) -> JaymiResult<PlannerResponse> {
         let content = request.content.clone();
+        // Snapshot prior turns before recording the current user message.
+        let history = self.prepare_conversational_host()?;
         if !content.trim().is_empty() {
             self.record_user_message(content)?;
         }
-        let response = self.handle(request)?;
+        let planner = self.container.resolve::<Planner>()?;
+        let started = std::time::Instant::now();
+        // Conversational path consumes history; tool-backed intents fall through
+        // to Planner::handle inside handle_conversational_with_observer.
+        let response =
+            planner.handle_conversational_with_observer(request, history, |_| {})?;
+        self.record_planner_activity(&response, started.elapsed().as_millis() as u64);
         self.apply_workspace_response(&response)?;
         Ok(response)
+    }
+
+    /// Handle a request with incremental conversation streaming when conversational.
+    ///
+    /// Blocking delivery with live Experience updates (one-shot collect). Prefer
+    /// [`Self::begin_generation`] / [`Self::pump_generation`] for the interactive UI.
+    /// Tool / plan / review paths behave like [`Self::handle_with_workspace`].
+    pub fn handle_streaming_with_workspace(
+        &self,
+        request: UserRequest,
+    ) -> JaymiResult<PlannerResponse> {
+        let content = request.content.clone();
+        let history = self.prepare_conversational_host()?;
+        if !content.trim().is_empty() {
+            self.record_user_message(content)?;
+        }
+        let planner = self.container.resolve::<Planner>()?;
+        let started = std::time::Instant::now();
+        let turn_slot = std::sync::Mutex::new(None::<usize>);
+        let response = planner.handle_conversational_with_observer(request, history, |event| {
+            let Ok(mut experience) = self.experience.lock() else {
+                return;
+            };
+            // Mirror Planner only — Experience never invents ConversationState.
+            experience.mirror_conversation_state(planner.conversation_state());
+            let Ok(mut slot) = turn_slot.lock() else {
+                return;
+            };
+            if slot.is_none() {
+                *slot = Some(experience.begin_streaming_assistant());
+            }
+            if let Some(index) = *slot {
+                let _ = experience.apply_stream_event(index, &event);
+            }
+        })?;
+        self.record_planner_activity(&response, started.elapsed().as_millis() as u64);
+        let had_stream = turn_slot
+            .lock()
+            .ok()
+            .and_then(|slot| *slot)
+            .is_some();
+        if response.reasoning_used && had_stream {
+            self.apply_workspace_expansion_only(&response)?;
+            let mut experience = self
+                .experience
+                .lock()
+                .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+            experience.mirror_conversation_state(response.conversation_state);
+        } else {
+            self.apply_workspace_response(&response)?;
+        }
+        Ok(response)
+    }
+
+    /// True when a pumpable conversational generation is in flight.
+    pub fn generation_active(&self) -> bool {
+        self.active_generation
+            .lock()
+            .map(|guard| guard.is_some())
+            .unwrap_or(false)
+    }
+
+    /// Shared Application host prep for both conversational delivery modes.
+    ///
+    /// Pushes Context session inputs then snapshots Experience history. User
+    /// message recording stays mode-specific: blocking records before Planner
+    /// entry; pumpable records only after the stream opens successfully.
+    fn prepare_conversational_host(
+        &self,
+    ) -> JaymiResult<Vec<jaymi_reasoning::ConversationTurn>> {
+        // Same host prep as Application::handle — conversational reasoning must
+        // not assemble with a stale or empty Context session.
+        self.prepare_context_session()?;
+        self.collect_reasoning_history(None)
+    }
+
+    /// Begin a conversational generation without blocking the UI thread.
+    ///
+    /// Tool-backed requests complete synchronously via
+    /// [`Self::handle_streaming_with_workspace`]. Conversational turns return
+    /// [`BeginGeneration::Started`] — drive [`Self::pump_generation`] each frame.
+    pub fn begin_generation(&self, content: impl Into<String>) -> JaymiResult<BeginGeneration> {
+        if self.generation_active() {
+            return Err(JaymiError::new(
+                "a generation is already in progress — cancel it first",
+            ));
+        }
+        let content = content.into();
+        let trimmed = content.trim();
+        if trimmed.is_empty() {
+            return Err(JaymiError::new("empty prompt"));
+        }
+        let history = self.prepare_conversational_host()?;
+        let request = UserRequest::new(trimmed);
+        let planner = self.container.resolve::<Planner>()?;
+        match planner.start_conversation_stream(&request, history) {
+            Ok((context, stream, prompt_diagnostics)) => {
+                // Record after stream open so failed starts don't leave orphan user turns
+                // before the soft-fallback observer path records its own copy.
+                self.record_user_message(trimmed)?;
+                let turn_index = {
+                    let mut experience = self
+                        .experience
+                        .lock()
+                        .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+                    experience.mirror_conversation_state(planner.conversation_state());
+                    experience.begin_streaming_assistant()
+                };
+                let mut guard = self
+                    .active_generation
+                    .lock()
+                    .map_err(|_| JaymiError::new("generation lock poisoned"))?;
+                *guard = Some(ActiveGeneration {
+                    stream,
+                    context,
+                    turn_index,
+                    prompt_diagnostics,
+                    user_text: trimmed.to_string(),
+                });
+                Ok(BeginGeneration::Started)
+            }
+            Err(error) => {
+                let message = error.message().to_string();
+                if message.contains("requires a conversational") {
+                    let response =
+                        self.handle_streaming_with_workspace(UserRequest::new(trimmed))?;
+                    return Ok(BeginGeneration::Completed(response));
+                }
+                // No backend, or stream failed to open (e.g. only embedding models
+                // installed) — use the observer path for a soft conversational reply.
+                let response = self.handle_streaming_with_workspace(UserRequest::new(trimmed))?;
+                Ok(BeginGeneration::Completed(response))
+            }
+        }
+    }
+
+    /// Pump up to `max_events` from the active generation onto Experience.
+    pub fn pump_generation(&self, max_events: usize) -> JaymiResult<PumpGeneration> {
+        let max_events = max_events.max(1);
+        let mut guard = self
+            .active_generation
+            .lock()
+            .map_err(|_| JaymiError::new("generation lock poisoned"))?;
+        let Some(active) = guard.as_mut() else {
+            return Ok(PumpGeneration::Idle);
+        };
+        let planner = self.container.resolve::<Planner>()?;
+        let mut applied = 0usize;
+        let mut terminal: Option<ConversationStreamEvent> = None;
+        for _ in 0..max_events {
+            match active.stream.pump() {
+                Ok(Some(event)) => {
+                    let is_terminal = event.is_terminal();
+                    if let ConversationStreamEvent::Lifecycle(lifecycle) = &event {
+                        planner.mirror_stream_lifecycle(*lifecycle);
+                    }
+                    {
+                        let mut experience = self
+                            .experience
+                            .lock()
+                            .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+                        experience.mirror_conversation_state(planner.conversation_state());
+                        let _ = experience.apply_stream_event(active.turn_index, &event);
+                    }
+                    applied += 1;
+                    if is_terminal {
+                        terminal = Some(event);
+                        break;
+                    }
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    let failed = ConversationStreamEvent::Failed {
+                        partial: active.stream.accumulated_text().to_string(),
+                        error,
+                        metrics: active.stream.diagnostics().into_metrics(),
+                    };
+                    {
+                        let mut experience = self
+                            .experience
+                            .lock()
+                            .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+                        // Turn content only — Planner completes the Failed transition.
+                        let _ = experience.apply_stream_event(active.turn_index, &failed);
+                    }
+                    terminal = Some(failed);
+                    break;
+                }
+            }
+        }
+        if let Some(event) = terminal {
+            let context = active.context.clone();
+            let prompt_diagnostics = Some(active.prompt_diagnostics.clone());
+            *guard = None;
+            drop(guard);
+            let response =
+                planner.complete_conversation_stream(context, event, prompt_diagnostics)?;
+            self.apply_workspace_expansion_only(&response)?;
+            {
+                let mut experience = self
+                    .experience
+                    .lock()
+                    .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+                experience.mirror_conversation_state(response.conversation_state);
+            }
+            self.record_planner_activity(&response, response.reasoning_metrics.as_ref().map(|m| m.latency_ms).unwrap_or(0));
+            Ok(PumpGeneration::Finished(response))
+        } else {
+            Ok(PumpGeneration::Active { events: applied })
+        }
+    }
+
+    /// Cancel the active generation (cooperative).
+    pub fn cancel_generation(&self) -> JaymiResult<()> {
+        let mut guard = self
+            .active_generation
+            .lock()
+            .map_err(|_| JaymiError::new("generation lock poisoned"))?;
+        let Some(active) = guard.as_mut() else {
+            return Ok(());
+        };
+        active.stream.cancel();
+        Ok(())
+    }
+
+    /// Retry the active generation, or regenerate when no stream remains.
+    pub fn retry_generation(&self, keep_partial: bool) -> JaymiResult<BeginGeneration> {
+        let mut guard = self
+            .active_generation
+            .lock()
+            .map_err(|_| JaymiError::new("generation lock poisoned"))?;
+        if let Some(active) = guard.as_mut() {
+            active.stream.retry(keep_partial).map_err(|err| {
+                JaymiError::new(format!("retry failed: {}", err.message()))
+            })?;
+            let planner = self.container.resolve::<Planner>()?;
+            // Planner owns the return to Reasoning; Experience only mirrors.
+            planner.resume_reasoning_after_retry();
+            let mut experience = self
+                .experience
+                .lock()
+                .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+            if keep_partial {
+                experience.set_stream_lifecycle(
+                    active.turn_index,
+                    jaymi_reasoning::StreamingLifecycle::Thinking,
+                )?;
+            } else {
+                experience.reset_assistant_for_retry(active.turn_index)?;
+            }
+            experience.mirror_conversation_state(planner.conversation_state());
+            return Ok(BeginGeneration::Started);
+        }
+        drop(guard);
+        self.regenerate_response()
+    }
+
+    /// Regenerate the last assistant reply from the preceding user message.
+    pub fn regenerate_response(&self) -> JaymiResult<BeginGeneration> {
+        if self.generation_active() {
+            return Err(JaymiError::new(
+                "cannot regenerate while a generation is active — cancel first",
+            ));
+        }
+        let user_text = {
+            let mut experience = self
+                .experience
+                .lock()
+                .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+            let text = experience
+                .last_user_content()
+                .ok_or_else(|| JaymiError::new("no user turn to regenerate from"))?
+                .to_string();
+            let _ = experience.remove_last_assistant_turn();
+            if let Some(index) = experience
+                .conversation()
+                .iter()
+                .rposition(|turn| matches!(turn.role, jaymi_memory::MessageRole::User))
+            {
+                experience.remove_turn_at(index)?;
+            }
+            text
+        };
+        self.begin_generation(user_text)
+    }
+
+    /// Copy helper — returns assistant turn text for clipboard (UI owns pasteboard).
+    pub fn assistant_turn_text(&self, turn_index: usize) -> JaymiResult<String> {
+        let experience = self
+            .experience
+            .lock()
+            .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+        let turn = experience
+            .conversation()
+            .get(turn_index)
+            .ok_or_else(|| JaymiError::new("turn index out of range"))?;
+        if !matches!(turn.role, jaymi_memory::MessageRole::Assistant) {
+            return Err(JaymiError::new("turn is not an assistant response"));
+        }
+        Ok(turn.content.clone())
+    }
+
+    /// Apply workspace expansion / summary side effects without appending assistant text.
+    fn apply_workspace_expansion_only(&self, response: &PlannerResponse) -> JaymiResult<()> {
+        let mut experience = self
+            .experience
+            .lock()
+            .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+        if let Some(workspace) = &response.workspace {
+            if workspace.expands() {
+                let _ = experience.expand_workspace(workspace.clone());
+            }
+        }
+        let conversation_id = experience.conversation_id().map(str::to_string);
+        let coding_open = experience.active_workspace_kind() == Some(WorkspaceKind::Coding);
+        drop(experience);
+        if let Some(summary) = response
+            .execution_summary
+            .as_ref()
+            .filter(|summary| summary.should_surface_in_conversation())
+        {
+            let _ = self.store_execution_summary_memory(summary, conversation_id.as_deref());
+        }
+        if coding_open {
+            let _ = self.refresh_coding_explorer();
+        }
+        Ok(())
     }
 
     /// Create an intentional personal preference through the Memory Engine.
@@ -3272,9 +3683,127 @@ impl Application {
         if let Ok(mut guard) = self.last_planner_activity.lock() {
             *guard = Some(activity);
         }
+        let turn = LastReasoningTurn {
+            reasoning_used: response.reasoning_used,
+            reasoning_provider_id: response.reasoning_provider_id.clone(),
+            stream_lifecycle: response.stream_lifecycle,
+            metrics: response.reasoning_metrics.clone(),
+            prompt_diagnostics: response.prompt_diagnostics.clone(),
+            configured_model: response.configured_model.clone(),
+            provider_model: response.provider_model.clone(),
+            conversation_state: response.conversation_state,
+        };
+        if let Ok(mut guard) = self.last_reasoning.lock() {
+            *guard = Some(turn);
+        }
         // Opportunistic refresh so a blocked / denied turn shows up in the
         // Problems panel without waiting for the next explicit refresh.
         let _ = self.refresh_coding_problems();
+    }
+
+    /// Last conversational reasoning turn retained for diagnostics.
+    pub fn last_reasoning_turn(&self) -> Option<LastReasoningTurn> {
+        self.last_reasoning
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    /// Prefer an explicit reasoning model for conversational turns (B1.13.6).
+    pub fn set_preferred_model(
+        &self,
+        model: Option<jaymi_reasoning::ModelIdentifier>,
+    ) -> JaymiResult<()> {
+        let planner = self.container.resolve::<Planner>()?;
+        planner.set_preferred_model(model)
+    }
+
+    /// Current explicit preferred reasoning model, when set.
+    pub fn preferred_model(&self) -> JaymiResult<Option<jaymi_reasoning::ModelIdentifier>> {
+        let planner = self.container.resolve::<Planner>()?;
+        Ok(planner.preferred_model())
+    }
+
+    /// Assemble the Conversational Reasoning diagnostics report.
+    pub fn reasoning_diagnostics(&self) -> JaymiResult<ReasoningDiagnosticsReport> {
+        let planner = self.container.resolve::<Planner>()?;
+        let registry = self.container.resolve::<Arc<ModelRegistry>>().ok();
+        if let Some(reg) = registry.as_ref() {
+            let _ = reg.refresh();
+        }
+        let last = self.last_reasoning_turn();
+        let live_state = planner.conversation_state();
+        let conversation_runtime_state = if live_state.is_active() {
+            live_state.as_str().to_string()
+        } else {
+            last.as_ref()
+                .map(|turn| turn.conversation_state.as_str().to_string())
+                .unwrap_or_else(|| live_state.as_str().to_string())
+        };
+        let streaming = last
+            .as_ref()
+            .and_then(|turn| turn.stream_lifecycle)
+            .or_else(|| {
+                use jaymi_reasoning::StreamingLifecycle;
+                match live_state {
+                    jaymi_planner::ConversationState::Reasoning => {
+                        Some(StreamingLifecycle::Thinking)
+                    }
+                    jaymi_planner::ConversationState::Streaming => {
+                        Some(StreamingLifecycle::Streaming)
+                    }
+                    jaymi_planner::ConversationState::Cancelled => {
+                        Some(StreamingLifecycle::Cancelled)
+                    }
+                    jaymi_planner::ConversationState::Failed => Some(StreamingLifecycle::Failed),
+                    jaymi_planner::ConversationState::Completed => {
+                        Some(StreamingLifecycle::Completed)
+                    }
+                    _ => None,
+                }
+            });
+        Ok(ReasoningDiagnosticsReport::assemble(
+            ReasoningDiagnosticsInput {
+                health: Some(planner.reasoning().health()),
+                capabilities: Some(planner.reasoning().capabilities()),
+                provider_id: planner
+                    .reasoning()
+                    .provider_id()
+                    .map(str::to_string)
+                    .or_else(|| {
+                        last.as_ref()
+                            .and_then(|turn| turn.reasoning_provider_id.clone())
+                    }),
+                registry: registry.map(|reg| reg.snapshot()),
+                metrics: last.as_ref().and_then(|turn| turn.metrics.clone()),
+                prompt: last
+                    .as_ref()
+                    .and_then(|turn| turn.prompt_diagnostics.clone()),
+                streaming,
+                conversation_runtime_state: Some(conversation_runtime_state),
+                reasoning_used: last
+                    .as_ref()
+                    .map(|turn| turn.reasoning_used)
+                    .unwrap_or(false),
+                configured_model: last
+                    .as_ref()
+                    .and_then(|turn| turn.configured_model.as_ref().map(|m| m.display()))
+                    .or_else(|| {
+                        self.container
+                            .resolve::<Arc<ModelRegistry>>()
+                            .ok()
+                            .and_then(|reg| reg.default_model().map(|m| m.display()))
+                    }),
+                provider_model: last
+                    .as_ref()
+                    .and_then(|turn| turn.provider_model.as_ref().map(|m| m.display())),
+                loaded_model: self
+                    .container
+                    .resolve::<Arc<OllamaReasoningProvider>>()
+                    .ok()
+                    .and_then(|ollama| ollama.diagnostics_cached().loaded_model),
+            },
+        ))
     }
 
     /// Build diagnostics including an optional Planner response.
@@ -3381,6 +3910,7 @@ impl Application {
             .ok()
             .map(|engine| engine.history())
             .unwrap_or_default();
+        let reasoning_inspector = self.reasoning_diagnostics().ok();
         let provider_ids: Vec<String> = providers
             .list()
             .unwrap_or_default()
@@ -3850,12 +4380,33 @@ impl Application {
             ),
             SubsystemStatus::new(
                 "Reasoning Status",
-                if planner.reasoning_implemented() {
-                    OperationalStatus::Operational
-                } else {
-                    OperationalStatus::Stub
+                {
+                    match reasoning_inspector
+                        .as_ref()
+                        .map(|report| report.reasoning_health.as_str())
+                    {
+                        Some("ready") | Some("degraded") => OperationalStatus::Operational,
+                        Some("unavailable") => OperationalStatus::Disabled,
+                        Some(_) if planner.reasoning_implemented() => {
+                            OperationalStatus::Operational
+                        }
+                        Some(_) => OperationalStatus::Disabled,
+                        None if planner.reasoning_implemented() => OperationalStatus::Operational,
+                        None => OperationalStatus::Stub,
+                    }
                 },
-                format!("backend={}", planner.reasoning_status()),
+                {
+                    match &reasoning_inspector {
+                        Some(report) => {
+                            format!(
+                                "backend={} · {}",
+                                planner.reasoning_status(),
+                                report.summary_line()
+                            )
+                        }
+                        None => format!("backend={}", planner.reasoning_status()),
+                    }
+                },
             ),
         ];
 
@@ -3875,6 +4426,7 @@ impl Application {
             capability_status_details,
             capability_inspector,
             context_inspector,
+            reasoning_inspector,
             context_history,
             parser_count: parsers.len(),
             parser_ids,
@@ -4180,10 +4732,23 @@ mod tests {
             diagnostics.subsystem("Memory Status").unwrap().status,
             OperationalStatus::Operational
         );
-        assert_eq!(
+        assert_ne!(
             diagnostics.subsystem("Reasoning Status").unwrap().status,
             OperationalStatus::Stub
         );
+        assert!(matches!(
+            diagnostics.subsystem("Reasoning Status").unwrap().status,
+            OperationalStatus::Disabled | OperationalStatus::Operational
+        ));
+        assert!(diagnostics
+            .subsystem("Reasoning Status")
+            .unwrap()
+            .detail
+            .contains("health="));
+        assert!(diagnostics.reasoning_inspector.is_some());
+        assert!(diagnostics
+            .render_dashboard()
+            .contains("Conversational Reasoning"));
         assert!(!diagnostics.render_dashboard().contains("Healthy"));
     }
 

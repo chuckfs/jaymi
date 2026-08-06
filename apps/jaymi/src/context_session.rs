@@ -1,7 +1,10 @@
 //! Build [`ContextSessionInputs`] from live Application / Coding UI state.
 //!
 //! The Context Engine never discovers editor or UX state itself — the host
-//! pushes a full snapshot before every `handle`.
+//! pushes a full snapshot via [`crate::Application`]'s `prepare_context_session`
+//! before **every** Planner assemble path (tool-backed `handle`, conversational
+//! `begin_generation` / streaming, workspace expand/close). There is no
+//! alternate preparation path for conversation.
 
 use jaymi_capabilities::CodingState;
 use jaymi_context::{

@@ -2272,6 +2272,8 @@ dependencies = [
  "jaymi-project-engine",
  "jaymi-projects",
  "jaymi-providers",
+ "jaymi-reasoning",
+ "jaymi-reasoning-ollama",
  "jaymi-search",
  "jaymi-tools",
  "jaymi-understanding",
@@ -2428,6 +2430,7 @@ dependencies = [
  "jaymi-policies",
  "jaymi-project-engine",
  "jaymi-providers",
+ "jaymi-reasoning",
  "jaymi-search",
  "jaymi-tools",
  "jaymi-understanding",
@@ -2470,6 +2473,27 @@ dependencies = [
  "portable-pty",
  "serde_json",
  "trash",
+]
+
+[[package]]
+name = "jaymi-reasoning"
+version = "0.1.0"
+dependencies = [
+ "jaymi-context",
+ "jaymi-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "jaymi-reasoning-ollama"
+version = "0.1.0"
+dependencies = [
+ "jaymi-context",
+ "jaymi-reasoning",
+ "serde",
+ "serde_json",
+ "ureq",
 ]
 
 [[package]]
@@ -5018,6 +5042,20 @@ name = "unicode-xid"
 version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ebc1c04c71510c7f702b52b7c350734c9ff1295c464a03335b00bb84fc54f853"
+
+[[package]]
+name = "ureq"
+version = "2.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "02d1a66277ed75f640d608235660df48c8e3c19f3b4edb6a263315626cc3c01d"
+dependencies = [
+ "base64",
+ "log",
+ "once_cell",
+ "serde",
+ "serde_json",
+ "url",
+]
 
 [[package]]
 name = "url"

@@ -1,0 +1,16 @@
+[package]
+name = "jaymi-reasoning"
+description = "Provider-independent Reasoning contracts and Prompt Builder for Jaymi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+jaymi-context = { workspace = true }
+jaymi-core = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+serde_json = { workspace = true }

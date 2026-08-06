@@ -30,6 +30,12 @@ Stable ids registered at boot and bound into tools:
 | `embedding.local` | Local embedding | Ads: Embeddings, Search |
 | `ocr.placeholder` | OCR placeholder | Architecture only; OCR capability remains **Planned** |
 
+### Reasoning backends (separate from tool providers)
+
+| Id | Name | Notes |
+|----|------|-------|
+| `ollama` | Ollama | First `ReasoningProvider` (Sprint B1.3). Local HTTP API: health, list models, stream/complete chat from assembled `Prompt` (B1.13.1), cancel. See [docs/ollama.md](ollama.md). Catalogued by the [Model Registry](models.md) (Sprint B1.9) — not a Tool Provider. |
+
 There is no separate ProviderManager. Capability-based selection for planning lives in the Capability Engine; execution lives in tools.
 
 This abstraction allows Jaymi to remain modular, extensible, and independent of any specific technology or vendor.

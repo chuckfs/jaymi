@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use jaymi_capabilities::CapabilityInspectorReport;
 use jaymi_context::{ContextHistoryEntry, ContextInspectorReport};
 use jaymi_core::{AppState, FileEntry};
+use jaymi_reasoning::ReasoningDiagnosticsReport;
 
 /// Operational readiness of a subsystem, distinct from lifecycle initialization.
 ///
@@ -55,6 +56,27 @@ impl OperationalStatus {
             Self::Disabled
         }
     }
+}
+
+/// Last conversational reasoning turn retained for diagnostics (Sprint B1.10).
+#[derive(Debug, Clone, Default)]
+pub struct LastReasoningTurn {
+    /// Whether the turn invoked reasoning.
+    pub reasoning_used: bool,
+    /// Provider id when reasoning ran.
+    pub reasoning_provider_id: Option<String>,
+    /// Streaming lifecycle when reasoning ran.
+    pub stream_lifecycle: Option<jaymi_reasoning::StreamingLifecycle>,
+    /// Generation metrics.
+    pub metrics: Option<jaymi_reasoning::ReasoningMetrics>,
+    /// Prompt budget / section diagnostics.
+    pub prompt_diagnostics: Option<jaymi_reasoning::PromptDiagnostics>,
+    /// Configured / preferred model for the turn (B1.13.6).
+    pub configured_model: Option<jaymi_reasoning::ModelIdentifier>,
+    /// Model attached onto the provider request (B1.13.6).
+    pub provider_model: Option<jaymi_reasoning::ModelIdentifier>,
+    /// Conversation runtime state at response time.
+    pub conversation_state: jaymi_planner::ConversationState,
 }
 
 /// One row in the diagnostics dashboard.
@@ -114,6 +136,8 @@ pub struct DiagnosticsSnapshot {
     pub capability_inspector: Option<CapabilityInspectorReport>,
     /// Developer-facing context inspector (latest ContextBundle assemble).
     pub context_inspector: Option<ContextInspectorReport>,
+    /// Conversational Reasoning inspector (provider / model / tokens / lifecycle).
+    pub reasoning_inspector: Option<ReasoningDiagnosticsReport>,
     /// Recent Context History entries (newest first) for debugging / transparency.
     pub context_history: Vec<ContextHistoryEntry>,
     /// Number of registered parsers.
@@ -317,6 +341,13 @@ impl DiagnosticsSnapshot {
             .map(ContextInspectorReport::render)
     }
 
+    /// Render the conversational reasoning inspector, when present.
+    pub fn render_reasoning_inspector(&self) -> Option<String> {
+        self.reasoning_inspector
+            .as_ref()
+            .map(ReasoningDiagnosticsReport::render)
+    }
+
     /// Render recent Context History (newest first).
     pub fn render_context_history(&self, limit: usize) -> Option<String> {
         if self.context_history.is_empty() {
@@ -363,6 +394,10 @@ impl DiagnosticsSnapshot {
             lines.push(inspector);
         }
         if let Some(inspector) = self.render_context_inspector() {
+            lines.push(String::new());
+            lines.push(inspector);
+        }
+        if let Some(inspector) = self.render_reasoning_inspector() {
             lines.push(String::new());
             lines.push(inspector);
         }
@@ -431,6 +466,7 @@ mod tests {
             capability_status_details: vec![],
             capability_inspector: None,
             context_inspector: None,
+            reasoning_inspector: None,
             context_history: vec![],
             parser_count: 0,
             parser_ids: vec![],

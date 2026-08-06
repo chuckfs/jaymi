@@ -1,0 +1,18 @@
+[package]
+name = "jaymi-reasoning-ollama"
+description = "Ollama ReasoningProvider backend for Jaymi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+jaymi-context = { workspace = true }
+jaymi-reasoning = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+ureq = { workspace = true }
+
+[dev-dependencies]
+jaymi-context = { workspace = true }

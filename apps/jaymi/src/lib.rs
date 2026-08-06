@@ -12,6 +12,7 @@ pub mod coding_workspace;
 pub mod command_dispatch;
 pub mod command_palette;
 pub mod context_session;
+pub mod conversation_ux;
 pub mod diagnostics;
 pub mod editor_workspace;
 pub mod execution_diagnostics;
@@ -24,7 +25,12 @@ mod system_accent;
 pub mod theme;
 pub mod ui;
 
-pub use boot::Application;
+pub use conversation_ux::{
+    action_accessibility_label, caret_blink_on, caret_glyph, display_content, loading_opacity,
+    progress_accessibility_label, show_typing_indicator, smooth_streaming_text, turn_actions,
+    ConversationTurnActions,
+};
+pub use boot::{Application, BeginGeneration, PumpGeneration};
 pub use coding_breadcrumb::{
     apply_breadcrumb_reveal, breadcrumb_action, breadcrumbs_from_coding_state,
     truncate_breadcrumbs, BreadcrumbAction, BreadcrumbKind, BreadcrumbSegment,
@@ -40,6 +46,8 @@ pub use execution_diagnostics::{
     build_execution_inspection, ExecutionInspection, EXECUTION_INSPECTION_SECTION_TITLES,
 };
 pub use command_dispatch::{dispatch_command, CommandDispatchEffect};
-pub use diagnostics::{DiagnosticsSnapshot, OperationalStatus, SubsystemStatus};
+pub use diagnostics::{
+    DiagnosticsSnapshot, LastReasoningTurn, OperationalStatus, SubsystemStatus,
+};
 pub use experience::{ConversationTurn, ExperienceSession};
 pub use theme::{inset, radius, space, stroke, type_size, Theme, ThemeMode};
