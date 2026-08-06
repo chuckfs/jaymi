@@ -7,7 +7,10 @@
 //! Planner → Desktop UI
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
+use std::thread;
 
 use jaymi_capabilities::{
     build_explorer_tree, is_editable_coding_extension, workspace_expansion_for, Capability,
@@ -92,12 +95,48 @@ struct ActiveGeneration {
     user_text: String,
 }
 
-/// Outcome of starting a prompt (sync tool path vs pumpable stream).
+/// Background start in progress — UI already acknowledged Thinking.
+struct PendingGeneration {
+    rx: Receiver<GenerationStartOutcome>,
+    cancel: Arc<AtomicBool>,
+    turn_index: usize,
+    request_started: std::time::Instant,
+    user_text: String,
+}
+
+/// Generation slot: ack/start pending, or stream ready to pump.
+enum GenerationSlot {
+    /// Host prep + assemble + stream open running off the UI thread.
+    Starting(PendingGeneration),
+    /// Provider stream open; tokens via [`ConversationStream::try_pump`].
+    Active(ActiveGeneration),
+}
+
+/// Result of background generation start (delivered via [`Application::pump_generation`]).
+enum GenerationStartOutcome {
+    /// Conversational stream opened successfully.
+    Ready {
+        stream: ConversationStream,
+        context: ContextBundle,
+        prompt_diagnostics: jaymi_reasoning::PromptDiagnostics,
+        early_pipeline: jaymi_reasoning::PipelineTiming,
+    },
+    /// Soft-fail / tool-backed path finished on the worker (no stream to pump).
+    Completed(PlannerResponse),
+    /// Worker aborted because the user cancelled before start finished.
+    Cancelled,
+    /// Start failed after ack (Planner should already be Failed when applicable).
+    Failed(String),
+}
+
+/// Outcome of starting a prompt (always pumpable after UI-thread ack).
 #[derive(Debug)]
 pub enum BeginGeneration {
-    /// Conversational stream started — call [`Application::pump_generation`].
+    /// Send acknowledged — call [`Application::pump_generation`] each frame.
+    /// Expensive prep / assemble / stream-open run on a background task.
     Started,
-    /// Non-conversational / soft path completed synchronously.
+    /// Non-conversational / soft path completed (legacy sync callers only).
+    /// Interactive UI receives soft/tool completions via [`PumpGeneration::Finished`].
     Completed(PlannerResponse),
 }
 
@@ -126,8 +165,8 @@ pub struct Application {
     last_planner_activity: Mutex<Option<LastPlannerActivity>>,
     /// Last conversational reasoning turn for Reasoning Diagnostics (B1.10).
     last_reasoning: Mutex<Option<LastReasoningTurn>>,
-    /// Active pumpable conversational generation (B1.11).
-    active_generation: Mutex<Option<ActiveGeneration>>,
+    /// Active or starting pumpable conversational generation (B1.11 / UI-thread ack).
+    active_generation: Mutex<Option<GenerationSlot>>,
     /// Session-scoped cache for inexpensive immutable snapshots (not conversation).
     session_cache: Mutex<SessionCache>,
     /// Background context maintenance (git / inventory / diagnostics / file summaries).
@@ -3352,23 +3391,40 @@ impl Application {
     /// Shared Application host prep for both conversational delivery modes.
     ///
     /// Pushes Context session inputs then snapshots Experience history. User
-    /// message recording stays mode-specific: blocking records before Planner
-    /// entry; pumpable records only after the stream opens successfully.
+    /// message recording is mode-specific: blocking records before Planner
+    /// entry; pumpable records on UI-thread ack (before background start).
     fn prepare_conversational_host(
         &self,
+    ) -> JaymiResult<Vec<jaymi_reasoning::ConversationTurn>> {
+        self.prepare_conversational_host_excluding(None)
+    }
+
+    /// Like [`Self::prepare_conversational_host`], excluding the current goal
+    /// from history when it was already recorded into Experience.
+    fn prepare_conversational_host_excluding(
+        &self,
+        exclude_goal: Option<&str>,
     ) -> JaymiResult<Vec<jaymi_reasoning::ConversationTurn>> {
         // Same host prep as Application::handle — conversational reasoning must
         // not assemble with a stale or empty Context session.
         self.prepare_context_session()?;
-        self.collect_reasoning_history(None)
+        self.collect_reasoning_history(exclude_goal)
     }
 
     /// Begin a conversational generation without blocking the UI thread.
     ///
-    /// Tool-backed requests complete synchronously via
-    /// [`Self::handle_streaming_with_workspace`]. Conversational turns return
-    /// [`BeginGeneration::Started`] — drive [`Self::pump_generation`] each frame.
-    pub fn begin_generation(&self, content: impl Into<String>) -> JaymiResult<BeginGeneration> {
+    /// On the calling thread (UI): records the user turn, Planner-acks Thinking
+    /// (`PreparingContext → Reasoning`), opens an empty assistant turn, and
+    /// returns [`BeginGeneration::Started`]. Host prep, Context assemble, prompt
+    /// build, and provider stream-open run on a background task; drive
+    /// [`Self::pump_generation`] each frame.
+    ///
+    /// Soft-fail / tool-backed completions surface as [`PumpGeneration::Finished`]
+    /// after the worker finishes — never as a blocking return from this method.
+    pub fn begin_generation(
+        self: &Arc<Self>,
+        content: impl Into<String>,
+    ) -> JaymiResult<BeginGeneration> {
         if self.generation_active() {
             return Err(JaymiError::new(
                 "a generation is already in progress — cancel it first",
@@ -3380,70 +3436,218 @@ impl Application {
             return Err(JaymiError::new("empty prompt"));
         }
         let request_started = std::time::Instant::now();
-        let history = self.prepare_conversational_host()?;
-        let request = UserRequest::new(trimmed);
         let planner = self.container.resolve::<Planner>()?;
+
+        // --- UI thread: acknowledge send + Thinking, return to event loop ---
+        self.record_user_message(trimmed)?;
+        planner.acknowledge_conversational_send();
+        let turn_index = {
+            let mut experience = self
+                .experience
+                .lock()
+                .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+            experience.mirror_conversation_state(planner.conversation_state());
+            experience.begin_streaming_assistant()
+        };
+
+        let (tx, rx) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        {
+            let mut guard = self
+                .active_generation
+                .lock()
+                .map_err(|_| JaymiError::new("generation lock poisoned"))?;
+            *guard = Some(GenerationSlot::Starting(PendingGeneration {
+                rx,
+                cancel: Arc::clone(&cancel),
+                turn_index,
+                request_started,
+                user_text: trimmed.to_string(),
+            }));
+        }
+
+        let app = Arc::clone(self);
+        let user_text = trimmed.to_string();
+        thread::spawn(move || {
+            let outcome = app.run_generation_start(&user_text, &cancel);
+            let _ = tx.send(outcome);
+        });
+
+        Ok(BeginGeneration::Started)
+    }
+
+    /// Background: prepare session, assemble, open stream (or soft/tool fallback).
+    fn run_generation_start(
+        &self,
+        content: &str,
+        cancel: &AtomicBool,
+    ) -> GenerationStartOutcome {
+        if cancel.load(Ordering::Relaxed) {
+            return GenerationStartOutcome::Cancelled;
+        }
+        let history = match self.prepare_conversational_host_excluding(Some(content)) {
+            Ok(history) => history,
+            Err(error) => {
+                if let Ok(planner) = self.container.resolve::<Planner>() {
+                    planner.transition_conversation(jaymi_planner::ConversationState::Failed);
+                }
+                return GenerationStartOutcome::Failed(error.message().to_string());
+            }
+        };
+        if cancel.load(Ordering::Relaxed) {
+            return GenerationStartOutcome::Cancelled;
+        }
+        let request = UserRequest::new(content);
+        let planner = match self.container.resolve::<Planner>() {
+            Ok(planner) => planner,
+            Err(error) => return GenerationStartOutcome::Failed(error.message().to_string()),
+        };
         match planner.start_conversation_stream(&request, history) {
             Ok((context, stream, prompt_diagnostics, mut early_pipeline)) => {
+                if cancel.load(Ordering::Relaxed) {
+                    return GenerationStartOutcome::Cancelled;
+                }
                 early_pipeline.stages.insert(
                     0,
                     jaymi_reasoning::PipelineStageTiming::new("request_received", 0),
                 );
-                // Record after stream open so failed starts don't leave orphan user turns
-                // before the soft-fallback observer path records its own copy.
-                self.record_user_message(trimmed)?;
-                let turn_index = {
-                    let mut experience = self
-                        .experience
-                        .lock()
-                        .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
-                    experience.mirror_conversation_state(planner.conversation_state());
-                    experience.begin_streaming_assistant()
-                };
-                let mut guard = self
-                    .active_generation
-                    .lock()
-                    .map_err(|_| JaymiError::new("generation lock poisoned"))?;
-                *guard = Some(ActiveGeneration {
+                GenerationStartOutcome::Ready {
                     stream,
                     context,
-                    turn_index,
                     prompt_diagnostics,
-                    request_started,
                     early_pipeline,
-                    user_text: trimmed.to_string(),
-                });
-                Ok(BeginGeneration::Started)
+                }
             }
             Err(error) => {
-                let message = error.message().to_string();
-                if message.contains("requires a conversational") {
-                    let response =
-                        self.handle_streaming_with_workspace(UserRequest::new(trimmed))?;
-                    return Ok(BeginGeneration::Completed(response));
+                if cancel.load(Ordering::Relaxed) {
+                    return GenerationStartOutcome::Cancelled;
                 }
-                // No backend, or stream failed to open (e.g. only embedding models
-                // installed) — use the observer path for a soft conversational reply.
-                let response = self.handle_streaming_with_workspace(UserRequest::new(trimmed))?;
-                Ok(BeginGeneration::Completed(response))
+                // Tool-backed or soft conversational — user turn already recorded;
+                // empty assistant turn is finalized when pump installs Completed.
+                match self.soft_or_tool_generation_fallback(content) {
+                    Ok(response) => GenerationStartOutcome::Completed(response),
+                    Err(fallback_error) => {
+                        planner.transition_conversation(jaymi_planner::ConversationState::Failed);
+                        GenerationStartOutcome::Failed(format!(
+                            "{}; fallback: {}",
+                            error.message(),
+                            fallback_error.message()
+                        ))
+                    }
+                }
             }
         }
     }
 
-    /// Pump up to `max_events` from the active generation onto Experience.
+    /// Soft-fail / tool path after UI ack (no second user-message record).
+    fn soft_or_tool_generation_fallback(&self, content: &str) -> JaymiResult<PlannerResponse> {
+        let history = self.prepare_conversational_host_excluding(Some(content))?;
+        let planner = self.container.resolve::<Planner>()?;
+        let request = UserRequest::new(content);
+        let started = std::time::Instant::now();
+        // Empty observer: Experience already has the Thinking assistant turn.
+        let response =
+            planner.handle_conversational_with_observer(request, history, |_| {})?;
+        self.record_planner_activity(&response, started.elapsed().as_millis() as u64);
+        Ok(response)
+    }
+
+    /// Pump pending start outcomes and/or active stream events onto Experience.
     ///
-    /// Non-blocking: uses [`ConversationStream::try_pump`] so the UI never waits
-    /// on provider I/O, diagnostics, metrics, or the final response object.
-    /// Tokens are forwarded to the conversation as soon as the provider emits them.
+    /// Non-blocking: pending start uses `try_recv`; active streams use
+    /// [`ConversationStream::try_pump`] so the UI never waits on provider I/O,
+    /// diagnostics, metrics, or the final response object.
     pub fn pump_generation(&self, max_events: usize) -> JaymiResult<PumpGeneration> {
         let max_events = max_events.max(1);
         let mut guard = self
             .active_generation
             .lock()
             .map_err(|_| JaymiError::new("generation lock poisoned"))?;
-        let Some(active) = guard.as_mut() else {
+
+        // Promote Starting → Active / Finished without holding work on the UI thread.
+        let promote = if let Some(GenerationSlot::Starting(pending)) = guard.as_ref() {
+            match pending.rx.try_recv() {
+                Ok(outcome) => Some(Ok(outcome)),
+                Err(TryRecvError::Empty) => None,
+                Err(TryRecvError::Disconnected) => Some(Err(JaymiError::new(
+                    "generation start worker disconnected",
+                ))),
+            }
+        } else {
+            None
+        };
+
+        if let Some(Err(error)) = promote {
+            let turn_index = match guard.as_ref() {
+                Some(GenerationSlot::Starting(pending)) => pending.turn_index,
+                _ => 0,
+            };
+            *guard = None;
+            drop(guard);
+            self.install_failed_generation(turn_index, error.message())?;
+            return Err(error);
+        }
+
+        if let Some(Ok(outcome)) = promote {
+            match outcome {
+                GenerationStartOutcome::Ready {
+                    stream,
+                    context,
+                    prompt_diagnostics,
+                    early_pipeline,
+                } => {
+                    let (turn_index, request_started, user_text) = match guard.as_ref() {
+                        Some(GenerationSlot::Starting(pending)) => (
+                            pending.turn_index,
+                            pending.request_started,
+                            pending.user_text.clone(),
+                        ),
+                        _ => unreachable!("promote only from Starting"),
+                    };
+                    *guard = Some(GenerationSlot::Active(ActiveGeneration {
+                        stream,
+                        context,
+                        turn_index,
+                        prompt_diagnostics,
+                        request_started,
+                        early_pipeline,
+                        user_text,
+                    }));
+                }
+                GenerationStartOutcome::Completed(response) => {
+                    let turn_index = match guard.as_ref() {
+                        Some(GenerationSlot::Starting(pending)) => pending.turn_index,
+                        _ => unreachable!("promote only from Starting"),
+                    };
+                    *guard = None;
+                    drop(guard);
+                    return self.install_completed_generation(turn_index, response);
+                }
+                GenerationStartOutcome::Cancelled => {
+                    *guard = None;
+                    return Ok(PumpGeneration::Idle);
+                }
+                GenerationStartOutcome::Failed(message) => {
+                    let turn_index = match guard.as_ref() {
+                        Some(GenerationSlot::Starting(pending)) => pending.turn_index,
+                        _ => unreachable!("promote only from Starting"),
+                    };
+                    *guard = None;
+                    drop(guard);
+                    self.install_failed_generation(turn_index, &message)?;
+                    return Err(JaymiError::new(message));
+                }
+            }
+        }
+
+        let Some(GenerationSlot::Active(active)) = guard.as_mut() else {
+            // Still Starting (Empty) or cleared.
+            if guard.as_ref().is_some() {
+                return Ok(PumpGeneration::Active { events: 0 });
+            }
             return Ok(PumpGeneration::Idle);
         };
+
         let planner = self.container.resolve::<Planner>()?;
         let mut applied = 0usize;
         let mut terminal: Option<ConversationStreamEvent> = None;
@@ -3458,8 +3662,6 @@ impl Application {
                             planner.mirror_stream_lifecycle(*lifecycle);
                         }
                         ConversationStreamEvent::Token(_) => {
-                            // Token immediacy: mirror Streaming even when the
-                            // Lifecycle(Streaming) event was coalesced away.
                             planner.mirror_stream_lifecycle(
                                 jaymi_reasoning::StreamingLifecycle::Streaming,
                             );
@@ -3491,7 +3693,6 @@ impl Application {
                             .experience
                             .lock()
                             .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
-                        // Turn content only — Planner completes the Failed transition.
                         let _ = experience.apply_stream_event(active.turn_index, &failed);
                     }
                     terminal = Some(failed);
@@ -3535,53 +3736,129 @@ impl Application {
         }
     }
 
+    /// Install a background soft/tool completion onto the pre-acked assistant turn.
+    fn install_completed_generation(
+        &self,
+        turn_index: usize,
+        response: PlannerResponse,
+    ) -> JaymiResult<PumpGeneration> {
+        {
+            let mut experience = self
+                .experience
+                .lock()
+                .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+            // Drop the Thinking placeholder so apply_planner_response owns the turn.
+            if experience.conversation().len() > turn_index {
+                let placeholder = experience.conversation().get(turn_index).map(|turn| {
+                    matches!(turn.role, jaymi_memory::MessageRole::Assistant)
+                        && turn.content.is_empty()
+                });
+                if placeholder == Some(true) {
+                    let _ = experience.remove_turn_at(turn_index);
+                }
+            }
+        }
+        // Placeholder removed — full Experience + workspace apply (no double user record).
+        self.apply_workspace_response(&response)?;
+        Ok(PumpGeneration::Finished(response))
+    }
+
+    /// Mirror a failed background start onto Experience + Planner.
+    fn install_failed_generation(&self, turn_index: usize, message: &str) -> JaymiResult<()> {
+        if let Ok(planner) = self.container.resolve::<Planner>() {
+            planner.transition_conversation(jaymi_planner::ConversationState::Failed);
+            let mut experience = self
+                .experience
+                .lock()
+                .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+            let _ = experience.finalize_streaming_turn(
+                turn_index,
+                format!("I couldn't start that reply ({message})"),
+                jaymi_reasoning::StreamingLifecycle::Failed,
+            );
+            experience.mirror_conversation_state(planner.conversation_state());
+        }
+        Ok(())
+    }
+
     /// Cancel the active generation (cooperative).
     pub fn cancel_generation(&self) -> JaymiResult<()> {
         let mut guard = self
             .active_generation
             .lock()
             .map_err(|_| JaymiError::new("generation lock poisoned"))?;
-        let Some(active) = guard.as_mut() else {
-            return Ok(());
-        };
-        active.stream.cancel();
-        Ok(())
+        match guard.as_mut() {
+            Some(GenerationSlot::Starting(pending)) => {
+                pending.cancel.store(true, Ordering::Relaxed);
+                let turn_index = pending.turn_index;
+                *guard = None;
+                drop(guard);
+                if let Ok(planner) = self.container.resolve::<Planner>() {
+                    planner.transition_conversation(jaymi_planner::ConversationState::Cancelled);
+                    let mut experience = self
+                        .experience
+                        .lock()
+                        .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+                    let _ = experience.finalize_streaming_turn(
+                        turn_index,
+                        "Generation cancelled (user)",
+                        jaymi_reasoning::StreamingLifecycle::Cancelled,
+                    );
+                    experience.mirror_conversation_state(planner.conversation_state());
+                }
+                Ok(())
+            }
+            Some(GenerationSlot::Active(active)) => {
+                active.stream.cancel();
+                Ok(())
+            }
+            None => Ok(()),
+        }
     }
 
     /// Retry the active generation, or regenerate when no stream remains.
-    pub fn retry_generation(&self, keep_partial: bool) -> JaymiResult<BeginGeneration> {
+    pub fn retry_generation(
+        self: &Arc<Self>,
+        keep_partial: bool,
+    ) -> JaymiResult<BeginGeneration> {
         let mut guard = self
             .active_generation
             .lock()
             .map_err(|_| JaymiError::new("generation lock poisoned"))?;
-        if let Some(active) = guard.as_mut() {
-            active.stream.retry(keep_partial).map_err(|err| {
-                JaymiError::new(format!("retry failed: {}", err.message()))
-            })?;
-            let planner = self.container.resolve::<Planner>()?;
-            // Planner owns the return to Reasoning; Experience only mirrors.
-            planner.resume_reasoning_after_retry();
-            let mut experience = self
-                .experience
-                .lock()
-                .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
-            if keep_partial {
-                experience.set_stream_lifecycle(
-                    active.turn_index,
-                    jaymi_reasoning::StreamingLifecycle::Thinking,
-                )?;
-            } else {
-                experience.reset_assistant_for_retry(active.turn_index)?;
+        match guard.as_mut() {
+            Some(GenerationSlot::Active(active)) => {
+                active.stream.retry(keep_partial).map_err(|err| {
+                    JaymiError::new(format!("retry failed: {}", err.message()))
+                })?;
+                let planner = self.container.resolve::<Planner>()?;
+                planner.resume_reasoning_after_retry();
+                let mut experience = self
+                    .experience
+                    .lock()
+                    .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+                if keep_partial {
+                    experience.set_stream_lifecycle(
+                        active.turn_index,
+                        jaymi_reasoning::StreamingLifecycle::Thinking,
+                    )?;
+                } else {
+                    experience.reset_assistant_for_retry(active.turn_index)?;
+                }
+                experience.mirror_conversation_state(planner.conversation_state());
+                Ok(BeginGeneration::Started)
             }
-            experience.mirror_conversation_state(planner.conversation_state());
-            return Ok(BeginGeneration::Started);
+            Some(GenerationSlot::Starting(_)) => Err(JaymiError::new(
+                "generation is still starting — wait or cancel before retry",
+            )),
+            None => {
+                drop(guard);
+                self.regenerate_response()
+            }
         }
-        drop(guard);
-        self.regenerate_response()
     }
 
     /// Regenerate the last assistant reply from the preceding user message.
-    pub fn regenerate_response(&self) -> JaymiResult<BeginGeneration> {
+    pub fn regenerate_response(self: &Arc<Self>) -> JaymiResult<BeginGeneration> {
         if self.generation_active() {
             return Err(JaymiError::new(
                 "cannot regenerate while a generation is active — cancel first",

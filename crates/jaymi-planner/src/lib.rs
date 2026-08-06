@@ -1040,7 +1040,7 @@ impl Planner {
         // A new user request (not resolve_review) invalidates any paused plan —
         // editing the request must never resume a stale plan.
         self.invalidate_paused("new user request")?;
-        self.transition_conversation(ConversationState::PreparingContext);
+        self.enter_or_continue_preparing_context();
 
         jaymi_logging::info(
             "planner",
@@ -1337,7 +1337,9 @@ impl Planner {
         request: &UserRequest,
     ) -> JaymiResult<conversational::ConversationalAssemble> {
         self.invalidate_paused("new user request")?;
-        self.transition_conversation(ConversationState::PreparingContext);
+        // Host may already have acknowledged Thinking (Reasoning) on the UI
+        // thread — do not attempt an illegal Reasoning → PreparingContext hop.
+        self.enter_or_continue_preparing_context();
         let planner_started = std::time::Instant::now();
         let intent = self.decision.determine_intent(request);
         let capabilities = self.decision.required_capabilities(&intent);
@@ -1369,6 +1371,60 @@ impl Planner {
             complexity,
             pipeline,
         })
+    }
+
+    /// Immediate UI-thread ack for a new conversational send (Planner-owned).
+    ///
+    /// Transitions `Idle|terminal → PreparingContext → Reasoning` so the UI can
+    /// show Thinking and return to the event loop **before** host prep, Context
+    /// assemble, prompt build, or provider I/O. Background work continues while
+    /// the conversation stays in [`ConversationState::Reasoning`] until stream
+    /// lifecycle advances it.
+    pub fn acknowledge_conversational_send(&self) {
+        match self.conversation_state() {
+            ConversationState::Idle
+            | ConversationState::Completed
+            | ConversationState::Cancelled
+            | ConversationState::Failed => {
+                self.transition_conversation(ConversationState::PreparingContext);
+                self.transition_conversation(ConversationState::Reasoning);
+            }
+            ConversationState::PreparingContext => {
+                self.transition_conversation(ConversationState::Reasoning);
+            }
+            ConversationState::Reasoning
+            | ConversationState::Streaming
+            | ConversationState::WaitingForReview
+            | ConversationState::Executing => {}
+        }
+    }
+
+    /// Enter PreparingContext for a new request, or keep an already-acked phase.
+    ///
+    /// Used when the host acknowledged Thinking (`Reasoning`) before expensive
+    /// work — re-entering PreparingContext from Reasoning is illegal.
+    fn enter_or_continue_preparing_context(&self) {
+        match self.conversation_state() {
+            ConversationState::Idle
+            | ConversationState::Completed
+            | ConversationState::Cancelled
+            | ConversationState::Failed => {
+                self.transition_conversation(ConversationState::PreparingContext);
+            }
+            ConversationState::PreparingContext | ConversationState::Reasoning => {}
+            ConversationState::Streaming
+            | ConversationState::WaitingForReview
+            | ConversationState::Executing => {
+                // Unexpected for a fresh request; log and leave state alone.
+                jaymi_logging::warn(
+                    "planner",
+                    format!(
+                        "enter_or_continue_preparing_context while {}",
+                        self.conversation_state().as_str()
+                    ),
+                );
+            }
+        }
     }
 
     /// Resume Reasoning after a stream retry / reconnect (Planner-owned).

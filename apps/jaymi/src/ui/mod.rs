@@ -57,6 +57,7 @@ pub fn run_diagnostics(
     initial_read_path: String,
     initial_snapshot: DiagnosticsSnapshot,
 ) -> eframe::Result<()> {
+    let app = Arc::new(app);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1100.0, 820.0])
@@ -323,7 +324,7 @@ fn configure_fonts(ctx: &egui::Context) {
 }
 
 struct JaymiApp {
-    app: Application,
+    app: Arc<Application>,
     snapshot: DiagnosticsSnapshot,
     list_path_input: String,
     read_path_input: String,
@@ -1019,7 +1020,12 @@ impl JaymiApp {
                     ui.horizontal(|ui| {
                         ui.add_space(space::LG);
                         ui.vertical(|ui| {
-                            ui.set_max_width((ui.available_width() - space::LG).max(120.0));
+                            // Fixed conversation column width so user bubbles can
+                            // Align::Max against the right edge; right LG inset
+                            // tracks workspace growth (CentralPanel shrinks).
+                            let column_width = (ui.available_width() - space::LG).max(120.0);
+                            ui.set_min_width(column_width);
+                            ui.set_max_width(column_width);
                             let mut last_day: Option<i64> = None;
                             for (index, turn) in turns.iter().enumerate() {
                                 let day = turn.created_at.div_euclid(86_400);
@@ -1240,25 +1246,28 @@ impl JaymiApp {
 
         match role {
             MessageRole::User => {
-                ui.horizontal(|ui| {
-                    ui.add_space((ui.available_width() - max_bubble).max(0.0));
+                // Dock to the conversation column's right edge (workspace growth
+                // shrinks that column). Content stays left-aligned inside the bubble.
+                ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
                     egui::Frame::new()
                         .corner_radius(radius::XL)
                         .inner_margin(inset(space::MD, space::SM + space::XS))
                         .fill(self.theme.accent)
                         .show(ui, |ui| {
                             ui.set_max_width(max_bubble);
-                            ui.label(
-                                egui::RichText::new(format_message_time(created_at))
-                                    .size(type_size::META)
-                                    .color(self.theme.on_accent()),
-                            );
-                            ui.add_space(space::XS);
-                            ui.label(
-                                egui::RichText::new(content)
-                                    .size(type_size::BODY)
-                                    .color(self.theme.on_accent()),
-                            );
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                                ui.label(
+                                    egui::RichText::new(format_message_time(created_at))
+                                        .size(type_size::META)
+                                        .color(self.theme.on_accent()),
+                                );
+                                ui.add_space(space::XS);
+                                ui.label(
+                                    egui::RichText::new(content)
+                                        .size(type_size::BODY)
+                                        .color(self.theme.on_accent()),
+                                );
+                            });
                         });
                 });
             }
@@ -2625,9 +2634,6 @@ impl JaymiApp {
 
     fn pump_active_generation(&mut self, ctx: &egui::Context) {
         if !self.app.generation_active() {
-            if self.awaiting_reply && !self.app.generation_active() {
-                // Sync path already finished inside begin_generation.
-            }
             return;
         }
         match self.app.pump_generation(24) {
@@ -2636,7 +2642,7 @@ impl JaymiApp {
                 if let Ok(session) = self.app.experience() {
                     self.experience = session;
                 }
-                // Keep polling — Pending frames must still wake for first token.
+                // Keep polling — Starting + Pending frames must wake for first token.
                 ctx.request_repaint();
             }
             Ok(PumpGeneration::Finished(_response)) => {
@@ -2668,7 +2674,7 @@ impl JaymiApp {
         self.prompt.clear();
         self.awaiting_reply = true;
         self.loading_started_at = Some(std::time::Instant::now());
-        // Do not invent ConversationState — sync from Application after Planner runs.
+        // Do not invent ConversationState — sync from Application after Planner ack.
         match self.app.begin_generation(prompt) {
             Ok(BeginGeneration::Started) => {
                 self.error = None;
@@ -2678,6 +2684,7 @@ impl JaymiApp {
                 }
             }
             Ok(BeginGeneration::Completed(response)) => {
+                // Legacy sync completion (should not occur on the interactive path).
                 self.awaiting_reply = false;
                 self.loading_started_at = None;
                 self.error = None;
@@ -2694,7 +2701,6 @@ impl JaymiApp {
                 self.loading_started_at = None;
                 self.status = None;
                 self.error = Some(error.message().to_string());
-                // Mirror Planner if available — never invent Failed in the UI.
                 if let Ok(session) = self.app.experience() {
                     self.experience = session;
                 }

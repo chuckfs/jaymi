@@ -313,6 +313,20 @@ fn render_reasoning_page(
     ctx: &SettingsWorkspaceContext<'_>,
     events: &mut Vec<SettingsWorkspaceEvent>,
 ) {
+    egui::ScrollArea::vertical()
+        .id_salt("jaymi_settings_reasoning_scroll")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            render_reasoning_page_body(ui, theme, ctx, events);
+        });
+}
+
+fn render_reasoning_page_body(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    ctx: &SettingsWorkspaceContext<'_>,
+    events: &mut Vec<SettingsWorkspaceEvent>,
+) {
     let snap = ctx.reasoning;
     ui.heading(
         RichText::new("Reasoning")

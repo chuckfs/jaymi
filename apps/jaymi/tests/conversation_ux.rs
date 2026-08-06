@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
 
 use jaymi::{
     action_accessibility_label, caret_blink_on, display_content, loading_opacity,
@@ -9,6 +10,7 @@ use jaymi::{
     Application, BeginGeneration, ConversationTurn, ConversationTurnActions, ExperienceSession,
     PumpGeneration,
 };
+use jaymi_memory::MessageRole;
 use jaymi_planner::ConversationState;
 use jaymi_reasoning::StreamingLifecycle;
 
@@ -71,7 +73,7 @@ fn streaming_session_helpers_support_retry_flow() {
 
 #[test]
 fn generation_cancel_and_pump_idle_without_active_stream() {
-    let app = Application::boot_with_data_dir(temp_dir("cancel")).expect("boot");
+    let app = Arc::new(Application::boot_with_data_dir(temp_dir("cancel")).expect("boot"));
     assert!(!app.generation_active());
     assert!(matches!(
         app.pump_generation(4).unwrap(),
@@ -81,11 +83,62 @@ fn generation_cancel_and_pump_idle_without_active_stream() {
 }
 
 #[test]
+fn begin_generation_acks_thinking_without_blocking() {
+    let app = Arc::new(Application::boot_with_data_dir(temp_dir("ack")).expect("boot"));
+    let started = std::time::Instant::now();
+    let outcome = app.begin_generation("What is ownership?").unwrap();
+    let elapsed = started.elapsed();
+    assert!(
+        matches!(outcome, BeginGeneration::Started),
+        "interactive send must return Started immediately"
+    );
+    assert!(
+        app.generation_active(),
+        "generation slot must be occupied while background start runs"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_millis(250),
+        "begin_generation must return before prep/assemble/stream-open (took {elapsed:?})"
+    );
+    let planner = app
+        .container()
+        .resolve::<jaymi_planner::Planner>()
+        .expect("planner");
+    assert_eq!(
+        planner.conversation_state(),
+        ConversationState::Reasoning,
+        "Planner must ack Thinking before background work"
+    );
+    let session = app.experience().unwrap();
+    assert!(
+        session
+            .conversation()
+            .iter()
+            .any(|turn| matches!(turn.role, MessageRole::User)),
+        "user turn must be recorded on ack"
+    );
+    assert!(
+        session.has_streaming_turn(),
+        "Thinking assistant turn must exist on ack"
+    );
+    assert_eq!(session.conversation_state(), ConversationState::Reasoning);
+
+    app.cancel_generation().unwrap();
+    for _ in 0..64 {
+        match app.pump_generation(8).unwrap() {
+            PumpGeneration::Finished(_) | PumpGeneration::Idle => break,
+            PumpGeneration::Active { .. } => {}
+        }
+    }
+}
+
+#[test]
 fn begin_generation_streaming_or_soft_completion() {
-    let app = Application::boot_with_data_dir(temp_dir("begin")).expect("boot");
+    let app = Arc::new(Application::boot_with_data_dir(temp_dir("begin")).expect("boot"));
     match app.begin_generation("What is ownership?").unwrap() {
         BeginGeneration::Started => {
             assert!(app.generation_active());
+            // Soft-fail / stream may finish via pump; cancel is always safe.
             app.cancel_generation().unwrap();
             for _ in 0..64 {
                 match app.pump_generation(8).unwrap() {
@@ -97,16 +150,15 @@ fn begin_generation_streaming_or_soft_completion() {
             let session = app.experience().unwrap();
             assert!(session.turn_count() >= 2);
         }
-        BeginGeneration::Completed(response) => {
-            assert!(!response.content.is_empty());
-            assert!(!app.generation_active());
+        BeginGeneration::Completed(_) => {
+            panic!("interactive begin_generation must not complete synchronously");
         }
     }
 }
 
 #[test]
 fn clipboard_retry_and_regenerate_apis() {
-    let app = Application::boot_with_data_dir(temp_dir("retry")).expect("boot");
+    let app = Arc::new(Application::boot_with_data_dir(temp_dir("retry")).expect("boot"));
     let _ = app.begin_generation("Say hello").unwrap();
     if app.generation_active() {
         app.cancel_generation().unwrap();

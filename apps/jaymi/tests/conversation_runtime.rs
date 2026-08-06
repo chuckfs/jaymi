@@ -3,6 +3,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Arc;
 
 use jaymi::{Application, BeginGeneration, ExperienceSession, PumpGeneration};
 use jaymi_planner::ConversationState;
@@ -21,11 +22,13 @@ fn temp_dir(label: &str) -> PathBuf {
     dir
 }
 
-fn drain(app: &Application) -> Option<jaymi_planner::PlannerResponse> {
-    for _ in 0..128 {
+fn drain(app: &Arc<Application>) -> Option<jaymi_planner::PlannerResponse> {
+    for _ in 0..200 {
         match app.pump_generation(8).unwrap() {
             PumpGeneration::Finished(response) => return Some(response),
-            PumpGeneration::Active { .. } => continue,
+            PumpGeneration::Active { .. } => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
             PumpGeneration::Idle => return None,
         }
     }
@@ -81,7 +84,7 @@ fn state_transition_graph_covers_streaming_cancel_retry_failure_recovery() {
 
 #[test]
 fn application_keeps_experience_mirrored_to_planner_through_generation() {
-    let app = Application::boot_with_data_dir(temp_dir("sync")).unwrap();
+    let app = Arc::new(Application::boot_with_data_dir(temp_dir("sync")).unwrap());
     assert_eq!(
         app.experience().unwrap().conversation_state(),
         ConversationState::Idle
@@ -115,7 +118,7 @@ fn application_keeps_experience_mirrored_to_planner_through_generation() {
 
 #[test]
 fn cancellation_surfaces_planner_terminal_on_experience() {
-    let app = Application::boot_with_data_dir(temp_dir("cancel")).unwrap();
+    let app = Arc::new(Application::boot_with_data_dir(temp_dir("cancel")).unwrap());
     match app.begin_generation("Write a long answer").unwrap() {
         BeginGeneration::Started => {
             let _ = app.pump_generation(1);
@@ -145,7 +148,7 @@ fn cancellation_surfaces_planner_terminal_on_experience() {
 
 #[test]
 fn regenerate_recovery_mirrors_planner_again() {
-    let app = Application::boot_with_data_dir(temp_dir("recover")).unwrap();
+    let app = Arc::new(Application::boot_with_data_dir(temp_dir("recover")).unwrap());
     match app.begin_generation("First turn").unwrap() {
         BeginGeneration::Started => {
             let _ = drain(&app);

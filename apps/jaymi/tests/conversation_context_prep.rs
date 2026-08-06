@@ -24,15 +24,25 @@ fn temp_dir(label: &str) -> PathBuf {
     dir
 }
 
-fn drain_generation(app: &Application) {
-    if !app.generation_active() {
-        return;
-    }
-    let _ = app.cancel_generation();
-    for _ in 0..64 {
+fn drain_generation(app: &Arc<Application>) {
+    // Background start must finish prepare/assemble (or soft-complete) before we
+    // assert session inputs. Poll with a short sleep so Empty Starting doesn't
+    // spin-cancel before the worker runs.
+    for _ in 0..200 {
         match app.pump_generation(8).unwrap() {
-            PumpGeneration::Finished(_) | PumpGeneration::Idle => break,
-            PumpGeneration::Active { .. } => {}
+            PumpGeneration::Finished(_) | PumpGeneration::Idle => return,
+            PumpGeneration::Active { .. } => {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+    }
+    if app.generation_active() {
+        let _ = app.cancel_generation();
+        for _ in 0..64 {
+            match app.pump_generation(8).unwrap() {
+                PumpGeneration::Finished(_) | PumpGeneration::Idle => break,
+                PumpGeneration::Active { .. } => {}
+            }
         }
     }
 }
@@ -40,7 +50,7 @@ fn drain_generation(app: &Application) {
 #[test]
 fn conversation_preparation_pushes_session_before_generation() {
     let data_dir = temp_dir("conversation-prep");
-    let app = Application::boot_with_data_dir(&data_dir).expect("boot");
+    let app = Arc::new(Application::boot_with_data_dir(&data_dir).expect("boot"));
 
     let context = app
         .container()
@@ -71,7 +81,7 @@ fn workspace_preparation_enriches_conversation_session() {
     let file = root.join("main.rs");
     fs::write(&file, "fn main() {}\n").unwrap();
 
-    let app = Application::boot_with_data_dir(&data_dir).expect("boot");
+    let app = Arc::new(Application::boot_with_data_dir(&data_dir).expect("boot"));
     let _ = app
         .handle_with_workspace(UserRequest::new("Help me build an app."))
         .expect("open coding");
@@ -132,7 +142,7 @@ fn session_reuse_stays_consistent_across_conversation_and_handle() {
     let file = root.join("lib.rs");
     fs::write(&file, "pub fn x() {}\n").unwrap();
 
-    let app = Application::boot_with_data_dir(&data_dir).expect("boot");
+    let app = Arc::new(Application::boot_with_data_dir(&data_dir).expect("boot"));
     let _ = app
         .handle_with_workspace(UserRequest::new("Help me build an app."))
         .expect("open coding");
@@ -179,7 +189,7 @@ fn session_reuse_stays_consistent_across_conversation_and_handle() {
 #[test]
 fn streaming_path_also_prepares_context_session() {
     let data_dir = temp_dir("streaming-prep");
-    let app = Application::boot_with_data_dir(&data_dir).expect("boot");
+    let app = Arc::new(Application::boot_with_data_dir(&data_dir).expect("boot"));
     let _ = app
         .handle_streaming_with_workspace(UserRequest::new("hello from streaming"))
         .expect("stream");
@@ -200,7 +210,7 @@ fn context_consistency_no_alternate_builder() {
     // build_context_session_inputs is the only session assembler; both paths
     // must produce identical snapshots for identical host state.
     let data_dir = temp_dir("consistency");
-    let app = Application::boot_with_data_dir(&data_dir).expect("boot");
+    let app = Arc::new(Application::boot_with_data_dir(&data_dir).expect("boot"));
 
     let _ = app.begin_generation("prep A");
     drain_generation(&app);

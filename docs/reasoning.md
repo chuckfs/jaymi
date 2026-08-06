@@ -116,14 +116,17 @@ Pumpable: start_conversation_stream → pump → complete_conversation_stream
 
 Intentional differences (do not collapse):
 
-* **Pumpable** keeps the UI thread free (`pump_generation` per frame).
-* **Blocking** soft-fails when no backend is wired; pumpable hard-errors and the
-  Application bridges to the observer path for a soft reply.
+* **Pumpable** keeps the UI thread free: Enter acks Thinking immediately, then
+  `pump_generation` per frame (background start + chunk reader + `try_pump`).
+* **Blocking** soft-fails when no backend is wired; pumpable hard-errors on
+  stream open and the Application bridges to the observer path on a **background**
+  worker (installed via `PumpGeneration::Finished`).
 * **User-turn recording**: blocking records before Planner entry; pumpable
-  records only after the stream opens (avoids orphan turns on failed start).
+  records on UI-thread ack (before background prep / assemble / stream-open).
 
 Extracted shared pieces live in `jaymi_planner::conversational`. See
-[conversation-ux.md](conversation-ux.md#dual-delivery-b1138).
+[conversation-ux.md](conversation-ux.md#dual-delivery-b1138) and
+[UI thread ownership](conversation-ux.md#ui-thread-ownership).
 
 ## Streaming conversation (B1.6)
 
