@@ -1,8 +1,8 @@
-//! Left navigation rail — Projects, Knowledge, Media, Conversations.
+//! Left navigation rail — Projects, Knowledge, Media, Conversations, Settings.
 //!
 //! ChatGPT-style: Projects and Conversations expand inline inside the rail
 //! (no floating popups). Order is Projects → Knowledge → Media → Conversations,
-//! with Developer Diagnostics pinned at the bottom.
+//! with Settings above Developer Diagnostics at the bottom.
 
 use eframe::egui;
 
@@ -31,6 +31,8 @@ pub enum NavTab {
     /// Conversations section (expandable, under Media).
     #[default]
     Conversations,
+    /// Settings Workspace (preferences).
+    Settings,
 }
 
 impl NavTab {
@@ -41,6 +43,7 @@ impl NavTab {
             Self::Knowledge => "Knowledge",
             Self::Media => "Media",
             Self::Conversations => "Conversations",
+            Self::Settings => "Settings",
         }
     }
 }
@@ -60,6 +63,8 @@ pub enum NavRailEvent {
     OpenConversation(String),
     /// Expand Coding from the right (or open a project first).
     OpenCoding,
+    /// Open the Settings Workspace.
+    OpenSettings,
 }
 
 /// Inputs needed to paint the rail.
@@ -174,9 +179,23 @@ pub fn render_nav_rail(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut
             render_conversations_section(ui, ctx, events);
         }
 
-        // Diagnostics stay at the bottom of the rail.
+        // Settings + Diagnostics stay at the bottom of the rail.
         ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
             render_footer(ui, ctx, events);
+            ui.add_space(space::SM);
+            if section_row(
+                ui,
+                ctx.theme,
+                NavTab::Settings,
+                ctx.tab == NavTab::Settings,
+                None,
+            )
+            .clicked()
+            {
+                projects_open = false;
+                conversations_open = false;
+                events.push(NavRailEvent::OpenSettings);
+            }
         });
     });
 
@@ -253,6 +272,24 @@ fn paint_nav_icon(
         NavTab::Knowledge => paint_icon_book(painter, center, r, stroke),
         NavTab::Media => paint_icon_image(painter, center, r, stroke, color),
         NavTab::Conversations => paint_icon_chat(painter, center, r, stroke, color),
+        NavTab::Settings => paint_icon_gear(painter, center, r, stroke, color),
+    }
+}
+
+fn paint_icon_gear(
+    painter: &egui::Painter,
+    center: egui::Pos2,
+    r: f32,
+    stroke: egui::Stroke,
+    color: egui::Color32,
+) {
+    painter.circle_stroke(center, r * 0.55, stroke);
+    painter.circle_filled(center, r * 0.22, color);
+    for i in 0..6 {
+        let angle = (i as f32) * std::f32::consts::TAU / 6.0;
+        let inner = center + egui::vec2(angle.cos(), angle.sin()) * (r * 0.55);
+        let outer = center + egui::vec2(angle.cos(), angle.sin()) * (r * 0.95);
+        painter.line_segment([inner, outer], stroke);
     }
 }
 

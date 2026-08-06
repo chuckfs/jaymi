@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 
 use crate::transport::{OllamaTransport, TransportError, DEFAULT_OLLAMA_BASE_URL};
 use crate::types::{
-    ChatMessage, OllamaModelTag, PsResponse, TagsResponse, VersionResponse,
+    ChatMessage, OllamaModelTag, OllamaShowResponse, PsResponse, TagsResponse, VersionResponse,
 };
 
 /// Client configuration.
@@ -79,6 +79,14 @@ impl OllamaClient {
         let parsed: TagsResponse = serde_json::from_str(&body)
             .map_err(|err| TransportError::Io(format!("malformed /api/tags: {err}")))?;
         Ok(parsed.models)
+    }
+
+    /// Model details via `/api/show` (capabilities, context length, family).
+    pub fn show_model(&self, name: &str) -> Result<OllamaShowResponse, TransportError> {
+        let body = json!({ "name": name });
+        let text = self.transport.post_json("/api/show", &body)?;
+        serde_json::from_str(&text)
+            .map_err(|err| TransportError::Io(format!("malformed /api/show: {err}")))
     }
 
     /// First loaded model name from `/api/ps`, when any.

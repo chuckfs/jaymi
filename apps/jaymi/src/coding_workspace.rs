@@ -172,6 +172,17 @@ pub fn build_coding_diagnostics_view(
         inspection,
     ));
 
+    // Performance dashboard — observational only (never conversation UI).
+    {
+        let performance = snapshot.performance_dashboard();
+        if performance.has_content() {
+            sections.push(CodingDiagnosticsSection {
+                title: "Performance".into(),
+                lines: performance.lines(),
+            });
+        }
+    }
+
     sections.push(CodingDiagnosticsSection {
         title: "Planner activity".into(),
         lines: {

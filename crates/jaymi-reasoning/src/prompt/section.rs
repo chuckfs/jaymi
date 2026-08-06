@@ -19,9 +19,8 @@ pub enum PromptSectionId {
     RelevantMemories,
     /// Active project identity and summary.
     ActiveProject,
-    /// Workspace / UX state (kind + open files when present).
-    ///
-    /// Intentional fold: `ActiveWorkspace` + `OpenFiles` Llm sections.
+    /// Intentional fold: `ActiveWorkspace` + `OpenFiles` + maintenance snapshots
+    /// (`GitStatus` / `WorkspaceInventory` / `FileSummaries`).
     WorkspaceState,
     /// Focused editor file.
     CurrentFile,
@@ -125,7 +124,7 @@ impl PromptSectionId {
             Self::Conversation => &["conversation"],
             Self::RelevantMemories => &["memory_results"],
             Self::ActiveProject => &["active_project"],
-            Self::WorkspaceState => &["active_workspace", "open_files"],
+            Self::WorkspaceState => &["active_workspace", "open_files", "git_status", "workspace_inventory", "file_summaries"],
             Self::CurrentFile => &["current_file"],
             Self::Selection => &["current_selection"],
             Self::SearchResults => &["search_results"],

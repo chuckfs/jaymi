@@ -16,9 +16,11 @@
 //! preserving important metadata. Ready for future LLM context windows.
 //!
 //! Recently assembled bundles are cached (keyed by project, workspace,
-//! conversation, active file, and request type). The cache never changes
-//! correctness: entries are fingerprinted and invalidated when files,
-//! project, workspace, conversation, or the search index change.
+//! conversation revision, session fingerprint, active file, and request type).
+//! The cache never changes correctness: entries are fingerprinted and
+//! invalidated when files, project, workspace, conversation, diagnostics, or
+//! the search index change. Planner asks for a fresh assemble via
+//! [`ContextEngine::request_fresh_context`] and never touches cache keys.
 //!
 //! Context History retains recent bundles (timestamp, request, providers,
 //! size, duration) for debugging and future reasoning transparency.
@@ -53,22 +55,24 @@ pub use bundle::{
     ActiveCapabilitiesSection, ActiveProjectSection, ActiveWorkspaceSection, BudgetReport,
     BundleDiagnostic, BundlePermissionEntry, BundleSearchHit, ContextBundle, ContextBundleBuilder,
     ContextSessionInputs, ContextSource, ConversationSection, CurrentFileSection,
-    CurrentSelectionSection, DiagnosticsSection, MemoryResultsSection, OpenFileEntry,
-    OpenFilesSection, PermissionsSection, PlannerMetadataSection, SearchContextHint,
-    SearchResultsSection, UserRequestMetadataSection,
+    CurrentSelectionSection, DiagnosticsSection, FileSummariesSection, FileSummaryEntry,
+    GitStatusSection, MemoryResultsSection, OpenFileEntry, OpenFilesSection, PermissionsSection,
+    PlannerMetadataSection, SearchContextHint, SearchResultsSection, UserRequestMetadataSection,
+    WorkspaceInventorySection,
 };
 pub use cache::{
-    fingerprint_request, CacheIdentity, ContextBundleCache, ContextCacheEntry, ContextCacheKey,
-    ContextCacheStats, DEFAULT_CACHE_CAPACITY,
+    fingerprint_request, fingerprint_session, CacheIdentity, ContextBundleCache, ContextCacheEntry,
+    ContextCacheKey, ContextCacheStats, DEFAULT_CACHE_CAPACITY,
 };
 pub use history::{ContextHistory, ContextHistoryEntry, DEFAULT_HISTORY_CAPACITY};
 pub use llm::{
     LlmActiveCapabilities, LlmActiveProject, LlmActiveWorkspace, LlmBudgetView, LlmContext,
     LlmContextSection, LlmConversation, LlmCurrentFile, LlmCurrentSelection, LlmDiagnostic,
-    LlmDiagnostics, LlmMemoryItem, LlmMemoryResults, LlmOpenFileEntry, LlmOpenFiles,
-    LlmPermissionEntry, LlmPermissions, LlmProjectDetailSummary, LlmPromotionSuggestion,
-    LlmProviderMetadata, LlmSearchHint, LlmSearchHit, LlmSearchResults, LlmSectionContent,
-    LlmSectionId, LlmUserRequest, LLM_CONTEXT_SCHEMA_VERSION,
+    LlmDiagnostics, LlmFileSummaries, LlmFileSummaryEntry, LlmGitStatus, LlmMemoryItem,
+    LlmMemoryResults, LlmOpenFileEntry, LlmOpenFiles, LlmPermissionEntry, LlmPermissions,
+    LlmProjectDetailSummary, LlmPromotionSuggestion, LlmProviderMetadata, LlmSearchHint,
+    LlmSearchHit, LlmSearchResults, LlmSectionContent, LlmSectionId, LlmUserRequest,
+    LlmWorkspaceInventory, LLM_CONTEXT_SCHEMA_VERSION,
 };
 pub use policy::{
     apply_contribution_constraints, apply_policy_to_contribution, default_context_policies,
@@ -78,16 +82,17 @@ pub use policy::{
 };
 pub use provider::{ContextContribution, ContextProvider, ProviderRequest};
 pub use providers::{
-    default_providers, ConversationProvider, DiagnosticsProvider, EditorProvider, MemoryProvider,
-    PermissionProvider, ProjectProvider, ProviderDeps, SearchProvider, WorkspaceProvider,
+    default_providers, ConversationProvider, DiagnosticsProvider, EditorProvider,
+    FileSummariesProvider, GitStatusProvider, MemoryProvider, PermissionProvider, ProjectProvider,
+    ProviderDeps, SearchProvider, WorkspaceInventoryProvider, WorkspaceProvider,
 };
 pub use inspector::{
     inspect_bundle_sections, measure_bundle_size, ContextInspectorReport, InspectedBundleSection,
     InspectedProvider, ProviderInspectOutcome,
 };
 pub use relevance::{
-    AssembleHints, IntentTag, RelevanceScore, RelevanceSignals, RequestKind,
-    DEFAULT_RELEVANCE_THRESHOLD, RELEVANCE_MAX,
+    complexity_provider_tier, AssembleHints, ComplexityProviderTier, IntentTag, RelevanceScore,
+    RelevanceSignals, RequestKind, DEFAULT_RELEVANCE_THRESHOLD, RELEVANCE_MAX,
 };
 pub use jaymi_core::IntentId;
 
@@ -238,26 +243,29 @@ impl ContextEngine {
 
     /// Replace the full session input snapshot used by the next assemble.
     ///
-    /// Invalidates the ContextBundle cache when the snapshot actually changes.
+    /// Requests a fresh assemble when the snapshot actually changes. Reason is
+    /// specialized when only one dimension moved (workspace / diagnostics / …).
     pub fn set_session_inputs(&self, inputs: ContextSessionInputs) {
         if let Ok(mut guard) = self.session.lock() {
-            if *guard != inputs {
-                *guard = inputs;
-                drop(guard);
-                self.invalidate_cache("session_inputs_changed");
+            if *guard == inputs {
+                return;
             }
+            let reason = session_change_reason(&guard, &inputs);
+            *guard = inputs;
+            drop(guard);
+            self.request_fresh_context(reason);
         }
     }
 
     /// Record the active UX workspace kind for the next assemble (session state).
     ///
-    /// Invalidates the ContextBundle cache when the workspace kind changes.
+    /// Requests a fresh assemble when the workspace kind changes.
     pub fn set_session_workspace(&self, workspace_kind: Option<String>) {
         if let Ok(mut guard) = self.session.lock() {
             if guard.workspace_kind != workspace_kind {
                 guard.workspace_kind = workspace_kind;
                 drop(guard);
-                self.invalidate_cache("workspace_changed");
+                self.request_fresh_context("workspace_changed");
             }
         }
     }
@@ -284,6 +292,10 @@ impl ContextEngine {
     }
 
     /// Drop cached bundles and bump the invalidation epoch.
+    ///
+    /// Prefer [`Self::request_fresh_context`] from Planner / Application call sites —
+    /// that name is the opaque “need a fresh assemble” seam. This method is the
+    /// cache implementation detail.
     pub fn invalidate_cache(&self, reason: impl Into<String>) {
         let reason = reason.into();
         if let Ok(mut guard) = self.cache.lock() {
@@ -293,6 +305,16 @@ impl ContextEngine {
             "context",
             format!("context bundle cache invalidated reason={reason}"),
         );
+    }
+
+    /// Ask the Context Engine for a fresh assemble on the next request.
+    ///
+    /// Planner-facing seam: callers state *why* context must be fresh
+    /// (`conversation_changed`, `workspace_changed`, `project_changed`,
+    /// `diagnostics_changed`, `files_changed`, …) without knowing cache keys,
+    /// epochs, or LRU. Implementation clears the ContextBundle cache.
+    pub fn request_fresh_context(&self, reason: impl Into<String>) {
+        self.invalidate_cache(reason);
     }
 
     /// Snapshot of ContextBundle cache statistics.
@@ -322,7 +344,7 @@ impl ContextEngine {
         if let Ok(mut guard) = self.policies.lock() {
             guard.set_policies(policies);
         }
-        self.invalidate_cache("context_policies_changed");
+        self.request_fresh_context("context_policies_changed");
     }
 
     /// Register an additional Context Policy.
@@ -330,7 +352,7 @@ impl ContextEngine {
         if let Ok(mut guard) = self.policies.lock() {
             guard.register_policy(policy);
         }
-        self.invalidate_cache("context_policy_registered");
+        self.request_fresh_context("context_policy_registered");
     }
 
     /// Recent Context History entries (newest first) for inspection / transparency.
@@ -629,7 +651,46 @@ impl ContextEngine {
             .map_err(|_| JaymiError::new("context policy engine lock poisoned"))?;
 
         for (evaluation_order, provider) in providers.iter().enumerate() {
-            let score = provider.relevance(&provider_request);
+            if matches!(
+                signals.complexity_tier_for(provider.id()),
+                Some(ComplexityProviderTier::Excluded)
+            ) {
+                let estimate = provider.estimate_size(&provider_request);
+                let sensitivity = provider.sensitivity();
+                inspect_providers.push(InspectedProvider::new(
+                    evaluation_order,
+                    None,
+                    provider.id(),
+                    provider.priority().value(),
+                    0,
+                    sensitivity.as_str(),
+                    false,
+                    "n/a",
+                    false,
+                    estimate.units.characters,
+                    estimate.units.estimated_tokens,
+                    ProviderInspectOutcome::SkippedComplexity {
+                        complexity: signals
+                            .complexity_id()
+                            .unwrap_or("unknown")
+                            .to_string(),
+                    },
+                ));
+                jaymi_logging::info(
+                    "context",
+                    format!(
+                        "provider complexity-excluded id={} complexity={:?}",
+                        provider.id(),
+                        signals.complexity_id()
+                    ),
+                );
+                continue;
+            }
+
+            let score = signals.score_for_provider(
+                provider.id(),
+                provider.relevance(&provider_request),
+            );
             let estimate = provider.estimate_size(&provider_request);
             let sensitivity = provider.sensitivity();
             let candidate = ContextPolicyCandidate {
@@ -909,8 +970,13 @@ impl ContextEngine {
                 continue;
             }
 
-            match provider.contribute(&provider_request)? {
-                Some(contribution) => {
+            match {
+                let contribute_started = Instant::now();
+                let result = provider.contribute(&provider_request);
+                let contribute_ms = contribute_started.elapsed().as_millis() as u64;
+                (result, contribute_ms)
+            } {
+                (Ok(Some(contribution)), contribute_ms) => {
                     let (contribution, enforced) =
                         apply_policy_to_contribution(contribution, decision);
                     if let Some(summary) = policy_summaries
@@ -937,24 +1003,27 @@ impl ContextEngine {
                                     summary.reason, measured.characters, remaining
                                 );
                             }
-                            inspect_providers.push(InspectedProvider::new(
-                                *evaluation_order,
-                                Some(allocation_order),
-                                provider.id(),
-                                decision.priority.value(),
-                                score.value(),
-                                sensitivity,
-                                decision.requires_user_approval,
-                                approval_status,
-                                decision.can_truncate,
-                                estimate.units.characters,
-                                estimate.units.estimated_tokens,
-                                ProviderInspectOutcome::SkippedBudget {
-                                    remaining_characters: remaining,
-                                    estimate_characters: measured.characters,
-                                    reason: "policy_forbids_truncation".into(),
-                                },
-                            ));
+                            inspect_providers.push(
+                                InspectedProvider::new(
+                                    *evaluation_order,
+                                    Some(allocation_order),
+                                    provider.id(),
+                                    decision.priority.value(),
+                                    score.value(),
+                                    sensitivity,
+                                    decision.requires_user_approval,
+                                    approval_status,
+                                    decision.can_truncate,
+                                    estimate.units.characters,
+                                    estimate.units.estimated_tokens,
+                                    ProviderInspectOutcome::SkippedBudget {
+                                        remaining_characters: remaining,
+                                        estimate_characters: measured.characters,
+                                        reason: "policy_forbids_truncation".into(),
+                                    },
+                                )
+                                .with_duration_ms(contribute_ms),
+                            );
                             continue;
                         }
                         fit_contribution(
@@ -981,22 +1050,25 @@ impl ContextEngine {
                                 .summaries
                                 .push(format!("{}: {summary}", provider.id()));
                         }
-                        inspect_providers.push(InspectedProvider::new(
-                            *evaluation_order,
-                            Some(allocation_order),
-                            provider.id(),
-                            decision.priority.value(),
-                            score.value(),
-                            sensitivity,
-                            decision.requires_user_approval,
-                            approval_status,
-                            decision.can_truncate,
-                            estimate.units.characters,
-                            estimate.units.estimated_tokens,
-                            ProviderInspectOutcome::Dropped {
-                                summary: outcome.summary.clone(),
-                            },
-                        ));
+                        inspect_providers.push(
+                            InspectedProvider::new(
+                                *evaluation_order,
+                                Some(allocation_order),
+                                provider.id(),
+                                decision.priority.value(),
+                                score.value(),
+                                sensitivity,
+                                decision.requires_user_approval,
+                                approval_status,
+                                decision.can_truncate,
+                                estimate.units.characters,
+                                estimate.units.estimated_tokens,
+                                ProviderInspectOutcome::Dropped {
+                                    summary: outcome.summary.clone(),
+                                },
+                            )
+                            .with_duration_ms(contribute_ms),
+                        );
                         continue;
                     }
 
@@ -1025,27 +1097,30 @@ impl ContextEngine {
                     used_characters =
                         used_characters.saturating_add(outcome.final_units.characters);
                     contributed += 1;
-                    inspect_providers.push(InspectedProvider::new(
-                        *evaluation_order,
-                        Some(allocation_order),
-                        provider.id(),
-                        decision.priority.value(),
-                        score.value(),
-                        sensitivity,
-                        decision.requires_user_approval,
-                        approval_status,
-                        decision.can_truncate,
-                        estimate.units.characters,
-                        estimate.units.estimated_tokens,
-                        ProviderInspectOutcome::Contributed {
-                            characters: outcome.final_units.characters,
-                            estimated_tokens: outcome.final_units.estimated_tokens,
-                            truncated: outcome.truncated,
-                            summarized: outcome.summarized,
-                            summary: outcome.summary.clone(),
-                            sources: fitted.sources.clone(),
-                        },
-                    ));
+                    inspect_providers.push(
+                        InspectedProvider::new(
+                            *evaluation_order,
+                            Some(allocation_order),
+                            provider.id(),
+                            decision.priority.value(),
+                            score.value(),
+                            sensitivity,
+                            decision.requires_user_approval,
+                            approval_status,
+                            decision.can_truncate,
+                            estimate.units.characters,
+                            estimate.units.estimated_tokens,
+                            ProviderInspectOutcome::Contributed {
+                                characters: outcome.final_units.characters,
+                                estimated_tokens: outcome.final_units.estimated_tokens,
+                                truncated: outcome.truncated,
+                                summarized: outcome.summarized,
+                                summary: outcome.summary.clone(),
+                                sources: fitted.sources.clone(),
+                            },
+                        )
+                        .with_duration_ms(contribute_ms),
+                    );
                     for source in &fitted.sources {
                         if !included.contains(source) {
                             included.push(*source);
@@ -1053,23 +1128,27 @@ impl ContextEngine {
                     }
                     builder = builder.apply_contribution(fitted);
                 }
-                None => {
+                (Ok(None), contribute_ms) => {
                     declined += 1;
-                    inspect_providers.push(InspectedProvider::new(
-                        *evaluation_order,
-                        Some(allocation_order),
-                        provider.id(),
-                        decision.priority.value(),
-                        score.value(),
-                        sensitivity,
-                        decision.requires_user_approval,
-                        approval_status,
-                        decision.can_truncate,
-                        estimate.units.characters,
-                        estimate.units.estimated_tokens,
-                        ProviderInspectOutcome::Declined,
-                    ));
+                    inspect_providers.push(
+                        InspectedProvider::new(
+                            *evaluation_order,
+                            Some(allocation_order),
+                            provider.id(),
+                            decision.priority.value(),
+                            score.value(),
+                            sensitivity,
+                            decision.requires_user_approval,
+                            approval_status,
+                            decision.can_truncate,
+                            estimate.units.characters,
+                            estimate.units.estimated_tokens,
+                            ProviderInspectOutcome::Declined,
+                        )
+                        .with_duration_ms(contribute_ms),
+                    );
                 }
+                (Err(err), _) => return Err(err),
             }
         }
 
@@ -1298,6 +1377,46 @@ impl jaymi_core::Lifecycle for ContextEngine {
         }
         Ok(())
     }
+}
+
+/// Classify why session inputs changed (for fresh-context reason labels).
+fn session_change_reason(
+    previous: &ContextSessionInputs,
+    next: &ContextSessionInputs,
+) -> &'static str {
+    if previous.workspace_kind != next.workspace_kind {
+        return "workspace_changed";
+    }
+    if previous.project_open != next.project_open
+        || previous.project_indexed_documents != next.project_indexed_documents
+    {
+        return "project_changed";
+    }
+    if previous.diagnostics != next.diagnostics {
+        return "diagnostics_changed";
+    }
+    if previous.git_status != next.git_status {
+        return "git_status_changed";
+    }
+    if previous.workspace_inventory != next.workspace_inventory {
+        return "workspace_inventory_changed";
+    }
+    if previous.file_summaries != next.file_summaries {
+        return "file_summaries_changed";
+    }
+    if previous.current_file != next.current_file
+        || previous.current_selection != next.current_selection
+        || previous.open_files != next.open_files
+    {
+        return "editor_changed";
+    }
+    if previous.permissions != next.permissions {
+        return "permissions_changed";
+    }
+    if previous.search_hits != next.search_hits {
+        return "search_hits_changed";
+    }
+    "session_inputs_changed"
 }
 
 #[cfg(test)]
@@ -1605,6 +1724,9 @@ mod tests {
                     source: None,
                 }],
             },
+            git_status: GitStatusSection::default(),
+            workspace_inventory: WorkspaceInventorySection::default(),
+            file_summaries: FileSummariesSection::default(),
             permissions: PermissionsSection::default(),
             active_capabilities: ActiveCapabilitiesSection::default(),
             search_hits: Vec::new(),
@@ -2139,7 +2261,7 @@ mod tests {
 
         let json = engine.serialize_llm_context(&bundle).unwrap();
         assert_eq!(json, bundle.to_llm_context().to_json().unwrap());
-        assert!(json.contains("\"schema_version\":1"));
+        assert!(json.contains(&format!("\"schema_version\":{LLM_CONTEXT_SCHEMA_VERSION}")));
         assert!(json.contains("llm facing context"));
     }
 

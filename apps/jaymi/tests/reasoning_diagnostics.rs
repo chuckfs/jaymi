@@ -135,6 +135,8 @@ fn prompt_inspection_surfaces_budget_and_sections() {
     let prompt = PromptDiagnostics {
         prompt_size_characters: 200,
         prompt_size_tokens: 50,
+        assembled_prompt_size_characters: Some(210),
+        assembled_prompt_size_tokens: Some(52),
         final_token_estimate: 50,
         conversation_turns: 0,
         budget: PromptBudgetUsage {
@@ -165,6 +167,7 @@ fn prompt_inspection_surfaces_budget_and_sections() {
         template_id: None,
         formatter_id: None,
         adapter_id: None,
+        build_duration_ms: None,
     };
 
     let report = ReasoningDiagnosticsReport::assemble(ReasoningDiagnosticsInput {

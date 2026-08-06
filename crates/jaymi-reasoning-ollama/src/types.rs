@@ -68,6 +68,37 @@ pub struct OllamaModelDetails {
     pub format: Option<String>,
 }
 
+/// Response from `/api/show` (subset used for Settings metadata).
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct OllamaShowResponse {
+    #[serde(default)]
+    pub details: Option<OllamaModelDetails>,
+    /// Model capability strings (e.g. `completion`, `tools`, `vision`).
+    #[serde(default)]
+    pub capabilities: Vec<String>,
+    /// Optional model_info map (context length often lives here).
+    #[serde(default)]
+    pub model_info: serde_json::Map<String, serde_json::Value>,
+}
+
+impl OllamaShowResponse {
+    /// Best-effort context length from model_info keys.
+    pub fn context_length(&self) -> Option<u64> {
+        for (key, value) in &self.model_info {
+            let lower = key.to_ascii_lowercase();
+            if lower.ends_with(".context_length") || lower == "context_length" {
+                if let Some(n) = value.as_u64() {
+                    return Some(n);
+                }
+                if let Some(n) = value.as_i64() {
+                    return Some(n.max(0) as u64);
+                }
+            }
+        }
+        None
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub(crate) struct TagsResponse {
     #[serde(default)]

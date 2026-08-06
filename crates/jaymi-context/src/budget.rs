@@ -9,8 +9,8 @@
 use crate::provider::ContextContribution;
 use crate::{
     ActiveProjectSection, BundleSearchHit, ConversationSection, CurrentSelectionSection,
-    DiagnosticsSection, MemoryResultsSection, OpenFilesSection, PermissionsSection,
-    SearchResultsSection,
+    DiagnosticsSection, FileSummariesSection, GitStatusSection, MemoryResultsSection,
+    OpenFilesSection, PermissionsSection, SearchResultsSection, WorkspaceInventorySection,
 };
 
 
@@ -52,8 +52,14 @@ impl ProviderPriority {
     pub const MEMORY: Self = Self(70);
     /// Search coordination / hits.
     pub const SEARCH: Self = Self(60);
+    /// Git status (maintenance snapshot).
+    pub const GIT_STATUS: Self = Self(55);
     /// Diagnostics.
     pub const DIAGNOSTICS: Self = Self(50);
+    /// File summaries (maintenance snapshot).
+    pub const FILE_SUMMARIES: Self = Self(48);
+    /// Workspace inventory (maintenance snapshot).
+    pub const WORKSPACE_INVENTORY: Self = Self(45);
 }
 
 impl std::fmt::Display for ProviderPriority {
@@ -225,6 +231,15 @@ pub fn measure_contribution(contribution: &ContextContribution, chars_per_token:
     if let Some(section) = &contribution.diagnostics {
         chars += measure_diagnostics(section);
     }
+    if let Some(section) = &contribution.git_status {
+        chars += measure_git_status(section);
+    }
+    if let Some(section) = &contribution.workspace_inventory {
+        chars += measure_workspace_inventory(section);
+    }
+    if let Some(section) = &contribution.file_summaries {
+        chars += measure_file_summaries(section);
+    }
     if let Some(section) = &contribution.permissions {
         chars += measure_permissions(section);
     }
@@ -323,6 +338,41 @@ fn measure_diagnostics(section: &DiagnosticsSection) -> usize {
                 + char_len(&diag.message)
                 + opt_str(diag.source.as_ref())
                 + 16
+        })
+        .sum::<usize>()
+}
+
+fn measure_git_status(section: &GitStatusSection) -> usize {
+    opt_str(section.branch.as_ref())
+        + char_len(&section.summary)
+        + section
+            .sample_paths
+            .iter()
+            .map(|path| char_len(path) + 1)
+            .sum::<usize>()
+        + 48
+}
+
+fn measure_workspace_inventory(section: &WorkspaceInventorySection) -> usize {
+    opt_str(section.root.as_ref())
+        + char_len(&section.status)
+        + section
+            .sample_paths
+            .iter()
+            .map(|path| char_len(path) + 1)
+            .sum::<usize>()
+        + 48
+}
+
+fn measure_file_summaries(section: &FileSummariesSection) -> usize {
+    section
+        .entries
+        .iter()
+        .map(|entry| {
+            char_len(&entry.path)
+                + opt_str(entry.language.as_ref())
+                + char_len(&entry.summary)
+                + 24
         })
         .sum::<usize>()
 }
@@ -560,6 +610,57 @@ pub fn fit_contribution(
             .unwrap_or(0);
         if after < before {
             summaries.push(format!("diagnostics fitted: kept {after} of {before}"));
+        }
+        if measure_contribution(&contribution, chars_per_token).characters <= max_characters {
+            return finish(contribution, truncated, summaries, chars_per_token);
+        }
+    }
+
+    // 4b) Maintenance snapshots — trim samples / summaries.
+    if contribution.git_status.is_some()
+        || contribution.workspace_inventory.is_some()
+        || contribution.file_summaries.is_some()
+    {
+        loop {
+            if measure_contribution(&contribution, chars_per_token).characters <= max_characters {
+                break;
+            }
+            let mut trimmed = false;
+            if let Some(git) = contribution.git_status.as_mut() {
+                if git.sample_paths.len() > 4 {
+                    git.sample_paths.pop();
+                    trimmed = true;
+                }
+            }
+            if !trimmed {
+                if let Some(inventory) = contribution.workspace_inventory.as_mut() {
+                    if inventory.sample_paths.len() > 4 {
+                        inventory.sample_paths.pop();
+                        trimmed = true;
+                    }
+                }
+            }
+            if !trimmed {
+                if let Some(summaries_section) = contribution.file_summaries.as_mut() {
+                    for entry in &mut summaries_section.entries {
+                        if char_len(&entry.summary) > 200 {
+                            entry.summary = truncate_chars(&entry.summary, 200);
+                            trimmed = true;
+                        }
+                    }
+                    if !trimmed && summaries_section.entries.len() > 1 {
+                        summaries_section.entries.pop();
+                        trimmed = true;
+                    }
+                }
+            }
+            if !trimmed {
+                break;
+            }
+            truncated = true;
+        }
+        if truncated {
+            summaries.push("maintenance snapshots fitted".into());
         }
         if measure_contribution(&contribution, chars_per_token).characters <= max_characters {
             return finish(contribution, truncated, summaries, chars_per_token);

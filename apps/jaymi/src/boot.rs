@@ -18,7 +18,7 @@ use jaymi_capabilities::{
     SplitDirection, WorkspaceKind,
 };
 
-use jaymi_config::Config;
+use jaymi_config::{Config, ReasoningPreferences};
 use jaymi_context::{ContextBundle, ContextEngine, ContextHistoryEntry, ContextInspectorReport};
 use jaymi_core::{
     AppState, DiscoveryQueryKind, EntryType, GitOperation, HealthReport, JaymiError, JaymiResult,
@@ -72,6 +72,11 @@ use crate::coding_workspace::{
 use crate::diagnostics::{DiagnosticsSnapshot, LastReasoningTurn};
 use crate::editor_workspace::{load_editor_workspace, save_editor_workspace};
 use crate::experience::{ConversationTurn, ExperienceSession};
+use crate::session_cache::SessionCache;
+use crate::context_maintenance::{
+    merge_completed_into_session, ContextMaintenance, MaintenanceJobRequest, MaintenanceKind,
+    MaintenanceUiUpdate,
+};
 
 /// In-flight pumpable conversational generation (Sprint B1.11).
 struct ActiveGeneration {
@@ -79,6 +84,10 @@ struct ActiveGeneration {
     context: ContextBundle,
     turn_index: usize,
     prompt_diagnostics: jaymi_reasoning::PromptDiagnostics,
+    /// Wall clock from request receipt (diagnostics only).
+    request_started: std::time::Instant,
+    /// Planner / Context / PromptBuilder timings captured at stream start.
+    early_pipeline: jaymi_reasoning::PipelineTiming,
     #[allow(dead_code)] // retained for regenerate / diagnostics context
     user_text: String,
 }
@@ -119,6 +128,10 @@ pub struct Application {
     last_reasoning: Mutex<Option<LastReasoningTurn>>,
     /// Active pumpable conversational generation (B1.11).
     active_generation: Mutex<Option<ActiveGeneration>>,
+    /// Session-scoped cache for inexpensive immutable snapshots (not conversation).
+    session_cache: Mutex<SessionCache>,
+    /// Background context maintenance (git / inventory / diagnostics / file summaries).
+    context_maintenance: Arc<ContextMaintenance>,
 }
 
 impl Application {
@@ -132,6 +145,8 @@ impl Application {
             last_planner_activity: Mutex::new(None),
             last_reasoning: Mutex::new(None),
             active_generation: Mutex::new(None),
+            session_cache: Mutex::new(SessionCache::new()),
+            context_maintenance: Arc::new(ContextMaintenance::new()),
         }
     }
 
@@ -181,9 +196,19 @@ impl Application {
             None => Config::new(),
         };
         self.boot_service(config)?;
+        // Wrap for runtime preference updates from Settings (&self Application APIs).
+        let config = {
+            let config = self
+                .container
+                .take::<Config>()
+                .ok_or_else(|| JaymiError::new("configuration missing after boot"))?;
+            let config = Arc::new(Mutex::new(config));
+            self.container.register(Arc::clone(&config));
+            config
+        };
 
         let (data_dir, log_level) = {
-            let config = self.container.resolve::<Config>()?;
+            let config = config.lock().map_err(|_| JaymiError::new("config lock poisoned"))?;
             (
                 PathBuf::from(&config.data_dir),
                 map_log_level(config.settings().log_level),
@@ -374,7 +399,10 @@ impl Application {
 
         // Discovery engine (Layer 1) — explicit scans only; no boot-time crawl.
         let (discovery_roots, indexing_enabled) = {
-            let config = self.container.resolve::<Config>()?;
+            let config = self.container.resolve::<Arc<Mutex<Config>>>()?;
+            let config = config
+                .lock()
+                .map_err(|_| JaymiError::new("config lock poisoned"))?;
             (
                 config
                     .settings()
@@ -395,7 +423,7 @@ impl Application {
         // (explicit index scans and filesystem watcher flushes).
         let context_for_cache = Arc::clone(&context);
         discovery.add_change_hook(Arc::new(move || {
-            context_for_cache.invalidate_cache("search_index_updated");
+            context_for_cache.request_fresh_context("search_index_updated");
         }));
 
         // Filesystem watcher keeps the inventory synchronized with configured roots.
@@ -449,12 +477,17 @@ impl Application {
             model_registry: Some(Arc::clone(&registry)),
         });
         self.initialize_service(&mut planner)?;
+        // Restore persisted Reasoning preferences into registry + Planner.
+        Self::apply_reasoning_preferences_locked(&planner, &registry, &self.container)?;
         self.container.register(planner);
 
         {
             let logger = self.container.resolve::<Logger>()?;
             logger.info("boot", "Jaymi startup complete");
         }
+
+        // Seed session cache with inexpensive immutable snapshots (not conversation).
+        self.seed_session_cache()?;
 
         Ok(())
     }
@@ -524,13 +557,18 @@ impl Application {
     /// **Required before every Planner path that assembles context** — including
     /// conversational generation (`begin_generation` / streaming). This is the
     /// sole Application preparation entrypoint: workspace, Coding editor,
-    /// diagnostics, permissions, project-open, search hits. Never placeholders.
+    /// diagnostics, permissions, project-open, search hits, plus the latest
+    /// **completed** background maintenance snapshots (git / inventory /
+    /// diagnostics / file summaries). Never waits on in-flight maintenance.
     /// Request-selected capabilities are **not** pushed here; the Planner supplies
     /// them via [`jaymi_context::AssembleHints`].
     ///
     /// Future Workspace Intelligence enrichments land here so conversation and
     /// tool-backed requests share one preparation path.
     fn prepare_context_session(&self) -> JaymiResult<()> {
+        // Apply finished UI updates without blocking; conversation uses snapshots only.
+        let _ = self.pump_context_maintenance();
+
         let context = self.container.resolve::<Arc<ContextEngine>>()?;
         let workspace_kind = self
             .experience()
@@ -557,15 +595,105 @@ impl Application {
             .unwrap_or((false, None));
 
         let permissions = self.container.resolve::<Arc<PermissionEngine>>()?;
-        let inputs = crate::context_session::build_context_session_inputs(
+        let mut inputs = crate::context_session::build_context_session_inputs(
             workspace_kind,
             coding.as_ref(),
             permissions.as_ref(),
             project_open,
             project_indexed_documents,
         );
+        let completed = self.context_maintenance.latest_completed();
+        merge_completed_into_session(&mut inputs, &completed);
         context.set_session_inputs(inputs);
         Ok(())
+    }
+
+    /// Drain completed background maintenance into Coding UI + snapshot store.
+    ///
+    /// Non-blocking. Call from the UI frame and before conversational prepare.
+    pub fn pump_context_maintenance(&self) -> JaymiResult<usize> {
+        let updates = self.context_maintenance.pump();
+        let count = updates.len();
+        for update in updates {
+            match update {
+                MaintenanceUiUpdate::Git(git) => {
+                    let _ = self.with_coding_state(|coding| {
+                        coding.git = Some(git.clone());
+                    });
+                }
+                MaintenanceUiUpdate::Explorer {
+                    root,
+                    nodes,
+                    status,
+                } => {
+                    let _ = self.with_coding_state(|coding| {
+                        coding.explorer.project_root = Some(root.clone());
+                        if matches!(status, ExplorerStatus::Ready) {
+                            for node in &nodes {
+                                if node.is_dir {
+                                    coding.explorer.expanded_paths.insert(node.path.clone());
+                                }
+                            }
+                        }
+                        coding.explorer.nodes = nodes;
+                        coding.explorer.status = status;
+                    });
+                }
+                MaintenanceUiUpdate::Problems(issues) => {
+                    let _ = self.with_coding_state(|coding| {
+                        coding.problems = issues;
+                    });
+                }
+            }
+        }
+        Ok(count)
+    }
+
+    /// Schedule background maintenance without blocking conversation.
+    pub fn schedule_context_maintenance(&self, kind: MaintenanceKind) -> bool {
+        let request = self.maintenance_job_request(kind);
+        self.context_maintenance.schedule(request)
+    }
+
+    /// Schedule the coding-open maintenance set (inventory / git / diagnostics / summaries).
+    pub fn schedule_coding_context_maintenance(&self) {
+        let request = self.maintenance_job_request(MaintenanceKind::WorkspaceInventory);
+        self.context_maintenance.schedule_coding_open(request);
+    }
+
+    fn maintenance_job_request(&self, kind: MaintenanceKind) -> MaintenanceJobRequest {
+        let project_root = self.active_project_root_path().or_else(|| {
+            self.with_coding_state(|coding| {
+                coding
+                    .explorer
+                    .project_root
+                    .as_ref()
+                    .map(PathBuf::from)
+            })
+            .ok()
+            .flatten()
+        });
+        let open_file_paths = self
+            .with_coding_state(|coding| {
+                coding
+                    .editors
+                    .open_files()
+                    .into_iter()
+                    .map(|file| file.path)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        // Capture problems inputs for every request so `schedule_coding_open`
+        // can clone one payload into the Diagnostics job without a second round-trip.
+        let problems_context = Some(self.build_problems_context());
+        let problems_registry = self.problems_registry().ok();
+        MaintenanceJobRequest {
+            kind,
+            project_root,
+            open_file_paths,
+            problems_context,
+            problems_registry,
+        }
     }
 
     /// Route a user request through the Planner (Intent → Capability → Context assemble).
@@ -1116,7 +1244,7 @@ impl Application {
         }
         memory.set_active_conversation(conversation_id)?;
         if let Ok(context) = self.container.resolve::<Arc<ContextEngine>>() {
-            context.invalidate_cache("conversation_changed");
+            context.request_fresh_context("conversation_changed");
         }
         Ok(())
     }
@@ -1511,15 +1639,23 @@ impl Application {
             self.with_coding_state(|coding| coding.clear_editors())?;
         }
 
-        self.refresh_coding_explorer()?;
         self.ensure_coding_terminal()?;
-        let _ = self.refresh_coding_git();
+        // Slow refreshes (explorer / git / problems / file summaries) run in
+        // background maintenance so opening Coding never blocks conversation.
+        self.schedule_coding_context_maintenance();
+        // Keep a synchronous explorer seed when the panel is empty so first paint
+        // is not blank; background inventory will replace it when complete.
+        let explorer_empty = self.with_coding_state(|coding| coding.explorer.nodes.is_empty())?;
+        if explorer_empty {
+            let _ = self.refresh_coding_explorer_now();
+        }
 
         let editors_empty = self.with_coding_state(|coding| coding.editors.is_empty())?;
         if editors_empty {
             let _ = self.restore_coding_editor_workspace();
+            // Open tabs may have changed — refresh file summaries without blocking.
+            let _ = self.schedule_context_maintenance(MaintenanceKind::FileSummaries);
         }
-        let _ = self.refresh_coding_problems();
         Ok(())
     }
 
@@ -1610,8 +1746,28 @@ impl Application {
         Ok(())
     }
 
-    /// Refresh Project Explorer from the active project via Planner → Tool → Provider.
+    /// Refresh Project Explorer via background inventory maintenance (non-blocking).
     pub fn refresh_coding_explorer(&self) -> JaymiResult<()> {
+        let root = self.active_project_id().and_then(|id| {
+            self.container
+                .resolve::<Arc<ProjectEngine>>()
+                .ok()
+                .and_then(|projects| projects.get(&id).ok().flatten())
+                .and_then(|project| project.root_directory)
+        });
+
+        if root.is_none() {
+            return self.with_coding_state(|coding| {
+                coding.explorer.clear_no_project();
+            });
+        }
+
+        let _ = self.schedule_context_maintenance(MaintenanceKind::WorkspaceInventory);
+        Ok(())
+    }
+
+    /// Synchronously refresh Project Explorer through Planner → Tool → Provider.
+    pub fn refresh_coding_explorer_now(&self) -> JaymiResult<()> {
         let root = self.active_project_id().and_then(|id| {
             self.container
                 .resolve::<Arc<ProjectEngine>>()
@@ -2743,8 +2899,18 @@ impl Application {
         })
     }
 
-    /// Refresh Coding Workspace Git status through Planner → git → Git Provider.
+    /// Refresh Coding Workspace Git status through background maintenance.
+    ///
+    /// Non-blocking: schedules a read-only Git status job. Mutating Git ops still
+    /// go Planner → Tool → Provider. Conversation consumes the latest completed
+    /// snapshot via ContextEngine — never waits here.
     pub fn refresh_coding_git(&self) -> JaymiResult<()> {
+        let _ = self.schedule_context_maintenance(MaintenanceKind::GitStatus);
+        Ok(())
+    }
+
+    /// Synchronously refresh Git status (tests / rare explicit sync paths).
+    pub fn refresh_coding_git_now(&self) -> JaymiResult<()> {
         let root = self.with_coding_state(|coding| coding.explorer.project_root.clone())?;
         let Some(root) = root else {
             return self.with_coding_state(|coding| {
@@ -2914,6 +3080,39 @@ impl Application {
             .as_ref()
             .map(|path| path.to_string_lossy().into_owned());
         let is_repository = response.git_is_repository.unwrap_or(true);
+        let section = {
+            let summary = response.git_summary.clone().unwrap_or_else(|| {
+                if is_repository {
+                    "clean".into()
+                } else {
+                    "not a git repository".into()
+                }
+            });
+            let mut sample_paths = Vec::new();
+            for path in response
+                .git_modified
+                .iter()
+                .chain(response.git_staged.iter())
+                .chain(response.git_untracked.iter())
+                .map(|item| item.path.clone())
+            {
+                if sample_paths.len() >= 8 {
+                    break;
+                }
+                if !sample_paths.contains(&path) {
+                    sample_paths.push(path);
+                }
+            }
+            jaymi_context::GitStatusSection {
+                is_repository,
+                branch: response.git_branch.clone(),
+                summary: summary.clone(),
+                modified_count: response.git_modified.len(),
+                staged_count: response.git_staged.len(),
+                untracked_count: response.git_untracked.len(),
+                sample_paths,
+            }
+        };
         self.with_coding_state(|coding| {
             let mut state = GitStatusState {
                 commit_message,
@@ -2937,7 +3136,9 @@ impl Application {
                 to_entries(&response.git_untracked),
             );
             coding.git = Some(state);
-        })
+        })?;
+        self.context_maintenance.publish_git_section(section);
+        Ok(())
     }
 
     /// Open the Research Workspace from the conversation action menu.
@@ -3178,11 +3379,16 @@ impl Application {
         if trimmed.is_empty() {
             return Err(JaymiError::new("empty prompt"));
         }
+        let request_started = std::time::Instant::now();
         let history = self.prepare_conversational_host()?;
         let request = UserRequest::new(trimmed);
         let planner = self.container.resolve::<Planner>()?;
         match planner.start_conversation_stream(&request, history) {
-            Ok((context, stream, prompt_diagnostics)) => {
+            Ok((context, stream, prompt_diagnostics, mut early_pipeline)) => {
+                early_pipeline.stages.insert(
+                    0,
+                    jaymi_reasoning::PipelineStageTiming::new("request_received", 0),
+                );
                 // Record after stream open so failed starts don't leave orphan user turns
                 // before the soft-fallback observer path records its own copy.
                 self.record_user_message(trimmed)?;
@@ -3203,6 +3409,8 @@ impl Application {
                     context,
                     turn_index,
                     prompt_diagnostics,
+                    request_started,
+                    early_pipeline,
                     user_text: trimmed.to_string(),
                 });
                 Ok(BeginGeneration::Started)
@@ -3223,6 +3431,10 @@ impl Application {
     }
 
     /// Pump up to `max_events` from the active generation onto Experience.
+    ///
+    /// Non-blocking: uses [`ConversationStream::try_pump`] so the UI never waits
+    /// on provider I/O, diagnostics, metrics, or the final response object.
+    /// Tokens are forwarded to the conversation as soon as the provider emits them.
     pub fn pump_generation(&self, max_events: usize) -> JaymiResult<PumpGeneration> {
         let max_events = max_events.max(1);
         let mut guard = self
@@ -3236,11 +3448,23 @@ impl Application {
         let mut applied = 0usize;
         let mut terminal: Option<ConversationStreamEvent> = None;
         for _ in 0..max_events {
-            match active.stream.pump() {
-                Ok(Some(event)) => {
+            match active.stream.try_pump() {
+                Ok(jaymi_reasoning::StreamPumpPoll::Pending) => break,
+                Ok(jaymi_reasoning::StreamPumpPoll::Idle) => break,
+                Ok(jaymi_reasoning::StreamPumpPoll::Event(event)) => {
                     let is_terminal = event.is_terminal();
-                    if let ConversationStreamEvent::Lifecycle(lifecycle) = &event {
-                        planner.mirror_stream_lifecycle(*lifecycle);
+                    match &event {
+                        ConversationStreamEvent::Lifecycle(lifecycle) => {
+                            planner.mirror_stream_lifecycle(*lifecycle);
+                        }
+                        ConversationStreamEvent::Token(_) => {
+                            // Token immediacy: mirror Streaming even when the
+                            // Lifecycle(Streaming) event was coalesced away.
+                            planner.mirror_stream_lifecycle(
+                                jaymi_reasoning::StreamingLifecycle::Streaming,
+                            );
+                        }
+                        _ => {}
                     }
                     {
                         let mut experience = self
@@ -3256,7 +3480,6 @@ impl Application {
                         break;
                     }
                 }
-                Ok(None) => break,
                 Err(error) => {
                     let failed = ConversationStreamEvent::Failed {
                         partial: active.stream.accumulated_text().to_string(),
@@ -3279,10 +3502,17 @@ impl Application {
         if let Some(event) = terminal {
             let context = active.context.clone();
             let prompt_diagnostics = Some(active.prompt_diagnostics.clone());
+            let mut early_pipeline = active.early_pipeline.clone();
+            let total_ms = active.request_started.elapsed().as_millis() as u64;
+            early_pipeline.total_ms = Some(total_ms);
             *guard = None;
             drop(guard);
-            let response =
-                planner.complete_conversation_stream(context, event, prompt_diagnostics)?;
+            let response = planner.complete_conversation_stream(
+                context,
+                event,
+                prompt_diagnostics,
+                Some(early_pipeline),
+            )?;
             self.apply_workspace_expansion_only(&response)?;
             {
                 let mut experience = self
@@ -3291,7 +3521,14 @@ impl Application {
                     .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
                 experience.mirror_conversation_state(response.conversation_state);
             }
-            self.record_planner_activity(&response, response.reasoning_metrics.as_ref().map(|m| m.latency_ms).unwrap_or(0));
+            self.record_planner_activity(
+                &response,
+                response
+                    .reasoning_metrics
+                    .as_ref()
+                    .map(|m| m.latency_ms)
+                    .unwrap_or(0),
+            );
             Ok(PumpGeneration::Finished(response))
         } else {
             Ok(PumpGeneration::Active { events: applied })
@@ -3629,10 +3866,19 @@ impl Application {
         }
     }
 
-    /// Recompute `CodingState.problems` from every registered Problems provider.
+    /// Recompute `CodingState.problems` via background maintenance (non-blocking).
     ///
     /// No-op (returns `Ok`) when there is no Coding capability state yet.
     pub fn refresh_coding_problems(&self) -> JaymiResult<()> {
+        if self.with_coding_state(|_| ()).is_err() {
+            return Ok(());
+        }
+        let _ = self.schedule_context_maintenance(MaintenanceKind::Diagnostics);
+        Ok(())
+    }
+
+    /// Synchronously recompute `CodingState.problems` from every registered Problems provider.
+    pub fn refresh_coding_problems_now(&self) -> JaymiResult<()> {
         if self.with_coding_state(|_| ()).is_err() {
             return Ok(());
         }
@@ -3640,8 +3886,26 @@ impl Application {
         let ctx = self.build_problems_context();
         let issues = registry.collect_all(&ctx)?;
         self.with_coding_state(|coding| {
-            coding.problems = issues;
-        })
+            coding.problems = issues.clone();
+        })?;
+        let diagnostics = issues
+            .iter()
+            .map(|issue| jaymi_context::BundleDiagnostic {
+                path: issue.path.clone(),
+                severity: issue.severity.as_str().to_string(),
+                message: issue.message.clone(),
+                line: issue.line,
+                column: issue.column,
+                source: Some(if issue.source_label.is_empty() {
+                    issue.source.clone()
+                } else {
+                    issue.source_label.clone()
+                }),
+            })
+            .collect();
+        self.context_maintenance
+            .publish_diagnostics_section(jaymi_context::DiagnosticsSection { diagnostics });
+        Ok(())
     }
 
     fn record_planner_activity(&self, response: &PlannerResponse, duration_ms: u64) {
@@ -3683,6 +3947,30 @@ impl Application {
         if let Ok(mut guard) = self.last_planner_activity.lock() {
             *guard = Some(activity);
         }
+        let mut pipeline_timing = response.pipeline_timing.clone();
+        if let Some(timing) = pipeline_timing.as_mut() {
+            if timing.total_ms.is_none() {
+                timing.total_ms = Some(duration_ms);
+            }
+            if !timing
+                .stages
+                .iter()
+                .any(|stage| stage.stage == "request_received")
+            {
+                timing.stages.insert(
+                    0,
+                    jaymi_reasoning::PipelineStageTiming::new("request_received", 0),
+                );
+            }
+        } else if response.reasoning_used {
+            let mut timing = jaymi_reasoning::PipelineTiming::new();
+            timing.push(jaymi_reasoning::PipelineStageTiming::new(
+                "request_received",
+                0,
+            ));
+            timing.total_ms = Some(duration_ms);
+            pipeline_timing = Some(timing);
+        }
         let turn = LastReasoningTurn {
             reasoning_used: response.reasoning_used,
             reasoning_provider_id: response.reasoning_provider_id.clone(),
@@ -3692,12 +3980,13 @@ impl Application {
             configured_model: response.configured_model.clone(),
             provider_model: response.provider_model.clone(),
             conversation_state: response.conversation_state,
+            pipeline_timing,
         };
         if let Ok(mut guard) = self.last_reasoning.lock() {
             *guard = Some(turn);
         }
-        // Opportunistic refresh so a blocked / denied turn shows up in the
-        // Problems panel without waiting for the next explicit refresh.
+        // Opportunistic background refresh so a blocked / denied turn shows up in
+        // the Problems panel without blocking the conversational path.
         let _ = self.refresh_coding_problems();
     }
 
@@ -3724,13 +4013,360 @@ impl Application {
         Ok(planner.preferred_model())
     }
 
+    /// Session cache generation (bumped on every invalidation).
+    pub fn session_cache_generation(&self) -> u64 {
+        self.session_cache
+            .lock()
+            .map(|cache| cache.generation())
+            .unwrap_or(0)
+    }
+
+    /// Diagnostic summary of the session cache (Developer Diagnostics / tests).
+    pub fn session_cache_summary(&self) -> String {
+        self.session_cache
+            .lock()
+            .map(|cache| cache.summary())
+            .unwrap_or_else(|_| "session cache lock poisoned".into())
+    }
+
+    /// Theme preference from the session settings cache (falls back to Config).
+    pub fn theme_preference(&self) -> JaymiResult<jaymi_config::Theme> {
+        if let Ok(cache) = self.session_cache.lock() {
+            if let Some(theme) = cache.theme() {
+                return Ok(theme);
+            }
+        }
+        Ok(self.load_settings_uncached()?.theme)
+    }
+
+    /// Immutable settings snapshot from the session cache (falls back to Config).
+    pub fn settings_snapshot(&self) -> JaymiResult<jaymi_config::Settings> {
+        self.cached_settings()
+    }
+
+    /// Invalidate Model Registry / installed-models / provider-health cache.
+    ///
+    /// Call after Refresh Models, connection tests, or any live rediscovery.
+    pub fn invalidate_session_cache_models(&self) {
+        if let Ok(mut cache) = self.session_cache.lock() {
+            cache.invalidate_models();
+        }
+    }
+
+    /// Notify that persisted settings changed (theme, reasoning prefs, …).
+    ///
+    /// Invalidates the settings + theme session cache slots.
+    pub fn notify_settings_changed(&self) {
+        if let Ok(mut cache) = self.session_cache.lock() {
+            cache.invalidate_settings();
+        }
+        // Eagerly re-warm so theme preference reads stay cheap.
+        let _ = self.cached_settings();
+    }
+
+    /// Notify that provider registration changed (tool or reasoning providers).
+    ///
+    /// Invalidates Model Registry and capability-availability cache slots.
+    pub fn notify_providers_changed(&self) {
+        if let Ok(mut cache) = self.session_cache.lock() {
+            cache.invalidate_providers();
+        }
+    }
+
+    /// Register an additional reasoning provider and invalidate related cache slots.
+    pub fn register_reasoning_provider(
+        &self,
+        provider: Arc<dyn ReasoningProvider>,
+    ) -> JaymiResult<()> {
+        let registry = self.container.resolve::<Arc<ModelRegistry>>()?;
+        registry.register_provider(provider);
+        self.notify_providers_changed();
+        Ok(())
+    }
+
+    fn store_model_registry_snapshot(&self, snapshot: jaymi_reasoning::ModelRegistrySnapshot) {
+        if let Ok(mut cache) = self.session_cache.lock() {
+            cache.set_model_registry(snapshot);
+        }
+    }
+
+    fn cached_model_registry_snapshot(
+        &self,
+    ) -> JaymiResult<jaymi_reasoning::ModelRegistrySnapshot> {
+        if let Ok(cache) = self.session_cache.lock() {
+            if let Some(snapshot) = cache.model_registry().cloned() {
+                return Ok(snapshot);
+            }
+        }
+        let registry = self.container.resolve::<Arc<ModelRegistry>>()?;
+        let snapshot = registry.snapshot();
+        self.store_model_registry_snapshot(snapshot.clone());
+        Ok(snapshot)
+    }
+
+    fn cached_capability_discovery(&self) -> JaymiResult<CapabilityDiscoveryReport> {
+        if let Ok(cache) = self.session_cache.lock() {
+            if let Some(report) = cache.capability_availability().cloned() {
+                return Ok(report);
+            }
+        }
+        let planner = self.container.resolve::<Planner>()?;
+        let report = planner.discover_capability_status().unwrap_or_default();
+        if let Ok(mut cache) = self.session_cache.lock() {
+            cache.set_capability_availability(report.clone());
+        }
+        Ok(report)
+    }
+
+    fn load_settings_uncached(&self) -> JaymiResult<jaymi_config::Settings> {
+        let config = self.container.resolve::<Arc<Mutex<Config>>>()?;
+        let config = config
+            .lock()
+            .map_err(|_| JaymiError::new("config lock poisoned"))?;
+        Ok(config.settings().clone())
+    }
+
+    fn cached_settings(&self) -> JaymiResult<jaymi_config::Settings> {
+        if let Ok(cache) = self.session_cache.lock() {
+            if let Some(settings) = cache.settings().cloned() {
+                return Ok(settings);
+            }
+        }
+        let settings = self.load_settings_uncached()?;
+        if let Ok(mut cache) = self.session_cache.lock() {
+            cache.set_settings(settings.clone());
+        }
+        Ok(settings)
+    }
+
+    fn seed_session_cache(&self) -> JaymiResult<()> {
+        let registry = self.container.resolve::<Arc<ModelRegistry>>()?;
+        self.store_model_registry_snapshot(registry.snapshot());
+        let _ = self.cached_capability_discovery()?;
+        let _ = self.cached_settings()?;
+        jaymi_logging::info(
+            "boot",
+            format!("session cache seeded · {}", self.session_cache_summary()),
+        );
+        Ok(())
+    }
+
+    /// Immutable Reasoning Settings snapshot (Settings Workspace paints this only).
+    pub fn reasoning_settings_snapshot(
+        &self,
+    ) -> JaymiResult<crate::settings_workspace::ReasoningSettingsSnapshot> {
+        self.build_reasoning_settings_snapshot(false)
+    }
+
+    /// Refresh ModelRegistry and return an updated Settings snapshot.
+    ///
+    /// Invalidates the session Model Registry cache (installed models + provider health).
+    pub fn refresh_reasoning_models(
+        &self,
+    ) -> JaymiResult<crate::settings_workspace::ReasoningSettingsSnapshot> {
+        self.invalidate_session_cache_models();
+        let registry = self.container.resolve::<Arc<ModelRegistry>>()?;
+        let _ = registry.refresh();
+        self.reapply_persisted_reasoning_preference()?;
+        self.store_model_registry_snapshot(registry.snapshot());
+        self.build_reasoning_settings_snapshot(false)
+    }
+
+    /// Persist and apply a user-selected default reasoning model.
+    pub fn set_default_reasoning_model(
+        &self,
+        provider_id: impl Into<String>,
+        model_name: impl Into<String>,
+    ) -> JaymiResult<crate::settings_workspace::ReasoningSettingsSnapshot> {
+        let provider_id = provider_id.into();
+        let model_name = model_name.into();
+        let id = jaymi_reasoning::ModelIdentifier::new(provider_id.clone(), model_name.clone());
+        let registry = self.container.resolve::<Arc<ModelRegistry>>()?;
+        registry.set_default(Some(id.clone())).map_err(|err| {
+            JaymiError::new(format!("could not set default model: {}", err.message()))
+        })?;
+        let planner = self.container.resolve::<Planner>()?;
+        planner.set_preferred_model(Some(id))?;
+        self.persist_reasoning_preferences(ReasoningPreferences {
+            preferred_provider_id: Some(provider_id),
+            preferred_model: Some(model_name),
+        })?;
+        // Default selection changed the registry snapshot + settings.
+        self.invalidate_session_cache_models();
+        self.store_model_registry_snapshot(registry.snapshot());
+        self.build_reasoning_settings_snapshot(false)
+    }
+
+    /// Probe reasoning provider connectivity through the registry path.
+    ///
+    /// Invalidates and refreshes the session Model Registry cache.
+    pub fn test_reasoning_connection(
+        &self,
+    ) -> JaymiResult<crate::settings_workspace::ReasoningSettingsSnapshot> {
+        self.invalidate_session_cache_models();
+        let registry = self.container.resolve::<Arc<ModelRegistry>>()?;
+        let _ = registry.refresh();
+        self.reapply_persisted_reasoning_preference()?;
+        self.store_model_registry_snapshot(registry.snapshot());
+        self.build_reasoning_settings_snapshot(true)
+    }
+
+    fn persist_reasoning_preferences(&self, prefs: ReasoningPreferences) -> JaymiResult<()> {
+        let config = self.container.resolve::<Arc<Mutex<Config>>>()?;
+        let mut config = config
+            .lock()
+            .map_err(|_| JaymiError::new("config lock poisoned"))?;
+        config.settings_mut().reasoning = prefs;
+        config.settings_mut().version = jaymi_config::CURRENT_SETTINGS_VERSION;
+        config.save()?;
+        drop(config);
+        self.notify_settings_changed();
+        Ok(())
+    }
+
+    fn reapply_persisted_reasoning_preference(&self) -> JaymiResult<()> {
+        let planner = self.container.resolve::<Planner>()?;
+        let registry = self.container.resolve::<Arc<ModelRegistry>>()?;
+        Self::apply_reasoning_preferences_locked(&planner, &registry, &self.container)
+    }
+
+    fn apply_reasoning_preferences_locked(
+        planner: &Planner,
+        registry: &ModelRegistry,
+        container: &ServiceContainer,
+    ) -> JaymiResult<()> {
+        let config = container.resolve::<Arc<Mutex<Config>>>()?;
+        let prefs = config
+            .lock()
+            .map_err(|_| JaymiError::new("config lock poisoned"))?
+            .settings()
+            .reasoning
+            .clone();
+        if !prefs.is_set() {
+            return Ok(());
+        }
+        let id = jaymi_reasoning::ModelIdentifier::new(
+            prefs.preferred_provider_id.clone().unwrap_or_default(),
+            prefs.preferred_model.clone().unwrap_or_default(),
+        );
+        if registry.get(&id).is_some() {
+            let _ = registry.set_default(Some(id.clone()));
+            let _ = planner.set_preferred_model(Some(id));
+        } else if let Some(fallback) = registry.default_model() {
+            // Preference removed from disk catalog — keep registry default; clear Planner override
+            // so prepare_reasoning_model uses the live default.
+            let _ = planner.set_preferred_model(Some(fallback));
+        }
+        Ok(())
+    }
+
+    fn build_reasoning_settings_snapshot(
+        &self,
+        after_test: bool,
+    ) -> JaymiResult<crate::settings_workspace::ReasoningSettingsSnapshot> {
+        use crate::settings_workspace::{
+            ReasoningConnectionStatus, ReasoningSettingsModel, ReasoningSettingsProvider,
+            ReasoningSettingsSnapshot,
+        };
+
+        let snapshot = self.cached_model_registry_snapshot()?;
+        let models: Vec<ReasoningSettingsModel> = snapshot
+            .models
+            .iter()
+            .map(|model| ReasoningSettingsModel {
+                provider_id: model.provider_id.clone(),
+                model_name: model.info.id.name.clone(),
+                display_name: model.info.display_name.clone(),
+                parameter_size: model.info.parameter_count.clone(),
+                context_length: model.info.context_tokens,
+                quantization: model.info.quantization.clone(),
+                local: model.info.local,
+                capability_labels: model
+                    .info
+                    .capabilities
+                    .labels()
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+                is_default: model.is_default,
+                available: model.available,
+            })
+            .collect();
+
+        let providers: Vec<ReasoningSettingsProvider> = snapshot
+            .providers
+            .iter()
+            .map(|entry| {
+                let (status, detail) = map_provider_connection(&entry.health);
+                ReasoningSettingsProvider {
+                    id: entry.provider_id.clone(),
+                    display_name: entry.display_name.clone(),
+                    status,
+                    detail,
+                    model_count: entry.model_count,
+                }
+            })
+            .collect();
+
+        let primary = providers.first();
+        let status = if after_test {
+            primary
+                .map(|provider| provider.status)
+                .unwrap_or(ReasoningConnectionStatus::Offline)
+        } else {
+            primary
+                .map(|provider| provider.status)
+                .unwrap_or(ReasoningConnectionStatus::Offline)
+        };
+        let message = primary
+            .map(|provider| provider.detail.clone())
+            .unwrap_or_else(|| "No reasoning providers are registered.".into());
+        if matches!(status, ReasoningConnectionStatus::Connected) && models.is_empty() {
+            // Connected but empty catalog — guide the user.
+        }
+        let message = if matches!(status, ReasoningConnectionStatus::Connected) && models.is_empty()
+        {
+            "Connected, but no models are installed yet. Pull a model in Ollama, then refresh."
+                .into()
+        } else if matches!(status, ReasoningConnectionStatus::Connected) && after_test {
+            format!("{message} Connection check succeeded.")
+        } else {
+            message
+        };
+
+        let default_model_key = snapshot
+            .default_model
+            .as_ref()
+            .map(|id| format!("{}/{}", id.provider, id.name));
+        let active_provider_id = snapshot
+            .default_model
+            .as_ref()
+            .map(|id| id.provider.clone())
+            .or_else(|| primary.map(|provider| provider.id.clone()));
+        let active_provider_name = active_provider_id.as_ref().and_then(|id| {
+            providers
+                .iter()
+                .find(|provider| &provider.id == id)
+                .map(|provider| provider.display_name.clone())
+        });
+
+        Ok(ReasoningSettingsSnapshot {
+            status,
+            message,
+            active_provider_id,
+            active_provider_name,
+            default_model_key,
+            providers,
+            models,
+        })
+    }
+
     /// Assemble the Conversational Reasoning diagnostics report.
     pub fn reasoning_diagnostics(&self) -> JaymiResult<ReasoningDiagnosticsReport> {
         let planner = self.container.resolve::<Planner>()?;
-        let registry = self.container.resolve::<Arc<ModelRegistry>>().ok();
-        if let Some(reg) = registry.as_ref() {
-            let _ = reg.refresh();
-        }
+        // Session-cached registry snapshot — do not refresh on every paint.
+        // Refresh Models / Test Connection own rediscovery + cache invalidation.
+        let registry_snapshot = self.cached_model_registry_snapshot().ok();
         let last = self.last_reasoning_turn();
         let live_state = planner.conversation_state();
         let conversation_runtime_state = if live_state.is_active() {
@@ -3774,7 +4410,7 @@ impl Application {
                         last.as_ref()
                             .and_then(|turn| turn.reasoning_provider_id.clone())
                     }),
-                registry: registry.map(|reg| reg.snapshot()),
+                registry: registry_snapshot.clone(),
                 metrics: last.as_ref().and_then(|turn| turn.metrics.clone()),
                 prompt: last
                     .as_ref()
@@ -3789,10 +4425,9 @@ impl Application {
                     .as_ref()
                     .and_then(|turn| turn.configured_model.as_ref().map(|m| m.display()))
                     .or_else(|| {
-                        self.container
-                            .resolve::<Arc<ModelRegistry>>()
-                            .ok()
-                            .and_then(|reg| reg.default_model().map(|m| m.display()))
+                        registry_snapshot
+                            .as_ref()
+                            .and_then(|snap| snap.default_model.as_ref().map(|m| m.display()))
                     }),
                 provider_model: last
                     .as_ref()
@@ -3802,6 +4437,7 @@ impl Application {
                     .resolve::<Arc<OllamaReasoningProvider>>()
                     .ok()
                     .and_then(|ollama| ollama.diagnostics_cached().loaded_model),
+                pipeline_timing: last.as_ref().and_then(|turn| turn.pipeline_timing.clone()),
             },
         ))
     }
@@ -3816,7 +4452,34 @@ impl Application {
         let planner = self.container.resolve::<Planner>()?;
         let database = self.container.resolve::<Arc<Database>>()?;
         let logger = self.container.resolve::<Logger>()?;
-        let config = self.container.resolve::<Config>()?;
+        let (
+            config_health,
+            indexing_enabled,
+            config_log_level,
+            config_theme,
+            config_path_display,
+            config_detail_line,
+        ) = {
+            let config = self.container.resolve::<Arc<Mutex<Config>>>()?;
+            let config = config
+                .lock()
+                .map_err(|_| JaymiError::new("config lock poisoned"))?;
+            let health = config.health_check();
+            let path = config.config_path().display().to_string();
+            // Settings values come from the session cache when warm.
+            let settings = self.cached_settings().unwrap_or_else(|_| config.settings().clone());
+            let indexing_enabled = settings.indexing_enabled;
+            let log_level = settings.log_level.as_str().to_string();
+            let theme = settings.theme.as_str().to_string();
+            let detail = format!(
+                "log_level={} theme={} indexing={} path={}",
+                settings.log_level.as_str(),
+                settings.theme.as_str(),
+                indexing_enabled,
+                config.config_path().display()
+            );
+            (health, indexing_enabled, log_level, theme, path, detail)
+        };
         let discovery = self.container.resolve::<Arc<DiscoveryEngine>>()?;
         let knowledge = self.container.resolve::<Arc<SqliteKnowledgeStore>>()?;
         let understanding = self.container.resolve::<Arc<UnderstandingEngine>>()?;
@@ -3839,7 +4502,6 @@ impl Application {
         let planner_health = planner.health_check();
         let database_health = database.health_check();
         let logger_health = logger.health_check();
-        let config_health = config.health_check();
         let policies_health = policies.health_check();
         let permissions_health = permissions.health_check();
         let memory_report = memory.health_check();
@@ -3879,7 +4541,7 @@ impl Application {
             .into_iter()
             .map(|capability| capability.id().to_string())
             .collect();
-        let discovery = planner.discover_capability_status().unwrap_or_default();
+        let discovery = self.cached_capability_discovery().unwrap_or_default();
         let available_capability_ids: Vec<String> = discovery
             .available
             .iter()
@@ -3895,10 +4557,13 @@ impl Application {
             .into_iter()
             .map(|status| status.detail())
             .collect();
-        let capability_inspector = planner
-            .inspect_capabilities()
-            .ok()
-            .map(|report| report.with_active_workspace(self.active_ui_workspace().ok().flatten()));
+        let capability_inspector = {
+            let registered = capabilities.list();
+            Some(
+                CapabilityInspectorReport::from_discovery(&registered, &discovery)
+                    .with_active_workspace(self.active_ui_workspace().ok().flatten()),
+            )
+        };
         let context_inspector = self
             .container
             .resolve::<Arc<ContextEngine>>()
@@ -3938,7 +4603,6 @@ impl Application {
         }
         .to_string();
 
-        let indexing_enabled = config.settings().indexing_enabled;
         let permission_mode =
             "read: allowed · write/delete/terminal: requires_approval · internet: denied · review from policy+permission+ToolRisk"
                 .to_string();
@@ -3984,13 +4648,12 @@ impl Application {
             SubsystemStatus::new(
                 "Configuration",
                 OperationalStatus::from_health(config_health.healthy, config_health.initialized),
-                format!(
-                    "log_level={} theme={} indexing_enabled={} · {}",
-                    config.settings().log_level.as_str(),
-                    config.settings().theme.as_str(),
-                    indexing_enabled,
-                    config.config_path().display()
-                ),
+                config_detail_line,
+            ),
+            SubsystemStatus::new(
+                "Session Cache",
+                OperationalStatus::Operational,
+                self.session_cache_summary(),
             ),
             SubsystemStatus::new(
                 "Logging",
@@ -4438,9 +5101,9 @@ impl Application {
             logging_path: Some(logger.log_path().display().to_string()),
             logging_dir: Some(logger.log_dir().display().to_string()),
             logging_level: Some(logging_level),
-            config_path: Some(config.config_path().display().to_string()),
-            config_log_level: Some(config.settings().log_level.as_str().to_string()),
-            config_theme: Some(config.settings().theme.as_str().to_string()),
+            config_path: Some(config_path_display),
+            config_log_level: Some(config_log_level),
+            config_theme: Some(config_theme),
             config_indexing_enabled: Some(indexing_enabled),
             active_policies,
             permission_mode: Some(permission_mode),
@@ -4569,7 +5232,13 @@ impl Application {
             }
         }
         shutdown_owned::<Logger>(&mut self.container)?;
-        shutdown_owned::<Config>(&mut self.container)?;
+        if let Some(config) = self.container.take::<Arc<Mutex<Config>>>() {
+            if let Ok(mutex) = Arc::try_unwrap(config) {
+                if let Ok(mut config) = mutex.into_inner() {
+                    config.shutdown()?;
+                }
+            }
+        }
 
         Ok(())
     }
@@ -4578,6 +5247,37 @@ impl Application {
 impl Default for Application {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+fn map_provider_connection(
+    health: &jaymi_reasoning::ReasoningHealth,
+) -> (
+    crate::settings_workspace::ReasoningConnectionStatus,
+    String,
+) {
+    use crate::settings_workspace::ReasoningConnectionStatus;
+    match health {
+        jaymi_reasoning::ReasoningHealth::Ready => {
+            (ReasoningConnectionStatus::Connected, "Connected".into())
+        }
+        jaymi_reasoning::ReasoningHealth::Degraded { reason } => (
+            ReasoningConnectionStatus::Connected,
+            format!("Connected with issues: {reason}"),
+        ),
+        jaymi_reasoning::ReasoningHealth::Unavailable { reason } => {
+            let lower = reason.to_ascii_lowercase();
+            if lower.contains("isn't running")
+                || lower.contains("unreachable")
+                || lower.contains("connection refused")
+                || lower.contains("can't reach")
+                || lower.contains("can’t reach")
+            {
+                (ReasoningConnectionStatus::Offline, reason.clone())
+            } else {
+                (ReasoningConnectionStatus::Error, reason.clone())
+            }
+        }
     }
 }
 

@@ -130,6 +130,7 @@ impl PromptBuilder {
         history: &[ConversationTurn],
         goal: &str,
     ) -> Prompt {
+        let build_started = std::time::Instant::now();
         let order = self
             .section_order
             .as_deref()
@@ -195,6 +196,8 @@ impl PromptBuilder {
         let diagnostics = PromptDiagnostics {
             prompt_size_characters: used_characters,
             prompt_size_tokens: estimated_tokens,
+            assembled_prompt_size_characters: None,
+            assembled_prompt_size_tokens: None,
             final_token_estimate: estimated_tokens,
             conversation_turns: history.len() as u64,
             budget: PromptBudgetUsage::from_budget(&self.budget, used_characters, truncated),
@@ -205,6 +208,7 @@ impl PromptBuilder {
             template_id: Some(self.template_id.clone()),
             formatter_id: Some(self.formatter_id.clone()),
             adapter_id: Some(self.adapter_id.clone()),
+            build_duration_ms: None,
         };
 
         let prompt = Prompt {
@@ -219,8 +223,15 @@ impl PromptBuilder {
         adapted.diagnostics.adapter_id = Some(self.adapter_id.clone());
         adapted.diagnostics.template_id = Some(self.template_id.clone());
         adapted.diagnostics.formatter_id = Some(self.formatter_id.clone());
+        // Retain assembled size before seal overwrites delivered size (Performance).
+        adapted.diagnostics.assembled_prompt_size_characters =
+            Some(adapted.diagnostics.prompt_size_characters);
+        adapted.diagnostics.assembled_prompt_size_tokens =
+            Some(adapted.diagnostics.prompt_size_tokens);
         // Diagnostics describe the prompt actually delivered to providers.
         adapted.seal_for_delivery(&self.budget, history.len());
+        adapted.diagnostics.build_duration_ms =
+            Some(build_started.elapsed().as_millis() as u64);
         adapted
     }
 
@@ -278,15 +289,18 @@ impl PromptBuilder {
                 if body.trim().is_empty() {
                     let ws = llm_section_present(context, LlmSectionId::ActiveWorkspace);
                     let files = llm_section_present(context, LlmSectionId::OpenFiles);
-                    if ws || files {
+                    let git = llm_section_present(context, LlmSectionId::GitStatus);
+                    let inventory = llm_section_present(context, LlmSectionId::WorkspaceInventory);
+                    let summaries = llm_section_present(context, LlmSectionId::FileSummaries);
+                    if ws || files || git || inventory || summaries {
                         DraftSection::filtered(
                             id,
-                            "active_workspace/open_files present but empty after format",
+                            "workspace maintenance sections present but empty after format",
                         )
                     } else {
                         DraftSection::excluded(
                             id,
-                            "active_workspace and open_files absent from LlmContext",
+                            "active_workspace/open_files/maintenance absent from LlmContext",
                         )
                     }
                 } else {
@@ -566,7 +580,10 @@ fn prompt_section_for_llm(id: LlmSectionId) -> PromptSectionId {
         LlmSectionId::UserRequest => PromptSectionId::UserRequest,
         LlmSectionId::Conversation => PromptSectionId::Conversation,
         LlmSectionId::ActiveProject => PromptSectionId::ActiveProject,
-        LlmSectionId::ActiveWorkspace | LlmSectionId::OpenFiles => PromptSectionId::WorkspaceState,
+        LlmSectionId::ActiveWorkspace | LlmSectionId::OpenFiles | LlmSectionId::GitStatus
+        | LlmSectionId::WorkspaceInventory | LlmSectionId::FileSummaries => {
+            PromptSectionId::WorkspaceState
+        }
         LlmSectionId::CurrentFile => PromptSectionId::CurrentFile,
         LlmSectionId::CurrentSelection => PromptSectionId::Selection,
         LlmSectionId::SearchResults => PromptSectionId::SearchResults,
@@ -585,11 +602,26 @@ fn build_llm_coverage(context: &LlmContext, drafts: &[DraftSection]) -> Vec<Prom
             let prompt_section = prompt_section_for_llm(llm_id);
             let llm_present = llm_section_present(context, llm_id);
             let draft = drafts.iter().find(|draft| draft.id == prompt_section);
+            let folded = matches!(
+                llm_id,
+                LlmSectionId::OpenFiles
+                    | LlmSectionId::ActiveWorkspace
+                    | LlmSectionId::GitStatus
+                    | LlmSectionId::WorkspaceInventory
+                    | LlmSectionId::FileSummaries
+            );
             let (disposition, note) = match draft {
                 Some(draft) => {
-                    let note = if llm_id == LlmSectionId::OpenFiles
-                        || llm_id == LlmSectionId::ActiveWorkspace
-                    {
+                    // Folded Llm sections may be absent while the shared prompt
+                    // section is still Included from a sibling source. Coverage
+                    // reports Excluded for the absent sibling so diagnostics stay
+                    // honest about which Llm payloads reached the prompt.
+                    let disposition = if folded && !llm_present {
+                        PromptSectionDisposition::Excluded
+                    } else {
+                        draft.disposition
+                    };
+                    let note = if folded {
                         Some(format!(
                             "folded into workspace_state · {}",
                             draft
@@ -600,7 +632,7 @@ fn build_llm_coverage(context: &LlmContext, drafts: &[DraftSection]) -> Vec<Prom
                     } else {
                         draft.note.clone()
                     };
-                    (draft.disposition, note)
+                    (disposition, note)
                 }
                 None => (
                     PromptSectionDisposition::Excluded,
@@ -735,7 +767,89 @@ fn format_workspace(context: &LlmContext) -> String {
             lines.push(block);
         }
     }
+    if let Some(LlmSectionContent::GitStatus(git)) = find_content(context, LlmSectionId::GitStatus)
+    {
+        if let Some(block) = format_git_status(git) {
+            lines.push(block);
+        }
+    }
+    if let Some(LlmSectionContent::WorkspaceInventory(inventory)) =
+        find_content(context, LlmSectionId::WorkspaceInventory)
+    {
+        if let Some(block) = format_workspace_inventory(inventory) {
+            lines.push(block);
+        }
+    }
+    if let Some(LlmSectionContent::FileSummaries(summaries)) =
+        find_content(context, LlmSectionId::FileSummaries)
+    {
+        if let Some(block) = format_file_summaries(summaries) {
+            lines.push(block);
+        }
+    }
     lines.join("\n")
+}
+
+fn format_git_status(git: &jaymi_context::LlmGitStatus) -> Option<String> {
+    if !git.is_repository && git.summary.is_empty() {
+        return None;
+    }
+    let mut lines = Vec::new();
+    if let Some(branch) = &git.branch {
+        lines.push(format!("git: branch={branch} summary={}", git.summary));
+    } else {
+        lines.push(format!("git: summary={}", git.summary));
+    }
+    lines.push(format!(
+        "git_counts: modified={} staged={} untracked={}",
+        git.modified_count, git.staged_count, git.untracked_count
+    ));
+    if !git.sample_paths.is_empty() {
+        lines.push(format!("git_paths: {}", git.sample_paths.join(", ")));
+    }
+    Some(lines.join("\n"))
+}
+
+fn format_workspace_inventory(inventory: &jaymi_context::LlmWorkspaceInventory) -> Option<String> {
+    if inventory.root.is_none()
+        && inventory.file_count == 0
+        && inventory.directory_count == 0
+        && inventory.status.is_empty()
+    {
+        return None;
+    }
+    let mut lines = Vec::new();
+    if let Some(root) = &inventory.root {
+        lines.push(format!("inventory_root: {root}"));
+    }
+    lines.push(format!(
+        "inventory: status={} files={} dirs={}",
+        inventory.status, inventory.file_count, inventory.directory_count
+    ));
+    if !inventory.sample_paths.is_empty() {
+        lines.push(format!("inventory_sample: {}", inventory.sample_paths.join(", ")));
+    }
+    Some(lines.join("\n"))
+}
+
+fn format_file_summaries(summaries: &jaymi_context::LlmFileSummaries) -> Option<String> {
+    if summaries.entries.is_empty() {
+        return None;
+    }
+    let mut lines = vec!["file_summaries:".to_string()];
+    for entry in &summaries.entries {
+        let language = entry.language.as_deref().unwrap_or("unknown");
+        let lines_label = entry
+            .line_count
+            .map(|count| format!(" lines={count}"))
+            .unwrap_or_default();
+        lines.push(format!(
+            "- {} ({language}{lines_label}): {}",
+            entry.path,
+            compact(&entry.summary)
+        ));
+    }
+    Some(lines.join("\n"))
 }
 
 fn format_open_files(files: &LlmOpenFiles) -> Option<String> {

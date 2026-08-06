@@ -49,6 +49,11 @@ pub enum ProviderInspectOutcome {
         /// Fit summary, when any.
         summary: Option<String>,
     },
+    /// Planner complexity tier excluded this provider (lightweight assemble).
+    SkippedComplexity {
+        /// Planner complexity class id (e.g. `greeting`).
+        complexity: String,
+    },
     /// Contribution accepted (possibly truncated / summarized).
     Contributed {
         /// Final character size after fitting.
@@ -74,6 +79,7 @@ impl ProviderInspectOutcome {
             Self::SkippedPolicy { .. } => "skipped_policy",
             Self::SkippedApproval { .. } => "skipped_approval",
             Self::SkippedBudget { .. } => "skipped_budget",
+            Self::SkippedComplexity { .. } => "skipped_complexity",
             Self::Declined => "declined",
             Self::Dropped { .. } => "dropped",
             Self::Contributed { .. } => "contributed",
@@ -114,6 +120,18 @@ impl ProviderInspectOutcome {
             _ => None,
         }
     }
+
+    /// True when the engine skipped this provider before / instead of accepting a contribution.
+    pub fn skipped(&self) -> bool {
+        matches!(
+            self,
+            Self::SkippedRelevance { .. }
+                | Self::SkippedPolicy { .. }
+                | Self::SkippedApproval { .. }
+                | Self::SkippedBudget { .. }
+                | Self::SkippedComplexity { .. }
+        )
+    }
 }
 
 /// One provider row in the Context Inspector.
@@ -141,6 +159,18 @@ pub struct InspectedProvider {
     pub estimate_characters: usize,
     /// Estimated tokens before contribute.
     pub estimate_tokens: usize,
+    /// Elapsed ms from assemble start when this provider's evaluation began.
+    pub started_ms: Option<u64>,
+    /// Elapsed ms from assemble start when this provider's evaluation finished.
+    pub finished_ms: Option<u64>,
+    /// Wall-clock milliseconds for this provider's evaluation (`finished − started`).
+    ///
+    /// Covers skip checks and `contribute` when it ran. Engine-owned; providers
+    /// never self-report timing.
+    pub duration_ms: Option<u64>,
+    /// True when this assemble reused a cached bundle contribution for the provider
+    /// (bundle-level cache hit — providers are not re-invoked).
+    pub cache_hit: bool,
     /// Assemble outcome for this provider.
     pub outcome: ProviderInspectOutcome,
 }
@@ -174,8 +204,66 @@ impl InspectedProvider {
             can_truncate,
             estimate_characters,
             estimate_tokens,
+            started_ms: None,
+            finished_ms: None,
+            duration_ms: None,
+            cache_hit: false,
             outcome,
         }
+    }
+
+    /// Attach provider evaluation lifecycle (offsets from assemble start, ms).
+    pub fn with_lifecycle(mut self, started_ms: u64, finished_ms: u64) -> Self {
+        self.started_ms = Some(started_ms);
+        self.finished_ms = Some(finished_ms);
+        self.duration_ms = Some(finished_ms.saturating_sub(started_ms));
+        self
+    }
+
+    /// Attach contribute-call duration (milliseconds).
+    ///
+    /// Prefer [`Self::with_lifecycle`] when started/finished offsets are known.
+    pub fn with_duration_ms(mut self, duration_ms: u64) -> Self {
+        self.duration_ms = Some(duration_ms);
+        self
+    }
+
+    /// Mark this row as served from a ContextBundle cache hit (providers not re-run).
+    pub fn with_cache_hit(mut self, cache_hit: bool) -> Self {
+        self.cache_hit = cache_hit;
+        self
+    }
+
+    /// True when the engine skipped this provider (policy / relevance / budget / …).
+    pub fn skipped(&self) -> bool {
+        self.outcome.skipped()
+    }
+
+    /// Cache status label for diagnostics (`hit` / `miss`).
+    pub fn cache_status(&self) -> &'static str {
+        if self.cache_hit {
+            "hit"
+        } else {
+            "miss"
+        }
+    }
+
+    /// Compact timing line for Developer Diagnostics.
+    pub fn timing_detail(&self) -> String {
+        format!(
+            "started={} · finished={} · duration={} · skipped={} · cache={}",
+            self.started_ms
+                .map(|ms| format!("{ms}ms"))
+                .unwrap_or_else(|| "—".into()),
+            self.finished_ms
+                .map(|ms| format!("{ms}ms"))
+                .unwrap_or_else(|| "—".into()),
+            self.duration_ms
+                .map(|ms| format!("{ms}ms"))
+                .unwrap_or_else(|| "—".into()),
+            if self.skipped() { "yes" } else { "no" },
+            self.cache_status()
+        )
     }
 
     /// Compact one-line detail for dashboards.
@@ -208,38 +296,44 @@ impl InspectedProvider {
                     line.push_str(" · ");
                     line.push_str(summary);
                 }
+                if let Some(ms) = self.duration_ms {
+                    line.push_str(&format!(" · duration_ms={ms}"));
+                }
+                line.push_str(" · ");
+                line.push_str(&self.timing_detail());
                 line
             }
             ProviderInspectOutcome::SkippedRelevance { threshold } => format!(
-                "{} · eval={} · relevance={} < threshold={} · sensitivity={} · approval={} · omitted",
+                "{} · eval={} · relevance={} < threshold={} · sensitivity={} · approval={} · omitted · {}",
                 self.id,
                 self.evaluation_order,
                 self.relevance,
                 threshold,
                 self.sensitivity,
-                self.approval_status
+                self.approval_status,
+                self.timing_detail()
             ),
             ProviderInspectOutcome::SkippedPolicy {
                 policy,
                 reason,
                 sensitivity,
             } => format!(
-                "{} · eval={} · policy={policy} · sensitivity={sensitivity} · approval={} · excluded · {reason}",
-                self.id, self.evaluation_order, self.approval_status
+                "{} · eval={} · policy={policy} · sensitivity={sensitivity} · approval={} · excluded · {reason} · {}",
+                self.id, self.evaluation_order, self.approval_status, self.timing_detail()
             ),
             ProviderInspectOutcome::SkippedApproval {
                 reason,
                 sensitivity,
             } => format!(
-                "{} · eval={} · sensitivity={sensitivity} · approval=pending · awaiting user approval · {reason}",
-                self.id, self.evaluation_order
+                "{} · eval={} · sensitivity={sensitivity} · approval=pending · awaiting user approval · {reason} · {}",
+                self.id, self.evaluation_order, self.timing_detail()
             ),
             ProviderInspectOutcome::SkippedBudget {
                 remaining_characters,
                 estimate_characters,
                 reason,
             } => format!(
-                "{} · eval={} · alloc={} · relevance={} · priority={} · sensitivity={} · approval={} · omitted ({reason}; estimate={estimate_characters} remaining={remaining_characters})",
+                "{} · eval={} · alloc={} · relevance={} · priority={} · sensitivity={} · approval={} · omitted ({reason}; estimate={estimate_characters} remaining={remaining_characters}) · {}",
                 self.id,
                 self.evaluation_order,
                 self.allocation_order
@@ -248,10 +342,11 @@ impl InspectedProvider {
                 self.relevance,
                 self.priority,
                 self.sensitivity,
-                self.approval_status
+                self.approval_status,
+                self.timing_detail()
             ),
             ProviderInspectOutcome::Declined => format!(
-                "{} · eval={} · alloc={} · relevance={} · priority={} · sensitivity={} · approval={} · declined",
+                "{} · eval={} · alloc={} · relevance={} · priority={} · sensitivity={} · approval={} · declined · {}",
                 self.id,
                 self.evaluation_order,
                 self.allocation_order
@@ -260,10 +355,11 @@ impl InspectedProvider {
                 self.relevance,
                 self.priority,
                 self.sensitivity,
-                self.approval_status
+                self.approval_status,
+                self.timing_detail()
             ),
             ProviderInspectOutcome::Dropped { summary } => format!(
-                "{} · eval={} · alloc={} · relevance={} · priority={} · sensitivity={} · approval={} · dropped{}",
+                "{} · eval={} · alloc={} · relevance={} · priority={} · sensitivity={} · approval={} · dropped{} · {}",
                 self.id,
                 self.evaluation_order,
                 self.allocation_order
@@ -276,7 +372,16 @@ impl InspectedProvider {
                 summary
                     .as_ref()
                     .map(|value| format!(" ({value})"))
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                self.timing_detail()
+            ),
+            ProviderInspectOutcome::SkippedComplexity { complexity } => format!(
+                "{} · eval={} · complexity={complexity} · sensitivity={} · approval={} · omitted (lightweight assemble) · {}",
+                self.id,
+                self.evaluation_order,
+                self.sensitivity,
+                self.approval_status,
+                self.timing_detail()
             ),
         }
     }
@@ -426,6 +531,22 @@ impl ContextInspectorReport {
         self.notes = bundle.planner_metadata().notes.clone();
     }
 
+    /// Mark every provider row as a bundle-cache hit (providers were not re-invoked).
+    pub fn mark_providers_cache_hit(&mut self) {
+        self.cache_hit = true;
+        for provider in &mut self.providers {
+            provider.cache_hit = true;
+        }
+    }
+
+    /// Per-provider timing rows for Developer Diagnostics (`Provider Timing`).
+    pub fn provider_timing_rows(&self) -> Vec<(String, String)> {
+        self.providers
+            .iter()
+            .map(|provider| (provider.id.clone(), provider.timing_detail()))
+            .collect()
+    }
+
     /// One-line summary for diagnostics headers.
     pub fn summary(&self) -> String {
         let contributed = self.contributed().len();
@@ -519,6 +640,35 @@ impl ContextInspectorReport {
                 chars,
                 provider.detail()
             ));
+        }
+        if !self.providers.is_empty() {
+            lines.push(String::new());
+            lines.push("Provider Timing".to_string());
+            lines.push("-".repeat(72));
+            lines.push(format!(
+                "{:<14} {:>8} {:>8} {:>8} {:<8} {:<6}",
+                "Provider", "Started", "Finished", "Duration", "Skipped", "Cache"
+            ));
+            for provider in &self.providers {
+                lines.push(format!(
+                    "{:<14} {:>8} {:>8} {:>8} {:<8} {:<6}",
+                    provider.id,
+                    provider
+                        .started_ms
+                        .map(|ms| format!("{ms}ms"))
+                        .unwrap_or_else(|| "—".into()),
+                    provider
+                        .finished_ms
+                        .map(|ms| format!("{ms}ms"))
+                        .unwrap_or_else(|| "—".into()),
+                    provider
+                        .duration_ms
+                        .map(|ms| format!("{ms}ms"))
+                        .unwrap_or_else(|| "—".into()),
+                    if provider.skipped() { "yes" } else { "no" },
+                    provider.cache_status()
+                ));
+            }
         }
         if !self.sections.is_empty() {
             lines.push(String::new());

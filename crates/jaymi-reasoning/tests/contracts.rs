@@ -239,7 +239,10 @@ fn reasoning_request_serializes_without_cancellation_handle() {
     assert_eq!(value["goal"], "goal");
     assert_eq!(value["request_id"], "req-1");
     assert!(value.get("cancellation").is_none());
-    assert_eq!(value["context"]["schema_version"], 1);
+    assert_eq!(
+        value["context"]["schema_version"],
+        jaymi_context::LLM_CONTEXT_SCHEMA_VERSION
+    );
 }
 
 #[test]

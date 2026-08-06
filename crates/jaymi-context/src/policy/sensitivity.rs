@@ -37,9 +37,9 @@ impl Sensitivity {
     pub fn for_provider(provider_id: &str) -> Self {
         match provider_id {
             "permission" => Self::Public,
-            "workspace" => Self::Workspace,
-            "project" | "diagnostics" | "search" => Self::Project,
-            "conversation" | "editor" | "memory" => Self::Private,
+            "workspace" | "workspace_inventory" => Self::Workspace,
+            "project" | "diagnostics" | "search" | "git_status" => Self::Project,
+            "conversation" | "editor" | "memory" | "file_summaries" => Self::Private,
             _ => Self::Private,
         }
     }

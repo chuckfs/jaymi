@@ -20,6 +20,7 @@ fn diagnostics_dashboard_reports_honest_subsystem_states() {
         ("Planner", OperationalStatus::Operational),
         ("Database", OperationalStatus::Operational),
         ("Configuration", OperationalStatus::Operational),
+        ("Session Cache", OperationalStatus::Operational),
         ("Logging", OperationalStatus::Operational),
         ("Permissions", OperationalStatus::Operational),
         ("Policies", OperationalStatus::Experimental),

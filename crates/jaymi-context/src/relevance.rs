@@ -2,8 +2,9 @@
 //!
 //! No AI / model scoring. Intent semantics come **only** from canonical
 //! [`jaymi_core::IntentId`] (Planner-supplied via [`AssembleHints`], or the
-//! shared structured classifier when hints are absent). Context never runs a
-//! parallel free-text intent classifier.
+//! shared structured classifier when hints are absent). Optional
+//! [`AssembleHints::complexity`] is Planner-authored conversational class —
+//! Context never invents complexity or Intent from free text.
 
 use jaymi_core::{IntentId, UserRequest};
 
@@ -195,12 +196,16 @@ impl IntentTag {
 ///
 /// Lives in `jaymi-context` (not planner) so there is no crate cycle.
 /// Intent is the canonical [`IntentId`] — never a free-form parallel label.
+/// Optional [`Self::complexity`] is a Planner-authored conversational class
+/// id (e.g. `greeting`, `coding_question`) — Context never invents it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssembleHints {
     /// Canonical Intent resolved by the Planner (or shared structured classifier).
     pub intent: IntentId,
     /// Capability ids selected by the Decision Engine for this request.
     pub capability_ids: Vec<String>,
+    /// Planner conversational complexity class id, when assessed.
+    pub complexity: Option<String>,
 }
 
 impl Default for AssembleHints {
@@ -208,6 +213,7 @@ impl Default for AssembleHints {
         Self {
             intent: IntentId::Unknown,
             capability_ids: Vec::new(),
+            complexity: None,
         }
     }
 }
@@ -218,7 +224,14 @@ impl AssembleHints {
         Self {
             intent,
             capability_ids: capability_ids.into_iter().collect(),
+            complexity: None,
         }
+    }
+
+    /// Attach a Planner complexity class id (does not change Intent / capabilities).
+    pub fn with_complexity(mut self, complexity: impl Into<String>) -> Self {
+        self.complexity = Some(complexity.into());
+        self
     }
 
     /// Fingerprint for cache keys.
@@ -228,6 +241,9 @@ impl AssembleHints {
         self.intent.as_str().hash(&mut hasher);
         for id in &self.capability_ids {
             id.hash(&mut hasher);
+        }
+        if let Some(complexity) = &self.complexity {
+            complexity.hash(&mut hasher);
         }
         hasher.finish()
     }
@@ -248,6 +264,8 @@ pub struct RelevanceSignals {
     pub active_capabilities: Vec<String>,
     /// Canonical Intent label (same as `intent.as_str()`).
     pub planner_intent: Option<String>,
+    /// Planner conversational complexity class id (`greeting`, …), when set.
+    pub complexity: Option<String>,
 }
 
 impl RelevanceSignals {
@@ -278,6 +296,7 @@ impl RelevanceSignals {
         let request_kind = RequestKind::from_intent(intent);
         let intent_tags = IntentTag::from_intent(intent);
         let planner_intent = Some(intent.as_str().to_string());
+        let complexity = hints.and_then(|hints| hints.complexity.clone());
 
         let workspace_kind = session.workspace_kind.clone();
         let mut active_capabilities = Vec::new();
@@ -304,6 +323,7 @@ impl RelevanceSignals {
             workspace_kind,
             active_capabilities,
             planner_intent,
+            complexity,
         }
     }
 
@@ -328,6 +348,73 @@ impl RelevanceSignals {
             self.workspace_kind.as_deref(),
             Some("coding") | Some("code") | Some("development")
         )
+    }
+
+    /// Planner complexity class id, when present.
+    pub fn complexity_id(&self) -> Option<&str> {
+        self.complexity.as_deref()
+    }
+
+    /// Participation tier for a provider under the current Planner complexity class.
+    ///
+    /// Returns `None` when no complexity hint is present (normal assemble).
+    pub fn complexity_tier_for(&self, provider_id: &str) -> Option<ComplexityProviderTier> {
+        let complexity = self.complexity.as_deref()?;
+        Some(complexity_provider_tier(complexity, provider_id))
+    }
+
+    /// Effective relevance score after complexity tier rules.
+    pub fn score_for_provider(&self, provider_id: &str, base: RelevanceScore) -> RelevanceScore {
+        match self.complexity_tier_for(provider_id) {
+            Some(ComplexityProviderTier::Required) => RelevanceScore::HIGH,
+            Some(ComplexityProviderTier::Excluded) => RelevanceScore::NONE,
+            Some(ComplexityProviderTier::Optional) | None => base,
+        }
+    }
+}
+
+/// How a provider participates under a Planner complexity class.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComplexityProviderTier {
+    /// Always considered for assemble (high relevance floor).
+    Required,
+    /// Normal relevance / policy / budget path.
+    Optional,
+    /// Skipped before policy — lightweight assemble.
+    Excluded,
+}
+
+/// Deterministic provider tier for a Planner complexity class id.
+pub fn complexity_provider_tier(complexity: &str, provider_id: &str) -> ComplexityProviderTier {
+    match complexity {
+        "greeting" | "small_talk" => match provider_id {
+            "conversation" => ComplexityProviderTier::Required,
+            "memory" | "search" | "workspace" | "diagnostics" | "project" | "editor"
+            | "git_status" | "workspace_inventory" | "file_summaries" => {
+                ComplexityProviderTier::Excluded
+            }
+            _ => ComplexityProviderTier::Optional,
+        },
+        "general_question" => match provider_id {
+            "conversation" => ComplexityProviderTier::Required,
+            _ => ComplexityProviderTier::Optional,
+        },
+        "coding_question" => match provider_id {
+            "conversation" | "workspace" | "diagnostics" | "project" | "editor" | "git_status"
+            | "file_summaries" => ComplexityProviderTier::Required,
+            _ => ComplexityProviderTier::Optional,
+        },
+        "project_question" => match provider_id {
+            "conversation" | "project" | "workspace" | "workspace_inventory" => {
+                ComplexityProviderTier::Required
+            }
+            _ => ComplexityProviderTier::Optional,
+        },
+        "research_question" => match provider_id {
+            "conversation" | "search" => ComplexityProviderTier::Required,
+            _ => ComplexityProviderTier::Optional,
+        },
+        _ => ComplexityProviderTier::Optional,
     }
 }
 
@@ -404,10 +491,55 @@ mod tests {
             signals.active_capabilities.first().map(String::as_str),
             Some("code")
         );
+        assert!(signals.has_capability("code"));
         assert!(signals.has_intent(IntentTag::Lsp));
         assert!(signals.has_intent(IntentTag::Code));
         // Free-text "hello" must not keep Chat facets when Planner said Lsp.
         assert!(!signals.has_intent(IntentTag::Chat));
+        assert!(signals.complexity.is_none());
+    }
+
+    #[test]
+    fn complexity_tiers_drive_participation() {
+        assert_eq!(
+            complexity_provider_tier("greeting", "conversation"),
+            ComplexityProviderTier::Required
+        );
+        assert_eq!(
+            complexity_provider_tier("greeting", "memory"),
+            ComplexityProviderTier::Excluded
+        );
+        assert_eq!(
+            complexity_provider_tier("general_question", "memory"),
+            ComplexityProviderTier::Optional
+        );
+        assert_eq!(
+            complexity_provider_tier("coding_question", "diagnostics"),
+            ComplexityProviderTier::Required
+        );
+
+        let hints = AssembleHints::new(IntentId::Unknown, Vec::<String>::new())
+            .with_complexity("greeting");
+        let signals = RelevanceSignals::derive_with(
+            &UserRequest::new("hi"),
+            &ContextSessionInputs::default(),
+            Some(&hints),
+        );
+        assert_eq!(signals.complexity_id(), Some("greeting"));
+        assert_eq!(
+            signals.complexity_tier_for("search"),
+            Some(ComplexityProviderTier::Excluded)
+        );
+        let base = RelevanceScore::new(70);
+        assert_eq!(
+            signals.score_for_provider("project", base).value(),
+            0,
+            "excluded tier should not use base score when skipped upstream"
+        );
+        assert_eq!(
+            signals.score_for_provider("conversation", base).value(),
+            RelevanceScore::HIGH.value()
+        );
     }
 
     #[test]

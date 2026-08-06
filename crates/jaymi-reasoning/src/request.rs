@@ -159,7 +159,7 @@ mod tests {
     fn new_request_carries_goal_and_context() {
         let request = ReasoningRequest::new("summarize this", sample_context());
         assert_eq!(request.goal, "summarize this");
-        assert_eq!(request.context.schema_version, 1);
+        assert_eq!(request.context.schema_version, jaymi_context::LLM_CONTEXT_SCHEMA_VERSION);
         assert!(!request.is_cancelled());
         assert!(!request.has_assembled_prompt());
         assert!(request.require_prompt().is_err());

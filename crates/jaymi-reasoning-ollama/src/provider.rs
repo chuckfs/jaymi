@@ -4,8 +4,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use jaymi_reasoning::{
-    ModelIdentifier, ReasoningCapabilities, ReasoningError, ReasoningHealth, ReasoningModelInfo,
-    ReasoningProvider, ReasoningRequest, ReasoningResponse, ReasoningResult, ReasoningStream,
+    ModelCapabilityFlags, ModelIdentifier, ReasoningCapabilities, ReasoningError, ReasoningHealth,
+    ReasoningModelInfo, ReasoningProvider, ReasoningRequest, ReasoningResponse, ReasoningResult,
+    ReasoningStream,
 };
 use serde_json::{json, Value};
 
@@ -115,10 +116,10 @@ impl OllamaReasoningProvider {
                 {
                     let mut state = self.diagnostics.lock().expect("diagnostics");
                     state.connected = false;
-                    state.detail = Some(err.to_string());
+                    state.detail = Some(humanize_unreachable(&err));
                 }
                 ReasoningHealth::Unavailable {
-                    reason: format!("ollama unreachable: {err}"),
+                    reason: humanize_unreachable(&err),
                 }
             }
         }
@@ -175,6 +176,37 @@ impl OllamaReasoningProvider {
         }
         Value::Object(options)
     }
+
+    fn model_info_from_tag(&self, tag: crate::types::OllamaModelTag) -> ReasoningModelInfo {
+        let id = ModelIdentifier::new(OLLAMA_PROVIDER_ID, tag.name.clone());
+        let mut info = ReasoningModelInfo::new(id, tag.name.clone());
+        info.supports_streaming = true;
+        info.local = true;
+        let details = tag.details.as_ref();
+        info.family = details.and_then(|details| details.family.clone());
+        let parameter_size = details.and_then(|details| details.parameter_size.clone());
+        info.parameter_count = parameter_size.clone();
+        info.quantization = details
+            .and_then(|details| details.quantization_level.clone())
+            .or_else(|| infer_quantization_from_name(&tag.name));
+        let parameter_size_ref = parameter_size.as_deref();
+        if let Some(window) =
+            infer_context_tokens(&tag.name, info.family.as_deref(), parameter_size_ref)
+        {
+            info.context_tokens = Some(window);
+        }
+        if let Some(size) = tag.size {
+            info.notes.push(format!("size_bytes={size}"));
+        }
+        if let Some(format) = details.and_then(|details| details.format.as_deref()) {
+            info.notes.push(format!("format={format}"));
+        }
+        info.capabilities = infer_capabilities_from_name(&tag.name, info.family.as_deref());
+        // `/api/show` enrichment is available via `OllamaClient::show_model` for
+        // targeted probes; list_models stays tags-based so registry refresh
+        // cannot stall on per-model show round-trips.
+        info
+    }
 }
 
 impl ReasoningProvider for OllamaReasoningProvider {
@@ -208,32 +240,7 @@ impl ReasoningProvider for OllamaReasoningProvider {
         let tags = self.client.list_tags().map_err(map_transport)?;
         Ok(tags
             .into_iter()
-            .map(|tag| {
-                let id = ModelIdentifier::new(OLLAMA_PROVIDER_ID, tag.name.clone());
-                let mut info = ReasoningModelInfo::new(id, tag.name.clone());
-                info.supports_streaming = true;
-                info.local = true;
-                let details = tag.details.as_ref();
-                info.family = details.and_then(|details| details.family.clone());
-                let parameter_size = details.and_then(|details| details.parameter_size.clone());
-                info.parameter_count = parameter_size.clone();
-                info.quantization = details
-                    .and_then(|details| details.quantization_level.clone())
-                    .or_else(|| infer_quantization_from_name(&tag.name));
-                let parameter_size_ref = parameter_size.as_deref();
-                if let Some(window) =
-                    infer_context_tokens(&tag.name, info.family.as_deref(), parameter_size_ref)
-                {
-                    info.context_tokens = Some(window);
-                }
-                if let Some(size) = tag.size {
-                    info.notes.push(format!("size_bytes={size}"));
-                }
-                if let Some(format) = details.and_then(|details| details.format.as_deref()) {
-                    info.notes.push(format!("format={format}"));
-                }
-                info
-            })
+            .map(|tag| self.model_info_from_tag(tag))
             .collect())
     }
 
@@ -316,6 +323,98 @@ impl ReasoningProvider for OllamaReasoningProvider {
             model,
             Arc::clone(&self.diagnostics),
         )))
+    }
+}
+
+fn humanize_unreachable(err: &TransportError) -> String {
+    let raw = err.to_string();
+    let lower = raw.to_ascii_lowercase();
+    if lower.contains("connection refused")
+        || lower.contains("couldn't connect")
+        || lower.contains("could not connect")
+        || lower.contains("failed to connect")
+    {
+        "Ollama isn’t running. Start Ollama to use local models (default http://127.0.0.1:11434)."
+            .into()
+    } else if lower.contains("timed out") || lower.contains("timeout") {
+        "Ollama did not respond in time. Check that the app is running and try again.".into()
+    } else {
+        format!("Can’t reach Ollama ({raw})")
+    }
+}
+
+fn is_embedding_name(name: &str, family: Option<&str>) -> bool {
+    let hay = format!(
+        "{} {}",
+        name.to_ascii_lowercase(),
+        family.unwrap_or("").to_ascii_lowercase()
+    );
+    hay.contains("embed") || hay.contains("nomic-embed") || hay.contains("bge-")
+}
+
+fn infer_capabilities_from_name(name: &str, family: Option<&str>) -> ModelCapabilityFlags {
+    if is_embedding_name(name, family) {
+        return ModelCapabilityFlags::embeddings_only();
+    }
+    let mut flags = ModelCapabilityFlags::completion_only();
+    let hay = format!(
+        "{} {}",
+        name.to_ascii_lowercase(),
+        family.unwrap_or("").to_ascii_lowercase()
+    );
+    if hay.contains("vision") || hay.contains("llava") || hay.contains("minicpm-v") {
+        flags.vision = true;
+    }
+    if hay.contains("think") || hay.contains("reason") || hay.contains("r1") {
+        flags.thinking = true;
+    }
+    flags
+}
+
+#[allow(dead_code)] // Used when /api/show enrichment is enabled; covered by unit tests.
+fn capabilities_from_show(capabilities: &[String]) -> ModelCapabilityFlags {
+    let mut flags = ModelCapabilityFlags::default();
+    for cap in capabilities {
+        match cap.trim().to_ascii_lowercase().as_str() {
+            "completion" | "chat" | "generate" => flags.completion = true,
+            "thinking" | "reasoning" => flags.thinking = true,
+            "tools" | "tool" | "function_call" | "function_calling" => flags.tools = true,
+            "vision" | "image" | "multimodal" => flags.vision = true,
+            "embedding" | "embeddings" => flags.embeddings = true,
+            _ => {}
+        }
+    }
+    if flags.embeddings && !flags.completion && !flags.vision && !flags.tools && !flags.thinking {
+        return flags;
+    }
+    if !flags.embeddings && !flags.completion && (flags.thinking || flags.tools || flags.vision) {
+        flags.completion = true;
+    }
+    flags
+}
+
+#[cfg(test)]
+mod capability_mapping_tests {
+    use super::*;
+
+    #[test]
+    fn show_capabilities_map_to_flags() {
+        let flags = capabilities_from_show(&[
+            "completion".into(),
+            "tools".into(),
+            "vision".into(),
+        ]);
+        assert!(flags.completion);
+        assert!(flags.tools);
+        assert!(flags.vision);
+        assert!(!flags.embeddings);
+    }
+
+    #[test]
+    fn embedding_name_inferred() {
+        let flags = infer_capabilities_from_name("nomic-embed-text", Some("bert"));
+        assert!(flags.embeddings);
+        assert!(!flags.completion);
     }
 }
 

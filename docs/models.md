@@ -1,21 +1,31 @@
 # Model Registry
 
-**Status: Partial** — Sprint B1.9 catalog + **B1.13.6** Reasoning loop.
+**Status: Partial** — Sprint B1.9 catalog + **B1.13.6** Reasoning loop + **Settings**
+persisted default (Preferences → Config → Application → Registry / Planner).
 
 Jaymi’s Model Registry tracks **available reasoning models**. It is **not** a
 marketplace and does **not** download, install, or pull weights.
 
 ```text
-ReasoningProvider::list_models / health
+Settings Workspace (intents only)
         ↓
-   ModelRegistry (default / preferred)
+Application facade
         ↓
- Planner::prepare_reasoning_model
+Configuration (preferred provider / model)
         ↓
- ReasoningRequest.model
+ModelRegistry (default / preferred) ← ReasoningProvider::list_models / health
         ↓
- ReasoningProvider (respects selection)
+Planner::prepare_reasoning_model
+        ↓
+ReasoningRequest.model
+        ↓
+ReasoningProvider (respects selection)
 ```
+
+Settings never talks to the registry or providers directly — see
+[settings.md](settings.md). Application holds a session-scoped cache of the
+registry snapshot (installed models + provider health); Refresh Models and
+Test Connection invalidate it — see [session-cache.md](session-cache.md).
 
 ## Contract
 
@@ -34,8 +44,13 @@ Planner resolves via `prepare_reasoning_model` (preferred → default → fallba
 * **Missing / unavailable** preferred or default → first available model
 * **No models** → soft-fail (request may omit model; diagnostics show `-`)
 
-`Planner::set_preferred_model` / `Application::set_preferred_model` set an
-explicit override for the next conversational turns.
+`Application::set_default_reasoning_model` persists into `config.json`
+(`Settings.reasoning`) and updates registry default + Planner preferred.
+`Application::set_preferred_model` remains the in-session Planner override API.
+
+`ReasoningModelInfo` carries vendor-neutral `ModelCapabilityFlags`
+(completion / thinking / tools / vision / embeddings) populated by providers
+during discovery (Ollama uses `/api/tags` + `/api/show`).
 
 ## Diagnostics (B1.13.6)
 
@@ -49,12 +64,13 @@ explicit override for the next conversational turns.
 ## Ollama (first backend)
 
 Boot registers `OllamaReasoningProvider` into `ModelRegistry` and refreshes
-once. Tags from `/api/tags` fill:
+once. Tags from `/api/tags` (enriched by `/api/show` when available) fill:
 
 * installed model names
 * `parameter_size` → parameter count
 * `quantization_level` (or inferred from the tag name)
-* heuristic context length (see [ollama.md](ollama.md) / B1.8)
+* context length (show `model_info` or heuristic — see [ollama.md](ollama.md))
+* capability flags
 
 When Planner sets `ReasoningRequest.model`, Ollama uses that name and rejects
 unknown models with `ModelNotFound`.
@@ -63,5 +79,5 @@ unknown models with `ModelNotFound`.
 
 * Model download / pull / install UI
 * Marketplace or ranking
-* Multi-backend routing beyond the shared registry contract
+* Additional backends (llama.cpp, MLX, cloud) — registry + Settings UI seams only
 * Changing tool `ProviderRegistry` (that catalog stays separate)

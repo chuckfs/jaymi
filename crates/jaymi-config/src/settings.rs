@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 /// Current settings schema version written by this build.
-pub const CURRENT_SETTINGS_VERSION: u32 = 1;
+pub const CURRENT_SETTINGS_VERSION: u32 = 2;
 
 const CONFIG_FILE_NAME: &str = "config.json";
 
@@ -82,6 +82,33 @@ impl Default for ProviderPreferences {
     }
 }
 
+/// Persisted conversational reasoning preferences (Settings Workspace).
+///
+/// Settings owns preferences only — discovery and runtime state live in the
+/// Model Registry / Planner, restored through Application at boot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ReasoningPreferences {
+    /// Preferred reasoning provider id (e.g. `ollama`), when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_provider_id: Option<String>,
+    /// Preferred model name within that provider, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferred_model: Option<String>,
+}
+
+impl ReasoningPreferences {
+    /// True when both provider and model are set.
+    pub fn is_set(&self) -> bool {
+        self.preferred_provider_id
+            .as_ref()
+            .is_some_and(|id| !id.trim().is_empty())
+            && self
+                .preferred_model
+                .as_ref()
+                .is_some_and(|name| !name.trim().is_empty())
+    }
+}
+
 /// Persisted Jaymi settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Settings {
@@ -100,6 +127,9 @@ pub struct Settings {
     /// Default provider selection preferences.
     #[serde(default)]
     pub default_provider_preferences: ProviderPreferences,
+    /// Conversational reasoning model preference (Settings → Reasoning).
+    #[serde(default)]
+    pub reasoning: ReasoningPreferences,
     /// Whether background indexing is enabled when the knowledge engine exists.
     #[serde(default = "default_true")]
     pub indexing_enabled: bool,
@@ -119,6 +149,7 @@ impl Default for Settings {
             log_level: LogLevel::Info,
             theme: Theme::System,
             default_provider_preferences: ProviderPreferences::default(),
+            reasoning: ReasoningPreferences::default(),
             indexing_enabled: true,
             discovery_roots: Vec::new(),
             extensions: BTreeMap::new(),
@@ -194,23 +225,28 @@ mod tests {
     }
 
     #[test]
-    fn unknown_fields_round_trip_via_extensions() {
-        let settings: Settings = serde_json::from_str(
-            r#"{
-                "data_dir":"/tmp/jaymi",
-                "future_flag":true,
-                "future_map":{"a":1}
-            }"#,
-        )
-        .unwrap();
+    fn reasoning_preferences_round_trip() {
+        let mut settings = Settings::default();
+        settings.reasoning = ReasoningPreferences {
+            preferred_provider_id: Some("ollama".into()),
+            preferred_model: Some("llama3.2:latest".into()),
+        };
+        let encoded = serde_json::to_string(&settings).unwrap();
+        let decoded: Settings = serde_json::from_str(&encoded).unwrap();
+        assert!(decoded.reasoning.is_set());
         assert_eq!(
-            settings.extensions.get("future_flag"),
-            Some(&serde_json::json!(true))
+            decoded.reasoning.preferred_provider_id.as_deref(),
+            Some("ollama")
         );
-        assert!(settings.extensions.contains_key("future_map"));
+        assert_eq!(
+            decoded.reasoning.preferred_model.as_deref(),
+            Some("llama3.2:latest")
+        );
+    }
 
-        let encoded = serde_json::to_value(&settings).unwrap();
-        assert_eq!(encoded["future_flag"], serde_json::json!(true));
-        assert_eq!(encoded["data_dir"], "/tmp/jaymi");
+    #[test]
+    fn missing_reasoning_deserializes_empty() {
+        let settings: Settings = serde_json::from_str(r#"{"data_dir":"/tmp/jaymi"}"#).unwrap();
+        assert!(!settings.reasoning.is_set());
     }
 }

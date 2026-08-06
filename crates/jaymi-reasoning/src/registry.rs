@@ -120,13 +120,17 @@ impl ModelRegistry {
 
     /// Registry with a single provider (typical boot: Ollama).
     pub fn with_provider(provider: Arc<dyn ReasoningProvider>) -> Self {
-        let mut registry = Self::new();
+        let registry = Self::new();
         registry.register_provider(provider);
         registry
     }
 
     /// Register an additional reasoning backend.
-    pub fn register_provider(&mut self, provider: Arc<dyn ReasoningProvider>) {
+    ///
+    /// Safe after the registry is behind `Arc` — providers use interior mutability.
+    /// Callers that change registration must invalidate Application session cache
+    /// (`notify_providers_changed`).
+    pub fn register_provider(&self, provider: Arc<dyn ReasoningProvider>) {
         if let Ok(mut guard) = self.providers.write() {
             if guard.iter().any(|existing| existing.id() == provider.id()) {
                 return;
@@ -136,7 +140,7 @@ impl ModelRegistry {
     }
 
     /// Builder-style register.
-    pub fn with_additional_provider(mut self, provider: Arc<dyn ReasoningProvider>) -> Self {
+    pub fn with_additional_provider(self, provider: Arc<dyn ReasoningProvider>) -> Self {
         self.register_provider(provider);
         self
     }

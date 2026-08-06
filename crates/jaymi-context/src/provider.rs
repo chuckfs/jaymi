@@ -14,8 +14,8 @@ use jaymi_core::UserRequest;
 use crate::bundle::{
     ActiveCapabilitiesSection, ActiveProjectSection, ActiveWorkspaceSection, ContextSessionInputs,
     ContextSource, ConversationSection, CurrentFileSection, CurrentSelectionSection,
-    DiagnosticsSection, MemoryResultsSection, OpenFilesSection, PermissionsSection,
-    SearchResultsSection,
+    DiagnosticsSection, FileSummariesSection, GitStatusSection, MemoryResultsSection,
+    OpenFilesSection, PermissionsSection, SearchResultsSection, WorkspaceInventorySection,
 };
 use crate::budget::{BudgetEstimate, ProviderPriority};
 use crate::relevance::{RelevanceScore, RelevanceSignals};
@@ -57,6 +57,12 @@ pub struct ContextContribution {
     pub memory_results: Option<MemoryResultsSection>,
     /// Diagnostics section, when contributing.
     pub diagnostics: Option<DiagnosticsSection>,
+    /// Git status section, when contributing.
+    pub git_status: Option<GitStatusSection>,
+    /// Workspace inventory section, when contributing.
+    pub workspace_inventory: Option<WorkspaceInventorySection>,
+    /// File summaries section, when contributing.
+    pub file_summaries: Option<FileSummariesSection>,
     /// Permissions section, when contributing.
     pub permissions: Option<PermissionsSection>,
     /// Active capabilities section, when contributing.
@@ -81,6 +87,9 @@ impl ContextContribution {
             && self.search_results.is_none()
             && self.memory_results.is_none()
             && self.diagnostics.is_none()
+            && self.git_status.is_none()
+            && self.workspace_inventory.is_none()
+            && self.file_summaries.is_none()
             && self.permissions.is_none()
             && self.active_capabilities.is_none()
     }

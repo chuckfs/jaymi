@@ -29,6 +29,10 @@ use crate::experience::ExperienceSession;
 use crate::monaco_host::{
     language_for_path, resolve_monaco_assets, MonacoDocument, MonacoHost, MonacoIpcMessage,
 };
+use crate::settings_workspace::{
+    render_settings_workspace, ReasoningSettingsSnapshot, SettingsCategory, SettingsWorkspaceContext,
+    SettingsWorkspaceEvent, SettingsWorkspaceState,
+};
 use crate::theme::{inset, radius, space, stroke, type_size, Theme};
 use crate::ui::explorer::ExplorerEvent;
 use crate::ui::nav_rail::{
@@ -42,6 +46,7 @@ use jaymi_capabilities::{
     MAX_WORKSPACE_PANEL_WIDTH, MIN_CONVERSATION_WIDTH, MIN_WORKSPACE_PANEL_WIDTH,
 };
 use jaymi_config::{Config, Theme as ThemePreference};
+use std::sync::{Arc, Mutex};
 use jaymi_memory::{ConversationMeta, MessageRole};
 use jaymi_planner::ReviewIntent;
 
@@ -67,8 +72,14 @@ pub fn run_diagnostics(
             configure_fonts(&cc.egui_ctx);
             let preference = app
                 .container()
-                .resolve::<Config>()
-                .map(|config| config.settings().theme)
+                .resolve::<Arc<Mutex<Config>>>()
+                .ok()
+                .and_then(|config| {
+                    config
+                        .lock()
+                        .ok()
+                        .map(|guard| guard.settings().theme)
+                })
                 .unwrap_or(ThemePreference::System);
             let system_dark = cc
                 .egui_ctx
@@ -108,6 +119,11 @@ pub fn run_diagnostics(
                 nav_anim_from: 0.0,
                 nav_anim_target: DEFAULT_NAV_WIDTH,
                 nav_width: DEFAULT_NAV_WIDTH,
+                settings: SettingsWorkspaceState {
+                    category: SettingsCategory::Reasoning,
+                },
+                reasoning_settings: ReasoningSettingsSnapshot::default(),
+                settings_busy: false,
             }))
         }),
     )
@@ -361,6 +377,12 @@ struct JaymiApp {
     nav_anim_target: f32,
     /// Remembered open width for the left nav rail.
     nav_width: f32,
+    /// Settings Workspace UI selection (preferences only).
+    settings: SettingsWorkspaceState,
+    /// Cached Reasoning settings snapshot from Application.
+    reasoning_settings: ReasoningSettingsSnapshot,
+    /// True while Settings refresh / test is in flight.
+    settings_busy: bool,
 }
 
 /// Duration of the workspace expand-in animation.
@@ -428,6 +450,7 @@ impl eframe::App for JaymiApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.sync_theme(ctx);
         self.pump_active_generation(ctx);
+        let _ = self.app.pump_context_maintenance();
 
         if let Ok(session) = self.app.experience() {
             self.experience = session;
@@ -479,7 +502,7 @@ impl eframe::App for JaymiApp {
 
         self.render_nav_side_panel(ctx);
 
-        if self.experience.workspace_expanded() {
+        if self.experience.workspace_expanded() && self.nav_tab != NavTab::Settings {
             // Chat-forward: Coding expands beside conversation, never full-window.
             let is_coding = self.experience.active_workspace_kind() == Some(WorkspaceKind::Coding);
             let remembered_coding_width = self
@@ -578,8 +601,7 @@ impl eframe::App for JaymiApp {
             self.workspace_anim_start = None;
         }
 
-        // Conversation column — always alive beside Coding (never replaced).
-        // Open window background only — no nested conversation frame.
+        // Conversation column — or Settings Workspace when that nav destination is active.
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -587,28 +609,32 @@ impl eframe::App for JaymiApp {
                     .inner_margin(egui::Margin::ZERO),
             )
             .show(ctx, |ui| {
-                // Floating composer — anchored bottom, inset from edges, no chrome bar.
-                egui::TopBottomPanel::bottom("chat_composer")
-                    .show_separator_line(false)
-                    .frame(
-                        egui::Frame::new()
-                            .inner_margin(egui::Margin {
-                                left: space::XL as i8,
-                                right: space::XL as i8,
-                                top: space::MD as i8,
-                                bottom: space::LG as i8,
-                            })
-                            .fill(self.theme.background)
-                            .stroke(egui::Stroke::NONE),
-                    )
-                    .show_inside(ui, |ui| {
-                        self.render_chat_composer(ui);
-                    });
+                if self.nav_tab == NavTab::Settings {
+                    self.render_settings_surface(ui);
+                } else {
+                    // Floating composer — anchored bottom, inset from edges, no chrome bar.
+                    egui::TopBottomPanel::bottom("chat_composer")
+                        .show_separator_line(false)
+                        .frame(
+                            egui::Frame::new()
+                                .inner_margin(egui::Margin {
+                                    left: space::XL as i8,
+                                    right: space::XL as i8,
+                                    top: space::MD as i8,
+                                    bottom: space::LG as i8,
+                                })
+                                .fill(self.theme.background)
+                                .stroke(egui::Stroke::NONE),
+                        )
+                        .show_inside(ui, |ui| {
+                            self.render_chat_composer(ui);
+                        });
 
-                self.render_conversation_surface(ui);
-                if self.show_diagnostics {
-                    ui.add_space(space::MD);
-                    self.render_diagnostics(ui);
+                    self.render_conversation_surface(ui);
+                    if self.show_diagnostics {
+                        ui.add_space(space::MD);
+                        self.render_diagnostics(ui);
+                    }
                 }
             });
 
@@ -627,9 +653,7 @@ impl JaymiApp {
     fn sync_theme(&mut self, ctx: &egui::Context) {
         let preference = self
             .app
-            .container()
-            .resolve::<Config>()
-            .map(|config| config.settings().theme)
+            .theme_preference()
             .unwrap_or(ThemePreference::System);
         let system_dark = ctx
             .system_theme()
@@ -905,6 +929,9 @@ impl JaymiApp {
             Ok(CommandDispatchEffect::ContinueConversation) => {
                 self.focus_composer = true;
                 self.status = Some("Continue the conversation…".into());
+            }
+            Ok(CommandDispatchEffect::OpenSettings) => {
+                self.open_settings_workspace();
             }
             Err(error) => {
                 self.status = None;
@@ -1681,6 +1708,95 @@ impl JaymiApp {
                         self.open_project_folder();
                     }
                 }
+                NavRailEvent::OpenSettings => {
+                    self.open_settings_workspace();
+                }
+            }
+        }
+    }
+
+    fn open_settings_workspace(&mut self) {
+        self.nav_tab = NavTab::Settings;
+        if self.settings.category != SettingsCategory::Reasoning
+            && matches!(
+                self.settings.category,
+                SettingsCategory::General | SettingsCategory::Appearance
+            )
+        {
+            // Keep user's last category when re-entering; default first open is Reasoning.
+        }
+        self.settings_busy = false;
+        match self.app.reasoning_settings_snapshot() {
+            Ok(snapshot) => {
+                self.reasoning_settings = snapshot;
+                self.error = None;
+            }
+            Err(error) => {
+                self.error = Some(error.message().to_string());
+            }
+        }
+    }
+
+    fn render_settings_surface(&mut self, ui: &mut egui::Ui) {
+        let mut events = Vec::new();
+        {
+            let ctx = SettingsWorkspaceContext {
+                theme: &self.theme,
+                state: &self.settings,
+                reasoning: &self.reasoning_settings,
+                busy: self.settings_busy,
+            };
+            render_settings_workspace(ui, &ctx, &mut events);
+        }
+        self.handle_settings_events(events);
+    }
+
+    fn handle_settings_events(&mut self, events: Vec<SettingsWorkspaceEvent>) {
+        for event in events {
+            match event {
+                SettingsWorkspaceEvent::SelectCategory(category) => {
+                    self.settings.category = category;
+                }
+                SettingsWorkspaceEvent::Close => {
+                    self.nav_tab = NavTab::Conversations;
+                }
+                SettingsWorkspaceEvent::SelectDefaultModel {
+                    provider_id,
+                    model_name,
+                } => match self
+                    .app
+                    .set_default_reasoning_model(provider_id, model_name)
+                {
+                    Ok(snapshot) => {
+                        self.reasoning_settings = snapshot;
+                        self.status = Some("Default reasoning model updated.".into());
+                        self.error = None;
+                    }
+                    Err(error) => self.error = Some(error.message().to_string()),
+                },
+                SettingsWorkspaceEvent::RefreshModels => {
+                    self.settings_busy = true;
+                    match self.app.refresh_reasoning_models() {
+                        Ok(snapshot) => {
+                            self.reasoning_settings = snapshot;
+                            self.status = Some("Models refreshed.".into());
+                            self.error = None;
+                        }
+                        Err(error) => self.error = Some(error.message().to_string()),
+                    }
+                    self.settings_busy = false;
+                }
+                SettingsWorkspaceEvent::TestConnection => {
+                    self.settings_busy = true;
+                    match self.app.test_reasoning_connection() {
+                        Ok(snapshot) => {
+                            self.reasoning_settings = snapshot;
+                            self.error = None;
+                        }
+                        Err(error) => self.error = Some(error.message().to_string()),
+                    }
+                    self.settings_busy = false;
+                }
             }
         }
     }
@@ -1791,15 +1907,8 @@ impl JaymiApp {
                     result
                 }
                 CodingShellEvent::OpenSettings => {
-                    // Until a real Settings surface exists, open the workspace
-                    // Diagnostics dock page (not the developer dashboard).
-                    let result = self.app.with_coding_state(|coding| {
-                        coding.show_bottom_tab(CodingBottomTab::Diagnostics);
-                    });
-                    if result.is_ok() {
-                        let _ = self.app.persist_coding_editor_workspace();
-                    }
-                    result
+                    self.open_settings_workspace();
+                    Ok(())
                 }
                 CodingShellEvent::SetMinimap(enabled) => {
                     self.update_editor_setting(|settings| settings.minimap = enabled)
@@ -2527,6 +2636,7 @@ impl JaymiApp {
                 if let Ok(session) = self.app.experience() {
                     self.experience = session;
                 }
+                // Keep polling — Pending frames must still wake for first token.
                 ctx.request_repaint();
             }
             Ok(PumpGeneration::Finished(_response)) => {
@@ -2763,6 +2873,125 @@ impl JaymiApp {
                 .size(type_size::UI)
                 .color(self.theme.text_secondary),
         );
+
+        // Performance dashboard — observational timings (Developer Diagnostics only).
+        {
+            let performance = self.snapshot.performance_dashboard();
+            if performance.has_content() {
+                ui.add_space(space::MD);
+                ui.label(
+                    egui::RichText::new("Performance")
+                        .strong()
+                        .size(type_size::UI)
+                        .color(self.theme.text_primary),
+                );
+                ui.add_space(space::XS);
+                ui.label(
+                    egui::RichText::new(
+                        "Last-turn pipeline timings · TTFT · provider / context timings · cache · prompt sizes. Observational only — not shown in conversation.",
+                    )
+                    .size(type_size::META)
+                    .color(self.theme.text_secondary),
+                );
+                ui.add_space(space::SM);
+                egui::Grid::new("performance_metrics")
+                    .striped(true)
+                    .num_columns(2)
+                    .spacing([space::MD, space::XS])
+                    .min_col_width(140.0)
+                    .show(ui, |ui| {
+                        ui.strong("Metric");
+                        ui.strong("Value");
+                        ui.end_row();
+                        for (label, value) in performance.metric_rows() {
+                            ui.label(label);
+                            ui.label(value);
+                            ui.end_row();
+                        }
+                    });
+                if !performance.provider_timings.is_empty() {
+                    ui.add_space(space::SM);
+                    ui.label(
+                        egui::RichText::new("Provider timings")
+                            .strong()
+                            .size(type_size::META)
+                            .color(self.theme.text_primary),
+                    );
+                    egui::Grid::new("performance_provider_timings")
+                        .striped(true)
+                        .num_columns(2)
+                        .spacing([space::MD, space::XS])
+                        .min_col_width(120.0)
+                        .show(ui, |ui| {
+                            for (label, value) in &performance.provider_timings {
+                                ui.label(label);
+                                ui.label(value);
+                                ui.end_row();
+                            }
+                        });
+                }
+                if !performance.context_provider_timings.is_empty() {
+                    ui.add_space(space::SM);
+                    ui.label(
+                        egui::RichText::new("Context provider timings")
+                            .strong()
+                            .size(type_size::META)
+                            .color(self.theme.text_primary),
+                    );
+                    egui::Grid::new("performance_context_provider_timings")
+                        .striped(true)
+                        .num_columns(2)
+                        .spacing([space::MD, space::XS])
+                        .min_col_width(120.0)
+                        .show(ui, |ui| {
+                            for (label, value) in &performance.context_provider_timings {
+                                ui.label(label);
+                                ui.label(value);
+                                ui.end_row();
+                            }
+                        });
+                }
+                if !performance.timeline.is_empty() {
+                    ui.add_space(space::SM);
+                    ui.label(
+                        egui::RichText::new("Pipeline timeline")
+                            .strong()
+                            .size(type_size::META)
+                            .color(self.theme.text_primary),
+                    );
+                    ui.add_space(space::XS);
+                    let max_ms = performance
+                        .timeline
+                        .iter()
+                        .map(|row| row.duration_ms)
+                        .max()
+                        .unwrap_or(1)
+                        .max(1);
+                    egui::Grid::new("performance_pipeline_timeline")
+                        .striped(true)
+                        .num_columns(3)
+                        .spacing([space::MD, space::XS])
+                        .min_col_width(80.0)
+                        .show(ui, |ui| {
+                            ui.strong("Stage");
+                            ui.strong("Duration");
+                            ui.strong("");
+                            ui.end_row();
+                            for row in &performance.timeline {
+                                ui.label(&row.label);
+                                ui.label(format!("{} ms", row.duration_ms));
+                                let fraction =
+                                    (row.duration_ms as f32 / max_ms as f32).clamp(0.0, 1.0);
+                                ui.add(
+                                    egui::ProgressBar::new(fraction)
+                                        .desired_width(140.0),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                }
+            }
+        }
 
         // Execution inspection — why plans are paused / resumed.
         if let Ok(view) = self.app.coding_diagnostics_view() {

@@ -38,14 +38,7 @@ pub fn dispatch_command(
         }
         ids::OPEN_TERMINAL => show_bottom_tab(app, CodingBottomTab::Terminal),
         ids::OPEN_GIT => show_bottom_tab(app, CodingBottomTab::Git),
-        ids::OPEN_SETTINGS => {
-            ensure_coding(app)?;
-            app.with_coding_state(|coding| {
-                coding.show_bottom_tab(CodingBottomTab::Diagnostics);
-            })?;
-            let _ = app.persist_coding_editor_workspace();
-            Ok(CommandDispatchEffect::None)
-        }
+        ids::OPEN_SETTINGS => Ok(CommandDispatchEffect::OpenSettings),
         ids::SWITCH_PROJECT => Ok(CommandDispatchEffect::PickAndOpenFolder),
         ids::CONTINUE_CONVERSATION => Ok(CommandDispatchEffect::ContinueConversation),
         ids::TOGGLE_EXPLORER => {
@@ -173,6 +166,8 @@ pub enum CommandDispatchEffect {
     OpenCommandPalette,
     /// Focus the conversation composer (continue chatting).
     ContinueConversation,
+    /// Open the Settings Workspace (preferences).
+    OpenSettings,
 }
 
 fn required_argument<'a>(argument: Option<&'a str>, label: &str) -> JaymiResult<&'a str> {

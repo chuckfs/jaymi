@@ -85,6 +85,9 @@ ModelRegistry (default / preferred)
 Diagnostics expose Configured / Actual / Provider / Loaded model. Missing or
 unavailable selections fall back to the next available registry model.
 
+Persisted defaults restore at boot from `Settings.reasoning` through the
+Application facade (Settings Workspace). See [settings.md](settings.md).
+
 ## Conversation state (B1.7 / B1.13.7)
 
 User-visible phase owned **only** by the Planner (`jaymi_planner::ConversationState`):
@@ -135,16 +138,37 @@ terminal), cancel with reason, retry / reconnect after disconnect, and partial
 completion. Experience updates assistant turns token-by-token via
 `begin_streaming_assistant` / `apply_stream_event`.
 
+**Time To First Token:** Provider reads run on a background worker inside
+`StreamingResponse`. The UI calls `ConversationStream::try_pump` (via
+`Application::pump_generation`) and never blocks on provider I/O. Visible
+`Token` events are forwarded to the conversation as soon as the provider emits
+them — they do **not** wait for diagnostics, execution summaries, metrics, or
+the final `ReasoningResponse`. Developer diagnostics / metrics continue
+collecting in the background and attach on terminal events only.
+
 Diagnostics on [`ReasoningMetrics`]:
 
 | Field | Meaning |
 |-------|---------|
 | `latency_ms` | Wall-clock request → terminal |
-| `provider_latency_ms` | TTFT or provider-reported duration |
+| `ttft_ms` | Time to first token from provider transport start |
+| `provider_latency_ms` | Provider-reported duration, else TTFT (compat) |
 | `generation_duration_ms` | First token → terminal |
 | `tokens_per_sec_milli` | Approx tokens/sec × 1000 |
 | `cancel_reason` | `user` / `timeout` / `provider_disconnect` / `engine` / `error` |
 | `partial` | Terminal content is incomplete |
+| `pipeline` | Stage timings (diagnostics only; see below) |
+
+### Pipeline stage timings
+
+Lightweight `PipelineTiming` records elapsed milliseconds per stage without
+changing generation behavior. Stages include request received, Planner,
+Context assembly, per-provider contribute, PromptBuilder, ReasoningEngine,
+provider transport, TTFT, total generation, and request→done total.
+
+Timings surface **only** in Developer Diagnostics — the **Performance**
+dashboard and `ReasoningDiagnosticsReport` labeled values under **Pipeline
+Timing**. They are never shown in the normal conversation UI.
 
 ## When Reasoning runs
 

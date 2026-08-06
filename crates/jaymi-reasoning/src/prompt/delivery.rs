@@ -133,6 +133,13 @@ impl Prompt {
             contribution.estimated_tokens = budget.estimate_tokens(characters);
         }
 
+        // Preserve assembled size when the builder already recorded it.
+        if self.diagnostics.assembled_prompt_size_characters.is_none() {
+            self.diagnostics.assembled_prompt_size_characters =
+                Some(self.diagnostics.prompt_size_characters);
+            self.diagnostics.assembled_prompt_size_tokens =
+                Some(self.diagnostics.prompt_size_tokens);
+        }
         self.diagnostics.prompt_size_characters = delivered_chars;
         self.diagnostics.prompt_size_tokens = delivered_tokens;
         self.diagnostics.final_token_estimate = delivered_tokens;
@@ -209,6 +216,8 @@ mod tests {
             diagnostics: crate::prompt::diagnostics::PromptDiagnostics {
                 prompt_size_characters: 20,
                 prompt_size_tokens: 5,
+                assembled_prompt_size_characters: Some(20),
+                assembled_prompt_size_tokens: Some(5),
                 final_token_estimate: 5,
                 conversation_turns: 0,
                 budget: crate::prompt::budget::PromptBudgetUsage {
@@ -230,6 +239,7 @@ mod tests {
                 template_id: None,
                 formatter_id: None,
                 adapter_id: None,
+                build_duration_ms: None,
             },
         };
         let messages = prompt.to_chat_messages();
@@ -254,6 +264,13 @@ mod tests {
         prompt.seal_for_delivery(&budget, 2);
         let delivered = prompt.delivered_character_count();
         assert_eq!(prompt.diagnostics.prompt_size_characters, delivered);
+        assert!(
+            prompt
+                .diagnostics
+                .assembled_prompt_size_characters
+                .is_some(),
+            "assembled size retained for Performance dashboard"
+        );
         assert_eq!(
             prompt.diagnostics.prompt_size_tokens,
             budget.estimate_tokens(delivered)

@@ -6,20 +6,26 @@
 mod conversation;
 mod diagnostics;
 mod editor;
+mod file_summaries;
+mod git_status;
 mod memory;
 mod permission;
 mod project;
 mod search;
 mod workspace;
+mod workspace_inventory;
 
 pub use conversation::ConversationProvider;
 pub use diagnostics::DiagnosticsProvider;
 pub use editor::EditorProvider;
+pub use file_summaries::FileSummariesProvider;
+pub use git_status::GitStatusProvider;
 pub use memory::MemoryProvider;
 pub use permission::PermissionProvider;
 pub use project::ProjectProvider;
 pub use search::SearchProvider;
 pub use workspace::WorkspaceProvider;
+pub use workspace_inventory::WorkspaceInventoryProvider;
 
 use std::sync::Arc;
 
@@ -50,6 +56,9 @@ pub fn default_providers(deps: ProviderDeps) -> Vec<Arc<dyn ContextProvider>> {
         Arc::new(SearchProvider::new(deps.search)),
         Arc::new(MemoryProvider::new(deps.memory)),
         Arc::new(DiagnosticsProvider),
+        Arc::new(GitStatusProvider),
+        Arc::new(WorkspaceInventoryProvider),
+        Arc::new(FileSummariesProvider),
         Arc::new(PermissionProvider),
     ]
 }

@@ -16,6 +16,7 @@ use jaymi_reasoning::{
     CancelReason, ConversationStreamEvent, ReasoningMetrics, ReasoningResponse, StreamingLifecycle,
 };
 
+use crate::complexity::ComplexityAssessment;
 use crate::conversation_state::ConversationState;
 use crate::decision::Intent;
 use crate::PlannerResponse;
@@ -186,6 +187,30 @@ pub fn planner_response_from_terminal(
     model_fallback: bool,
 ) -> PlannerResponse {
     let content = normalize_terminal_content(terminal.content, terminal.lifecycle);
+    let mut pipeline_timing = terminal
+        .metrics
+        .as_ref()
+        .and_then(|metrics| metrics.pipeline.clone())
+        .unwrap_or_default();
+    if let Some(prompt) = prompt_diagnostics.as_ref() {
+        if let Some(ms) = prompt.build_duration_ms {
+            if !pipeline_timing
+                .stages
+                .iter()
+                .any(|stage| stage.stage == "prompt_builder")
+            {
+                pipeline_timing.set_stage("prompt_builder", ms);
+            }
+        }
+    }
+    if let Some(metrics) = terminal.metrics.as_ref() {
+        if pipeline_timing.ttft_ms.is_none() {
+            pipeline_timing.ttft_ms = metrics.ttft_ms;
+        }
+        if pipeline_timing.total_generation_ms.is_none() {
+            pipeline_timing.total_generation_ms = metrics.generation_duration_ms;
+        }
+    }
     PlannerResponse {
         content,
         reasoning_used: true,
@@ -196,6 +221,11 @@ pub fn planner_response_from_terminal(
         configured_model,
         provider_model,
         model_fallback,
+        pipeline_timing: if pipeline_timing.is_empty() {
+            None
+        } else {
+            Some(pipeline_timing)
+        },
         ..PlannerResponse::default()
     }
 }
@@ -244,11 +274,22 @@ pub fn stream_collect_failed_response(
 }
 
 /// Assemble hints for a conversational / unknown request.
-pub fn conversational_assemble_hints(intent: &Intent, capability_ids: Vec<String>) -> AssembleHints {
-    AssembleHints {
+///
+/// Complexity is Planner-authored and never changes Intent or capability ids.
+pub fn conversational_assemble_hints(
+    intent: &Intent,
+    capability_ids: Vec<String>,
+    complexity: Option<&ComplexityAssessment>,
+) -> AssembleHints {
+    let mut hints = AssembleHints {
         intent: intent.id(),
         capability_ids,
+        complexity: None,
+    };
+    if let Some(assessment) = complexity {
+        hints.complexity = Some(assessment.class_id().to_string());
     }
+    hints
 }
 
 /// Bundle returned after conversational Context assemble prelude.
@@ -259,6 +300,32 @@ pub struct ConversationalAssemble {
     pub capability_ids: Vec<String>,
     /// Assembled context for the request.
     pub context: ContextBundle,
+    /// Deterministic conversational complexity (Planner-owned).
+    pub complexity: ComplexityAssessment,
+    /// Lightweight stage timings for Planner + Context (diagnostics only).
+    pub pipeline: jaymi_reasoning::PipelineTiming,
+}
+
+/// Collect context-assembly + per-provider contribute timings from the last inspection.
+pub fn pipeline_from_context_inspection(
+    inspection: &jaymi_context::ContextInspectorReport,
+) -> jaymi_reasoning::PipelineTiming {
+    let mut timing = jaymi_reasoning::PipelineTiming::new();
+    let detail = if inspection.cache_hit {
+        "cache_hit"
+    } else {
+        "cache_miss"
+    };
+    timing.push(
+        jaymi_reasoning::PipelineStageTiming::new("context_assembly", inspection.duration_ms)
+            .with_detail(detail),
+    );
+    for provider in &inspection.providers {
+        if let Some(ms) = provider.duration_ms {
+            timing.push_provider(&provider.id, ms);
+        }
+    }
+    timing
 }
 
 /// True when the intent requires tool-backed capability dispatch (not chat).

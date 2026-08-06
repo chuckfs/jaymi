@@ -31,7 +31,7 @@ Progress
 | 8 | Provider Ecosystem | **Partial** (Registry + 6 local providers; plugins Target) |
 | 9 | Daily Driver | **Target** |
 
-Architectural Integrity (orthogonal to layers): Context sole assemble path, ContextBundle sole request-context contract on `PlannerResponse`, Project ownership, Planner responsibilities, Planner integrity (requests via `handle`), Provider simplification (no ProviderManager), Capability availability (Ready / Experimental / Planned / Unavailable), canonical request pipeline (Intent → Capability → Context Policy → assemble → Action Policy → Permission → Tool), Session ownership (one project open/close lifecycle), Documentation & Diagnostics (Operational / Experimental / Stub / Disabled) — **Current**. Behavior stage after ContextBundle — **Planned**.
+Architectural Integrity (orthogonal to layers): Context sole assemble path, ContextBundle sole request-context contract on `PlannerResponse`, Project ownership, Planner responsibilities, Planner integrity (requests via `handle`), Provider simplification (no ProviderManager), Capability availability (Ready / Experimental / Planned / Unavailable), canonical request pipeline (Intent → Capability → Context Policy → assemble → Action Policy → Permission → Tool), Session ownership (one project open/close lifecycle), Documentation & Diagnostics (Operational / Experimental / Stub / Disabled), Settings Workspace preferences ownership (snapshots/intents only; Model Registry remains catalog SoT) — **Current**. Behavior stage after ContextBundle — **Planned**.
 
 ⸻
 

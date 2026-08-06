@@ -68,6 +68,9 @@ pub struct ReasoningDiagnosticsReport {
     /// Delivered prompt character size when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_size_characters: Option<usize>,
+    /// Assembled (pre-seal) prompt character size when known.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assembled_prompt_size_characters: Option<usize>,
     /// Final token estimate for the delivered prompt.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_token_estimate: Option<u64>,
@@ -102,6 +105,9 @@ pub struct ReasoningDiagnosticsReport {
     /// Default model display id from the registry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_model: Option<String>,
+    /// Pipeline stage timings for the last conversational turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline_timing: Option<crate::pipeline::PipelineTiming>,
 }
 
 /// Inputs used to assemble a [`ReasoningDiagnosticsReport`].
@@ -131,6 +137,8 @@ pub struct ReasoningDiagnosticsInput {
     pub provider_model: Option<String>,
     /// Loaded model reported by the provider backend.
     pub loaded_model: Option<String>,
+    /// Pipeline stage timings from the last conversational turn.
+    pub pipeline_timing: Option<crate::pipeline::PipelineTiming>,
 }
 
 impl ReasoningDiagnosticsReport {
@@ -234,6 +242,9 @@ impl ReasoningDiagnosticsReport {
             .unwrap_or_default();
         let prompt_truncated = prompt.as_ref().map(|p| p.truncated).unwrap_or(false);
         let prompt_size_characters = prompt.as_ref().map(|p| p.prompt_size_characters);
+        let assembled_prompt_size_characters = prompt
+            .as_ref()
+            .and_then(|p| p.assembled_prompt_size_characters);
         let final_token_estimate = prompt.as_ref().map(|p| p.final_token_estimate);
         let conversation_turns = prompt.as_ref().map(|p| p.conversation_turns);
         let truncated_sections = prompt
@@ -281,6 +292,7 @@ impl ReasoningDiagnosticsReport {
             prompt_budget,
             prompt_sections,
             prompt_size_characters,
+            assembled_prompt_size_characters,
             final_token_estimate,
             conversation_turns,
             truncated_sections,
@@ -299,6 +311,11 @@ impl ReasoningDiagnosticsReport {
                 .as_ref()
                 .map(ModelIdentifier::display)
                 .or(current_model),
+            pipeline_timing: input.pipeline_timing.or_else(|| {
+                metrics
+                    .as_ref()
+                    .and_then(|m| m.pipeline.clone())
+            }),
         }
     }
 
@@ -353,13 +370,21 @@ impl ReasoningDiagnosticsReport {
             ),
             ("Context Size".into(), opt_num(self.context_size)),
             ("Latency".into(), {
-                match (self.latency_ms, self.provider_latency_ms) {
-                    (Some(wall), Some(provider)) => {
+                match (self.latency_ms, self.provider_latency_ms, self.pipeline_timing.as_ref().and_then(|p| p.ttft_ms)) {
+                    (Some(wall), Some(provider), Some(ttft)) => {
+                        format!("{wall} ms (provider {provider} ms · ttft {ttft} ms)")
+                    }
+                    (Some(wall), Some(provider), None) => {
                         format!("{wall} ms (provider {provider} ms)")
                     }
-                    (Some(wall), None) => format!("{wall} ms"),
-                    (None, Some(provider)) => format!("provider {provider} ms"),
-                    (None, None) => "-".into(),
+                    (Some(wall), None, Some(ttft)) => format!("{wall} ms (ttft {ttft} ms)"),
+                    (Some(wall), None, None) => format!("{wall} ms"),
+                    (None, Some(provider), Some(ttft)) => {
+                        format!("provider {provider} ms · ttft {ttft} ms")
+                    }
+                    (None, Some(provider), None) => format!("provider {provider} ms"),
+                    (None, None, Some(ttft)) => format!("ttft {ttft} ms"),
+                    (None, None, None) => "-".into(),
                 }
             }),
             ("Streaming".into(), self.streaming.clone()),
@@ -367,6 +392,13 @@ impl ReasoningDiagnosticsReport {
             ("Reasoning Health".into(), self.reasoning_health.clone()),
             (
                 "Prompt Size".into(),
+                self.assembled_prompt_size_characters
+                    .or(self.prompt_size_characters)
+                    .map(|n| format!("{n} chars"))
+                    .unwrap_or_else(|| "-".into()),
+            ),
+            (
+                "Delivered Prompt Size".into(),
                 self.prompt_size_characters
                     .map(|n| format!("{n} chars"))
                     .unwrap_or_else(|| "-".into()),
@@ -420,6 +452,12 @@ impl ReasoningDiagnosticsReport {
             "Default Model".into(),
             opt_str(self.default_model.as_deref()),
         ));
+        if let Some(timing) = &self.pipeline_timing {
+            if !timing.is_empty() {
+                rows.push(("Pipeline Timing".into(), "—".into()));
+                rows.extend(timing.labeled_rows());
+            }
+        }
         rows
     }
 
@@ -553,6 +591,8 @@ mod tests {
         PromptDiagnostics {
             prompt_size_characters: 120,
             prompt_size_tokens: 30,
+            assembled_prompt_size_characters: Some(128),
+            assembled_prompt_size_tokens: Some(32),
             final_token_estimate: 30,
             conversation_turns: 2,
             budget: PromptBudgetUsage {
@@ -595,6 +635,7 @@ mod tests {
             template_id: None,
             formatter_id: None,
             adapter_id: None,
+            build_duration_ms: None,
         }
     }
 
@@ -640,6 +681,7 @@ mod tests {
             configured_model: Some("ollama/llama3.2".into()),
             provider_model: Some("ollama/llama3.2".into()),
             loaded_model: Some("llama3.2".into()),
+            pipeline_timing: None,
         });
 
         let labels: Vec<_> = report
@@ -662,6 +704,7 @@ mod tests {
             "Cancellation",
             "Reasoning Health",
             "Prompt Size",
+            "Delivered Prompt Size",
             "Prompt Budget",
             "Prompt Sections",
             "Truncated Sections",
@@ -751,5 +794,34 @@ mod tests {
         assert!(report.prompt_sections_label().contains("system_instructions:"));
         assert_eq!(report.prompt_tokens, Some(30));
         assert_eq!(report.context_size, Some(8_192));
+    }
+
+    #[test]
+    fn pipeline_timing_rows_surface_in_labeled_values() {
+        let mut timing = crate::pipeline::PipelineTiming::new();
+        timing.set_stage("planner", 2);
+        timing.push_provider("memory", 4);
+        timing.set_stage("prompt_builder", 3);
+        timing.ttft_ms = Some(25);
+        timing.total_generation_ms = Some(100);
+        timing.total_ms = Some(140);
+        let report = ReasoningDiagnosticsReport::assemble(ReasoningDiagnosticsInput {
+            health: Some(ReasoningHealth::Ready),
+            reasoning_used: true,
+            pipeline_timing: Some(timing),
+            ..ReasoningDiagnosticsInput::default()
+        });
+        let labels: Vec<_> = report
+            .labeled_values()
+            .into_iter()
+            .map(|(label, _)| label)
+            .collect();
+        assert!(labels.iter().any(|label| label == "Pipeline Timing"));
+        assert!(labels.iter().any(|label| label == "Planner"));
+        assert!(labels
+            .iter()
+            .any(|label| label.contains("Context Provider (memory)")));
+        assert!(labels.iter().any(|label| label == "Time To First Token"));
+        assert!(labels.iter().any(|label| label == "Total Generation"));
     }
 }

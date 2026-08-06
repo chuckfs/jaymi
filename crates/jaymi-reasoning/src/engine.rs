@@ -13,7 +13,8 @@
 //! (delegates to [`PromptBuilder`]), context assembly, Planner routing, or
 //! tool execution.
 
-use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver, TryRecvError};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -338,8 +339,11 @@ impl ReasoningEngine {
         if request.is_cancelled() {
             return Err(ReasoningError::Cancelled);
         }
+        let engine_started = Instant::now();
         let (prompt, request) = self.attach_prompt(request);
+        let select_started = Instant::now();
         let provider = self.select_provider(&request)?;
+        let select_ms = select_started.elapsed().as_millis() as u64;
         if !provider.capabilities().stream {
             return Err(ReasoningError::Unavailable {
                 reason: format!("provider `{}` does not support streaming", provider.id()),
@@ -348,6 +352,7 @@ impl ReasoningEngine {
         let timeout = effective_timeout(&request, &self.config);
         let deadline = timeout.map(|ms| Instant::now() + Duration::from_millis(ms));
         let cancellation = request.cancellation.clone();
+        // Transport clock starts at the provider call (includes open + generation).
         let started = Instant::now();
         let inner = provider.stream(request).map_err(|err| {
             if matches!(err, ReasoningError::Cancelled) {
@@ -358,27 +363,28 @@ impl ReasoningEngine {
                 err
             }
         })?;
-        Ok(StreamingResponse {
-            inner: Some(inner),
+        let mut pipeline_seed = crate::pipeline::PipelineTiming::new();
+        if let Some(ms) = prompt.diagnostics.build_duration_ms {
+            pipeline_seed.set_stage("prompt_builder", ms);
+        }
+        let engine_ms = engine_started
+            .elapsed()
+            .as_millis()
+            .saturating_sub(prompt.diagnostics.build_duration_ms.unwrap_or(0) as u128)
+            as u64;
+        // ReasoningEngine stage = attach/select overhead excluding PromptBuilder work.
+        pipeline_seed.set_stage("reasoning_engine", engine_ms.max(select_ms));
+        Ok(StreamingResponse::spawn_forwarding(
+            inner,
             cancellation,
             deadline,
-            timeout_ms: timeout,
+            timeout,
             started,
-            accumulated: String::new(),
-            provider_id: provider.id().to_string(),
-            prompt_characters: prompt.size_characters(),
-            prompt_diagnostics: prompt.diagnostics.clone(),
-            attempts: 1,
-            last_metrics: None,
-            finish_reason: None,
-            model: None,
-            finished: false,
-            terminal_emitted: false,
-            lifecycle: crate::lifecycle::StreamingLifecycle::Thinking,
-            first_token_at: None,
-            token_count: 0,
-            cancel_reason: None,
-        })
+            provider.id().to_string(),
+            prompt.size_characters(),
+            prompt.diagnostics.clone(),
+            pipeline_seed,
+        ))
     }
 
     /// Build PromptBuilder output and attach it onto the request.
@@ -446,8 +452,11 @@ impl ReasoningEngine {
         if request.is_cancelled() {
             return Err(ReasoningError::Cancelled);
         }
+        let engine_started = Instant::now();
         let (prompt, request) = self.attach_prompt(request);
+        let select_started = Instant::now();
         let provider = self.select_provider(&request)?;
+        let select_ms = select_started.elapsed().as_millis() as u64;
         let provider_id = provider.id().to_string();
         let timeout = effective_timeout(&request, &self.config);
         let max_attempts = self.config.max_retries.saturating_add(1);
@@ -479,13 +488,29 @@ impl ReasoningEngine {
 
             match result {
                 Ok(mut response) => {
+                    let latency_ms = started.elapsed().as_millis() as u64;
                     enrich_response(
                         &mut response,
                         &provider_id,
                         attempts,
-                        started.elapsed().as_millis() as u64,
+                        latency_ms,
                         prompt.size_characters(),
                     );
+                    let mut pipeline = crate::pipeline::PipelineTiming::new();
+                    if let Some(ms) = prompt.diagnostics.build_duration_ms {
+                        pipeline.set_stage("prompt_builder", ms);
+                    }
+                    let engine_ms = engine_started
+                        .elapsed()
+                        .as_millis()
+                        .saturating_sub(
+                            prompt.diagnostics.build_duration_ms.unwrap_or(0) as u128,
+                        )
+                        .saturating_sub(latency_ms as u128) as u64;
+                    pipeline.set_stage("reasoning_engine", engine_ms.max(select_ms));
+                    pipeline.set_stage("provider_transport", latency_ms);
+                    pipeline.total_generation_ms = Some(latency_ms);
+                    response.metrics.pipeline = Some(pipeline);
                     return Ok(response);
                 }
                 Err(err) => {
@@ -542,8 +567,16 @@ enum InvokeMode {
 }
 
 /// Managed stream lifecycle owned by the Reasoning Engine.
+///
+/// Provider I/O runs on a **background worker**. [`Self::try_next_chunk`] never
+/// blocks the caller — tokens are forwarded as soon as the worker receives them.
+/// Diagnostics / metrics keep collecting on the worker and are attached on
+/// terminal chunks only (never gate visible tokens).
 pub struct StreamingResponse {
-    inner: Option<Box<dyn ReasoningStream>>,
+    /// Background provider stream (shared so cancel can interrupt).
+    provider_stream: Arc<Mutex<Option<Box<dyn ReasoningStream>>>>,
+    /// Chunks from the background reader (never blocks the UI pump).
+    inbox: Receiver<StreamInboxMessage>,
     cancellation: CancellationToken,
     deadline: Option<Instant>,
     timeout_ms: Option<u64>,
@@ -562,12 +595,37 @@ pub struct StreamingResponse {
     first_token_at: Option<Instant>,
     token_count: u64,
     cancel_reason: Option<CancelReason>,
+    /// PromptBuilder + provider-select timings captured at stream open.
+    pipeline_seed: crate::pipeline::PipelineTiming,
+}
+
+/// Background → consumer inbox message.
+enum StreamInboxMessage {
+    Chunk(StreamingChunk),
+    Ended,
+    Error(ReasoningError),
+}
+
+/// Non-blocking poll result for [`StreamingResponse::try_next_chunk`].
+#[derive(Debug)]
+pub enum ChunkPoll {
+    /// No provider chunk yet — call again on the next UI frame.
+    Pending,
+    /// A chunk is ready to forward (Token / Thought never wait on metrics).
+    Ready(StreamingChunk),
+    /// Provider stream exhausted without a terminal chunk.
+    Closed,
 }
 
 impl StreamingResponse {
     /// Provider selected for this stream.
     pub fn provider_id(&self) -> &str {
         &self.provider_id
+    }
+
+    /// Pipeline timings captured at stream open (prompt / engine).
+    pub fn pipeline_seed(&self) -> &crate::pipeline::PipelineTiming {
+        &self.pipeline_seed
     }
 
     /// Prompt size recorded at stream start (delivered characters).
@@ -605,57 +663,146 @@ impl StreamingResponse {
         self.attempts
     }
 
-    /// Pull the next chunk, enforcing cancellation and timeout.
-    pub fn next_chunk(&mut self) -> ReasoningResult<Option<StreamingChunk>> {
+    fn spawn_forwarding(
+        inner: Box<dyn ReasoningStream>,
+        cancellation: CancellationToken,
+        deadline: Option<Instant>,
+        timeout_ms: Option<u64>,
+        started: Instant,
+        provider_id: String,
+        prompt_characters: usize,
+        prompt_diagnostics: crate::prompt::PromptDiagnostics,
+        pipeline_seed: crate::pipeline::PipelineTiming,
+    ) -> Self {
+        let (tx, rx) = mpsc::channel();
+        let provider_stream = Arc::new(Mutex::new(Some(inner)));
+        let worker_stream = Arc::clone(&provider_stream);
+        let worker_cancel = cancellation.clone();
+        let _ = thread::Builder::new()
+            .name("jaymi-reasoning-stream".into())
+            .spawn(move || {
+                loop {
+                    if worker_cancel.is_cancelled() {
+                        if let Ok(mut guard) = worker_stream.lock() {
+                            if let Some(mut stream) = guard.take() {
+                                stream.cancel();
+                            }
+                        }
+                        let _ = tx.send(StreamInboxMessage::Chunk(StreamingChunk::cancelled(0)));
+                        break;
+                    }
+                    let result = {
+                        let mut guard = match worker_stream.lock() {
+                            Ok(guard) => guard,
+                            Err(_) => break,
+                        };
+                        let Some(stream) = guard.as_mut() else {
+                            break;
+                        };
+                        stream.next_chunk()
+                    };
+                    match result {
+                        Ok(Some(chunk)) => {
+                            let terminal = chunk.is_terminal();
+                            if tx.send(StreamInboxMessage::Chunk(chunk)).is_err() {
+                                break;
+                            }
+                            if terminal {
+                                if let Ok(mut guard) = worker_stream.lock() {
+                                    *guard = None;
+                                }
+                                break;
+                            }
+                        }
+                        Ok(None) => {
+                            let _ = tx.send(StreamInboxMessage::Ended);
+                            if let Ok(mut guard) = worker_stream.lock() {
+                                *guard = None;
+                            }
+                            break;
+                        }
+                        Err(error) => {
+                            let _ = tx.send(StreamInboxMessage::Error(error));
+                            if let Ok(mut guard) = worker_stream.lock() {
+                                *guard = None;
+                            }
+                            break;
+                        }
+                    }
+                }
+            });
+
+        Self {
+            provider_stream,
+            inbox: rx,
+            cancellation,
+            deadline,
+            timeout_ms,
+            started,
+            accumulated: String::new(),
+            provider_id,
+            prompt_characters,
+            prompt_diagnostics,
+            attempts: 1,
+            last_metrics: None,
+            finish_reason: None,
+            model: None,
+            finished: false,
+            terminal_emitted: false,
+            lifecycle: StreamingLifecycle::Thinking,
+            first_token_at: None,
+            token_count: 0,
+            cancel_reason: None,
+            pipeline_seed,
+        }
+    }
+
+    /// Non-blocking poll — never waits on provider I/O, diagnostics, or metrics.
+    ///
+    /// Token / Thought chunks are forwarded immediately. Metrics enrichment
+    /// happens only on terminal chunks (developer diagnostics continue in the
+    /// background worker).
+    pub fn try_next_chunk(&mut self) -> ReasoningResult<ChunkPoll> {
         if self.finished {
-            return Ok(None);
+            return Ok(ChunkPoll::Closed);
         }
         if self.cancellation.is_cancelled() {
-            return Ok(Some(self.emit_cancelled(self.cancel_reason.unwrap_or(CancelReason::User))));
+            return Ok(ChunkPoll::Ready(
+                self.emit_cancelled(self.cancel_reason.unwrap_or(CancelReason::User)),
+            ));
         }
         if let Some(deadline) = self.deadline {
             if Instant::now() >= deadline {
-                if let Some(inner) = self.inner.as_mut() {
-                    inner.cancel();
-                }
+                self.request_provider_cancel();
                 self.cancel_reason = Some(CancelReason::Timeout);
                 self.lifecycle = StreamingLifecycle::Failed;
                 self.finished = true;
-                self.inner = None;
                 return Err(ReasoningError::TimedOut {
                     limit_ms: self.timeout_ms,
                 });
             }
         }
 
-        let Some(inner) = self.inner.as_mut() else {
-            self.finished = true;
-            return Ok(None);
-        };
-
-        match inner.next_chunk() {
-            Ok(Some(chunk)) => Ok(Some(self.observe_chunk(chunk))),
-            Ok(None) => {
+        match self.inbox.try_recv() {
+            Ok(StreamInboxMessage::Chunk(chunk)) => Ok(ChunkPoll::Ready(self.observe_chunk(chunk))),
+            Ok(StreamInboxMessage::Ended) => {
                 if !self.accumulated.is_empty() {
-                    // Provider closed without a terminal chunk — treat as partial completion.
                     self.lifecycle = StreamingLifecycle::Completed;
                     self.finished = true;
-                    self.inner = None;
                     self.terminal_emitted = true;
                     self.finish_reason = Some(FinishReason::Completed);
-                    return Ok(Some(StreamingChunk::completed(
+                    return Ok(ChunkPoll::Ready(StreamingChunk::completed(
                         self.token_count,
                         self.build_metrics(false),
                     )));
                 }
                 self.finished = true;
-                self.inner = None;
-                Ok(None)
+                Ok(ChunkPoll::Closed)
             }
-            Err(ReasoningError::Cancelled) => {
-                Ok(Some(self.emit_cancelled(self.cancel_reason.unwrap_or(CancelReason::User))))
-            }
-            Err(err) => {
+            Ok(StreamInboxMessage::Error(ReasoningError::Cancelled)) => Ok(ChunkPoll::Ready(
+                self.emit_cancelled(self.cancel_reason.unwrap_or(CancelReason::User)),
+            )),
+            Ok(StreamInboxMessage::Error(err)) => {
                 let reason = if matches!(
                     err,
                     ReasoningError::StreamFailed { .. } | ReasoningError::Unavailable { .. }
@@ -667,8 +814,30 @@ impl StreamingResponse {
                 self.cancel_reason = Some(reason);
                 self.lifecycle = StreamingLifecycle::Failed;
                 self.finished = true;
-                self.inner = None;
                 Err(err)
+            }
+            Err(TryRecvError::Empty) => Ok(ChunkPoll::Pending),
+            Err(TryRecvError::Disconnected) => {
+                self.finished = true;
+                Ok(ChunkPoll::Closed)
+            }
+        }
+    }
+
+    /// Pull the next chunk, blocking until the background worker delivers one.
+    ///
+    /// Prefer [`Self::try_next_chunk`] on the UI / pumpable path so conversation
+    /// tokens are never gated on provider read latency of later chunks.
+    pub fn next_chunk(&mut self) -> ReasoningResult<Option<StreamingChunk>> {
+        loop {
+            match self.try_next_chunk()? {
+                ChunkPoll::Pending => {
+                    // Blocking delivery (collect / observer) waits briefly for
+                    // the next provider chunk without spinning the CPU.
+                    thread::sleep(Duration::from_millis(1));
+                }
+                ChunkPoll::Ready(chunk) => return Ok(Some(chunk)),
+                ChunkPoll::Closed => return Ok(None),
             }
         }
     }
@@ -682,8 +851,14 @@ impl StreamingResponse {
     pub fn cancel_with_reason(&mut self, reason: CancelReason) {
         self.cancel_reason = Some(reason);
         self.cancellation.cancel();
-        if let Some(inner) = self.inner.as_mut() {
-            inner.cancel();
+        self.request_provider_cancel();
+    }
+
+    fn request_provider_cancel(&self) {
+        if let Ok(mut guard) = self.provider_stream.lock() {
+            if let Some(stream) = guard.as_mut() {
+                stream.cancel();
+            }
         }
     }
 
@@ -767,8 +942,8 @@ impl StreamingResponse {
             };
             self.terminal_emitted = true;
             self.finished = true;
-            self.inner = None;
-            // Enrich terminal metrics before handing the chunk out.
+            // Enrich terminal metrics before handing the chunk out — tokens already
+            // forwarded without waiting for this enrichment.
             let mut enriched = chunk;
             enriched.metrics = Some(self.build_metrics(matches!(
                 self.lifecycle,
@@ -776,6 +951,7 @@ impl StreamingResponse {
             )));
             return enriched;
         }
+        // Token / Thought: never attach metrics; forward immediately.
         chunk
     }
 
@@ -789,13 +965,20 @@ impl StreamingResponse {
         metrics.provider_id = Some(self.provider_id.clone());
         metrics.attempts = self.attempts.max(1);
         metrics.partial = partial;
+        let mut pipeline = self.pipeline_seed.clone();
+        pipeline.set_stage("provider_transport", latency_ms);
         if let Some(first) = self.first_token_at {
             let ttft = first.duration_since(self.started).as_millis() as u64;
+            metrics.ttft_ms = Some(ttft);
+            // Keep provider_latency_ms as provider-reported duration when present;
+            // otherwise mirror TTFT for backward-compatible diagnostics.
             if metrics.provider_latency_ms.is_none() {
                 metrics.provider_latency_ms = Some(ttft);
             }
             let generation_ms = first.elapsed().as_millis() as u64;
             metrics.generation_duration_ms = Some(generation_ms);
+            pipeline.ttft_ms = Some(ttft);
+            pipeline.total_generation_ms = Some(generation_ms);
             if generation_ms > 0 && self.token_count > 0 {
                 let tps = (self.token_count as f64) / (generation_ms as f64 / 1000.0);
                 metrics = metrics.with_tokens_per_sec(tps);
@@ -809,6 +992,7 @@ impl StreamingResponse {
                 }
             }
         }
+        metrics.pipeline = Some(pipeline);
         if self.cancellation.is_cancelled()
             || matches!(self.finish_reason, Some(FinishReason::Cancelled))
             || matches!(self.lifecycle, StreamingLifecycle::Cancelled)
@@ -827,7 +1011,6 @@ impl StreamingResponse {
         self.lifecycle = StreamingLifecycle::Cancelled;
         self.finished = true;
         self.terminal_emitted = true;
-        self.inner = None;
         self.finish_reason = Some(FinishReason::Cancelled);
         StreamingChunk::cancelled_with_reason(0, self.build_metrics(true))
     }

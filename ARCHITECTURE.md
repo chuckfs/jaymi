@@ -142,7 +142,7 @@ Project knowledge search is a Planner-mediated request (`UserRequest::search_pro
 
 Project session open/close has one lifecycle: Application delegates → Planner orchestrates → Project Engine owns open state (Memory mirrors the id). There is no Application→Engine session bypass.
 
-**Partial:** Reasoning Engine + conversation state machine; conversational / unknown requests share `prepare_context_session` with tool-backed paths, then Context assemble → PromptBuilder → provider; diagnostics inspect delivered prompt; Model Registry populates `ReasoningRequest.model`; Experience/UI mirror Planner `ConversationState` only; pumpable and blocking delivery share assemble/terminal mapping with intentional host differences (Sprint B1.1–B1.13.8). See [docs/reasoning.md](docs/reasoning.md) and [docs/planner.md](docs/planner.md).
+**Partial:** Reasoning Engine + conversation state machine; conversational / unknown requests share `prepare_context_session` with tool-backed paths, then Context assemble → PromptBuilder → provider; diagnostics inspect delivered prompt; Model Registry populates `ReasoningRequest.model`; Experience/UI mirror Planner `ConversationState` only; pumpable and blocking delivery share assemble/terminal mapping with intentional host differences; Settings Workspace persists reasoning preferences via Application (Sprint B1.1–B1.13.8 + Settings). See [docs/reasoning.md](docs/reasoning.md), [docs/settings.md](docs/settings.md), and [docs/planner.md](docs/planner.md).
 
 ⸻
 
@@ -152,7 +152,12 @@ Status: **Current**
 
 The Context Engine **assembles** only the context required for the current request.
 
-The Planner calls `ContextEngine::assemble_with` **after** Intent and Capability resolution, passing `AssembleHints` (`IntentId` + capability ids). Context Policy and providers derive relevance from that Intent only — they do not re-classify free-text intent.
+The Planner calls `ContextEngine::assemble_with` **after** Intent and Capability
+resolution (and conversational Complexity Assessment), passing `AssembleHints`
+(`IntentId` + capability ids + optional complexity class). Context Policy and
+providers derive Intent relevance from that Intent only — they do not
+re-classify free-text intent. Complexity is Planner-authored and biases
+provider scores only ([docs/complexity.md](docs/complexity.md)).
 
 Ownership:
 
@@ -170,6 +175,8 @@ review flows intentionally skip reassemble), or `reuse_bundle` (attach a prior
 engine-minted snapshot). The Planner never constructs `ContextBundle` directly.
 
 Recently assembled bundles are cached by project, workspace, conversation, active file, and request type (plus a request fingerprint). The cache is invalidated when files, project, workspace, conversation, or the search index change — performance only; correctness is unchanged. See `docs/context.md`.
+
+Slow host-side context refreshes (git status, workspace inventory, diagnostics, file summaries) run as Application background maintenance and never block conversation; assemble still goes only through ContextEngine. See `docs/context-maintenance.md`.
 
 Context History retains recent bundles with timestamp, request, providers used, bundle size, and execution duration for debugging and future reasoning transparency.
 
@@ -443,7 +450,7 @@ The system functions without cloud services.
 
 AI Models
 
-Status: **Partial** — Ollama backend + Reasoning Engine + conversation state machine + Model Registry + Conversational Reasoning diagnostics + Prompt → Provider handoff + Context section coverage + multi-turn history + shared conversational context prep + delivered-prompt diagnostics + registry→request model loop + Planner-owned runtime mirrored by UI + dual delivery clarity (`ConversationState`, Sprint B1.1–B1.13.8)
+Status: **Partial** — Ollama backend + Reasoning Engine + conversation state machine + Model Registry + Conversational Reasoning diagnostics + Prompt → Provider handoff + Context section coverage + multi-turn history + shared conversational context prep + delivered-prompt diagnostics + registry→request model loop + Planner-owned runtime mirrored by UI + dual delivery clarity + Settings Workspace Reasoning preferences (`ConversationState`, Sprint B1.1–B1.13.8 + Settings)
 
 Models are interchangeable.
 

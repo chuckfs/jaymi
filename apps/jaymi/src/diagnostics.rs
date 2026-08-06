@@ -77,6 +77,8 @@ pub struct LastReasoningTurn {
     pub provider_model: Option<jaymi_reasoning::ModelIdentifier>,
     /// Conversation runtime state at response time.
     pub conversation_state: jaymi_planner::ConversationState,
+    /// Pipeline stage timings (Developer Diagnostics only).
+    pub pipeline_timing: Option<jaymi_reasoning::PipelineTiming>,
 }
 
 /// One row in the diagnostics dashboard.
@@ -348,6 +350,31 @@ impl DiagnosticsSnapshot {
             .map(ReasoningDiagnosticsReport::render)
     }
 
+    /// Render the Performance dashboard (Developer Diagnostics only).
+    pub fn render_performance(&self) -> Option<String> {
+        let dashboard = crate::performance_diagnostics::PerformanceDashboard::from_sources(
+            self.reasoning_inspector.as_ref(),
+            self.context_inspector.as_ref(),
+            &self.context_history,
+        );
+        if dashboard.has_content() {
+            Some(dashboard.render())
+        } else {
+            None
+        }
+    }
+
+    /// Assemble the Performance dashboard from this snapshot.
+    pub fn performance_dashboard(
+        &self,
+    ) -> crate::performance_diagnostics::PerformanceDashboard {
+        crate::performance_diagnostics::PerformanceDashboard::from_sources(
+            self.reasoning_inspector.as_ref(),
+            self.context_inspector.as_ref(),
+            &self.context_history,
+        )
+    }
+
     /// Render recent Context History (newest first).
     pub fn render_context_history(&self, limit: usize) -> Option<String> {
         if self.context_history.is_empty() {
@@ -388,6 +415,10 @@ impl DiagnosticsSnapshot {
                 row.status.label(),
                 row.detail
             ));
+        }
+        if let Some(performance) = self.render_performance() {
+            lines.push(String::new());
+            lines.push(performance);
         }
         if let Some(inspector) = self.render_capability_inspector() {
             lines.push(String::new());

@@ -52,13 +52,22 @@ pub struct PromptLlmCoverageEntry {
 ///
 /// After sealing for delivery (Sprint B1.13.5), size / token fields describe the
 /// prompt **actually delivered** via [`super::Prompt::to_chat_messages`] — never
-/// unused or alternate framing.
+/// unused or alternate framing. Assembled size is retained separately for the
+/// Performance dashboard (observational only).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PromptDiagnostics {
     /// Total characters in the **delivered** prompt (chat message contents).
     pub prompt_size_characters: usize,
     /// Estimated tokens for the **delivered** prompt.
     pub prompt_size_tokens: u64,
+    /// Characters in the PromptBuilder-assembled prompt **before** delivery seal.
+    ///
+    /// Observational only — never used for budgeting or generation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assembled_prompt_size_characters: Option<usize>,
+    /// Estimated tokens for the assembled prompt before delivery seal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assembled_prompt_size_tokens: Option<u64>,
     /// Final token estimate for the delivered prompt (same basis as size tokens).
     #[serde(default)]
     pub final_token_estimate: u64,
@@ -89,6 +98,9 @@ pub struct PromptDiagnostics {
     /// Optional model adapter id used (future adapters).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub adapter_id: Option<String>,
+    /// Wall-clock milliseconds spent in PromptBuilder::build (diagnostics only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_duration_ms: Option<u64>,
 }
 
 impl PromptDiagnostics {

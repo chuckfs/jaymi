@@ -15,7 +15,8 @@ Conversation stays visually primary. Coding workspace behavior is unchanged.
 | Retry | On cancelled / failed turns → stream retry or regenerate |
 | Copy | Copies assistant text via egui clipboard |
 | Regenerate | Replays the last user turn through a new generation |
-| Smooth streaming | Per-frame `pump_generation` (non-blocking UI) |
+| Smooth streaming | Per-frame `try_pump` / `pump_generation` (non-blocking UI) |
+| Time To First Token | Tokens forward as soon as the provider emits them — never wait on diagnostics, metrics, or final response objects |
 | Loading transitions | Ease-out opacity on the typing indicator |
 | Multi-turn continuity | Prior Experience turns flow into `ReasoningRequest.history` |
 | Context preparation | `prepare_context_session` before conversational assemble (same as `handle`) |
@@ -36,7 +37,10 @@ Blocking (observer collect)
   → handle_conversational_with_observer → run_with_observer
 
 Pumpable (UI)
-  begin_generation → pump_generation → complete_conversation_stream
+  begin_generation → try_pump / pump_generation → complete_conversation_stream
+  Provider I/O runs on a background worker; UI frames never block on read.
+  Token events are applied to Experience immediately; metrics / prompt diagnostics
+  / pipeline timing continue collecting and attach on terminal completion only.
 ```
 
 | Concern | Shared? | Notes |
@@ -46,7 +50,7 @@ Pumpable (UI)
 | Terminal → response map | Yes | `jaymi_planner::conversational` |
 | Soft-fail no backend | Blocking only | Pumpable hard-errors; host bridges to observer |
 | User-turn recording | Intentionally different | Blocking records before Planner; pumpable after stream open |
-| UI non-blocking | Pumpable only | Per-frame `pump` keeps egui responsive |
+| UI non-blocking / TTFT | Pumpable only | Background chunk reader + `try_pump`; tokens before diagnostics |
 
 Shared helpers live in `crates/jaymi-planner/src/conversational.rs`.
 

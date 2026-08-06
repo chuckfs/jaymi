@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 
 use jaymi_core::{HealthReport, JaymiError, JaymiResult, Lifecycle};
 
-pub use settings::{LogLevel, ProviderPreferences, Settings, Theme, CURRENT_SETTINGS_VERSION};
+pub use settings::{
+    LogLevel, ProviderPreferences, ReasoningPreferences, Settings, Theme, CURRENT_SETTINGS_VERSION,
+};
 
 const NAME: &str = "configuration";
 const DEPENDENCIES: &[&str] = &[];

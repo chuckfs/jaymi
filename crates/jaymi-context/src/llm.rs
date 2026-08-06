@@ -17,8 +17,9 @@ use serde::Serialize;
 use crate::bundle::{
     ActiveCapabilitiesSection, ActiveProjectSection, ActiveWorkspaceSection, BudgetReport,
     ContextBundle, ContextSource, ConversationSection, CurrentFileSection,
-    CurrentSelectionSection, DiagnosticsSection, MemoryResultsSection, OpenFilesSection,
-    PermissionsSection, PlannerMetadataSection, SearchResultsSection, UserRequestMetadataSection,
+    CurrentSelectionSection, DiagnosticsSection, FileSummariesSection, GitStatusSection,
+    MemoryResultsSection, OpenFilesSection, PermissionsSection, PlannerMetadataSection,
+    SearchResultsSection, UserRequestMetadataSection, WorkspaceInventorySection,
 };
 
 /// Schema version for the LLM-facing Context API.
@@ -26,7 +27,7 @@ use crate::bundle::{
 /// Bump when making breaking changes to [`LlmContext`] field layout or
 /// section ids. Additive fields / extension keys do not require a bump when
 /// consumers treat unknown keys as ignorable.
-pub const LLM_CONTEXT_SCHEMA_VERSION: u32 = 1;
+pub const LLM_CONTEXT_SCHEMA_VERSION: u32 = 2;
 
 /// Canonical section identifiers in stable emission order.
 ///
@@ -59,6 +60,12 @@ pub enum LlmSectionId {
     Permissions,
     /// Active capability ids.
     ActiveCapabilities,
+    /// Git status from completed maintenance.
+    GitStatus,
+    /// Workspace inventory from completed maintenance.
+    WorkspaceInventory,
+    /// File summaries from completed maintenance.
+    FileSummaries,
 }
 
 impl LlmSectionId {
@@ -77,10 +84,13 @@ impl LlmSectionId {
             Self::Diagnostics => "diagnostics",
             Self::Permissions => "permissions",
             Self::ActiveCapabilities => "active_capabilities",
+            Self::GitStatus => "git_status",
+            Self::WorkspaceInventory => "workspace_inventory",
+            Self::FileSummaries => "file_summaries",
         }
     }
 
-    /// Fixed section emission order (schema v1).
+    /// Fixed section emission order (schema v2).
     pub const ORDER: &'static [Self] = &[
         Self::UserRequest,
         Self::Conversation,
@@ -94,6 +104,9 @@ impl LlmSectionId {
         Self::Diagnostics,
         Self::Permissions,
         Self::ActiveCapabilities,
+        Self::GitStatus,
+        Self::WorkspaceInventory,
+        Self::FileSummaries,
     ];
 }
 
@@ -248,6 +261,9 @@ pub enum LlmSectionContent {
     Diagnostics(LlmDiagnostics),
     Permissions(LlmPermissions),
     ActiveCapabilities(LlmActiveCapabilities),
+    GitStatus(LlmGitStatus),
+    WorkspaceInventory(LlmWorkspaceInventory),
+    FileSummaries(LlmFileSummaries),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -426,6 +442,43 @@ pub struct LlmPromotionSuggestion {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LlmDiagnostics {
     pub diagnostics: Vec<LlmDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LlmGitStatus {
+    pub is_repository: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
+    pub summary: String,
+    pub modified_count: usize,
+    pub staged_count: usize,
+    pub untracked_count: usize,
+    pub sample_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LlmWorkspaceInventory {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    pub file_count: usize,
+    pub directory_count: usize,
+    pub status: String,
+    pub sample_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LlmFileSummaryEntry {
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_count: Option<u32>,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LlmFileSummaries {
+    pub entries: Vec<LlmFileSummaryEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -631,6 +684,45 @@ fn section_for(id: LlmSectionId, bundle: &ContextBundle) -> LlmContextSection {
                 },
             )
         }
+        LlmSectionId::GitStatus => {
+            let section = bundle.git_status();
+            let present = section.is_repository || !section.summary.is_empty();
+            (
+                present,
+                if present {
+                    LlmSectionContent::GitStatus(map_git_status(section))
+                } else {
+                    LlmSectionContent::Empty
+                },
+            )
+        }
+        LlmSectionId::WorkspaceInventory => {
+            let section = bundle.workspace_inventory();
+            let present = section.root.is_some()
+                || section.file_count > 0
+                || section.directory_count > 0
+                || !section.status.is_empty();
+            (
+                present,
+                if present {
+                    LlmSectionContent::WorkspaceInventory(map_workspace_inventory(section))
+                } else {
+                    LlmSectionContent::Empty
+                },
+            )
+        }
+        LlmSectionId::FileSummaries => {
+            let section = bundle.file_summaries();
+            let present = !section.entries.is_empty();
+            (
+                present,
+                if present {
+                    LlmSectionContent::FileSummaries(map_file_summaries(section))
+                } else {
+                    LlmSectionContent::Empty
+                },
+            )
+        }
     };
 
     LlmContextSection {
@@ -658,6 +750,9 @@ fn sources_for_section(id: LlmSectionId) -> Vec<String> {
         LlmSectionId::Diagnostics => &[ContextSource::Diagnostics],
         LlmSectionId::Permissions => &[ContextSource::Permissions],
         LlmSectionId::ActiveCapabilities => &[ContextSource::ActiveCapabilities],
+        LlmSectionId::GitStatus => &[ContextSource::GitStatus],
+        LlmSectionId::WorkspaceInventory => &[ContextSource::WorkspaceInventory],
+        LlmSectionId::FileSummaries => &[ContextSource::FileSummaries],
     };
     let mut labels: Vec<String> = sources.iter().map(|s| s.as_str().to_string()).collect();
     labels.sort();
@@ -840,6 +935,43 @@ fn map_diagnostics(section: &DiagnosticsSection) -> LlmDiagnostics {
     }
 }
 
+fn map_git_status(section: &GitStatusSection) -> LlmGitStatus {
+    LlmGitStatus {
+        is_repository: section.is_repository,
+        branch: section.branch.clone(),
+        summary: section.summary.clone(),
+        modified_count: section.modified_count,
+        staged_count: section.staged_count,
+        untracked_count: section.untracked_count,
+        sample_paths: section.sample_paths.clone(),
+    }
+}
+
+fn map_workspace_inventory(section: &WorkspaceInventorySection) -> LlmWorkspaceInventory {
+    LlmWorkspaceInventory {
+        root: section.root.clone(),
+        file_count: section.file_count,
+        directory_count: section.directory_count,
+        status: section.status.clone(),
+        sample_paths: section.sample_paths.clone(),
+    }
+}
+
+fn map_file_summaries(section: &FileSummariesSection) -> LlmFileSummaries {
+    LlmFileSummaries {
+        entries: section
+            .entries
+            .iter()
+            .map(|entry| LlmFileSummaryEntry {
+                path: entry.path.clone(),
+                language: entry.language.clone(),
+                line_count: entry.line_count,
+                summary: entry.summary.clone(),
+            })
+            .collect(),
+    }
+}
+
 fn map_permissions(section: &PermissionsSection) -> LlmPermissions {
     LlmPermissions {
         entries: section
@@ -938,7 +1070,7 @@ mod tests {
         let first = llm.to_json().unwrap();
         let second = llm.to_json().unwrap();
         assert_eq!(first, second);
-        assert!(first.contains("\"schema_version\":1"));
+        assert!(first.contains(&format!("\"schema_version\":{LLM_CONTEXT_SCHEMA_VERSION}")));
         assert!(first.contains("\"id\":\"current_file\"") || first.contains("\"id\":\"CurrentFile\"") || first.contains("current_file"));
         // snake_case enum serialization
         assert!(first.contains("current_file"));

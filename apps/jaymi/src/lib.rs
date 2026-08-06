@@ -11,6 +11,7 @@ pub mod coding_quick_actions;
 pub mod coding_workspace;
 pub mod command_dispatch;
 pub mod command_palette;
+pub mod context_maintenance;
 pub mod context_session;
 pub mod conversation_ux;
 pub mod diagnostics;
@@ -19,7 +20,10 @@ pub mod execution_diagnostics;
 pub mod experience;
 pub mod monaco_host;
 mod problems;
+pub mod performance_diagnostics;
 pub mod quick_open;
+pub mod session_cache;
+pub mod settings_workspace;
 #[allow(unsafe_code)] // AppKit / DWM bridges for OS accent color.
 mod system_accent;
 pub mod theme;
@@ -50,4 +54,12 @@ pub use diagnostics::{
     DiagnosticsSnapshot, LastReasoningTurn, OperationalStatus, SubsystemStatus,
 };
 pub use experience::{ConversationTurn, ExperienceSession};
-pub use theme::{inset, radius, space, stroke, type_size, Theme, ThemeMode};
+pub use context_maintenance::{
+    ContextMaintenance, MaintenanceKind, MaintenanceUiUpdate,
+};
+pub use performance_diagnostics::{PerformanceDashboard, PerformanceTimelineRow};
+pub use settings_workspace::{
+    render_settings_workspace, ReasoningConnectionStatus, ReasoningSettingsModel,
+    ReasoningSettingsProvider, ReasoningSettingsSnapshot, SettingsCategory, SettingsWorkspaceEvent,
+    SettingsWorkspaceState,
+};

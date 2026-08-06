@@ -25,6 +25,7 @@
 #![forbid(unsafe_code)]
 
 pub mod approval_history;
+pub mod complexity;
 pub mod conversation_history;
 pub mod conversation_state;
 pub mod conversational;
@@ -42,6 +43,9 @@ mod routes;
 pub use approval_history::{
     ApprovalDecision, ApprovalExecutionResult, ApprovalHistoryAccess, ApprovalHistoryEntry,
     ApprovalHistoryQuery, ApprovalHistoryStore, ApprovalHistoryView,
+};
+pub use complexity::{
+    assess_conversational_complexity, assess_text, ComplexityAssessment, ConversationalComplexity,
 };
 pub use conversation_history::prepare_reasoning_history;
 pub use conversation_state::{ConversationState, ConversationTransitionError};
@@ -237,6 +241,8 @@ pub struct PlannerResponse {
     pub model_fallback: bool,
     /// Conversation runtime state at response time (Planner-owned).
     pub conversation_state: ConversationState,
+    /// Conversational pipeline stage timings (Developer Diagnostics only).
+    pub pipeline_timing: Option<jaymi_reasoning::PipelineTiming>,
 }
 
 impl PlannerResponse {
@@ -869,7 +875,7 @@ impl Planner {
         let context = self.projects.open(project_id)?;
         self.bind_memory_project(Some(project_id))?;
         self.resume_project_conversation(project_id)?;
-        self.context.invalidate_cache("project_changed");
+        self.context.request_fresh_context("project_changed");
         jaymi_logging::info(
             "planner",
             format!(
@@ -890,7 +896,7 @@ impl Planner {
         self.ensure_ready()?;
         let closed = self.projects.close()?;
         let _ = self.bind_memory_project(None);
-        self.context.invalidate_cache("project_changed");
+        self.context.request_fresh_context("project_changed");
         Ok(closed)
     }
 
@@ -1054,20 +1060,27 @@ impl Planner {
 
         // 2. Capability Resolution (may be empty for session intents / unknown)
         let capabilities = self.decision.required_capabilities(&intent);
+        // Conversational complexity annotates AssembleHints only — never routing.
+        let complexity = assess_conversational_complexity(
+            &request,
+            self.context.session_inputs().workspace_kind.as_deref(),
+        );
         let hints = AssembleHints {
             intent: intent.id(),
             capability_ids: capabilities
                 .iter()
                 .map(|capability| capability.id().to_string())
                 .collect(),
+            complexity: Some(complexity.class_id().to_string()),
         };
 
         jaymi_logging::info(
             "planner",
             format!(
-                "intent resolved label={} capabilities=[{}]",
+                "intent resolved label={} capabilities=[{}] complexity={}",
                 hints.intent.as_str(),
-                hints.capability_ids.join(",")
+                hints.capability_ids.join(","),
+                complexity.class_id(),
             ),
         );
 
@@ -1076,7 +1089,7 @@ impl Planner {
         match &intent {
             Intent::ContinueProject { name } => {
                 let response = self.handle_continue_project(name)?;
-                self.context.invalidate_cache("project_changed");
+                self.context.request_fresh_context("project_changed");
                 let bundle = self.context.assemble_with(&request, Some(&hints))?;
                 log_promotions(&bundle);
                 self.transition_conversation(ConversationState::Completed);
@@ -1084,7 +1097,7 @@ impl Planner {
             }
             Intent::OpenProject { project_id } => {
                 let response = self.handle_open_project_id(project_id)?;
-                self.context.invalidate_cache("project_changed");
+                self.context.request_fresh_context("project_changed");
                 let bundle = self.context.assemble_with(&request, Some(&hints))?;
                 log_promotions(&bundle);
                 self.transition_conversation(ConversationState::Completed);
@@ -1092,7 +1105,7 @@ impl Planner {
             }
             Intent::CloseProject => {
                 let response = self.handle_close_project()?;
-                self.context.invalidate_cache("project_changed");
+                self.context.request_fresh_context("project_changed");
                 let bundle = self.context.assemble_with(&request, Some(&hints))?;
                 log_promotions(&bundle);
                 self.transition_conversation(ConversationState::Completed);
@@ -1111,11 +1124,19 @@ impl Planner {
             // History is empty on the generic handle path; Application
             // conversational UX passes prior turns via
             // handle_conversational_with_observer / start_conversation_stream.
-            return self.handle_conversational_request(
+            let mut early_pipeline = jaymi_reasoning::PipelineTiming::new();
+            if let Some(inspection) = self.context.last_inspection() {
+                early_pipeline.merge(conversational::pipeline_from_context_inspection(
+                    &inspection,
+                ));
+            }
+            return self.handle_conversational_request_with_observer(
                 &request,
                 context,
                 &intent,
                 Vec::new(),
+                early_pipeline,
+                |_| {},
             );
         };
 
@@ -1185,27 +1206,6 @@ impl Planner {
         result
     }
 
-    /// Conversational / unknown request path.
-    ///
-    /// Always runs **after** ContextBundle assemble. Streams through
-    /// [`ConversationStream`] (Idle → Thinking → Streaming → terminal).
-    /// Never tools, never providers directly.
-    fn handle_conversational_request(
-        &self,
-        request: &UserRequest,
-        context: ContextBundle,
-        intent: &Intent,
-        history: Vec<jaymi_reasoning::ConversationTurn>,
-    ) -> JaymiResult<PlannerResponse> {
-        self.handle_conversational_request_with_observer(
-            request,
-            context,
-            intent,
-            history,
-            |_| {},
-        )
-    }
-
     /// Conversational path with incremental stream observer (tokens / lifecycle).
     ///
     /// Blocking delivery mode: collects the shared [`ConversationStream`] to a
@@ -1237,6 +1237,7 @@ impl Planner {
             assembled.context,
             &assembled.intent,
             history,
+            assembled.pipeline,
             on_event,
         )
     }
@@ -1258,6 +1259,7 @@ impl Planner {
         ContextBundle,
         ConversationStream,
         jaymi_reasoning::PromptDiagnostics,
+        jaymi_reasoning::PipelineTiming,
     )> {
         if !self.initialized {
             return Err(JaymiError::new("planner is not initialized"));
@@ -1268,6 +1270,7 @@ impl Planner {
                 "start_conversation_stream requires a conversational / unknown request",
             ));
         }
+        let mut pipeline = assembled.pipeline;
         let context = assembled.context;
         if !self.reasoning.is_implemented() {
             return Err(JaymiError::new("no reasoning backend is available"));
@@ -1283,53 +1286,88 @@ impl Planner {
             .prompt_diagnostics()
             .cloned()
             .ok_or_else(|| JaymiError::new("conversation stream missing prompt diagnostics"))?;
-        Ok((context, stream, prompt_diagnostics))
+        if let Some(ms) = prompt_diagnostics.build_duration_ms {
+            pipeline.set_stage("prompt_builder", ms);
+        }
+        Ok((context, stream, prompt_diagnostics, pipeline))
     }
 
     /// Finalize a pump-driven conversational stream into a [`PlannerResponse`].
     ///
     /// Uses the same terminal → response mapping as the blocking observer path.
+    /// `early_pipeline` carries request/planner/context timings from stream start.
     pub fn complete_conversation_stream(
         &self,
         context: ContextBundle,
         event: ConversationStreamEvent,
         prompt_diagnostics: Option<jaymi_reasoning::PromptDiagnostics>,
+        early_pipeline: Option<jaymi_reasoning::PipelineTiming>,
     ) -> JaymiResult<PlannerResponse> {
         let terminal = conversational::conversational_terminal_from_event(event)?;
         self.transition_conversation(terminal.conversation_state());
         let (configured_model, provider_model, model_fallback) =
             self.take_model_selection_fields();
-        Ok(self.finalize_response(
-            conversational::planner_response_from_terminal(
-                terminal,
-                prompt_diagnostics,
-                configured_model,
-                provider_model,
-                model_fallback,
-            ),
-            context,
-        ))
+        let mut response = conversational::planner_response_from_terminal(
+            terminal,
+            prompt_diagnostics,
+            configured_model,
+            provider_model,
+            model_fallback,
+        );
+        if let Some(early) = early_pipeline {
+            let mut merged = early;
+            if let Some(later) = response.pipeline_timing.take() {
+                merged.merge(later);
+            }
+            response.pipeline_timing = if merged.is_empty() {
+                None
+            } else {
+                Some(merged)
+            };
+        }
+        Ok(self.finalize_response(response, context))
     }
 
-    /// Shared Intent → AssembleHints → ContextBundle prelude for both delivery modes.
+    /// Shared Intent → Capability → Complexity → AssembleHints → ContextBundle prelude.
+    ///
+    /// Complexity never alters Intent or Capability selection — it only annotates
+    /// [`AssembleHints`] for Context relevance bias.
     fn begin_conversational_assemble(
         &self,
         request: &UserRequest,
     ) -> JaymiResult<conversational::ConversationalAssemble> {
         self.invalidate_paused("new user request")?;
         self.transition_conversation(ConversationState::PreparingContext);
+        let planner_started = std::time::Instant::now();
         let intent = self.decision.determine_intent(request);
         let capabilities = self.decision.required_capabilities(&intent);
         let capability_ids: Vec<String> = capabilities
             .iter()
             .map(|capability| capability.id().to_string())
             .collect();
-        let hints = conversational::conversational_assemble_hints(&intent, capability_ids.clone());
+        let workspace_kind = self.context.session_inputs().workspace_kind;
+        let complexity = assess_conversational_complexity(
+            request,
+            workspace_kind.as_deref(),
+        );
+        let hints = conversational::conversational_assemble_hints(
+            &intent,
+            capability_ids.clone(),
+            Some(&complexity),
+        );
+        let planner_ms = planner_started.elapsed().as_millis() as u64;
         let context = self.context.assemble_with(request, Some(&hints))?;
+        let mut pipeline = jaymi_reasoning::PipelineTiming::new();
+        pipeline.set_stage("planner", planner_ms);
+        if let Some(inspection) = self.context.last_inspection() {
+            pipeline.merge(conversational::pipeline_from_context_inspection(&inspection));
+        }
         Ok(conversational::ConversationalAssemble {
             intent,
             capability_ids,
             context,
+            complexity,
+            pipeline,
         })
     }
 
@@ -1358,6 +1396,7 @@ impl Planner {
         context: ContextBundle,
         intent: &Intent,
         history: Vec<jaymi_reasoning::ConversationTurn>,
+        early_pipeline: jaymi_reasoning::PipelineTiming,
         mut on_event: F,
     ) -> JaymiResult<PlannerResponse>
     where
@@ -1447,13 +1486,25 @@ impl Planner {
                     ),
                 );
                 Ok(self.finalize_response(
-                    conversational::planner_response_from_terminal(
-                        terminal,
-                        prompt_diagnostics,
-                        configured_model,
-                        provider_model,
-                        model_fallback,
-                    ),
+                    {
+                        let mut response = conversational::planner_response_from_terminal(
+                            terminal,
+                            prompt_diagnostics,
+                            configured_model,
+                            provider_model,
+                            model_fallback,
+                        );
+                        let mut merged = early_pipeline.clone();
+                        if let Some(later) = response.pipeline_timing.take() {
+                            merged.merge(later);
+                        }
+                        response.pipeline_timing = if merged.is_empty() {
+                            None
+                        } else {
+                            Some(merged)
+                        };
+                        response
+                    },
                     context,
                 ))
             }
@@ -1464,13 +1515,21 @@ impl Planner {
                 );
                 self.transition_conversation(ConversationState::Failed);
                 Ok(self.finalize_response(
-                    conversational::stream_collect_failed_response(
-                        &error.message(),
-                        prompt_diagnostics,
-                        configured_model,
-                        provider_model,
-                        model_fallback,
-                    ),
+                    {
+                        let mut response = conversational::stream_collect_failed_response(
+                            &error.message(),
+                            prompt_diagnostics,
+                            configured_model,
+                            provider_model,
+                            model_fallback,
+                        );
+                        response.pipeline_timing = if early_pipeline.is_empty() {
+                            None
+                        } else {
+                            Some(early_pipeline)
+                        };
+                        response
+                    },
                     context,
                 ))
             }
@@ -1586,8 +1645,8 @@ impl Planner {
             self.ensure_success(&output)?;
         }
 
-        if let Some(reason) = call.invalidate_cache {
-            self.context.invalidate_cache(reason);
+        if let Some(reason) = call.fresh_context {
+            self.context.request_fresh_context(reason);
         }
 
         let meta = ExecutionMeta {
@@ -2118,6 +2177,7 @@ impl Planner {
                 .capability
                 .map(|capability| vec![capability.id().to_string()])
                 .unwrap_or_default(),
+            complexity: None,
         };
         let request = UserRequest::new("");
         let bundle = self.context.assemble_with(&request, Some(&hints))?;
@@ -3740,7 +3800,7 @@ mod tests {
             jaymi_reasoning::ConversationTurn::user("earlier"),
             jaymi_reasoning::ConversationTurn::assistant("ack"),
         ];
-        let (bundle, stream, prompt_diagnostics) = planner
+        let (bundle, stream, prompt_diagnostics, _pipeline) = planner
             .start_conversation_stream(&UserRequest::new("next question"), history)
             .unwrap();
         assert!(bundle.assemble_generation() >= 1);
@@ -3766,7 +3826,7 @@ mod tests {
 
         let pump_provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
         let pump_planner = planner_with_reasoning(pump_provider.clone());
-        let (context, mut stream, prompt_diagnostics) = pump_planner
+        let (context, mut stream, prompt_diagnostics, early_pipeline) = pump_planner
             .start_conversation_stream(&UserRequest::new(goal), Vec::new())
             .unwrap();
         let mut terminal = None;
@@ -3785,6 +3845,7 @@ mod tests {
                 context,
                 terminal.expect("pumpable stream must terminate"),
                 Some(prompt_diagnostics),
+                Some(early_pipeline),
             )
             .unwrap();
 
@@ -3824,7 +3885,7 @@ mod tests {
         assert!(blocking.reasoning_metrics.is_some());
 
         let planner = planner_with_reasoning(Arc::new(CountingReasoningProvider::new("chat-mock")));
-        let (context, stream, diagnostics) = planner
+        let (context, stream, diagnostics, early_pipeline) = planner
             .start_conversation_stream(&UserRequest::new("diagnostics check"), Vec::new())
             .unwrap();
         let collected = stream.collect().unwrap();
@@ -3833,6 +3894,7 @@ mod tests {
                 context,
                 jaymi_reasoning::ConversationStreamEvent::Completed(collected),
                 Some(diagnostics),
+                Some(early_pipeline),
             )
             .unwrap();
         assert!(pumpable.prompt_diagnostics.is_some());
@@ -3841,6 +3903,92 @@ mod tests {
             pumpable.stream_lifecycle,
             Some(jaymi_reasoning::StreamingLifecycle::Completed)
         );
+        let timing = pumpable
+            .pipeline_timing
+            .expect("pipeline timing retained on pumpable path");
+        assert!(
+            timing
+                .stages
+                .iter()
+                .any(|stage| stage.stage == "planner"),
+            "expected planner stage: {:?}",
+            timing.stages
+        );
+        assert!(
+            timing
+                .stages
+                .iter()
+                .any(|stage| stage.stage == "context_assembly"),
+            "expected context_assembly stage: {:?}",
+            timing.stages
+        );
+        assert!(
+            timing
+                .stages
+                .iter()
+                .any(|stage| stage.stage == "prompt_builder"),
+            "expected prompt_builder stage: {:?}",
+            timing.stages
+        );
+        assert!(
+            timing
+                .stages
+                .iter()
+                .any(|stage| stage.stage == "provider_transport"),
+            "expected provider_transport stage: {:?}",
+            timing.stages
+        );
+    }
+
+    #[test]
+    fn pipeline_timing_present_on_blocking_conversational_path() {
+        let planner = planner_with_reasoning(Arc::new(CountingReasoningProvider::new("chat-mock")));
+        let response = planner
+            .handle_conversational_with_observer(
+                UserRequest::new("time the pipeline"),
+                Vec::new(),
+                |_| {},
+            )
+            .unwrap();
+        let timing = response
+            .pipeline_timing
+            .expect("pipeline timing on blocking path");
+        assert!(timing.stages.iter().any(|s| s.stage == "planner"));
+        assert!(timing.stages.iter().any(|s| s.stage == "context_assembly"));
+        assert!(timing
+            .stages
+            .iter()
+            .any(|s| s.stage == "prompt_builder" || s.stage == "provider_transport"));
+    }
+
+    #[test]
+    fn complexity_annotates_hints_without_changing_capabilities() {
+        let planner = planner_with_reasoning(Arc::new(CountingReasoningProvider::new("chat-mock")));
+        let greeting = planner
+            .handle_conversational_with_observer(UserRequest::new("Hello!"), Vec::new(), |_| {})
+            .unwrap();
+        assert!(greeting.capability.is_none());
+        assert!(greeting.reasoning_used);
+
+        let coding = planner
+            .handle_conversational_with_observer(
+                UserRequest::new("How do I fix this borrow checker error?"),
+                Vec::new(),
+                |_| {},
+            )
+            .unwrap();
+        // Still conversational — no tool capability invented by complexity.
+        assert!(coding.capability.is_none());
+        assert!(coding.reasoning_used);
+
+        let assessment = assess_text("How do I fix this borrow checker error?", None);
+        assert_eq!(assessment.class, ConversationalComplexity::CodingQuestion);
+        let greeting_assessment = assess_text("Hello!", None);
+        assert_eq!(greeting_assessment.class, ConversationalComplexity::Greeting);
+        // DecisionEngine still returns empty capabilities for Unknown regardless of text.
+        assert!(DecisionEngine
+            .required_capabilities(&Intent::Unknown)
+            .is_empty());
     }
 
     #[test]

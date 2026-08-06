@@ -43,6 +43,12 @@ pub struct ReasoningMetrics {
     /// True when terminal content is a partial (cancel / disconnect / fail).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub partial: bool,
+    /// Time to first token from stream start (ms), when measurable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ttft_ms: Option<u64>,
+    /// Nested pipeline stage timings (diagnostics only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pipeline: Option<crate::pipeline::PipelineTiming>,
 }
 
 fn is_zero_u32(value: &u32) -> bool {

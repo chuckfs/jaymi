@@ -66,8 +66,10 @@ pub struct PreparedToolCall {
     pub action_label: String,
     /// Expected outputs / conversational plan bullets.
     pub expected_outputs: Vec<String>,
-    /// When set, invalidate Context cache with this reason after success.
-    pub invalidate_cache: Option<&'static str>,
+    /// When set, ask ContextEngine for a fresh assemble after success (opaque reason).
+    ///
+    /// Planner does not know cache keys / epochs — only that context must be rebuilt.
+    pub fresh_context: Option<&'static str>,
     /// When true, soft-fail into a blocked response instead of `Err`.
     pub soft_failure: bool,
 }

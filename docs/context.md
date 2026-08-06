@@ -38,7 +38,7 @@ ContextEngine::assemble_with(request, hints) -> ContextBundle
 | **Behaviors** | Execute (Planned) | — |
 | **Tools** | Perform work (search / read / write / …) | Run inside Context assemble |
 
-Host (`Application`) pushes `ContextSessionInputs` (workspace, editor, diagnostics, permissions, project-open, search hits). Request-selected capabilities arrive only via `AssembleHints`.
+Host (`Application`) pushes `ContextSessionInputs` (workspace, editor, diagnostics, permissions, project-open, search hits, plus **latest completed** background maintenance snapshots: git / inventory / file summaries). Request-selected capabilities arrive only via `AssembleHints`. Slow refreshes are Application-owned — see [context-maintenance.md](context-maintenance.md).
 
 **Context Policy** (`jaymi-context`) ≠ **Action Policy** (`jaymi-policies`).
 
@@ -65,7 +65,8 @@ Rules:
 * The engine orchestrates providers **without depending on their internal implementation**
 * Each provider exposes a deterministic `relevance(request) -> RelevanceScore` (0..=100)
 * The engine **skips** providers below `relevance_threshold` (default 40) before calling `contribute`
-* Relevance heuristics consider user intent tags, active capabilities, workspace kind, and request kind — **no AI scoring**
+* Relevance heuristics consider user intent tags, active capabilities, workspace kind, request kind, and Planner **complexity** (via `AssembleHints`) — **no AI scoring**
+* When `AssembleHints.complexity` is set, providers marked **Excluded** for that class are skipped before policy evaluation (inspector outcome `SkippedComplexity`); **Required** providers receive a high relevance score; **Optional** providers use normal heuristics — see [complexity.md](complexity.md)
 * Each provider exposes `priority` and `estimate_size` for **Context Budgeting**
 * The engine allocates a configurable character/token budget to **higher-priority providers first**
 * Oversized contributions are **fitted** provider-agnostically: truncate → summarize → preserve metadata; otherwise skip
@@ -85,6 +86,9 @@ Rules:
 | `SearchProvider` | Search coordination hint + session hits (never executes search) | No structured search, index summary, or hits |
 | `MemoryProvider` | Relevant memories + promotions | — (always contributes memory results) |
 | `DiagnosticsProvider` | Session diagnostics | Empty diagnostics |
+| `GitStatusProvider` | Session git status (completed maintenance) | Empty / non-repo without summary |
+| `WorkspaceInventoryProvider` | Session workspace inventory (completed maintenance) | Empty inventory |
+| `FileSummariesProvider` | Session file summaries (completed maintenance) | Empty summaries |
 | `PermissionProvider` | Session permission grants | Empty permissions |
 
 The engine itself stamps **User Request Metadata** and **Planner Metadata** (assemble generation, folded `ContextSource`s, provider contribute/decline notes).
@@ -97,6 +101,8 @@ The engine itself stamps **User Request Metadata** and **Planner Metadata** (ass
 * Merge contributions into an immutable `ContextBundle`
 * Stamp request / planner metadata
 * Expose session inputs the host may push before assemble (`set_session_inputs` / `set_session_workspace`)
+
+Background maintenance of git / inventory / diagnostics / file summaries is **Application-owned** — see [context-maintenance.md](context-maintenance.md). Providers only read completed session snapshots.
 
 ---
 
@@ -118,7 +124,13 @@ Fitting prefers dropping bulky payloads (project detail, memory bodies, search p
 
 ## ContextBundle caching
 
-Recently assembled bundles are reused when the cache key matches. Correctness is preserved: hits never skip invalidation or fingerprint checks.
+Recently assembled bundles are reused when the cache key matches. On a hit the
+engine **skips all provider `contribute` work**, restamps planner generation /
+request metadata, and records `cache_hit=true` on the Context Inspector.
+
+Reuse lives **entirely inside ContextEngine**. Planner never builds keys or
+reads the LRU — it only asks for a fresh assemble via
+`ContextEngine::request_fresh_context(reason)` when it knows context must change.
 
 ### Key
 
@@ -127,21 +139,30 @@ Recently assembled bundles are reused when the cache key matches. Correctness is
 | Project | Open project id (`ProjectEngine`) |
 | Workspace | Session UX workspace kind |
 | Conversation | Active conversation id (`MemoryEngine`) |
+| Conversation revision | `(updated_at, message_count)` — detects unchanged conversational state without loading the transcript |
+| Session fingerprint | Diagnostics, editor, permissions, search hits, … |
 | Active file | Session current file path |
 | Request type | Derived request kind (`chat`, `file_read`, `search`, …) |
 | Request fingerprint | Content + structured request fields (memory / write / search / …) |
 | Epoch | Bumped on every invalidation |
 | Threshold / budget | Relevance threshold + max character budget |
+| Hints / policies | AssembleHints + active Context Policy fingerprints |
 
-### Invalidation
+### Invalidation / fresh context
 
-`ContextEngine::invalidate_cache(reason)` clears entries and bumps the epoch when:
+`ContextEngine::request_fresh_context(reason)` clears entries and bumps the epoch when:
 
-* Files change (Planner write / manage_path)
-* Project changes (open / close)
-* Workspace changes (`set_session_workspace` / `set_session_inputs` when values differ)
-* Conversation changes (`Application::set_active_conversation`)
-* Search index / inventory updates (Discovery scan hooks, including filesystem watcher flushes; Planner `index` intents)
+| Reason | Typical trigger |
+|--------|-----------------|
+| `conversation_changed` | Active conversation switch (`Application::set_active_conversation`) |
+| `workspace_changed` | UX workspace kind change |
+| `project_changed` | Project open / close (Planner) |
+| `diagnostics_changed` | Session diagnostics snapshot change |
+| `files_changed` / `search_index_updated` | Planner tool success (`PreparedToolCall.fresh_context`) |
+| `editor_changed` / `permissions_changed` / … | Other session-input deltas |
+| Planner-requested | Any explicit `request_fresh_context` call |
+
+Identical session rewrites (same workspace / same diagnostics) do **not** invalidate.
 
 Cache hits still increment `assemble_count`, restamp planner generation / request metadata, and record a Context Inspector report with `cache_hit=true`.
 
@@ -231,7 +252,11 @@ Context Providers → Context Engine assemble → ContextBundle
 Behavior (Planned) → Action Policies → Permissions → Tools → Response
 ```
 
-Planner passes `AssembleHints` (`IntentId` + capability ids) into `assemble_with`. Context derives relevance facets from that Intent only — it never runs a parallel free-text intent classifier.
+Planner passes `AssembleHints` (`IntentId` + capability ids + optional Planner
+`complexity` class) into `assemble_with`. Context derives Intent facets from
+that Intent only — it never runs a parallel free-text intent or complexity
+classifier. Complexity bias is applied from the Planner-supplied label
+([docs/complexity.md](complexity.md)).
 
 ### Decision fields
 
@@ -335,6 +360,7 @@ Context decision on that assemble is transparent:
 | Truncation | Per-provider truncate / summarize / budget-skip labels |
 | Cache hit/miss | `cache_status()` (`hit` / `miss`) |
 | Assembly duration | Wall-clock `duration_ms` |
+| Per-provider contribute | Optional `InspectedProvider.duration_ms` for each `contribute` call |
 | Final bundle size | `bundle_size_characters` / `bundle_size_estimated_tokens` |
 
 * Recorded automatically after each successful `ContextEngine::assemble`
@@ -394,12 +420,17 @@ the Context Engine is one of the best-tested systems in Jaymi.
 |-------|--------|
 | `workspace_kind` | Experience active workspace |
 | `current_file` / `current_selection` / `open_files` | Coding `OpenEditors` (selection = caret until Monaco selection IPC) |
-| `diagnostics` | Coding Problems (else raw diagnostics) |
+| `diagnostics` | Completed maintenance snapshot (else Coding Problems / raw diagnostics) |
+| `git_status` | Completed maintenance snapshot |
+| `workspace_inventory` | Completed maintenance snapshot |
+| `file_summaries` | Completed maintenance snapshot |
 | `permissions` | Permission Engine policy matrix summary |
 | `active_capabilities` | **Deprecated / empty** — request-selected capability ids come only from Planner `AssembleHints`, never from a Capability Engine catalog |
 | `search_hits` | Coding Search panel results |
 
 Active project and conversation still come from Project / Memory engines via providers — not duplicated into session inputs.
+
+See [context-maintenance.md](context-maintenance.md) for refresh ownership.
 
 * Not a Reasoning Engine
 * Not a language model

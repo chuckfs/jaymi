@@ -26,7 +26,10 @@ use jaymi_context::{
 use jaymi_core::{IntentId, JaymiResult, Lifecycle, SearchRequest, UserRequest};
 use jaymi_database::Database;
 use jaymi_knowledge::SqliteKnowledgeStore;
-use jaymi_memory_engine::{InMemoryMemoryStore, MemoryEngine, MemoryEngineApi};
+use jaymi_memory_engine::{
+    AppendMessageRequest, CreateConversationRequest, InMemoryMemoryStore, MemoryEngine,
+    MemoryEngineApi, MessageRole,
+};
 use jaymi_project_engine::{InMemoryProjectStore, ProjectEngine, ProjectEngineApi};
 use jaymi_search::{SearchEngine, SearchEngineApi};
 
@@ -851,6 +854,147 @@ fn cache_not_invalidated_by_identical_workspace_rewrite() {
     assert!(engine.cache_stats().hits >= 1);
 }
 
+#[test]
+fn cache_hit_skips_provider_contribute_work() {
+    let engine = bound_engine();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let marker = WorkspaceMark {
+        id: "workspace_mark",
+        priority: 90,
+        relevance: 100,
+        sensitivity: Sensitivity::Public,
+        kind: "coding",
+        characters: 32,
+        can_truncate: true,
+        contribute_calls: Arc::clone(&calls),
+    };
+    engine
+        .bind_providers(vec![Arc::new(marker) as Arc<dyn ContextProvider>])
+        .unwrap();
+    engine.set_session_workspace(Some("coding".into()));
+    let request = UserRequest::new("reuse me");
+    let _ = engine.assemble(&request).unwrap();
+    assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+    let _ = engine.assemble(&request).unwrap();
+    assert!(engine.inspect_last().unwrap().cache_hit);
+    assert_eq!(
+        calls.load(AtomicOrdering::SeqCst),
+        1,
+        "cache hit must not re-call contribute"
+    );
+}
+
+#[test]
+fn diagnostics_change_requests_fresh_context() {
+    let engine = bound_engine();
+    let request = UserRequest::new("same prompt");
+    let _ = engine.assemble(&request).unwrap();
+    assert_eq!(engine.cache_stats().hits, 0);
+
+    engine.set_session_inputs(ContextSessionInputs {
+        diagnostics: DiagnosticsSection {
+            diagnostics: vec![BundleDiagnostic {
+                path: Some("/proj/main.rs".into()),
+                severity: "error".into(),
+                message: "unused".into(),
+                line: Some(1),
+                column: Some(0),
+                source: None,
+            }],
+        },
+        ..ContextSessionInputs::default()
+    });
+    let stats = engine.cache_stats();
+    assert!(stats.invalidations >= 1);
+    assert_eq!(
+        stats.last_invalidation_reason.as_deref(),
+        Some("diagnostics_changed")
+    );
+    let _ = engine.assemble(&request).unwrap();
+    assert!(!engine.inspect_last().unwrap().cache_hit);
+}
+
+#[test]
+fn conversation_revision_change_misses_cache() {
+    let mut memory = MemoryEngine::with_store(Arc::new(InMemoryMemoryStore::new()));
+    memory.initialize().unwrap();
+    let memory = Arc::new(memory) as Arc<dyn MemoryEngineApi>;
+    let mut projects = ProjectEngine::with_store(Arc::new(InMemoryProjectStore::new()));
+    projects.initialize().unwrap();
+    let projects = Arc::new(projects) as Arc<dyn ProjectEngineApi>;
+    let data = temp_dir("conv-rev");
+    let mut db = Database::with_data_dir(&data);
+    db.initialize().unwrap();
+    let db = Arc::new(db);
+    let mut knowledge = SqliteKnowledgeStore::new(Arc::clone(&db));
+    knowledge.initialize().unwrap();
+    let knowledge = Arc::new(knowledge);
+    let mut search = SearchEngine::new(Arc::clone(&knowledge), None);
+    search.initialize().unwrap();
+    let search = Arc::new(search) as Arc<dyn SearchEngineApi>;
+
+    let mut engine = ContextEngine::new();
+    engine.initialize().unwrap();
+    engine
+        .bind_sources(ContextSources {
+            memory: Arc::clone(&memory),
+            projects,
+            search,
+        })
+        .unwrap();
+
+    let conv = memory
+        .create_conversation(&CreateConversationRequest {
+            conversation_id: Some("conv-cache".into()),
+            title: Some("cache".into()),
+            project_id: None,
+        })
+        .unwrap();
+    memory
+        .set_active_conversation(Some(conv.id.as_str()))
+        .unwrap();
+
+    let request = UserRequest::new("hello again");
+    let _ = engine.assemble(&request).unwrap();
+    let hits_before = engine.cache_stats().hits;
+    let _ = engine.assemble(&request).unwrap();
+    assert!(engine.cache_stats().hits > hits_before);
+    assert!(engine.inspect_last().unwrap().cache_hit);
+
+    memory
+        .append_message(&AppendMessageRequest {
+            conversation_id: conv.id.as_str().to_string(),
+            role: MessageRole::User,
+            content: "new turn".into(),
+            created_at: None,
+            attachments: Vec::new(),
+            references: Vec::new(),
+        })
+        .unwrap();
+
+    let _ = engine.assemble(&request).unwrap();
+    assert!(
+        !engine.inspect_last().unwrap().cache_hit,
+        "conversation revision change must miss cache"
+    );
+}
+
+#[test]
+fn request_fresh_context_forces_miss() {
+    let engine = bound_engine();
+    let request = UserRequest::new("fresh please");
+    let _ = engine.assemble(&request).unwrap();
+    let _ = engine.assemble(&request).unwrap();
+    assert!(engine.inspect_last().unwrap().cache_hit);
+    engine.request_fresh_context("planner_requested_fresh");
+    let _ = engine.assemble(&request).unwrap();
+    assert!(!engine.inspect_last().unwrap().cache_hit);
+    assert_eq!(
+        engine.cache_stats().last_invalidation_reason.as_deref(),
+        Some("planner_requested_fresh")
+    );
+}
+
 // ── ContextBundle immutability ─────────────────────────────────────────────
 
 #[test]
@@ -963,6 +1107,117 @@ fn context_provider_independence_no_shared_mutable_state() {
     assert_eq!(right_calls.load(AtomicOrdering::SeqCst), 1);
     assert_eq!(bundle.workspace_kind(), Some("coding"));
     assert_eq!(bundle.search_results().hits.len(), 2);
+}
+
+// ── Complexity lightweight assemble ─────────────────────────────────────────
+
+#[test]
+fn lightweight_greeting_skips_expensive_providers() {
+    let engine = bound_engine();
+    let hints = AssembleHints::new(IntentId::Unknown, Vec::<String>::new())
+        .with_complexity("greeting");
+    engine
+        .assemble_with(&UserRequest::new("Hello!"), Some(&hints))
+        .unwrap();
+    let inspection = engine.inspect_last().unwrap();
+    for id in [
+        "memory",
+        "search",
+        "workspace",
+        "diagnostics",
+        "git_status",
+        "workspace_inventory",
+        "file_summaries",
+    ] {
+        assert!(
+            inspection.providers.iter().any(|p| {
+                p.id == id
+                    && matches!(
+                        p.outcome,
+                        ProviderInspectOutcome::SkippedComplexity { .. }
+                    )
+            }),
+            "expected {id} complexity-excluded for greeting; got {:?}",
+            inspection
+                .providers
+                .iter()
+                .find(|p| p.id == id)
+                .map(|p| &p.outcome)
+        );
+    }
+    assert!(
+        !inspection.providers.iter().any(|p| {
+            p.id == "conversation"
+                && matches!(p.outcome, ProviderInspectOutcome::SkippedComplexity { .. })
+        }),
+        "conversation must not be complexity-excluded for greeting"
+    );
+}
+
+#[test]
+fn lightweight_general_question_keeps_memory_and_search_optional() {
+    let engine = bound_engine();
+    let hints = AssembleHints::new(IntentId::Unknown, Vec::<String>::new())
+        .with_complexity("general_question");
+    engine
+        .assemble_with(
+            &UserRequest::new("What is the capital of France?"),
+            Some(&hints),
+        )
+        .unwrap();
+    let inspection = engine.inspect_last().unwrap();
+    for id in ["memory", "search"] {
+        assert!(
+            !inspection.providers.iter().any(|p| {
+                p.id == id
+                    && matches!(
+                        p.outcome,
+                        ProviderInspectOutcome::SkippedComplexity { .. }
+                    )
+            }),
+            "{id} must not be complexity-excluded for general_question"
+        );
+    }
+}
+
+#[test]
+fn lightweight_coding_does_not_complexity_exclude_core_providers() {
+    let engine = bound_engine();
+    engine.set_session_workspace(Some("coding".into()));
+    engine.set_session_inputs(ContextSessionInputs {
+        diagnostics: DiagnosticsSection {
+            diagnostics: vec![BundleDiagnostic {
+                path: None,
+                severity: "warning".into(),
+                message: "unused variable".into(),
+                line: None,
+                column: None,
+                source: Some("rust-analyzer".into()),
+            }],
+        },
+        ..ContextSessionInputs::default()
+    });
+    let hints = AssembleHints::new(IntentId::Unknown, Vec::<String>::new())
+        .with_complexity("coding_question");
+    engine
+        .assemble_with(
+            &UserRequest::new("How do I fix this borrow checker error?"),
+            Some(&hints),
+        )
+        .unwrap();
+    let inspection = engine.inspect_last().unwrap();
+    for id in ["conversation", "workspace", "diagnostics", "project"] {
+        assert!(
+            !inspection.providers.iter().any(|p| {
+                p.id == id
+                    && matches!(
+                        p.outcome,
+                        ProviderInspectOutcome::SkippedComplexity { .. }
+                    )
+            }),
+            "{id} must not be complexity-excluded for coding_question"
+        );
+    }
 }
 
 // ── ContextPolicy determinism ──────────────────────────────────────────────

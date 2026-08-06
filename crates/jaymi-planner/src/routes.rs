@@ -83,7 +83,7 @@ impl IntentToolHandler for ListDirectoryRoute {
             originating_request: "List directory".into(),
             action_label: "List directory".into(),
             expected_outputs: vec!["directory listing".into()],
-            invalidate_cache: None,
+            fresh_context: None,
             soft_failure: true,
         })
     }
@@ -146,7 +146,7 @@ impl IntentToolHandler for ListProjectTreeRoute {
             originating_request: "List project tree".into(),
             action_label: "List project tree".into(),
             expected_outputs: vec!["project tree listing".into()],
-            invalidate_cache: None,
+            fresh_context: None,
             soft_failure: false,
         })
     }
@@ -209,7 +209,7 @@ impl IntentToolHandler for ReadFileRoute {
             originating_request: "Read file".into(),
             action_label: "Read file".into(),
             expected_outputs: vec!["unified document".into()],
-            invalidate_cache: None,
+            fresh_context: None,
             soft_failure: false,
         })
     }
@@ -272,7 +272,7 @@ impl IntentToolHandler for WriteFileRoute {
             originating_request: "Write file".into(),
             action_label: "Write file".into(),
             expected_outputs: vec!["written file".into()],
-            invalidate_cache: Some("files_changed"),
+            fresh_context: Some("files_changed"),
             soft_failure: true,
         })
     }
@@ -409,7 +409,7 @@ impl IntentToolHandler for ManagePathRoute {
             originating_request,
             action_label,
             expected_outputs,
-            invalidate_cache: Some("files_changed"),
+            fresh_context: Some("files_changed"),
             soft_failure: false,
         })
     }
@@ -510,7 +510,7 @@ impl IntentToolHandler for RunTerminalRoute {
             originating_request: "Execute terminal command".into(),
             action_label: "Execute terminal command".into(),
             expected_outputs: vec!["terminal output".into()],
-            invalidate_cache: None,
+            fresh_context: None,
             soft_failure: false,
         })
     }
@@ -595,7 +595,7 @@ impl IntentToolHandler for GitRoute {
             originating_request: action_label.clone(),
             action_label,
             expected_outputs: vec!["git result".into()],
-            invalidate_cache: None,
+            fresh_context: None,
             soft_failure: false,
         })
     }
@@ -678,7 +678,7 @@ impl IntentToolHandler for LspRoute {
             originating_request: action_label.clone(),
             action_label,
             expected_outputs: vec!["lsp result".into()],
-            invalidate_cache: None,
+            fresh_context: None,
             soft_failure: false,
         })
     }
@@ -755,7 +755,7 @@ impl IntentToolHandler for DiscoverInventoryRoute {
             originating_request: "Query inventory".into(),
             action_label: "Query inventory".into(),
             expected_outputs: vec!["inventory entries".into()],
-            invalidate_cache: None,
+            fresh_context: None,
             soft_failure: false,
         })
     }
@@ -824,7 +824,7 @@ impl IntentToolHandler for SearchKnowledgeRoute {
             originating_request: "Search knowledge".into(),
             action_label: "Search knowledge".into(),
             expected_outputs: vec!["search hits".into()],
-            invalidate_cache: None,
+            fresh_context: None,
             soft_failure: false,
         })
     }
@@ -892,7 +892,7 @@ impl IntentToolHandler for SearchProjectKnowledgeRoute {
             originating_request: "Search project knowledge".into(),
             action_label: "Search project knowledge".into(),
             expected_outputs: vec!["project knowledge hits".into()],
-            invalidate_cache: None,
+            fresh_context: None,
             soft_failure: false,
         })
     }
@@ -955,7 +955,7 @@ impl IntentToolHandler for IndexRootsRoute {
             originating_request: "Index filesystem".into(),
             action_label: "Index filesystem".into(),
             expected_outputs: vec!["index summary".into()],
-            invalidate_cache: Some("search_index_updated"),
+            fresh_context: Some("search_index_updated"),
             soft_failure: false,
         })
     }

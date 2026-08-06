@@ -129,7 +129,9 @@ Decision Engine    Reasoning Engine (conversational / unknown after Context)
    │               │
    └──────┬────────┘
           │
-   Intent → Capability
+   Intent → Capability → Complexity Assessment
+          │
+   AssembleHints (intent, capability_ids, complexity)
           │
    Context Policy → Providers → Context Engine → ContextBundle
           │
@@ -139,9 +141,15 @@ Decision Engine    Reasoning Engine (conversational / unknown after Context)
           │
  ProviderRegistry + bound providers
           │
- Local Resources / AI Models / Internet
+   Local Resources / AI Models / Internet
 
 The Planner remains deterministic.
+
+**Conversational complexity** (`ComplexityAssessment`) is a Planner-owned,
+rule-based class (`greeting` … `research_question`) attached to
+`AssembleHints` before assemble. It biases Context relevance only — it does
+**not** change Intent routing or Capability selection. Rules:
+[docs/complexity.md](complexity.md).
 
 Reasoning is delegated.
 

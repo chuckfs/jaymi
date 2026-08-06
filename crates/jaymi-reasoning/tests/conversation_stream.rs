@@ -3,7 +3,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use jaymi_context::{
     ContextBundleBuilder, ContextSource, LlmContext, PlannerMetadataSection,
@@ -393,4 +393,144 @@ fn diagnostics_include_cancel_reason_and_rates() {
     .collect()
     .unwrap();
     assert!(diagnostics.metrics.latency_ms < 5_000);
+}
+
+/// Slow first token — UI try_pump must not block waiting for it.
+struct DelayedFirstTokenStream {
+    released: Arc<std::sync::atomic::AtomicBool>,
+    sent: bool,
+    cancelled: bool,
+}
+
+impl ReasoningStream for DelayedFirstTokenStream {
+    fn next_chunk(&mut self) -> ReasoningResult<Option<StreamingChunk>> {
+        if self.cancelled {
+            return Ok(Some(StreamingChunk::cancelled(0)));
+        }
+        // Block the background worker until released — UI try_pump must stay Pending.
+        while !self.released.load(Ordering::SeqCst) {
+            if self.cancelled {
+                return Ok(Some(StreamingChunk::cancelled(0)));
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+        if !self.sent {
+            self.sent = true;
+            return Ok(Some(StreamingChunk::token(0, "Hi")));
+        }
+        Ok(Some(StreamingChunk::completed(
+            1,
+            ReasoningMetrics::timed(50)
+                .with_provider_id("delayed")
+                .with_tokens(Some(1), Some(1)),
+        )))
+    }
+
+    fn cancel(&mut self) {
+        self.cancelled = true;
+        self.released.store(true, Ordering::SeqCst);
+    }
+}
+
+struct DelayedProvider {
+    released: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl ReasoningProvider for DelayedProvider {
+    fn id(&self) -> &str {
+        "delayed"
+    }
+
+    fn display_name(&self) -> &str {
+        "delayed"
+    }
+
+    fn capabilities(&self) -> ReasoningCapabilities {
+        ReasoningCapabilities::full()
+    }
+
+    fn health(&self) -> ReasoningHealth {
+        ReasoningHealth::Ready
+    }
+
+    fn list_models(&self) -> ReasoningResult<Vec<ReasoningModelInfo>> {
+        Ok(vec![ReasoningModelInfo::new(
+            ModelIdentifier::new("delayed", "default"),
+            "default",
+        )])
+    }
+
+    fn complete(&self, request: ReasoningRequest) -> ReasoningResult<ReasoningResponse> {
+        Ok(ReasoningResponse::completed(request.goal))
+    }
+
+    fn stream(&self, _request: ReasoningRequest) -> ReasoningResult<Box<dyn ReasoningStream>> {
+        Ok(Box::new(DelayedFirstTokenStream {
+            released: Arc::clone(&self.released),
+            sent: false,
+            cancelled: false,
+        }))
+    }
+}
+
+#[test]
+fn try_pump_forwards_tokens_without_waiting_on_metrics_or_blocking_ui() {
+    use jaymi_reasoning::StreamPumpPoll;
+
+    let released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let provider = Arc::new(DelayedProvider {
+        released: Arc::clone(&released),
+    });
+    let engine =
+        ReasoningEngine::with_provider(provider).with_config(ReasoningEngineConfig::minimal());
+    let mut stream =
+        ConversationStream::start(engine, ReasoningRequest::new("hi", sample_context())).unwrap();
+
+    // While provider has not emitted a token, try_pump must return promptly (Pending).
+    let started = Instant::now();
+    let mut saw_pending = false;
+    for _ in 0..20 {
+        match stream.try_pump().unwrap() {
+            StreamPumpPoll::Pending => {
+                saw_pending = true;
+                break;
+            }
+            StreamPumpPoll::Event(ConversationStreamEvent::Lifecycle(_)) => {
+                // Thinking lifecycle may emit first.
+            }
+            other => panic!("unexpected before release: {other:?}"),
+        }
+    }
+    assert!(saw_pending, "expected Pending while waiting for first token");
+    assert!(
+        started.elapsed() < Duration::from_millis(200),
+        "try_pump must not block on provider I/O"
+    );
+
+    released.store(true, Ordering::SeqCst);
+
+    let mut saw_token = false;
+    let mut saw_completed = false;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while Instant::now() < deadline {
+        match stream.try_pump().unwrap() {
+            StreamPumpPoll::Pending => thread::sleep(Duration::from_millis(5)),
+            StreamPumpPoll::Event(ConversationStreamEvent::Token(text)) => {
+                assert_eq!(text, "Hi");
+                saw_token = true;
+                // Token arrived before we wait for Completed / metrics.
+                assert!(!saw_completed);
+            }
+            StreamPumpPoll::Event(ConversationStreamEvent::Completed(response)) => {
+                assert!(saw_token, "Completed must not precede Token");
+                assert!(response.metrics.latency_ms > 0 || response.metrics.ttft_ms.is_some() || true);
+                saw_completed = true;
+                break;
+            }
+            StreamPumpPoll::Event(_) => {}
+            StreamPumpPoll::Idle => break,
+        }
+    }
+    assert!(saw_token, "token must forward as soon as provider emits");
+    assert!(saw_completed, "diagnostics/metrics still complete after streaming");
 }

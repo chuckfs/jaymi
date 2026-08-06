@@ -1,6 +1,6 @@
 //! Conversation streaming session — lifecycle, incremental events, retry.
 
-use crate::engine::{ReasoningEngine, StreamingResponse};
+use crate::engine::{ChunkPoll, ReasoningEngine, StreamingResponse};
 use crate::error::{ReasoningError, ReasoningResult};
 use crate::lifecycle::{CancelReason, StreamingLifecycle};
 use crate::metrics::ReasoningMetrics;
@@ -125,6 +125,17 @@ pub struct ConversationStream {
     prompt_diagnostics: Option<crate::prompt::PromptDiagnostics>,
 }
 
+/// Non-blocking poll for [`ConversationStream::try_pump`].
+#[derive(Debug)]
+pub enum StreamPumpPoll {
+    /// No event yet — stream still active (UI should repaint later).
+    Pending,
+    /// Forward this event to the conversation immediately.
+    Event(ConversationStreamEvent),
+    /// Stream finished; no further events.
+    Idle,
+}
+
 impl ConversationStream {
     /// Start a conversation stream (lifecycle → Thinking).
     pub fn start(engine: ReasoningEngine, request: ReasoningRequest) -> ReasoningResult<Self> {
@@ -245,46 +256,63 @@ impl ConversationStream {
         self.begin_attempt()
     }
 
-    /// Pull the next conversation event.
+    /// Pull the next conversation event (blocks briefly while waiting for provider chunks).
+    ///
+    /// Prefer [`Self::try_pump`] on the interactive UI path so frames never wait
+    /// on provider I/O, diagnostics, metrics, or final response objects.
     pub fn pump(&mut self) -> ReasoningResult<Option<ConversationStreamEvent>> {
+        loop {
+            match self.try_pump()? {
+                StreamPumpPoll::Pending => {
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                }
+                StreamPumpPoll::Event(event) => return Ok(Some(event)),
+                StreamPumpPoll::Idle => return Ok(None),
+            }
+        }
+    }
+
+    /// Non-blocking pump — tokens are forwarded as soon as the provider emits them.
+    ///
+    /// Never waits for diagnostics, execution summaries, metrics, or the final
+    /// response object. Those continue collecting in the background and attach
+    /// only on terminal events.
+    pub fn try_pump(&mut self) -> ReasoningResult<StreamPumpPoll> {
         if self.finished && self.pending.is_none() && self.complete_fallback.is_none() {
-            return Ok(None);
+            return Ok(StreamPumpPoll::Idle);
         }
 
         if let Some(response) = self.complete_fallback.take() {
             self.finished = true;
             self.lifecycle = StreamingLifecycle::Completed;
-            if self.last_emitted_lifecycle != StreamingLifecycle::Thinking
-                && self.last_emitted_lifecycle != StreamingLifecycle::Completed
-            {
-                // Ensure Thinking was visible for complete-fallback path.
-            }
-            if self.last_emitted_lifecycle != StreamingLifecycle::Completed {
-                // Emit lifecycle Completed via the Completed event only.
-            }
-            return Ok(Some(ConversationStreamEvent::Completed(response)));
+            return Ok(StreamPumpPoll::Event(ConversationStreamEvent::Completed(
+                response,
+            )));
         }
 
         if self.lifecycle != self.last_emitted_lifecycle {
             let lifecycle = self.lifecycle;
             self.last_emitted_lifecycle = lifecycle;
-            return Ok(Some(ConversationStreamEvent::Lifecycle(lifecycle)));
+            return Ok(StreamPumpPoll::Event(ConversationStreamEvent::Lifecycle(
+                lifecycle,
+            )));
         }
 
         if let Some(chunk) = self.pending.take() {
-            return Ok(Some(self.event_from_chunk(chunk)));
+            return Ok(StreamPumpPoll::Event(self.event_from_chunk(chunk)));
         }
 
-        let chunk_result = {
+        let chunk_poll = {
             let Some(inner) = self.inner.as_mut() else {
                 self.finished = true;
-                return Ok(None);
+                return Ok(StreamPumpPoll::Idle);
             };
-            inner.next_chunk()
+            inner.try_next_chunk()
         };
 
-        match chunk_result {
-            Ok(Some(chunk)) => {
+        match chunk_poll {
+            Ok(ChunkPoll::Pending) => Ok(StreamPumpPoll::Pending),
+            Ok(ChunkPoll::Ready(chunk)) => {
                 if let Some(inner) = self.inner.as_ref() {
                     self.lifecycle = inner.lifecycle();
                     self.accumulated = inner.accumulated_text().to_string();
@@ -293,22 +321,28 @@ impl ConversationStream {
                     self.last_metrics = metrics.clone();
                 }
 
+                // Emit Lifecycle before Token/Thought so ConversationState mirrors
+                // Streaming; the same UI pump frame drains both via try_pump.
                 if self.lifecycle != self.last_emitted_lifecycle {
                     self.pending = Some(chunk);
                     let lifecycle = self.lifecycle;
                     self.last_emitted_lifecycle = lifecycle;
-                    return Ok(Some(ConversationStreamEvent::Lifecycle(lifecycle)));
+                    return Ok(StreamPumpPoll::Event(ConversationStreamEvent::Lifecycle(
+                        lifecycle,
+                    )));
                 }
-                Ok(Some(self.event_from_chunk(chunk)))
+                Ok(StreamPumpPoll::Event(self.event_from_chunk(chunk)))
             }
-            Ok(None) => {
+            Ok(ChunkPoll::Closed) => {
                 if let Some(inner) = self.inner.as_ref() {
                     self.accumulated = inner.accumulated_text().to_string();
                 }
                 self.lifecycle = StreamingLifecycle::Completed;
                 self.finished = true;
                 let response = self.take_inner_response();
-                Ok(Some(ConversationStreamEvent::Completed(response)))
+                Ok(StreamPumpPoll::Event(ConversationStreamEvent::Completed(
+                    response,
+                )))
             }
             Err(ReasoningError::TimedOut { limit_ms }) => {
                 if let Some(inner) = self.inner.as_ref() {
@@ -322,7 +356,7 @@ impl ConversationStream {
                 let error = ReasoningError::TimedOut { limit_ms };
                 self.last_error = Some(error.clone());
                 self.last_metrics = metrics.clone();
-                Ok(Some(ConversationStreamEvent::Failed {
+                Ok(StreamPumpPoll::Event(ConversationStreamEvent::Failed {
                     partial: self.accumulated.clone(),
                     error,
                     metrics,
@@ -347,7 +381,7 @@ impl ConversationStream {
                 self.inner = None;
                 self.last_error = Some(err.clone());
                 self.last_metrics = metrics.clone();
-                Ok(Some(ConversationStreamEvent::Failed {
+                Ok(StreamPumpPoll::Event(ConversationStreamEvent::Failed {
                     partial: self.accumulated.clone(),
                     error: err,
                     metrics,

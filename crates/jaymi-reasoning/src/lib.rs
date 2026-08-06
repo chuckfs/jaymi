@@ -34,6 +34,7 @@ mod lifecycle;
 mod metrics;
 mod model;
 mod parameters;
+mod pipeline;
 mod prompt;
 mod provider;
 mod registry;
@@ -44,18 +45,21 @@ mod types;
 
 pub use cancellation::{CancellationFlag, CancellationToken};
 pub use conversation_stream::{
-    ConversationStream, ConversationStreamDiagnostics, ConversationStreamEvent,
+    ConversationStream, ConversationStreamDiagnostics, ConversationStreamEvent, StreamPumpPoll,
 };
 pub use diagnostics::{ReasoningDiagnosticsInput, ReasoningDiagnosticsReport};
 pub use engine::{
-    ReasoningEngine, ReasoningEngineConfig, StreamingResponse, DEFAULT_REASONING_TIMEOUT_MS,
+    ChunkPoll, ReasoningEngine, ReasoningEngineConfig, StreamingResponse,
+    DEFAULT_REASONING_TIMEOUT_MS,
 };
 pub use error::{ReasoningError, ReasoningResult};
 pub use lifecycle::{CancelReason, StreamingLifecycle};
 pub use metrics::ReasoningMetrics;
 pub use model::{
-    ModelIdentifier, ModelLimits, ReasoningModelInfo, DEFAULT_RESERVED_COMPLETION_TOKENS,
+    ModelCapabilityFlags, ModelIdentifier, ModelLimits, ReasoningModelInfo,
+    DEFAULT_RESERVED_COMPLETION_TOKENS,
 };
+pub use pipeline::{PipelineStageTiming, PipelineTiming};
 pub use registry::{
     ModelRegistry, ModelRegistrySnapshot, ProviderHealthEntry, RegisteredModel,
 };

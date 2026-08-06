@@ -126,6 +126,16 @@ pub trait MemoryEngineApi: Send + Sync {
     /// Current active conversation id, when any.
     fn active_conversation_id(&self) -> Option<String>;
 
+    /// Lightweight conversational revision for ContextBundle cache keys.
+    ///
+    /// Returns `(updated_at, message_count)` when the conversation exists.
+    /// Used only to detect unchanged conversational state — never loads the
+    /// full transcript.
+    fn conversation_revision(
+        &self,
+        conversation_id: &str,
+    ) -> JaymiResult<Option<(i64, u64)>>;
+
     /// Store categorized project memory.
     fn store_project_memory(
         &self,
@@ -875,6 +885,22 @@ impl MemoryEngineApi for MemoryEngine {
             .lock()
             .ok()
             .and_then(|guard| guard.clone())
+    }
+
+    fn conversation_revision(
+        &self,
+        conversation_id: &str,
+    ) -> JaymiResult<Option<(i64, u64)>> {
+        self.ensure_ready()?;
+        if conversation_id.trim().is_empty() {
+            return Ok(None);
+        }
+        let Some(meta) = self.store.get_conversation_meta(conversation_id)? else {
+            return Ok(None);
+        };
+        // next_message_sequence is the next free index == current message count.
+        let message_count = self.store.next_message_sequence(conversation_id)?;
+        Ok(Some((meta.updated_at, message_count)))
     }
 
     fn store_project_memory(

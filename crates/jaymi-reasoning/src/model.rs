@@ -98,6 +98,62 @@ impl ModelLimits {
     }
 }
 
+/// Vendor-neutral per-model capability flags (Settings / diagnostics).
+///
+/// Providers populate these during discovery. The UI never invents them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ModelCapabilityFlags {
+    /// Can produce chat / completion replies.
+    pub completion: bool,
+    /// Supports extended thinking / reasoning traces.
+    pub thinking: bool,
+    /// Supports tool / function calling.
+    pub tools: bool,
+    /// Accepts image / multimodal inputs.
+    pub vision: bool,
+    /// Embedding / vector model (not chat).
+    pub embeddings: bool,
+}
+
+impl ModelCapabilityFlags {
+    /// Chat completion only (typical default for local LLMs).
+    pub fn completion_only() -> Self {
+        Self {
+            completion: true,
+            ..Self::default()
+        }
+    }
+
+    /// Embedding models.
+    pub fn embeddings_only() -> Self {
+        Self {
+            embeddings: true,
+            ..Self::default()
+        }
+    }
+
+    /// Short labels for Settings chips (stable order).
+    pub fn labels(self) -> Vec<&'static str> {
+        let mut labels = Vec::new();
+        if self.completion {
+            labels.push("Completion");
+        }
+        if self.thinking {
+            labels.push("Thinking");
+        }
+        if self.tools {
+            labels.push("Tools");
+        }
+        if self.vision {
+            labels.push("Vision");
+        }
+        if self.embeddings {
+            labels.push("Embeddings");
+        }
+        labels
+    }
+}
+
 /// Descriptive metadata for a discoverable model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReasoningModelInfo {
@@ -124,6 +180,9 @@ pub struct ReasoningModelInfo {
     pub supports_streaming: bool,
     /// Whether the model is suitable for local / offline use.
     pub local: bool,
+    /// Capability flags for Settings / selection UX.
+    #[serde(default)]
+    pub capabilities: ModelCapabilityFlags,
     /// Free-form notes for diagnostics (never wire payloads).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
@@ -142,6 +201,7 @@ impl ReasoningModelInfo {
             quantization: None,
             supports_streaming: false,
             local: true,
+            capabilities: ModelCapabilityFlags::completion_only(),
             notes: Vec::new(),
         }
     }
@@ -167,6 +227,12 @@ impl ReasoningModelInfo {
     /// Attach quantization label.
     pub fn with_quantization(mut self, quantization: impl Into<String>) -> Self {
         self.quantization = Some(quantization.into());
+        self
+    }
+
+    /// Attach capability flags.
+    pub fn with_capabilities(mut self, capabilities: ModelCapabilityFlags) -> Self {
+        self.capabilities = capabilities;
         self
     }
 

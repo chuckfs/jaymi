@@ -36,6 +36,12 @@ pub enum ContextSource {
     ActiveCapabilities,
     /// User request metadata derived from the inbound request.
     UserRequest,
+    /// Git status summary from Application background maintenance.
+    GitStatus,
+    /// Workspace inventory summary from Application background maintenance.
+    WorkspaceInventory,
+    /// Lightweight file summaries from Application background maintenance.
+    FileSummaries,
 }
 
 impl ContextSource {
@@ -53,6 +59,9 @@ impl ContextSource {
             Self::Permissions => "permissions",
             Self::ActiveCapabilities => "active_capabilities",
             Self::UserRequest => "user_request",
+            Self::GitStatus => "git_status",
+            Self::WorkspaceInventory => "workspace_inventory",
+            Self::FileSummaries => "file_summaries",
         }
     }
 }
@@ -232,6 +241,63 @@ pub struct DiagnosticsSection {
     pub diagnostics: Vec<BundleDiagnostic>,
 }
 
+/// Compact Git status for conversational context (never a full porcelain dump).
+///
+/// Populated by Application background maintenance from the latest **completed**
+/// snapshot — providers must not shell out to git during assemble.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct GitStatusSection {
+    /// Whether the project root is inside a Git work tree.
+    pub is_repository: bool,
+    /// Current branch name, when known.
+    pub branch: Option<String>,
+    /// Short status summary (e.g. "clean", "2 modified").
+    pub summary: String,
+    /// Count of modified (unstaged) paths.
+    pub modified_count: usize,
+    /// Count of staged paths.
+    pub staged_count: usize,
+    /// Count of untracked paths.
+    pub untracked_count: usize,
+    /// Sample paths (capped) for prompt context.
+    pub sample_paths: Vec<String>,
+}
+
+/// Workspace inventory summary from background maintenance (not a live walk).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WorkspaceInventorySection {
+    /// Absolute project root, when known.
+    pub root: Option<String>,
+    /// File count in the completed inventory snapshot.
+    pub file_count: usize,
+    /// Directory count in the completed inventory snapshot.
+    pub directory_count: usize,
+    /// Status label (`ready` / `error` / `empty` / `pending`).
+    pub status: String,
+    /// Sample paths (capped) for prompt context.
+    pub sample_paths: Vec<String>,
+}
+
+/// One lightweight file summary produced by background maintenance.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FileSummaryEntry {
+    /// Absolute path.
+    pub path: String,
+    /// Language id when known.
+    pub language: Option<String>,
+    /// Approximate line count when known.
+    pub line_count: Option<u32>,
+    /// Short head / outline summary (not full file contents).
+    pub summary: String,
+}
+
+/// File summaries section — host-supplied, never gathered during assemble.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct FileSummariesSection {
+    /// Summaries for open / recently maintained files.
+    pub entries: Vec<FileSummaryEntry>,
+}
+
 /// One permission grant / decision snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BundlePermissionEntry {
@@ -367,6 +433,9 @@ pub struct ContextBundle {
     search_results: SearchResultsSection,
     memory_results: MemoryResultsSection,
     diagnostics: DiagnosticsSection,
+    git_status: GitStatusSection,
+    workspace_inventory: WorkspaceInventorySection,
+    file_summaries: FileSummariesSection,
     permissions: PermissionsSection,
     planner_metadata: PlannerMetadataSection,
     active_capabilities: ActiveCapabilitiesSection,
@@ -433,6 +502,21 @@ impl ContextBundle {
     /// Diagnostics section.
     pub fn diagnostics(&self) -> &DiagnosticsSection {
         &self.diagnostics
+    }
+
+    /// Git status section (from completed maintenance snapshot).
+    pub fn git_status(&self) -> &GitStatusSection {
+        &self.git_status
+    }
+
+    /// Workspace inventory section (from completed maintenance snapshot).
+    pub fn workspace_inventory(&self) -> &WorkspaceInventorySection {
+        &self.workspace_inventory
+    }
+
+    /// File summaries section (from completed maintenance snapshot).
+    pub fn file_summaries(&self) -> &FileSummariesSection {
+        &self.file_summaries
     }
 
     /// Permissions section.
@@ -546,6 +630,9 @@ pub struct ContextBundleBuilder {
     search_results: SearchResultsSection,
     memory_results: MemoryResultsSection,
     diagnostics: DiagnosticsSection,
+    git_status: GitStatusSection,
+    workspace_inventory: WorkspaceInventorySection,
+    file_summaries: FileSummariesSection,
     permissions: PermissionsSection,
     planner_metadata: PlannerMetadataSection,
     active_capabilities: ActiveCapabilitiesSection,
@@ -612,6 +699,24 @@ impl ContextBundleBuilder {
         self
     }
 
+    /// Set the git status section.
+    pub fn git_status(mut self, section: GitStatusSection) -> Self {
+        self.git_status = section;
+        self
+    }
+
+    /// Set the workspace inventory section.
+    pub fn workspace_inventory(mut self, section: WorkspaceInventorySection) -> Self {
+        self.workspace_inventory = section;
+        self
+    }
+
+    /// Set the file summaries section.
+    pub fn file_summaries(mut self, section: FileSummariesSection) -> Self {
+        self.file_summaries = section;
+        self
+    }
+
     /// Set the permissions section.
     pub fn permissions(mut self, section: PermissionsSection) -> Self {
         self.permissions = section;
@@ -668,6 +773,15 @@ impl ContextBundleBuilder {
         if let Some(section) = contribution.diagnostics {
             self.diagnostics = section;
         }
+        if let Some(section) = contribution.git_status {
+            self.git_status = section;
+        }
+        if let Some(section) = contribution.workspace_inventory {
+            self.workspace_inventory = section;
+        }
+        if let Some(section) = contribution.file_summaries {
+            self.file_summaries = section;
+        }
         if let Some(section) = contribution.permissions {
             self.permissions = section;
         }
@@ -690,6 +804,9 @@ impl ContextBundleBuilder {
             search_results: self.search_results,
             memory_results: self.memory_results,
             diagnostics: self.diagnostics,
+            git_status: self.git_status,
+            workspace_inventory: self.workspace_inventory,
+            file_summaries: self.file_summaries,
             permissions: self.permissions,
             planner_metadata: self.planner_metadata,
             active_capabilities: self.active_capabilities,
@@ -723,6 +840,12 @@ pub struct ContextSessionInputs {
     pub open_files: OpenFilesSection,
     /// Diagnostics attached for the next request.
     pub diagnostics: DiagnosticsSection,
+    /// Latest completed Git status from Application background maintenance.
+    pub git_status: GitStatusSection,
+    /// Latest completed workspace inventory from Application background maintenance.
+    pub workspace_inventory: WorkspaceInventorySection,
+    /// Latest completed file summaries from Application background maintenance.
+    pub file_summaries: FileSummariesSection,
     /// Permission grants attached for the next request.
     pub permissions: PermissionsSection,
     /// Deprecated for request selection — leave empty.
