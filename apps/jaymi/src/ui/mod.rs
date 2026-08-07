@@ -41,7 +41,7 @@ use crate::ui::nav_rail::{
 };
 use crate::ui::review_card::render_review_card;
 use jaymi_capabilities::{
-    CodingBottomTab, EditorSettings, FoldedRegion, SplitDirection, WorkspaceKind,
+    CodingBottomTab, EditorSelection, EditorSettings, FoldedRegion, SplitDirection, WorkspaceKind,
     DEFAULT_CONVERSATION_FRACTION, DEFAULT_WORKSPACE_PANEL_WIDTH, MAX_CONVERSATION_FRACTION,
     MAX_WORKSPACE_PANEL_WIDTH, MIN_CONVERSATION_WIDTH, MIN_WORKSPACE_PANEL_WIDTH,
 };
@@ -505,8 +505,8 @@ impl eframe::App for JaymiApp {
             .show(ctx, |ui| {
                 ui.horizontal_centered(|ui| {
                     self.render_nav_toggle(ui);
-                });
             });
+        });
 
         self.render_nav_side_panel(ctx);
 
@@ -578,8 +578,8 @@ impl eframe::App for JaymiApp {
             }
 
             let panel_response = panel.show(ctx, |ui| {
-                monaco_surface = self.render_workspace(ui);
-            });
+                    monaco_surface = self.render_workspace(ui);
+                });
 
             // Write back user resizes of the Coding side panel so they survive
             // workspace close/reopen (persisted in `.jaymi/workspace.json`).
@@ -621,10 +621,10 @@ impl eframe::App for JaymiApp {
                     self.render_settings_surface(ui);
                 } else {
                     // Floating composer — anchored bottom, inset from edges, no chrome bar.
-                    egui::TopBottomPanel::bottom("chat_composer")
-                        .show_separator_line(false)
-                        .frame(
-                            egui::Frame::new()
+        egui::TopBottomPanel::bottom("chat_composer")
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
                                 .inner_margin(egui::Margin {
                                     left: space::XL as i8,
                                     right: space::XL as i8,
@@ -635,13 +635,13 @@ impl eframe::App for JaymiApp {
                                 .stroke(egui::Stroke::NONE),
                         )
                         .show_inside(ui, |ui| {
-                            self.render_chat_composer(ui);
-                        });
+                self.render_chat_composer(ui);
+            });
 
                     self.render_conversation_surface(ui);
-                    if self.show_diagnostics {
+            if self.show_diagnostics {
                         ui.add_space(space::MD);
-                        self.render_diagnostics(ui);
+                self.render_diagnostics(ui);
                     }
                 }
             });
@@ -1125,9 +1125,9 @@ impl JaymiApp {
                                                 ));
                                             if response.clicked() {
                                                 regenerate_index = Some(index);
-                                            }
-                                        }
-                                    });
+                    }
+                }
+            });
                                 }
                                 ui.add_space(space::LG);
                             }
@@ -1171,15 +1171,15 @@ impl JaymiApp {
                 let top = ((ui.available_height() - block_height) * 0.5).max(space::XL);
                 ui.add_space(top);
 
-                ui.label(
+            ui.label(
                     egui::RichText::new("Hi, I'm Jaymi")
                         .size(type_size::WELCOME)
-                        .strong()
+                    .strong()
                         .color(self.theme.text_primary),
-                );
+            );
                 ui.add_space(space::MD + space::XS);
                 ui.set_max_width((ui.available_width() * 0.7).clamp(260.0, 480.0));
-                ui.label(
+            ui.label(
                     egui::RichText::new("Ask anything,\nor open a Coding Workspace.")
                         .size(type_size::BODY + 2.0)
                         .color(self.theme.text_secondary),
@@ -1269,11 +1269,11 @@ impl JaymiApp {
 
                 // Dock to the conversation column's right edge; text right-aligned.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                    egui::Frame::new()
+            egui::Frame::new()
                         .corner_radius(radius::XL)
                         .inner_margin(inset(pad_x, pad_y))
                         .fill(self.theme.accent)
-                        .show(ui, |ui| {
+                .show(ui, |ui| {
                             ui.set_width(inner_w);
                             ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
                                 ui.add(
@@ -1285,8 +1285,8 @@ impl JaymiApp {
                                     .wrap(),
                                 );
                             });
-                        });
                 });
+        });
             }
             MessageRole::Assistant | MessageRole::System => {
                 // Assistant / system sit on the open background — no nested card.
@@ -1403,7 +1403,7 @@ impl JaymiApp {
                         .auto_shrink([false, true])
                         .stick_to_bottom(true)
                         .show(ui, |ui| {
-                            let response = ui.add(
+                    let response = ui.add(
                                 egui::TextEdit::multiline(&mut self.prompt)
                                     .id(edit_id)
                                     .desired_width(ui.available_width())
@@ -1414,8 +1414,8 @@ impl JaymiApp {
                                             .color(self.theme.text_secondary),
                                     )
                                     .text_color(self.theme.text_primary)
-                                    .frame(false),
-                            );
+                            .frame(false),
+                    );
                             edit_response = Some(response);
                         });
 
@@ -1707,7 +1707,7 @@ impl JaymiApp {
                 NavRailEvent::OpenProjectId(project_id) => self.open_project_by_id(&project_id),
                 NavRailEvent::ToggleDiagnostics => {
                     self.show_diagnostics = !self.show_diagnostics;
-                    self.error = None;
+                self.error = None;
                     self.status = None;
                 }
                 NavRailEvent::OpenConversation(conversation_id) => {
@@ -1889,6 +1889,25 @@ impl JaymiApp {
                 } => self
                     .app
                     .set_coding_tab_cursor_in_pane(&pane, &path, line, column),
+                CodingShellEvent::SetSelection {
+                    pane,
+                    path,
+                    start_line,
+                    start_column,
+                    end_line,
+                    end_column,
+                    text,
+                } => self.app.set_coding_tab_selection_in_pane(
+                    &pane,
+                    &path,
+                    EditorSelection::new(
+                        start_line,
+                        start_column,
+                        end_line,
+                        end_column,
+                        text,
+                    ),
+                ),
                 CodingShellEvent::SetFolds {
                     pane,
                     path,
@@ -1912,8 +1931,8 @@ impl JaymiApp {
                 CodingShellEvent::OpenQuickOpen => {
                     self.command_palette.open();
                     self.refresh_command_palette();
-                    Ok(())
-                }
+                            Ok(())
+                        }
                 CodingShellEvent::CloseWorkspace => {
                     self.close_workspace();
                     Ok(())
@@ -2426,6 +2445,24 @@ impl JaymiApp {
                         column,
                     });
                 }
+                MonacoIpcMessage::Selection {
+                    path,
+                    start_line,
+                    start_column,
+                    end_line,
+                    end_column,
+                    text,
+                } => {
+                    events.push(CodingShellEvent::SetSelection {
+                        pane: focused_pane.clone(),
+                        path,
+                        start_line,
+                        start_column,
+                        end_line,
+                        end_column,
+                        text,
+                    });
+                }
                 MonacoIpcMessage::Folds { path, regions } => {
                     if let Some(host) = self.monaco.as_mut() {
                         host.note_external_folds(&path, &regions);
@@ -2608,21 +2645,21 @@ impl JaymiApp {
                         })
                         .collect::<Vec<_>>()
                 } else {
-                    coding
-                        .diagnostics
-                        .iter()
-                        .filter(|diag| diag.path.as_deref() == Some(path))
-                        .map(|diag| {
-                            serde_json::json!({
-                                "message": diag.message,
-                                "severity": diag.severity,
-                                "line": diag.line.unwrap_or(0),
-                                "character": diag.character.unwrap_or(0),
-                                "endLine": diag.end_line.unwrap_or(diag.line.unwrap_or(0)),
-                                "endCharacter": diag.end_character.unwrap_or(diag.character.unwrap_or(0) + 1),
-                            })
+                coding
+                    .diagnostics
+                    .iter()
+                    .filter(|diag| diag.path.as_deref() == Some(path))
+                    .map(|diag| {
+                        serde_json::json!({
+                            "message": diag.message,
+                            "severity": diag.severity,
+                            "line": diag.line.unwrap_or(0),
+                            "character": diag.character.unwrap_or(0),
+                            "endLine": diag.end_line.unwrap_or(diag.line.unwrap_or(0)),
+                            "endCharacter": diag.end_character.unwrap_or(diag.character.unwrap_or(0) + 1),
                         })
-                        .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
                 }
             })
             .unwrap_or_default();
@@ -3041,6 +3078,180 @@ impl JaymiApp {
                                     egui::ProgressBar::new(fraction)
                                         .desired_width(140.0),
                                 );
+                                ui.end_row();
+                            }
+                        });
+                }
+            }
+        }
+
+        // Workspace Intelligence — freshness, maintenance, candidates, policy, budget (B2.11).
+        if let Some(workspace) = &self.snapshot.workspace_inspector {
+            if workspace.has_content() {
+                ui.add_space(space::MD);
+                ui.label(
+                    egui::RichText::new("Workspace Intelligence")
+                        .strong()
+                        .size(type_size::UI)
+                        .color(self.theme.text_primary),
+                );
+                ui.add_space(space::XS);
+                ui.label(
+                    egui::RichText::new(
+                        "Snapshot freshness · provider timings · maintenance · candidates · policy · context budget. Developer-only — never written to conversation.",
+                    )
+                    .size(type_size::META)
+                    .color(self.theme.text_secondary),
+                );
+                ui.add_space(space::SM);
+                egui::Grid::new("workspace_intelligence_metrics")
+                    .striped(true)
+                    .num_columns(2)
+                    .spacing([space::MD, space::XS])
+                    .min_col_width(140.0)
+                    .show(ui, |ui| {
+                        ui.strong("Metric");
+                        ui.strong("Value");
+                        ui.end_row();
+                        for (label, value) in workspace.labeled_values() {
+                            ui.label(label);
+                            ui.label(value);
+                            ui.end_row();
+                        }
+                    });
+                if !workspace.snapshot_freshness.is_empty() {
+                    ui.add_space(space::SM);
+                    ui.label(
+                        egui::RichText::new("Snapshot freshness")
+                            .strong()
+                            .size(type_size::META)
+                            .color(self.theme.text_primary),
+                    );
+                    egui::Grid::new("workspace_snapshot_freshness")
+                        .striped(true)
+                        .num_columns(4)
+                        .spacing([space::MD, space::XS])
+                        .min_col_width(64.0)
+                        .show(ui, |ui| {
+                            ui.strong("Kind");
+                            ui.strong("Present");
+                            ui.strong("Freshness");
+                            ui.strong("Age");
+                            ui.end_row();
+                            for row in &workspace.snapshot_freshness {
+                                ui.label(&row.kind);
+                                ui.label(if row.present { "yes" } else { "no" });
+                                ui.label(&row.freshness);
+                                ui.label(
+                                    row.age_seconds
+                                        .map(|s| format!("{s}s"))
+                                        .unwrap_or_else(|| "-".into()),
+                                );
+                                ui.end_row();
+                            }
+                        });
+                }
+                if !workspace.maintenance_status.is_empty() {
+                    ui.add_space(space::SM);
+                    ui.label(
+                        egui::RichText::new("Maintenance status")
+                            .strong()
+                            .size(type_size::META)
+                            .color(self.theme.text_primary),
+                    );
+                    egui::Grid::new("workspace_maintenance_status")
+                        .striped(true)
+                        .num_columns(3)
+                        .spacing([space::MD, space::XS])
+                        .min_col_width(80.0)
+                        .show(ui, |ui| {
+                            ui.strong("Kind");
+                            ui.strong("Inflight");
+                            ui.strong("Completed");
+                            ui.end_row();
+                            for row in &workspace.maintenance_status {
+                                ui.label(&row.kind);
+                                ui.label(if row.inflight { "yes" } else { "no" });
+                                ui.label(if row.has_completed { "yes" } else { "no" });
+                                ui.end_row();
+                            }
+                        });
+                }
+                if !workspace.provider_timings.is_empty() {
+                    ui.add_space(space::SM);
+                    ui.label(
+                        egui::RichText::new("Provider timings")
+                            .strong()
+                            .size(type_size::META)
+                            .color(self.theme.text_primary),
+                    );
+                    egui::Grid::new("workspace_provider_timings")
+                        .striped(true)
+                        .num_columns(2)
+                        .spacing([space::MD, space::XS])
+                        .min_col_width(120.0)
+                        .show(ui, |ui| {
+                            for (id, detail) in &workspace.provider_timings {
+                                ui.label(id);
+                                ui.label(detail);
+                                ui.end_row();
+                            }
+                        });
+                }
+                if !workspace.candidate_rows().is_empty() {
+                    ui.add_space(space::SM);
+                    ui.label(
+                        egui::RichText::new("Candidate selection")
+                            .strong()
+                            .size(type_size::META)
+                            .color(self.theme.text_primary),
+                    );
+                    egui::Grid::new("workspace_candidate_selection")
+                        .striped(true)
+                        .num_columns(6)
+                        .spacing([space::MD, space::XS])
+                        .min_col_width(48.0)
+                        .show(ui, |ui| {
+                            ui.strong("Provider");
+                            ui.strong("Candidate");
+                            ui.strong("Selected");
+                            ui.strong("Rel");
+                            ui.strong("Reason");
+                            ui.strong("Chars");
+                            ui.end_row();
+                            for decision in workspace.candidate_rows().iter().take(48) {
+                                ui.label(&decision.provider_id);
+                                ui.label(&decision.candidate_id);
+                                ui.label(if decision.selected { "yes" } else { "no" });
+                                ui.label(decision.relevance.to_string());
+                                ui.label(&decision.reason);
+                                ui.label(decision.estimated_chars.to_string());
+                                ui.end_row();
+                            }
+                        });
+                }
+                if !workspace.policy_decisions.is_empty() {
+                    ui.add_space(space::SM);
+                    ui.label(
+                        egui::RichText::new("Policy decisions")
+                            .strong()
+                            .size(type_size::META)
+                            .color(self.theme.text_primary),
+                    );
+                    egui::Grid::new("workspace_policy_decisions")
+                        .striped(true)
+                        .num_columns(3)
+                        .spacing([space::MD, space::XS])
+                        .min_col_width(80.0)
+                        .show(ui, |ui| {
+                            ui.strong("Provider");
+                            ui.strong("Included");
+                            ui.strong("Reason");
+                            ui.end_row();
+                            for decision in workspace.policy_decisions.iter().take(48) {
+                                ui.label(&decision.provider_id);
+                                ui.label(if decision.included { "yes" } else { "no" });
+                                ui.label(&decision.reason);
                                 ui.end_row();
                             }
                         });

@@ -2,7 +2,8 @@
 
 use jaymi_core::JaymiResult;
 
-use crate::provider::{ContextContribution, ContextProvider, ProviderRequest};
+use crate::candidate::{CandidatePayload, ContextCandidate, ContextCandidateKind};
+use crate::provider::{ContextProvider, ProviderRequest};
 use crate::budget::{BudgetEstimate, BudgetUnits, ProviderPriority};
 use crate::relevance::RelevanceScore;
 use crate::{ActiveCapabilitiesSection, ActiveWorkspaceSection, ContextSource};
@@ -49,35 +50,45 @@ impl ContextProvider for WorkspaceProvider {
         BudgetEstimate::metadata(BudgetUnits::from_characters(chars, 4))
     }
 
-    fn contribute(
+    fn propose_candidates(
         &self,
         request: &ProviderRequest<'_>,
-    ) -> JaymiResult<Option<ContextContribution>> {
+    ) -> JaymiResult<Vec<ContextCandidate>> {
         let kind = request.session.workspace_kind.clone();
         let capability_ids = request.relevance.active_capabilities.clone();
         if kind.is_none() && capability_ids.is_empty() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
 
-        let mut sources = Vec::new();
-        let active_workspace = kind.map(|kind_id| {
-            sources.push(ContextSource::ActiveWorkspace);
-            ActiveWorkspaceSection {
-                kind_id: Some(kind_id),
-            }
-        });
-        let active_capabilities = if capability_ids.is_empty() {
-            None
-        } else {
-            sources.push(ContextSource::ActiveCapabilities);
-            Some(ActiveCapabilitiesSection { capability_ids })
-        };
-
-        Ok(Some(ContextContribution {
-            sources,
-            active_workspace,
-            active_capabilities,
-            ..ContextContribution::default()
-        }))
+        let mut out = Vec::new();
+        if let Some(kind_id) = kind {
+            out.push(ContextCandidate::new(
+                self.id(),
+                ContextCandidateKind::WorkspaceKind,
+                ContextSource::ActiveWorkspace,
+                kind_id.clone(),
+                CandidatePayload::ActiveWorkspace(ActiveWorkspaceSection {
+                    kind_id: Some(kind_id),
+                }),
+                self.sensitivity(),
+                92,
+                self.priority(),
+                true,
+            ));
+        }
+        if !capability_ids.is_empty() {
+            out.push(ContextCandidate::new(
+                self.id(),
+                ContextCandidateKind::Capabilities,
+                ContextSource::ActiveCapabilities,
+                "caps",
+                CandidatePayload::ActiveCapabilities(ActiveCapabilitiesSection { capability_ids }),
+                self.sensitivity(),
+                88,
+                self.priority(),
+                true,
+            ));
+        }
+        Ok(out)
     }
 }

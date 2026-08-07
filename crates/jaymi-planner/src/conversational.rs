@@ -275,7 +275,8 @@ pub fn stream_collect_failed_response(
 
 /// Assemble hints for a conversational / unknown request.
 ///
-/// Complexity is Planner-authored and never changes Intent or capability ids.
+/// Complexity and environmental resolution are Planner-authored and never
+/// change Intent or capability ids.
 pub fn conversational_assemble_hints(
     intent: &Intent,
     capability_ids: Vec<String>,
@@ -285,6 +286,7 @@ pub fn conversational_assemble_hints(
         intent: intent.id(),
         capability_ids,
         complexity: None,
+        environmental: None,
     };
     if let Some(assessment) = complexity {
         hints.complexity = Some(assessment.class_id().to_string());
@@ -302,6 +304,8 @@ pub struct ConversationalAssemble {
     pub context: ContextBundle,
     /// Deterministic conversational complexity (Planner-owned).
     pub complexity: ComplexityAssessment,
+    /// Environmental resolution (Planner-owned; unused when no deixis).
+    pub environmental: crate::environmental::EnvironmentalResolution,
     /// Lightweight stage timings for Planner + Context (diagnostics only).
     pub pipeline: jaymi_reasoning::PipelineTiming,
 }

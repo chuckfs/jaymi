@@ -22,6 +22,7 @@ mod problems;
 mod registry;
 mod state;
 mod workspace;
+mod workspace_activity;
 
 pub use capability::Capability;
 pub use composition::{
@@ -37,9 +38,10 @@ pub use discovery::{
 };
 pub use editor::{
     EditorBuffer, EditorCursor, EditorLayoutNode, EditorPane, EditorPaneId, EditorPaneTab,
-    EditorSession, EditorSessionId, EditorSettings, EditorTab, EditorViewState,
+    EditorSelection, EditorSession, EditorSessionId, EditorSettings, EditorTab, EditorViewState,
     EditorWorkspaceSnapshot, FoldedRegion, OpenEditors, PersistedEditorPane, PersistedEditorTab,
-    SplitDirection, EDITOR_WORKSPACE_SNAPSHOT_VERSION, RECENTLY_OPENED_CAP,
+    SplitDirection, EDITOR_SELECTION_TEXT_CAP, EDITOR_WORKSPACE_SNAPSHOT_VERSION,
+    RECENTLY_OPENED_CAP,
 };
 pub use engine::{CapabilityEngine, CapabilityEngineApi, CapabilityHealth, CapabilityStats};
 pub use inspector::{
@@ -67,4 +69,8 @@ pub use state::{
 pub use workspace::{
     capability_workspace, workspace_expansion_for, workspace_panels, WorkspaceEdge,
     WorkspaceExpansion, WorkspaceKind, WorkspacePanel,
+};
+pub use workspace_activity::{
+    WorkspaceActivityCommand, WorkspaceActivityPath, WorkspaceActivityState,
+    WORKSPACE_ACTIVITY_COMMAND_CAP, WORKSPACE_ACTIVITY_PATH_CAP,
 };

@@ -59,7 +59,7 @@ maps each provider to a participation tier: **Required**, **Optional**, or **Exc
 | Provider | greeting / small_talk | general_question | coding_question |
 |----------|----------------------|------------------|-----------------|
 | conversation | Required | Required | Required |
-| memory | Excluded | Optional | Optional |
+| memory | Required | Optional | Optional |
 | search | Excluded | Optional | Optional |
 | workspace | Excluded | Optional | Required |
 | diagnostics | Excluded | Optional | Required |
@@ -68,6 +68,8 @@ maps each provider to a participation tier: **Required**, **Optional**, or **Exc
 | git_status | Excluded | Optional | Required |
 | workspace_inventory | Excluded | Optional | Optional |
 | file_summaries | Excluded | Optional | Required |
+| runtime | Excluded | Optional | Required |
+| workspace_memory | Excluded | Optional | Required |
 
 **Excluded** providers are skipped before policy evaluation — no `contribute()` call,
 inspector outcome `SkippedComplexity`. **Required** providers receive a high relevance
@@ -78,8 +80,12 @@ Additional tiers (same mechanism):
 
 | Complexity | Required | Excluded |
 |------------|----------|----------|
-| project_question | conversation, project, workspace, workspace_inventory | — |
+| project_question | conversation, project, workspace, workspace_inventory, git_status | — |
 | research_question | conversation, search | — |
+
+Sprint **B2.8** Context Selection may further omit Required feeds when a refined
+profile is stricter (e.g. debug/compile omits Git). See
+[context-selection.md](context-selection.md).
 
 Threshold / policy / capability ids are unchanged. Assembly always flows through
 `ContextEngine::assemble_with` — complexity never bypasses the engine.

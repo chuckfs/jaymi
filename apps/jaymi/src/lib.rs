@@ -24,6 +24,7 @@ pub mod performance_diagnostics;
 pub mod quick_open;
 pub mod session_cache;
 pub mod settings_workspace;
+pub mod workspace_diagnostics;
 #[allow(unsafe_code)] // AppKit / DWM bridges for OS accent color.
 mod system_accent;
 pub mod theme;
@@ -58,6 +59,10 @@ pub use context_maintenance::{
     ContextMaintenance, MaintenanceKind, MaintenanceUiUpdate,
 };
 pub use performance_diagnostics::{PerformanceDashboard, PerformanceTimelineRow};
+pub use workspace_diagnostics::{
+    MaintenanceStatusRow, SnapshotFreshnessRow, WorkspaceDiagnosticsInput,
+    WorkspaceDiagnosticsReport,
+};
 pub use settings_workspace::{
     render_settings_workspace, ReasoningConnectionStatus, ReasoningSettingsModel,
     ReasoningSettingsProvider, ReasoningSettingsSnapshot, SettingsCategory, SettingsWorkspaceEvent,

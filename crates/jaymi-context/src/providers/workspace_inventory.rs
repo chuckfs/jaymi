@@ -3,13 +3,12 @@
 use jaymi_core::JaymiResult;
 
 use crate::budget::{BudgetEstimate, BudgetUnits, ProviderPriority};
-use crate::provider::{ContextContribution, ContextProvider, ProviderRequest};
+use crate::candidate::{CandidatePayload, ContextCandidate, ContextCandidateKind};
+use crate::provider::{ContextProvider, ProviderRequest};
 use crate::relevance::{IntentTag, RelevanceScore, RequestKind};
 use crate::ContextSource;
 
 /// Contributes workspace inventory when the session carries a completed snapshot.
-///
-/// Never walks the filesystem — Application background maintenance owns refresh.
 pub struct WorkspaceInventoryProvider;
 
 impl ContextProvider for WorkspaceInventoryProvider {
@@ -67,22 +66,29 @@ impl ContextProvider for WorkspaceInventoryProvider {
         BudgetEstimate::flexible(BudgetUnits::from_characters(chars.max(32), 4))
     }
 
-    fn contribute(
+    fn propose_candidates(
         &self,
         request: &ProviderRequest<'_>,
-    ) -> JaymiResult<Option<ContextContribution>> {
+    ) -> JaymiResult<Vec<ContextCandidate>> {
         let section = &request.session.workspace_inventory;
         if section.root.is_none()
             && section.file_count == 0
             && section.directory_count == 0
             && section.status.is_empty()
         {
-            return Ok(None);
+            return Ok(Vec::new());
         }
-        Ok(Some(ContextContribution {
-            sources: vec![ContextSource::WorkspaceInventory],
-            workspace_inventory: Some(section.clone()),
-            ..ContextContribution::default()
-        }))
+        let importance = self.relevance(request).value().saturating_add(10).min(100);
+        Ok(vec![ContextCandidate::new(
+            self.id(),
+            ContextCandidateKind::WorkspaceInventory,
+            ContextSource::WorkspaceInventory,
+            "inventory",
+            CandidatePayload::WorkspaceInventory(section.clone()),
+            self.sensitivity(),
+            importance,
+            self.priority(),
+            false,
+        )])
     }
 }

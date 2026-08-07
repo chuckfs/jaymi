@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use jaymi_capabilities::Capability;
-use jaymi_core::{GitOperation, GitPathStatus, JaymiError, JaymiResult};
+use jaymi_core::{GitCommitSummary, GitOperation, GitPathStatus, JaymiError, JaymiResult};
 
 use crate::categories::ProviderCategory;
 use crate::provider::{Provider, ProviderIdentity};
@@ -27,9 +27,13 @@ pub struct GitStatusSnapshot {
     pub repo_root: PathBuf,
     /// Current branch name, when known.
     pub branch: Option<String>,
+    /// Full HEAD object name, when known.
+    pub head_sha: Option<String>,
+    /// Abbreviated HEAD, when known.
+    pub head_short: Option<String>,
     /// Short human-readable summary.
     pub summary: String,
-    /// Unstaged worktree modifications (tracked files, not deletes).
+    /// Unstaged worktree modifications (tracked files, not deletes / conflicts).
     pub modified: Vec<GitPathStatus>,
     /// Newly staged paths (index status `A`).
     pub added: Vec<GitPathStatus>,
@@ -39,6 +43,10 @@ pub struct GitStatusSnapshot {
     pub staged: Vec<GitPathStatus>,
     /// Untracked paths.
     pub untracked: Vec<GitPathStatus>,
+    /// Merge conflict / unmerged paths.
+    pub conflicts: Vec<GitPathStatus>,
+    /// Recent commits (newest first; capped).
+    pub recent_commits: Vec<GitCommitSummary>,
 }
 
 impl GitStatusSnapshot {
@@ -52,6 +60,7 @@ impl GitStatusSnapshot {
                 &self.deleted,
                 &self.staged,
                 &self.untracked,
+                &self.conflicts,
             )
         };
         self
@@ -421,7 +430,76 @@ fn status_snapshot(repo: &Path) -> JaymiResult<GitStatusSnapshot> {
         )));
     }
     let text = String::from_utf8_lossy(&output.stdout);
-    Ok(parse_porcelain(repo, &text).with_summary())
+    let mut snapshot = parse_porcelain(repo, &text).with_summary();
+    let (head_sha, head_short) = resolve_head(repo);
+    snapshot.head_sha = head_sha;
+    snapshot.head_short = head_short;
+    snapshot.recent_commits = recent_commits(repo, 8);
+    Ok(snapshot)
+}
+
+fn resolve_head(repo: &Path) -> (Option<String>, Option<String>) {
+    let full = run_git_stdout(repo, &["rev-parse", "HEAD"]).ok();
+    let short = run_git_stdout(repo, &["rev-parse", "--short", "HEAD"]).ok();
+    (full, short)
+}
+
+fn recent_commits(repo: &Path, limit: usize) -> Vec<GitCommitSummary> {
+    let limit = limit.max(1).min(32);
+    let n = format!("-n{limit}");
+    let pretty = format!("--pretty=format:{}", "%H%x00%h%x00%s%x00%an%x00%cr");
+    let Ok(text) = run_git_stdout(repo, &["log", &n, &pretty]) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|line| {
+            let mut parts = line.split('\0');
+            let sha = parts.next()?.trim();
+            let short_sha = parts.next()?.trim();
+            let subject = parts.next()?.trim();
+            if sha.is_empty() || subject.is_empty() {
+                return None;
+            }
+            let author = parts
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            let relative_time = parts
+                .next()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            Some(GitCommitSummary {
+                sha: sha.to_string(),
+                short_sha: if short_sha.is_empty() {
+                    sha.chars().take(7).collect()
+                } else {
+                    short_sha.to_string()
+                },
+                subject: subject.to_string(),
+                author,
+                relative_time,
+            })
+        })
+        .collect()
+}
+
+fn run_git_stdout(repo: &Path, args: &[&str]) -> JaymiResult<String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .map_err(|error| JaymiError::new(format!("failed to run git: {error}")))?;
+    if !output.status.success() {
+        return Err(JaymiError::new(format!(
+            "git {} failed: {}",
+            args.first().copied().unwrap_or("command"),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 fn parse_porcelain(repo: &Path, text: &str) -> GitStatusSnapshot {
@@ -431,6 +509,7 @@ fn parse_porcelain(repo: &Path, text: &str) -> GitStatusSnapshot {
     let mut deleted = Vec::new();
     let mut staged = Vec::new();
     let mut untracked = Vec::new();
+    let mut conflicts = Vec::new();
 
     for line in text.lines() {
         if line.is_empty() {
@@ -451,6 +530,14 @@ fn parse_porcelain(repo: &Path, text: &str) -> GitStatusSnapshot {
             untracked.push(GitPathStatus {
                 path,
                 status: "??".into(),
+            });
+            continue;
+        }
+
+        if is_unmerged(index, worktree) {
+            conflicts.push(GitPathStatus {
+                path,
+                status: format!("{index}{worktree}"),
             });
             continue;
         }
@@ -483,7 +570,7 @@ fn parse_porcelain(repo: &Path, text: &str) -> GitStatusSnapshot {
                         });
                     }
                 }
-                'M' | 'T' | 'U' | 'R' | 'C' => {
+                'M' | 'T' | 'R' | 'C' => {
                     modified.push(GitPathStatus {
                         path: path.clone(),
                         status: worktree.to_string(),
@@ -503,13 +590,24 @@ fn parse_porcelain(repo: &Path, text: &str) -> GitStatusSnapshot {
         is_repository: true,
         repo_root: repo.to_path_buf(),
         branch,
+        head_sha: None,
+        head_short: None,
         summary: String::new(),
         modified,
         added,
         deleted,
         staged,
         untracked,
+        conflicts,
+        recent_commits: Vec::new(),
     }
+}
+
+fn is_unmerged(index: char, worktree: char) -> bool {
+    index == 'U'
+        || worktree == 'U'
+        || (index == 'A' && worktree == 'A')
+        || (index == 'D' && worktree == 'D')
 }
 
 fn parse_branch_line(rest: &str) -> String {
@@ -541,16 +639,21 @@ fn summarize(
     deleted: &[GitPathStatus],
     staged: &[GitPathStatus],
     untracked: &[GitPathStatus],
+    conflicts: &[GitPathStatus],
 ) -> String {
     if modified.is_empty()
         && added.is_empty()
         && deleted.is_empty()
         && staged.is_empty()
         && untracked.is_empty()
+        && conflicts.is_empty()
     {
         return "clean".to_string();
     }
     let mut parts = Vec::new();
+    if !conflicts.is_empty() {
+        parts.push(format!("{} conflict{}", conflicts.len(), if conflicts.len() == 1 { "" } else { "s" }));
+    }
     if !modified.is_empty() {
         parts.push(format!("{} modified", modified.len()));
     }
@@ -588,6 +691,9 @@ mod tests {
         assert!(status.branch.is_some());
         assert_eq!(status.untracked.len(), 1);
         assert_eq!(status.untracked[0].path, "note.txt");
+        assert!(status.conflicts.is_empty());
+        // Brand-new repo may not have HEAD until first commit.
+        assert!(status.recent_commits.is_empty() || status.head_sha.is_some());
 
         let staged = provider
             .execute(
@@ -629,6 +735,10 @@ mod tests {
         assert!(committed.added.is_empty());
         assert!(committed.untracked.is_empty());
         assert_eq!(committed.summary, "clean");
+        assert!(committed.head_sha.is_some());
+        assert!(committed.head_short.is_some());
+        assert!(!committed.recent_commits.is_empty());
+        assert_eq!(committed.recent_commits[0].subject, "add note");
 
         let log = Command::new("git")
             .arg("-C")
@@ -637,6 +747,23 @@ mod tests {
             .output()
             .unwrap();
         assert_eq!(String::from_utf8_lossy(&log.stdout).trim(), "add note");
+    }
+
+    #[test]
+    fn parse_porcelain_classifies_merge_conflicts() {
+        let repo = PathBuf::from("/tmp/fake-repo");
+        let snap = parse_porcelain(
+            &repo,
+            "## main\nUU conflict.rs\n M dirty.rs\nA  staged.rs\n?? new.rs\n",
+        );
+        assert_eq!(snap.conflicts.len(), 1);
+        assert_eq!(snap.conflicts[0].path, "conflict.rs");
+        assert_eq!(snap.modified.len(), 1);
+        assert_eq!(snap.staged.len(), 1);
+        assert_eq!(snap.untracked.len(), 1);
+        assert!(!snap.summary.is_empty() || snap.summary.is_empty()); // filled by with_summary
+        let summarized = snap.with_summary();
+        assert!(summarized.summary.contains("conflict"));
     }
 
     #[test]

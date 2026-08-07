@@ -140,6 +140,8 @@ pub struct DiagnosticsSnapshot {
     pub context_inspector: Option<ContextInspectorReport>,
     /// Conversational Reasoning inspector (provider / model / tokens / lifecycle).
     pub reasoning_inspector: Option<ReasoningDiagnosticsReport>,
+    /// Workspace Intelligence diagnostics (Sprint B2.11; developer-only).
+    pub workspace_inspector: Option<crate::workspace_diagnostics::WorkspaceDiagnosticsReport>,
     /// Recent Context History entries (newest first) for debugging / transparency.
     pub context_history: Vec<ContextHistoryEntry>,
     /// Number of registered parsers.
@@ -350,6 +352,17 @@ impl DiagnosticsSnapshot {
             .map(ReasoningDiagnosticsReport::render)
     }
 
+    /// Render Workspace Intelligence diagnostics (Developer Diagnostics only).
+    pub fn render_workspace_inspector(&self) -> Option<String> {
+        self.workspace_inspector.as_ref().and_then(|report| {
+            if report.has_content() {
+                Some(report.render())
+            } else {
+                None
+            }
+        })
+    }
+
     /// Render the Performance dashboard (Developer Diagnostics only).
     pub fn render_performance(&self) -> Option<String> {
         let dashboard = crate::performance_diagnostics::PerformanceDashboard::from_sources(
@@ -419,6 +432,10 @@ impl DiagnosticsSnapshot {
         if let Some(performance) = self.render_performance() {
             lines.push(String::new());
             lines.push(performance);
+        }
+        if let Some(workspace) = self.render_workspace_inspector() {
+            lines.push(String::new());
+            lines.push(workspace);
         }
         if let Some(inspector) = self.render_capability_inspector() {
             lines.push(String::new());
@@ -498,6 +515,7 @@ mod tests {
             capability_inspector: None,
             context_inspector: None,
             reasoning_inspector: None,
+            workspace_inspector: None,
             context_history: vec![],
             parser_count: 0,
             parser_ids: vec![],

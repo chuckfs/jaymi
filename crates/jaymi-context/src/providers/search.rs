@@ -5,15 +5,13 @@ use std::sync::Arc;
 use jaymi_core::JaymiResult;
 use jaymi_search::SearchEngineApi;
 
-use crate::provider::{ContextContribution, ContextProvider, ProviderRequest};
+use crate::candidate::{CandidatePayload, ContextCandidate, ContextCandidateKind};
+use crate::provider::{ContextProvider, ProviderRequest};
 use crate::budget::{BudgetEstimate, BudgetUnits, ProviderPriority};
 use crate::relevance::{IntentTag, RelevanceScore, RequestKind};
 use crate::{ContextSource, SearchContextHint, SearchResultsSection};
 
 /// Contributes search coordination hints and any pre-attached session hits.
-///
-/// Never calls [`SearchEngineApi::search`] and never loads Project context —
-/// index summaries are host-supplied on the session.
 pub struct SearchProvider {
     search: Arc<dyn SearchEngineApi>,
 }
@@ -50,7 +48,6 @@ impl ContextProvider for SearchProvider {
             if signals.has_capability("search") { 25 } else { 0 },
             if has_hits { 40 } else { 0 },
             if request.request.project_knowledge.is_some() { 30 } else { 0 },
-            // Light boost when a coding workspace may expose index health.
             if signals.coding_workspace() { 15 } else { 0 },
         ])
     }
@@ -72,11 +69,11 @@ impl ContextProvider for SearchProvider {
         BudgetEstimate::flexible(BudgetUnits::from_characters(chars, 4))
     }
 
-    fn contribute(
+    fn propose_candidates(
         &self,
         request: &ProviderRequest<'_>,
-    ) -> JaymiResult<Option<ContextContribution>> {
-        let _ = &self.search; // keep Search Engine wired; do not call search()
+    ) -> JaymiResult<Vec<ContextCandidate>> {
+        let _ = &self.search;
 
         let structured = request.request.search.as_ref();
         let project_indexed = request.session.project_indexed_documents;
@@ -93,13 +90,20 @@ impl ContextProvider for SearchProvider {
         };
 
         if hint.is_none() && hits.is_empty() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
 
-        Ok(Some(ContextContribution {
-            sources: vec![ContextSource::SearchResults],
-            search_results: Some(SearchResultsSection { hint, hits }),
-            ..ContextContribution::default()
-        }))
+        let importance = self.relevance(request).value().saturating_add(10).min(100);
+        Ok(vec![ContextCandidate::new(
+            self.id(),
+            ContextCandidateKind::SearchResults,
+            ContextSource::SearchResults,
+            "search",
+            CandidatePayload::SearchResults(SearchResultsSection { hint, hits }),
+            self.sensitivity(),
+            importance,
+            self.priority(),
+            false,
+        )])
     }
 }

@@ -60,6 +60,38 @@ Providers never make decisions.
 
 They simply expose capabilities in a predictable way.
 
+**Context Providers** (Workspace Intelligence feeds) are a separate contract in
+`jaymi-context`. They propose [`ContextCandidate`](context-candidates.md) nodes
+via `propose_candidates()` and never assemble a `ContextBundle`. See
+[context-candidates.md](context-candidates.md) (Sprint B2.7 / B2.13.1 — **Current**).
+
+### Current Context Providers (Workspace Intelligence)
+
+These are **not** Tool Providers. They read host session / ambient snapshots only.
+
+| Context Provider | Feed | Status |
+|------------------|------|--------|
+| `ConversationProvider` | Conversation summary | **Current** |
+| `ProjectProvider` | Project + ProjectSnapshot | **Current** |
+| `WorkspaceProvider` | Workspace kind / capabilities | **Current** |
+| `EditorProvider` | Editor + EditorSnapshot / selection | **Current** (B2.3 / B2.13.3) |
+| `SearchProvider` | Search hints / hits | **Current** |
+| `MemoryProvider` | Conversation / project / personal memory | **Current** |
+| `DiagnosticsProvider` | Problems / diagnostics | **Current** |
+| `GitStatusProvider` | GitSnapshot summaries | **Current** (B2.5) |
+| `RuntimeProvider` | RuntimeSnapshot summaries | **Current** (B2.6) |
+| `WorkspaceMemoryProvider` | Coding activity rings | **Current** (B2.9) |
+| `WorkspaceInventoryProvider` | Inventory snapshot | **Current** |
+| `FileSummariesProvider` | File head summaries | **Current** |
+| `PermissionProvider` | Permission summary | **Current** |
+
+Do not confuse:
+
+* **`git` Tool Provider** — mutating / interactive Git via Planner → Tool (status / stage / commit **Current**; merge / rebase / cherry-pick **Target**)
+* **`GitStatusProvider` Context Provider** — read-only ambient GitSnapshot summaries for assemble (**Current**)
+
+Umbrella: [workspace-intelligence.md](workspace-intelligence.md).
+
 ⸻
 
 Responsibilities

@@ -42,8 +42,9 @@ pub use preview::{
     PREVIEW_MAX_BODY_LINES,
 };
 pub use request::{
-    DeletionMethod, DiscoveryQueryKind, GitOperation, GitPathStatus, GitRequest, ManagePathRequest,
-    ProjectKnowledgeRequest, TerminalOperation, TerminalRequest, UserRequest, WriteFileRequest,
+    DeletionMethod, DiscoveryQueryKind, GitCommitSummary, GitOperation, GitPathStatus, GitRequest,
+    ManagePathRequest, ProjectKnowledgeRequest, TerminalOperation, TerminalRequest, UserRequest,
+    WriteFileRequest,
 };
 pub use result::JaymiResult;
 pub use search::{MetadataFilters, SearchRequest};

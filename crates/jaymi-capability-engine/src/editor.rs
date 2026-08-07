@@ -24,6 +24,75 @@ pub struct EditorCursor {
     pub column: u32,
 }
 
+/// Cap for selected text stored on [`EditorSelection`] (IPC / CodingState).
+///
+/// Context budget may truncate further; this only bounds host observation size.
+pub const EDITOR_SELECTION_TEXT_CAP: usize = 16_384;
+
+/// Text selection in a pane tab (zero-based positions).
+///
+/// Empty range (start == end) with `text: None` means caret-only — not a span.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct EditorSelection {
+    /// Zero-based start line.
+    pub start_line: u32,
+    /// Zero-based start column.
+    pub start_column: u32,
+    /// Zero-based end line.
+    pub end_line: u32,
+    /// Zero-based end column.
+    pub end_column: u32,
+    /// Selected text when the range is non-empty (capped).
+    #[serde(default)]
+    pub text: Option<String>,
+}
+
+impl EditorSelection {
+    /// True when start and end positions coincide (caret-only).
+    pub fn is_empty(&self) -> bool {
+        self.start_line == self.end_line && self.start_column == self.end_column
+    }
+
+    /// Build a selection, capping text and clearing text for empty ranges.
+    pub fn new(
+        start_line: u32,
+        start_column: u32,
+        end_line: u32,
+        end_column: u32,
+        text: Option<String>,
+    ) -> Self {
+        let mut selection = Self {
+            start_line,
+            start_column,
+            end_line,
+            end_column,
+            text: None,
+        };
+        if selection.is_empty() {
+            return selection;
+        }
+        selection.text = text.map(|raw| {
+            if raw.chars().count() <= EDITOR_SELECTION_TEXT_CAP {
+                raw
+            } else {
+                raw.chars().take(EDITOR_SELECTION_TEXT_CAP).collect()
+            }
+        });
+        selection
+    }
+
+    /// Caret-only selection (no selected text).
+    pub fn caret(line: u32, column: u32) -> Self {
+        Self {
+            start_line: line,
+            start_column: column,
+            end_line: line,
+            end_column: column,
+            text: None,
+        }
+    }
+}
+
 /// One collapsed fold range (zero-based inclusive line numbers).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct FoldedRegion {
@@ -33,13 +102,16 @@ pub struct FoldedRegion {
     pub end_line: u32,
 }
 
-/// View state restored when activating a session (scroll + cursor + folds).
+/// View state restored when activating a session (scroll + cursor + folds + selection).
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
 pub struct EditorViewState {
     /// Vertical scroll in pixels.
     pub scroll_top: f32,
     /// Cursor position.
     pub cursor: EditorCursor,
+    /// Text selection (independent of caret; may be empty).
+    #[serde(default)]
+    pub selection: EditorSelection,
     /// Collapsed fold ranges for this buffer (not owned by Monaco).
     #[serde(default)]
     pub folded_regions: Vec<FoldedRegion>,
@@ -975,6 +1047,8 @@ impl OpenEditors {
     }
 
     /// Update buffer content for a path; promotes preview in all panes and marks dirty.
+    ///
+    /// Returns `true` when content actually changed.
     pub fn set_content(&mut self, path: &str, content: String) -> bool {
         let Some(buffer) = self.buffers.get_mut(path) else {
             return false;
@@ -987,8 +1061,9 @@ impl OpenEditors {
                     tab.preview = false;
                 }
             }
+            return true;
         }
-        true
+        false
     }
 
     /// Update scroll in the focused pane's tab for `path`.
@@ -1033,6 +1108,28 @@ impl OpenEditors {
             return false;
         };
         tab.view.cursor = EditorCursor { line, column };
+        true
+    }
+
+    /// Update text selection in the focused pane.
+    pub fn set_selection(&mut self, path: &str, selection: EditorSelection) -> bool {
+        self.set_selection_in_pane(&self.focused_pane.clone(), path, selection)
+    }
+
+    /// Update text selection in a pane.
+    pub fn set_selection_in_pane(
+        &mut self,
+        pane_id: &EditorPaneId,
+        path: &str,
+        selection: EditorSelection,
+    ) -> bool {
+        let Some(pane) = self.panes.get_mut(pane_id.as_str()) else {
+            return false;
+        };
+        let Some(tab) = pane.tab_mut(path) else {
+            return false;
+        };
+        tab.view.selection = selection;
         true
     }
 

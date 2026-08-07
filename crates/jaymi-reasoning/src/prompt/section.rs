@@ -26,6 +26,16 @@ pub enum PromptSectionId {
     CurrentFile,
     /// Editor selection.
     Selection,
+    /// Editor intelligence from EditorSnapshot (symbol / hover / references / …).
+    EditorIntelligence,
+    /// Project intelligence from ProjectSnapshot (languages / deps / layout / …).
+    ProjectIntelligence,
+    /// Runtime intelligence from RuntimeSnapshot (terminal / build / test / …).
+    RuntimeIntelligence,
+    /// Workspace activity memory (edits / opens / builds / objective).
+    WorkspaceMemory,
+    /// Planner-resolved workspace deixis (Sprint B2.10).
+    EnvironmentalResolution,
     /// Search coordination / attached hits.
     SearchResults,
     /// Attached diagnostics.
@@ -50,6 +60,11 @@ impl PromptSectionId {
         Self::WorkspaceState,
         Self::CurrentFile,
         Self::Selection,
+        Self::EditorIntelligence,
+        Self::ProjectIntelligence,
+        Self::RuntimeIntelligence,
+        Self::WorkspaceMemory,
+        Self::EnvironmentalResolution,
         Self::SearchResults,
         Self::Diagnostics,
         Self::Permissions,
@@ -68,6 +83,11 @@ impl PromptSectionId {
             Self::WorkspaceState => "workspace_state",
             Self::CurrentFile => "current_file",
             Self::Selection => "selection",
+            Self::EditorIntelligence => "editor_intelligence",
+            Self::ProjectIntelligence => "project_intelligence",
+            Self::RuntimeIntelligence => "runtime_intelligence",
+            Self::WorkspaceMemory => "workspace_memory",
+            Self::EnvironmentalResolution => "environmental_resolution",
             Self::SearchResults => "search_results",
             Self::Diagnostics => "diagnostics",
             Self::Permissions => "permissions",
@@ -87,6 +107,11 @@ impl PromptSectionId {
             Self::WorkspaceState => "Workspace State",
             Self::CurrentFile => "Current File",
             Self::Selection => "Selection",
+            Self::EditorIntelligence => "Editor Intelligence",
+            Self::ProjectIntelligence => "Project Intelligence",
+            Self::RuntimeIntelligence => "Runtime Intelligence",
+            Self::WorkspaceMemory => "Workspace Memory",
+            Self::EnvironmentalResolution => "Environmental Resolution",
             Self::SearchResults => "Search Results",
             Self::Diagnostics => "Diagnostics",
             Self::Permissions => "Permissions",
@@ -105,6 +130,11 @@ impl PromptSectionId {
             Self::ActiveProject => 75,
             Self::CurrentFile => 70,
             Self::Selection => 65,
+            Self::EditorIntelligence => 62,
+            Self::ProjectIntelligence => 72,
+            Self::RuntimeIntelligence => 68,
+            Self::WorkspaceMemory => 66,
+            Self::EnvironmentalResolution => 88,
             Self::Capabilities => 55,
             Self::WorkspaceState => 50,
             Self::SearchResults => 45,
@@ -127,6 +157,11 @@ impl PromptSectionId {
             Self::WorkspaceState => &["active_workspace", "open_files", "git_status", "workspace_inventory", "file_summaries"],
             Self::CurrentFile => &["current_file"],
             Self::Selection => &["current_selection"],
+            Self::EditorIntelligence => &["editor_intelligence"],
+            Self::ProjectIntelligence => &["project_intelligence"],
+            Self::RuntimeIntelligence => &["runtime_intelligence"],
+            Self::WorkspaceMemory => &["workspace_memory"],
+            Self::EnvironmentalResolution => &[], // from LlmContext.providers.environmental
             Self::SearchResults => &["search_results"],
             Self::Diagnostics => &["diagnostics"],
             Self::Permissions => &["permissions"],

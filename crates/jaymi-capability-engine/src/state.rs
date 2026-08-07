@@ -341,6 +341,10 @@ pub struct GitStatusState {
     pub repo_root: Option<String>,
     /// Current branch name, when known.
     pub branch: Option<String>,
+    /// Full HEAD object name, when known.
+    pub head_sha: Option<String>,
+    /// Abbreviated HEAD, when known.
+    pub head_short: Option<String>,
     /// Short status summary (e.g. "clean", "2 modified").
     pub summary: String,
     /// Unstaged worktree modifications (not deletes).
@@ -353,6 +357,8 @@ pub struct GitStatusState {
     pub staged: Vec<GitFileEntry>,
     /// Untracked paths.
     pub untracked: Vec<GitFileEntry>,
+    /// Merge conflict / unmerged paths.
+    pub conflicts: Vec<GitFileEntry>,
     /// Draft commit message for the panel.
     pub commit_message: String,
     /// Paths awaiting discard confirmation (UI).
@@ -673,6 +679,11 @@ pub struct CodingState {
     pub problems: Vec<crate::ProblemIssue>,
     /// Find in Files / project search panel state.
     pub search: SearchPanelState,
+    /// Session-scoped workspace activity memory (Sprint B2.9).
+    ///
+    /// Distinct from Conversation Memory. Tracks recent edits, builds,
+    /// failures, and the current coding objective for Context Policy.
+    pub workspace_activity: crate::WorkspaceActivityState,
 }
 
 impl Default for CodingState {
@@ -691,6 +702,7 @@ impl Default for CodingState {
             diagnostics: Vec::new(),
             problems: Vec::new(),
             search: SearchPanelState::default(),
+            workspace_activity: crate::WorkspaceActivityState::default(),
         }
     }
 }
@@ -796,6 +808,11 @@ impl CodingState {
         let _ = self.editors.set_cursor(path, line, column);
     }
 
+    /// Update text selection for a session path in the focused pane.
+    pub fn set_selection(&mut self, path: &str, selection: crate::editor::EditorSelection) {
+        let _ = self.editors.set_selection(path, selection);
+    }
+
     /// Update folded regions for a session path in the focused pane.
     pub fn set_folded_regions(&mut self, path: &str, folded_regions: Vec<FoldedRegion>) {
         let _ = self.editors.set_folded_regions(path, folded_regions);
@@ -807,8 +824,28 @@ impl CodingState {
     }
 
     /// Update editable content for a session path (promotes preview).
+    ///
+    /// When content actually changes, records a workspace-activity recent edit.
     pub fn set_tab_content(&mut self, path: &str, content: String) {
-        let _ = self.editors.set_content(path, content);
+        let changed = self.editors.set_content(path, content);
+        if changed {
+            self.workspace_activity.record_edit(path);
+        }
+    }
+
+    /// Set the current coding objective for Workspace Memory.
+    pub fn set_coding_objective(&mut self, objective: Option<String>) {
+        self.workspace_activity.set_coding_objective(objective);
+    }
+
+    /// Record a terminal build / check / test outcome into Workspace Memory.
+    pub fn record_workspace_build(&mut self, command: &str, summary: &str, ok: bool) {
+        self.workspace_activity.record_build(command, summary, ok);
+    }
+
+    /// Clear Workspace Memory (coding / workspace close).
+    pub fn clear_workspace_activity(&mut self) {
+        self.workspace_activity.clear();
     }
 
     /// Clear dirty after a successful save.

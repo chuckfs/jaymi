@@ -33,6 +33,7 @@
       let applyingExternal = false;
       let scrollTimer = null;
       let cursorTimer = null;
+      let selectionTimer = null;
       let foldsTimer = null;
       let nextRequestId = 1;
       const pending = {};
@@ -400,6 +401,48 @@
               path: currentPath,
               line: Math.max(0, (position.lineNumber || 1) - 1),
               column: Math.max(0, (position.column || 1) - 1),
+            });
+          }, 50);
+        });
+
+        editor.onDidChangeCursorSelection(function (event) {
+          if (applyingExternal || !currentPath) {
+            return;
+          }
+          if (selectionTimer) {
+            clearTimeout(selectionTimer);
+          }
+          selectionTimer = setTimeout(function () {
+            const sel = (event && event.selection) || editor.getSelection();
+            if (!sel) {
+              return;
+            }
+            const startLine = Math.max(0, (sel.startLineNumber || 1) - 1);
+            const startColumn = Math.max(0, (sel.startColumn || 1) - 1);
+            const endLine = Math.max(0, (sel.endLineNumber || 1) - 1);
+            const endColumn = Math.max(0, (sel.endColumn || 1) - 1);
+            const empty =
+              startLine === endLine && startColumn === endColumn;
+            let text = null;
+            if (!empty) {
+              const model = editor.getModel();
+              if (model) {
+                text = model.getValueInRange(sel) || "";
+                // Cap observation payload; Context budget may truncate further.
+                const CAP = 16384;
+                if (text.length > CAP) {
+                  text = text.slice(0, CAP);
+                }
+              }
+            }
+            ipc({
+              type: "selection",
+              path: currentPath,
+              startLine: startLine,
+              startColumn: startColumn,
+              endLine: endLine,
+              endColumn: endColumn,
+              text: empty ? null : text,
             });
           }, 50);
         });

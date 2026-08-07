@@ -330,6 +330,85 @@ impl PromptBuilder {
                     None => DraftSection::excluded(id, "current_selection absent from LlmContext"),
                 }
             }
+            PromptSectionId::EditorIntelligence => {
+                match find_content(context, LlmSectionId::EditorIntelligence) {
+                    Some(LlmSectionContent::EditorIntelligence(intel)) => {
+                        match format_editor_intelligence(intel) {
+                            Some(body) => DraftSection::included(id, body),
+                            None => DraftSection::filtered(
+                                id,
+                                "editor_intelligence present but empty after format",
+                            ),
+                        }
+                    }
+                    Some(_) => {
+                        DraftSection::filtered(id, "editor_intelligence content kind mismatch")
+                    }
+                    None => DraftSection::excluded(id, "editor_intelligence absent from LlmContext"),
+                }
+            }
+            PromptSectionId::ProjectIntelligence => {
+                match find_content(context, LlmSectionId::ProjectIntelligence) {
+                    Some(LlmSectionContent::ProjectIntelligence(intel)) => {
+                        match format_project_intelligence(intel) {
+                            Some(body) => DraftSection::included(id, body),
+                            None => DraftSection::filtered(
+                                id,
+                                "project_intelligence present but empty after format",
+                            ),
+                        }
+                    }
+                    Some(_) => {
+                        DraftSection::filtered(id, "project_intelligence content kind mismatch")
+                    }
+                    None => {
+                        DraftSection::excluded(id, "project_intelligence absent from LlmContext")
+                    }
+                }
+            }
+            PromptSectionId::RuntimeIntelligence => {
+                match find_content(context, LlmSectionId::RuntimeIntelligence) {
+                    Some(LlmSectionContent::RuntimeIntelligence(intel)) => {
+                        match format_runtime_intelligence(intel) {
+                            Some(body) => DraftSection::included(id, body),
+                            None => DraftSection::filtered(
+                                id,
+                                "runtime_intelligence present but empty after format",
+                            ),
+                        }
+                    }
+                    Some(_) => {
+                        DraftSection::filtered(id, "runtime_intelligence content kind mismatch")
+                    }
+                    None => {
+                        DraftSection::excluded(id, "runtime_intelligence absent from LlmContext")
+                    }
+                }
+            }
+            PromptSectionId::WorkspaceMemory => {
+                match find_content(context, LlmSectionId::WorkspaceMemory) {
+                    Some(LlmSectionContent::WorkspaceMemory(memory)) => {
+                        match format_workspace_memory(memory) {
+                            Some(body) => DraftSection::included(id, body),
+                            None => DraftSection::filtered(
+                                id,
+                                "workspace_memory present but empty after format",
+                            ),
+                        }
+                    }
+                    Some(_) => DraftSection::filtered(id, "workspace_memory content kind mismatch"),
+                    None => DraftSection::excluded(id, "workspace_memory absent from LlmContext"),
+                }
+            }
+            PromptSectionId::EnvironmentalResolution => {
+                match format_environmental_resolution(context) {
+                    Some(body) => DraftSection::included(id, body),
+                    None => DraftSection::excluded(
+                        id,
+                        "no planner environmental resolution bindings",
+                    ),
+                }
+            }
             PromptSectionId::SearchResults => {
                 match find_content(context, LlmSectionId::SearchResults) {
                     Some(LlmSectionContent::SearchResults(search)) => match format_search(search) {
@@ -586,6 +665,10 @@ fn prompt_section_for_llm(id: LlmSectionId) -> PromptSectionId {
         }
         LlmSectionId::CurrentFile => PromptSectionId::CurrentFile,
         LlmSectionId::CurrentSelection => PromptSectionId::Selection,
+        LlmSectionId::EditorIntelligence => PromptSectionId::EditorIntelligence,
+        LlmSectionId::ProjectIntelligence => PromptSectionId::ProjectIntelligence,
+        LlmSectionId::RuntimeIntelligence => PromptSectionId::RuntimeIntelligence,
+        LlmSectionId::WorkspaceMemory => PromptSectionId::WorkspaceMemory,
         LlmSectionId::SearchResults => PromptSectionId::SearchResults,
         LlmSectionId::MemoryResults => PromptSectionId::RelevantMemories,
         LlmSectionId::Diagnostics => PromptSectionId::Diagnostics,
@@ -800,11 +883,47 @@ fn format_git_status(git: &jaymi_context::LlmGitStatus) -> Option<String> {
     } else {
         lines.push(format!("git: summary={}", git.summary));
     }
+    if let Some(head) = git.head_short.as_ref().or(git.head_sha.as_ref()) {
+        lines.push(format!("git_head: {head}"));
+    }
     lines.push(format!(
-        "git_counts: modified={} staged={} untracked={}",
-        git.modified_count, git.staged_count, git.untracked_count
+        "git_counts: modified={} staged={} untracked={} conflicts={}",
+        git.modified_count, git.staged_count, git.untracked_count, git.conflict_count
     ));
-    if !git.sample_paths.is_empty() {
+    if !git.conflict_paths.is_empty() {
+        lines.push(format!(
+            "git_conflicts: {}",
+            git.conflict_paths.iter().take(8).cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if !git.dirty_paths.is_empty() {
+        lines.push(format!(
+            "git_dirty: {}",
+            git.dirty_paths.iter().take(8).cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if !git.staged_paths.is_empty() {
+        lines.push(format!(
+            "git_staged: {}",
+            git.staged_paths.iter().take(8).cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if !git.untracked_paths.is_empty() {
+        lines.push(format!(
+            "git_untracked: {}",
+            git.untracked_paths.iter().take(8).cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    if !git.recent_commits.is_empty() {
+        lines.push(format!("git_recent_commits: {}", git.recent_commits.len()));
+        for commit in git.recent_commits.iter().take(5) {
+            let mut line = format!("- {} {}", commit.short_sha, commit.subject);
+            if let Some(when) = &commit.relative_time {
+                line.push_str(&format!(" ({when})"));
+            }
+            lines.push(line);
+        }
+    } else if !git.sample_paths.is_empty() {
         lines.push(format!("git_paths: {}", git.sample_paths.join(", ")));
     }
     Some(lines.join("\n"))
@@ -881,6 +1000,229 @@ fn format_current_file(file: &LlmCurrentFile) -> Option<String> {
     lines.push(format!("dirty: {}", file.dirty));
     if let Some(language) = &file.language {
         lines.push(format!("language: {language}"));
+    }
+    Some(lines.join("\n"))
+}
+
+fn format_editor_intelligence(
+    intel: &jaymi_context::LlmEditorIntelligence,
+) -> Option<String> {
+    let mut lines = Vec::new();
+    if let Some(symbol) = &intel.symbol {
+        let mut line = format!("symbol: {}", symbol.name);
+        if let Some(kind) = &symbol.kind {
+            line.push_str(&format!(" ({kind})"));
+        }
+        lines.push(line);
+        if let Some(detail) = &symbol.detail {
+            lines.push(format!("symbol_detail: {detail}"));
+        }
+    }
+    if let Some(func) = &intel.enclosing_function {
+        lines.push(format!("enclosing_function: {}", func.name));
+    }
+    if let Some(ty) = &intel.enclosing_type {
+        lines.push(format!("enclosing_type: {}", ty.name));
+    }
+    if intel.semantic_token_count > 0 {
+        lines.push(format!(
+            "semantic_tokens: {}",
+            intel.semantic_token_count
+        ));
+    }
+    if !intel.references.is_empty() {
+        lines.push(format!("references: {}", intel.references.len()));
+        for reference in intel.references.iter().take(8) {
+            lines.push(format!(
+                "- {}:{}:{}",
+                reference.path, reference.start_line, reference.start_column
+            ));
+        }
+    }
+    if !intel.code_lens.is_empty() {
+        lines.push(format!("code_lens: {}", intel.code_lens.len()));
+        for lens in intel.code_lens.iter().take(8) {
+            lines.push(format!("- {}", lens.title));
+        }
+    }
+    if let Some(hover) = &intel.hover {
+        let preview: String = hover.contents.chars().take(480).collect();
+        lines.push(format!("hover:\n{preview}"));
+    }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
+}
+
+fn format_project_intelligence(
+    intel: &jaymi_context::LlmProjectIntelligence,
+) -> Option<String> {
+    let mut lines = Vec::new();
+    if !intel.languages.is_empty() {
+        lines.push(format!("languages: {}", intel.languages.join(", ")));
+    }
+    if !intel.frameworks.is_empty() {
+        lines.push(format!("frameworks: {}", intel.frameworks.join(", ")));
+    }
+    if let Some(pm) = &intel.package_manager {
+        lines.push(format!("package_manager: {pm}"));
+    }
+    if let Some(build) = &intel.build_system {
+        lines.push(format!("build_system: {build}"));
+    }
+    if intel.dependency_direct_count > 0 || !intel.dependency_top_level.is_empty() {
+        lines.push(format!(
+            "dependencies: {} direct",
+            intel.dependency_direct_count
+        ));
+        for dep in intel.dependency_top_level.iter().take(16) {
+            lines.push(format!("- {dep}"));
+        }
+    }
+    if !intel.workspace_members.is_empty() {
+        lines.push(format!(
+            "workspace_members: {}",
+            intel.workspace_members.join(", ")
+        ));
+    }
+    if let Some(name) = &intel.cargo_package {
+        lines.push(format!("cargo_package: {name}"));
+    }
+    if let Some(name) = &intel.npm_package {
+        lines.push(format!("npm_package: {name}"));
+    }
+    if let Some(branch) = &intel.repository_branch {
+        lines.push(format!("repository_branch: {branch}"));
+    }
+    if let Some(shape) = &intel.layout_shape {
+        lines.push(format!("layout: {shape}"));
+    }
+    if !intel.top_level_dirs.is_empty() {
+        lines.push(format!(
+            "top_level_dirs: {}",
+            intel.top_level_dirs.join(", ")
+        ));
+    }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
+}
+
+fn format_runtime_intelligence(
+    intel: &jaymi_context::LlmRuntimeIntelligence,
+) -> Option<String> {
+    let mut lines = Vec::new();
+    if let Some(check) = &intel.latest_cargo_check {
+        lines.push(format!("latest_cargo_check: {check}"));
+    }
+    if let Some(build) = &intel.latest_build {
+        lines.push(format!("latest_build: {build}"));
+    }
+    if let Some(tests) = &intel.latest_tests {
+        lines.push(format!("latest_tests: {tests}"));
+    }
+    if intel.session_count > 0 || intel.alive_count > 0 {
+        lines.push(format!(
+            "terminal_sessions: {} ({} alive)",
+            intel.session_count, intel.alive_count
+        ));
+    }
+    if let Some(cmd) = &intel.last_command {
+        lines.push(format!("last_command: {cmd}"));
+    }
+    if !intel.running.is_empty() {
+        lines.push(format!("running: {}", intel.running.len()));
+        for entry in intel.running.iter().take(8) {
+            lines.push(format!("- {entry}"));
+        }
+    }
+    if !intel.recent_failures.is_empty() {
+        lines.push(format!("recent_failures: {}", intel.recent_failures.len()));
+        for entry in intel.recent_failures.iter().take(8) {
+            lines.push(format!("- {entry}"));
+        }
+    }
+    if !intel.output_tail.trim().is_empty() {
+        lines.push("output_tail:".into());
+        lines.push(intel.output_tail.trim().to_string());
+    }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
+}
+
+fn format_workspace_memory(memory: &jaymi_context::LlmWorkspaceMemory) -> Option<String> {
+    let mut lines = Vec::new();
+    if let Some(objective) = &memory.coding_objective {
+        lines.push(format!("coding_objective: {objective}"));
+    }
+    if !memory.recent_edits.is_empty() {
+        lines.push(format!("recent_edits: {}", memory.recent_edits.len()));
+        for path in memory.recent_edits.iter().take(8) {
+            lines.push(format!("- {path}"));
+        }
+    }
+    if !memory.recently_opened.is_empty() {
+        lines.push(format!("recently_opened: {}", memory.recently_opened.len()));
+        for path in memory.recently_opened.iter().take(8) {
+            lines.push(format!("- {path}"));
+        }
+    }
+    if !memory.recent_builds.is_empty() {
+        lines.push(format!("recent_builds: {}", memory.recent_builds.len()));
+        for entry in memory.recent_builds.iter().take(6) {
+            lines.push(format!("- {entry}"));
+        }
+    }
+    if !memory.recent_failures.is_empty() {
+        lines.push(format!("recent_failures: {}", memory.recent_failures.len()));
+        for entry in memory.recent_failures.iter().take(6) {
+            lines.push(format!("- {entry}"));
+        }
+    }
+    if lines.is_empty() {
+        None
+    } else {
+        Some(lines.join("\n"))
+    }
+}
+
+fn format_environmental_resolution(context: &LlmContext) -> Option<String> {
+    let env = context.providers.environmental.as_ref()?;
+    let mut lines = Vec::new();
+    lines.push(
+        "Use only these Planner-resolved workspace references. Do not invent paths, files, or symbols."
+            .into(),
+    );
+    if env.ambiguous {
+        lines.push("ambiguous: true".into());
+    }
+    if let Some(path) = &env.primary_path {
+        lines.push(format!("primary_path: {path}"));
+    }
+    if let Some(preview) = &env.selection_preview {
+        lines.push(format!("selection: {preview}"));
+    }
+    if let Some(symbol) = &env.symbol {
+        lines.push(format!("symbol: {symbol}"));
+    }
+    if let Some(diagnostic) = &env.diagnostic {
+        lines.push(format!("diagnostic: {diagnostic}"));
+    }
+    if !env.bindings.is_empty() {
+        lines.push("bindings:".into());
+        for binding in &env.bindings {
+            lines.push(format!("- {binding}"));
+        }
+    }
+    if !env.rules.is_empty() {
+        lines.push(format!("rules: {}", env.rules.join(", ")));
     }
     Some(lines.join("\n"))
 }

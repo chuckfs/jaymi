@@ -21,7 +21,8 @@ fn sample_context(preview: &str) -> LlmContext {
             notes: vec![],
             budget: None,
             policy: None,
-        })
+                        environmental: None,
+            })
         .build();
     LlmContext::from_bundle(&bundle)
 }

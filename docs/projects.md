@@ -126,6 +126,8 @@ Other subsystems reference projects exclusively by `project_id`:
 
 There is a single `ProjectContext` type, owned by the Project Engine. Memory returns a `ProjectMemoryBundle` of categorized memories for a given `project_id`.
 
+Request-path project intelligence for Context uses ambient [`ProjectSnapshot`](project-snapshot.md) (Sprint B2.4) — not a live `assemble_context` / filesystem walk during assemble. Planner never scans projects for context; `ProjectProvider` reads the completed session snapshot (with lightweight Project Engine `get` identity fallback).
+
 ⸻
 
 Session Ownership

@@ -2,7 +2,8 @@
 
 use jaymi_core::JaymiResult;
 
-use crate::provider::{ContextContribution, ContextProvider, ProviderRequest};
+use crate::candidate::{CandidatePayload, ContextCandidate, ContextCandidateKind};
+use crate::provider::{ContextProvider, ProviderRequest};
 use crate::budget::{BudgetEstimate, BudgetUnits, ProviderPriority};
 use crate::relevance::{IntentTag, RelevanceScore, RequestKind};
 use crate::ContextSource;
@@ -77,17 +78,24 @@ impl ContextProvider for PermissionProvider {
         BudgetEstimate::flexible(BudgetUnits::from_characters(chars, 4))
     }
 
-    fn contribute(
+    fn propose_candidates(
         &self,
         request: &ProviderRequest<'_>,
-    ) -> JaymiResult<Option<ContextContribution>> {
+    ) -> JaymiResult<Vec<ContextCandidate>> {
         if request.session.permissions.entries.is_empty() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
-        Ok(Some(ContextContribution {
-            sources: vec![ContextSource::Permissions],
-            permissions: Some(request.session.permissions.clone()),
-            ..ContextContribution::default()
-        }))
+        let importance = self.relevance(request).value().saturating_add(10).min(100);
+        Ok(vec![ContextCandidate::new(
+            self.id(),
+            ContextCandidateKind::Permissions,
+            ContextSource::Permissions,
+            "grants",
+            CandidatePayload::Permissions(request.session.permissions.clone()),
+            self.sensitivity(),
+            importance,
+            self.priority(),
+            false,
+        )])
     }
 }

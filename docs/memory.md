@@ -71,6 +71,11 @@ Memory Types
 
 Jaymi has three independent memory systems.
 
+**Related (not a Memory Engine scope):** [Workspace Memory](workspace-memory.md)
+(Sprint B2.9) remembers Coding workspace activity (edits / opens / builds /
+failures / objective). It is owned by CodingState, selected by Context Policy,
+and never writes Conversation / Project / Personal memories.
+
 ⸻
 
 Conversation Memory

@@ -522,6 +522,16 @@ pub enum CodingShellEvent {
         line: u32,
         column: u32,
     },
+    /// Persist text selection for a tab in a specific pane.
+    SetSelection {
+        pane: String,
+        path: String,
+        start_line: u32,
+        start_column: u32,
+        end_line: u32,
+        end_column: u32,
+        text: Option<String>,
+    },
     /// Persist folded regions for a tab in a specific pane.
     SetFolds {
         pane: String,

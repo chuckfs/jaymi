@@ -3,13 +3,12 @@
 use jaymi_core::JaymiResult;
 
 use crate::budget::{BudgetEstimate, BudgetUnits, ProviderPriority};
-use crate::provider::{ContextContribution, ContextProvider, ProviderRequest};
+use crate::candidate::{CandidatePayload, ContextCandidate, ContextCandidateKind};
+use crate::provider::{ContextProvider, ProviderRequest};
 use crate::relevance::{IntentTag, RelevanceScore, RequestKind};
 use crate::ContextSource;
 
 /// Contributes file summaries when the session carries completed maintenance data.
-///
-/// Never reads files during assemble — Application background maintenance owns refresh.
 pub struct FileSummariesProvider;
 
 impl ContextProvider for FileSummariesProvider {
@@ -65,17 +64,35 @@ impl ContextProvider for FileSummariesProvider {
         BudgetEstimate::flexible(BudgetUnits::from_characters(chars, 4))
     }
 
-    fn contribute(
+    fn propose_candidates(
         &self,
         request: &ProviderRequest<'_>,
-    ) -> JaymiResult<Option<ContextContribution>> {
+    ) -> JaymiResult<Vec<ContextCandidate>> {
         if request.session.file_summaries.entries.is_empty() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
-        Ok(Some(ContextContribution {
-            sources: vec![ContextSource::FileSummaries],
-            file_summaries: Some(request.session.file_summaries.clone()),
-            ..ContextContribution::default()
-        }))
+        let relevance = self.relevance(request).value();
+        let sensitivity = self.sensitivity();
+        let priority = self.priority();
+        Ok(request
+            .session
+            .file_summaries
+            .entries
+            .iter()
+            .take(32)
+            .map(|entry| {
+                ContextCandidate::new(
+                    self.id(),
+                    ContextCandidateKind::FileSummary,
+                    ContextSource::FileSummaries,
+                    &entry.path,
+                    CandidatePayload::FileSummary(entry.clone()),
+                    sensitivity,
+                    relevance.saturating_add(10).min(100),
+                    priority,
+                    false,
+                )
+            })
+            .collect())
     }
 }

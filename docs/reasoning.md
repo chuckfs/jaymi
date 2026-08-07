@@ -59,7 +59,14 @@ prepare_context_session
 
 Conversational `begin_generation` / streaming use the **same** host preparation
 as `Application::handle`. No alternate session builder. Workspace Intelligence
-enrichments that land in `prepare_context_session` automatically apply to chat.
+enrichments that land in `prepare_context_session` automatically apply to chat,
+including the Sprint B2.1 / B2.2 [`WorkspaceSnapshot`](workspace-snapshot.md),
+Sprint B2.3 [`EditorSnapshot`](editor-snapshot.md), Sprint B2.4
+[`ProjectSnapshot`](project-snapshot.md), Sprint B2.5
+[`GitSnapshot`](git-snapshot.md), and Sprint B2.6
+[`RuntimeSnapshot`](runtime-snapshot.md) (ambient-maintained; Context providers
+consume; Reasoning never talks to LSP, scans projects, runs git, or re-runs
+cargo / tests).
 
 ## Delivered prompt diagnostics (B1.13.5)
 

@@ -157,6 +157,28 @@ pub fn fingerprint_session(session: &ContextSessionInputs) -> u64 {
     session.git_status.modified_count.hash(&mut hasher);
     session.git_status.staged_count.hash(&mut hasher);
     session.git_status.untracked_count.hash(&mut hasher);
+    session.git_status.conflict_count.hash(&mut hasher);
+    session.git_status.head_sha.hash(&mut hasher);
+    session.git_status.head_short.hash(&mut hasher);
+    for path in &session.git_status.dirty_paths {
+        path.hash(&mut hasher);
+    }
+    for path in &session.git_status.staged_paths {
+        path.hash(&mut hasher);
+    }
+    for path in &session.git_status.untracked_paths {
+        path.hash(&mut hasher);
+    }
+    for path in &session.git_status.conflict_paths {
+        path.hash(&mut hasher);
+    }
+    for commit in &session.git_status.recent_commits {
+        commit.sha.hash(&mut hasher);
+        commit.short_sha.hash(&mut hasher);
+        commit.subject.hash(&mut hasher);
+        commit.author.hash(&mut hasher);
+        commit.relative_time.hash(&mut hasher);
+    }
     for path in &session.git_status.sample_paths {
         path.hash(&mut hasher);
     }
@@ -194,6 +216,24 @@ pub fn fingerprint_session(session: &ContextSessionInputs) -> u64 {
     }
     for id in &session.active_capabilities.capability_ids {
         id.hash(&mut hasher);
+    }
+    if let Some(snapshot) = &session.workspace_snapshot {
+        snapshot.hash(&mut hasher);
+    }
+    if let Some(snapshot) = &session.editor_snapshot {
+        snapshot.hash(&mut hasher);
+    }
+    if let Some(snapshot) = &session.project_snapshot {
+        snapshot.hash(&mut hasher);
+    }
+    if let Some(snapshot) = &session.git_snapshot {
+        snapshot.hash(&mut hasher);
+    }
+    if let Some(snapshot) = &session.runtime_snapshot {
+        snapshot.hash(&mut hasher);
+    }
+    if let Some(snapshot) = &session.workspace_memory_snapshot {
+        snapshot.hash(&mut hasher);
     }
     hasher.finish()
 }

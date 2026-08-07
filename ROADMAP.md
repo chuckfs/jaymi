@@ -25,7 +25,7 @@ Progress
 | 2 | Understanding Engine | **Current** (OCR stub; lexical embeddings) |
 | 3 | Search Engine | **Current** |
 | 4 | Memory Engine | **Current** (core; graph/export/aging Target) |
-| 5 | Project Engine | **Current** (core; Git/artifacts Target) |
+| 5 | Project Engine | **Current** (core; deep Git history / artifacts Target — ambient GitSnapshot status is Current via Layer 6 WI) |
 | 6 | Workspace & Capability Engine | **Current** (engine + Coding shell + thin UX; rich IDE/canvas Target) |
 | 7 | Tool Engine | **Partial** (framework + 12 tools; broader catalog Target) |
 | 8 | Provider Ecosystem | **Partial** (Registry + 6 local providers; plugins Target) |
@@ -197,10 +197,12 @@ A project includes (Current):
 
 Target:
 
-* Git integration
+* Deep Git history / project-owned Git Integration productization (working-tree
+  status observation is **Current** via [`GitSnapshot`](docs/git-snapshot.md) —
+  Workspace Intelligence, not Project Engine)
 * Artifact pipelines
 * Repository import / conversation convert flows
-* Live working-tree / IDE file state
+* Richer live working-tree / IDE file productization beyond the Coding shell
 
 Exit Criteria
 
@@ -236,17 +238,127 @@ Capabilities also change the user experience.
 
 Conversation stays permanent. Workspaces expand beside it.
 
-**Current:** conversation shell + Coding Workspace shell (five dock pages — Terminal / Problems / Search / Git / Diagnostics — plus an Output placeholder not listed in `pages()`) + `CodingState` + workspace expansion model + capability state / inspector.
+**Current:** conversation shell + Coding Workspace shell (five dock pages — Terminal / Problems / Search / Git / Diagnostics — plus an Output placeholder not listed in `pages()`) + `CodingState` + workspace expansion model + capability state / inspector + **WorkspaceSnapshot** (B2.1 / B2.2 / B2.13.2) + **EditorSnapshot** (B2.3 / B2.13.3 editor intelligence) + **ProjectSnapshot** (B2.4 project intelligence) + **GitSnapshot** (B2.5 — **Current**) + **RuntimeSnapshot** (B2.6 — **Current**) + **Context Candidate Graph** (B2.7 / B2.13.1 — **Current**) + **Context Selection** (B2.8) + **Workspace Memory** (B2.9) + **Environmental Resolution** (B2.10) + **Workspace Diagnostics** (B2.11) + **Constitutional Audit** (B2.12) + **docs sync** (B2.13.4).
 
 **Target UX:**
 
 Conversation → chat-only interface
 
-Coding → conversation stays; full IDE (live editor / terminal / git) on top of the shell
+Coding → conversation stays; fuller IDE polish on top of the shipped shell
+(Monaco / Terminal / Git panel / Workspace Intelligence are **Current**; deeper
+LSP tooling and Git merge/rebase remain Target)
 
 Creation → conversation stays; canvas appears
 
 Research → conversation stays; sources and notes appear
+
+**B2.1:** `WorkspaceSnapshot` is the immutable observation of the live Coding
+workspace (project / root / kind / files / selection / cursor / branch /
+language / package manager / build system / timestamp). Host observation is
+ambient (`ContextMaintenance`); prepare merges the latest completed snapshot.
+Context Engine consumes via session inputs. See
+[docs/workspace-snapshot.md](docs/workspace-snapshot.md).
+
+**B2.2:** Ambient `ContextMaintenance` refreshes `WorkspaceSnapshot` on editor /
+selection / git / diagnostics / terminal / project changes without blocking
+conversation. Prepare merges the latest **completed** snapshot only — never
+rebuilds a ContextBundle, never reasons, never calls LLMs, never executes tools,
+and (Sprint **B2.13.2**) never probes toolchain markers on the conversational
+path. Planner remains the sole request owner. See
+[docs/context-maintenance.md](docs/context-maintenance.md).
+
+**B2.3:** `EditorSnapshot` is the read-only editor intelligence observation
+(active file / open editors / cursor / selection / symbol / enclosing function /
+enclosing type / semantic tokens / references / diagnostics / code lens / hover).
+Context providers consume it; Planner and Reasoning never call LSP for assemble.
+Ambient refresh may use read-only `LspProvider` enrichment. See
+[docs/editor-snapshot.md](docs/editor-snapshot.md).
+
+**B2.4:** `ProjectSnapshot` is the read-only project intelligence observation
+(metadata / languages / frameworks / package manager / dependency summary /
+cargo·npm metadata / repository metadata / workspace layout). Ambient
+`ContextMaintenance` owns FS observation; `ProjectProvider` consumes the session
+snapshot. Planner never scans projects; no filesystem scanning during requests.
+See [docs/project-snapshot.md](docs/project-snapshot.md).
+
+**B2.5:** `GitSnapshot` is the read-only Git intelligence observation (branch /
+HEAD / dirty / staged / untracked / conflicts / recent commits). Ambient
+`ContextMaintenance` owns read-only `GitProvider` refresh; `GitStatusProvider`
+exposes capped summaries. Reasoning never runs git commands. See
+[docs/git-snapshot.md](docs/git-snapshot.md).
+
+**B2.6:** `RuntimeSnapshot` is the read-only runtime intelligence observation
+(latest cargo check / build / tests, terminal output summary, running processes,
+recent failures). Ambient `ContextMaintenance` observes Coding terminal sessions;
+TerminalProvider owns PTY updates; `RuntimeProvider` exposes summaries.
+Conversation never blocks waiting for runtime; observe never re-runs cargo.
+See [docs/runtime-snapshot.md](docs/runtime-snapshot.md).
+
+**B2.7:** Workspace Intelligence exposes `ContextCandidate` nodes instead of
+raw bundle sections. Every workspace feed proposes candidates; Context Policy
+evaluates relevance, recency, importance, privacy, and budget; only selected
+candidates become a `ContextBundle`. Providers never assemble bundles; Planner
+ownership unchanged. Migration completed in **B2.13.1** (every provider
+implements `propose_candidates`). See
+[docs/context-candidates.md](docs/context-candidates.md).
+
+**B2.8:** Context Policy chooses workspace context with deterministic selection
+profiles (no AI scoring). Examples: `hello` → Conversation + Memory; `why won't
+this compile?` → Conversation + Diagnostics + Current file + Terminal +
+Selection; `summarize this project` → Project + Filesystem + Architecture + Git.
+All heuristics are documented. See
+[docs/context-selection.md](docs/context-selection.md).
+
+**B2.9:** Workspace Memory remembers Coding workspace activity (recent edits,
+recently opened files, recent builds, recent failures, current coding
+objective). Distinct from Conversation Memory. Context Policy decides when to
+include it. See [docs/workspace-memory.md](docs/workspace-memory.md).
+
+**B2.10:** Environmental Resolution — Planner resolves ambiguous workspace
+deixis (`rename this`, `fix it`, `why?`, `clean this up`) from Workspace
+Intelligence before Reasoning. LLMs never invent workspace references.
+See [docs/environmental-resolution.md](docs/environmental-resolution.md).
+
+**B2.11:** Workspace Diagnostics — Developer Diagnostics expose Workspace
+Intelligence (snapshot freshness, provider timings, maintenance status,
+candidate selection, policy decisions, context budget). Never written to the
+conversation transcript. See
+[docs/workspace-diagnostics.md](docs/workspace-diagnostics.md).
+
+**B2.12:** Constitutional Audit — Workspace Intelligence (B2.1–B2.11) verified
+against VISION / PRINCIPLES / NON_GOALS / ARCHITECTURE / ROADMAP / docs/.
+Ownership holds (Planner orchestrates, Workspace observes, providers passive,
+ContextEngine sole ContextBundle factory). Residuals noted at audit time were
+closed by **B2.13.1**–**B2.13.3** (candidate migration, ambient-only prepare,
+Monaco selection). Documentation synchronized in **B2.13.4**.
+
+**B2.13.1:** Complete Context Candidate Migration — every Context Provider
+exposes `propose_candidates()`; production assemble no longer relies on
+contribution→candidate trait fallback; Context Policy evaluates candidates
+uniformly; ContextEngine remains sole bundle factory. See
+[docs/context-candidates.md](docs/context-candidates.md).
+
+**B2.13.2:** Remove Synchronous Prepare Probes — conversational
+`prepare_context_session` never rebuilds WorkspaceSnapshot or calls
+`observe_toolchain`; ambient ContextMaintenance owns observation; prepare
+merges the latest completed snapshot (or schedules refresh if missing). See
+[docs/workspace-snapshot.md](docs/workspace-snapshot.md) and
+[docs/context-maintenance.md](docs/context-maintenance.md).
+
+**B2.13.3:** Monaco Selection Intelligence — Monaco text selection (range +
+text) synchronizes into CodingState and the ambient Workspace/EditorSnapshot
+pipeline; Environmental Resolution binds `"Explain this."` / `"Rename this."` /
+`"Clean this up."` from Workspace Intelligence. Cursor tracking preserved; no
+Monaco types in Planner/ContextEngine; no sync LSP. See
+[docs/editor-snapshot.md](docs/editor-snapshot.md) and
+[docs/environmental-resolution.md](docs/environmental-resolution.md).
+
+**B2.13.4:** Documentation Synchronization — ARCHITECTURE / ROADMAP /
+context / workspace-intelligence / providers / experience updated so shipped
+Workspace Intelligence (including **Current** GitSnapshot, RuntimeSnapshot, and
+Context Candidate Graph) is documented accurately; stale B2 Target residuals
+removed. Docs only — no implementation changes. See
+[docs/workspace-intelligence.md](docs/workspace-intelligence.md).
 
 ⸻
 

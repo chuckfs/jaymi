@@ -38,8 +38,10 @@ impl Sensitivity {
         match provider_id {
             "permission" => Self::Public,
             "workspace" | "workspace_inventory" => Self::Workspace,
-            "project" | "diagnostics" | "search" | "git_status" => Self::Project,
-            "conversation" | "editor" | "memory" | "file_summaries" => Self::Private,
+            "project" | "diagnostics" | "search" | "git_status" | "runtime" => Self::Project,
+            "conversation" | "editor" | "memory" | "file_summaries" | "workspace_memory" => {
+                Self::Private
+            }
             _ => Self::Private,
         }
     }

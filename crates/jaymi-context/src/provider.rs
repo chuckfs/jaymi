@@ -1,12 +1,15 @@
-//! Context Provider contract — subsystems contribute to a [`ContextBundle`].
+//! Context Provider contract — subsystems propose [`ContextCandidate`]s.
 //!
 //! The Context Engine orchestrates [`ContextProvider`]s without depending on
 //! their internal implementation. Providers expose deterministic
 //! [`Self::relevance`] and [`Self::estimate_size`], plus a
 //! [`Self::priority`]. The engine skips low-relevance providers, allocates
 //! budget to higher-priority providers first, and fits oversized
-//! contributions. Providers may also return [`None`] from [`Self::contribute`]
-//! when they have nothing to add.
+//! contributions after materializing selected candidates.
+//!
+//! Sprint **B2.13.1:** every provider exposes candidates through
+//! [`Self::propose_candidates`]. [`Self::contribute`] is a convenience that
+//! materializes those candidates — not a parallel assemble path.
 
 use jaymi_core::JaymiResult;
 use jaymi_core::UserRequest;
@@ -18,6 +21,7 @@ use crate::bundle::{
     OpenFilesSection, PermissionsSection, SearchResultsSection, WorkspaceInventorySection,
 };
 use crate::budget::{BudgetEstimate, ProviderPriority};
+use crate::candidate::{materialize_candidates, ContextCandidate};
 use crate::relevance::{RelevanceScore, RelevanceSignals};
 
 /// Read-only inputs available to every provider during assemble.
@@ -35,6 +39,9 @@ pub struct ProviderRequest<'a> {
 ///
 /// Only populated fields are merged into the bundle builder. Empty / default
 /// sections should be omitted (`None`) so other providers are not overwritten.
+///
+/// Produced by the Context Engine via [`materialize_candidates`] after Policy
+/// selection — providers propose candidates; they do not merge into a bundle.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ContextContribution {
     /// Sources this provider claims for the request.
@@ -67,6 +74,14 @@ pub struct ContextContribution {
     pub permissions: Option<PermissionsSection>,
     /// Active capabilities section, when contributing.
     pub active_capabilities: Option<ActiveCapabilitiesSection>,
+    /// Editor intelligence section derived from [`crate::EditorSnapshot`].
+    pub editor_intelligence: Option<crate::EditorIntelligenceSection>,
+    /// Project intelligence section derived from [`crate::ProjectSnapshot`].
+    pub project_intelligence: Option<crate::ProjectIntelligenceSection>,
+    /// Runtime intelligence section derived from [`crate::RuntimeSnapshot`].
+    pub runtime_intelligence: Option<crate::RuntimeIntelligenceSection>,
+    /// Workspace activity memory section derived from [`crate::WorkspaceMemorySnapshot`].
+    pub workspace_memory: Option<crate::WorkspaceMemorySection>,
 }
 
 impl ContextContribution {
@@ -92,15 +107,23 @@ impl ContextContribution {
             && self.file_summaries.is_none()
             && self.permissions.is_none()
             && self.active_capabilities.is_none()
+            && self.editor_intelligence.is_none()
+            && self.project_intelligence.is_none()
+            && self.runtime_intelligence.is_none()
+            && self.workspace_memory.is_none()
     }
 }
 
-/// Subsystem that may contribute data to a [`crate::ContextBundle`].
+/// Subsystem that may propose data for a [`crate::ContextBundle`].
 ///
 /// Implementations own their dependencies. The Context Engine calls
 /// [`Self::relevance`], [`Self::priority`], [`Self::estimate_size`], then
-/// [`Self::contribute`] — it never inspects provider internals. Context
-/// Policies decide participation without mutating providers.
+/// [`Self::propose_candidates`] (Sprint B2.7 / B2.13.1). Context Policy scores
+/// candidates; the engine materializes selected ones. The engine never inspects
+/// provider internals.
+///
+/// **Providers must not assemble [`crate::ContextBundle`]s.** They only propose
+/// candidates. They do not apply Context Policy or allocate budget.
 pub trait ContextProvider: Send + Sync {
     /// Stable provider identity for diagnostics and logs.
     fn id(&self) -> &'static str;
@@ -124,17 +147,33 @@ pub trait ContextProvider: Send + Sync {
 
     /// Estimate the size of a contribution without performing heavy work when possible.
     ///
-    /// Used for budgeting before [`Self::contribute`]. Prefer over-estimates for
-    /// bulky payloads so the engine can reserve room for higher-priority providers.
+    /// Used for budgeting before propose. Prefer over-estimates for bulky
+    /// payloads so the engine can reserve room for higher-priority providers.
     fn estimate_size(&self, request: &ProviderRequest<'_>) -> BudgetEstimate;
 
-    /// Optionally contribute context for this request.
+    /// Propose [`ContextCandidate`] nodes for Context Policy selection.
     ///
-    /// Only called when Context Policies allow participation, relevance meets
-    /// the engine threshold (unless bypassed), and budget remains. Return
-    /// `Ok(None)` to decline (nothing to add).
+    /// Required path for production providers (Sprint B2.13.1). Never builds a
+    /// [`crate::ContextBundle`]. Return an empty vec when there is nothing to add.
+    fn propose_candidates(
+        &self,
+        request: &ProviderRequest<'_>,
+    ) -> JaymiResult<Vec<ContextCandidate>>;
+
+    /// Materialize proposed candidates into a section contribution.
+    ///
+    /// Default implementation folds [`Self::propose_candidates`] through
+    /// [`materialize_candidates`]. Prefer overriding [`Self::propose_candidates`]
+    /// only — do not use this as a parallel assemble path.
     fn contribute(
         &self,
         request: &ProviderRequest<'_>,
-    ) -> JaymiResult<Option<ContextContribution>>;
+    ) -> JaymiResult<Option<ContextContribution>> {
+        let candidates = self.propose_candidates(request)?;
+        if candidates.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(materialize_candidates(&candidates)))
+        }
+    }
 }

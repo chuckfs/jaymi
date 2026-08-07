@@ -63,6 +63,15 @@ pub enum MonacoIpcMessage {
         line: u32,
         column: u32,
     },
+    /// Text selection changed (range + optional text).
+    Selection {
+        path: String,
+        start_line: u32,
+        start_column: u32,
+        end_line: u32,
+        end_column: u32,
+        text: Option<String>,
+    },
     /// Folded regions changed.
     Folds {
         path: String,
@@ -93,6 +102,15 @@ struct IpcPayload {
     line: Option<u32>,
     character: Option<u32>,
     column: Option<u32>,
+    #[serde(rename = "startLine")]
+    start_line: Option<u32>,
+    #[serde(rename = "startColumn")]
+    start_column: Option<u32>,
+    #[serde(rename = "endLine")]
+    end_line: Option<u32>,
+    #[serde(rename = "endColumn")]
+    end_column: Option<u32>,
+    text: Option<String>,
     #[serde(rename = "newName")]
     new_name: Option<String>,
     #[serde(default)]
@@ -285,6 +303,31 @@ impl MonacoHost {
                     .map_err(|error| format!("show monaco: {error}"))
             }
         }
+    }
+
+    /// Release keyboard so egui TextEdit (terminal, search, …) can receive keys.
+    ///
+    /// Child WKWebView stays first-responder after Monaco clicks. Blur the JS
+    /// editor and briefly toggle visibility (no `unsafe`) so the parent window
+    /// can deliver keys to egui. Call at most once per focus episode.
+    pub fn release_keyboard(&mut self) -> Result<(), String> {
+        if self.keyboard_released {
+            return Ok(());
+        }
+        let _ = self.webview.evaluate_script(
+            "(function(){try{if(window.editor&&editor.blur)editor.blur();var a=document.activeElement;if(a&&a.blur)a.blur();}catch(e){}})();",
+        );
+        if self.ready && self.last_bounds.is_some() {
+            let _ = self.webview.set_visible(false);
+            let _ = self.webview.set_visible(true);
+        }
+        self.keyboard_released = true;
+        Ok(())
+    }
+
+    /// Allow Monaco to take keyboard again after egui chrome is done.
+    pub fn clear_keyboard_release(&mut self) {
+        self.keyboard_released = false;
     }
 
     /// Whether Monaco finished loading and can accept documents.
@@ -535,6 +578,24 @@ fn parse_ipc(body: &str) -> Option<MonacoIpcMessage> {
             line: payload.line.unwrap_or(0),
             column: payload.column.or(payload.character).unwrap_or(0),
         }),
+        "selection" => {
+            let start_line = payload.start_line.unwrap_or(0);
+            let start_column = payload.start_column.unwrap_or(0);
+            let end_line = payload.end_line.unwrap_or(start_line);
+            let end_column = payload.end_column.unwrap_or(start_column);
+            let text = payload
+                .text
+                .map(|t| t.trim_end_matches('\0').to_string())
+                .filter(|t| !t.is_empty());
+            Some(MonacoIpcMessage::Selection {
+                path: payload.path.unwrap_or_default(),
+                start_line,
+                start_column,
+                end_line,
+                end_column,
+                text,
+            })
+        }
         "folds" => Some(MonacoIpcMessage::Folds {
             path: payload.path.unwrap_or_default(),
             regions: payload
@@ -662,6 +723,19 @@ mod tests {
                 path: "/a.rs".into(),
                 line: 3,
                 column: 7,
+            })
+        );
+        assert_eq!(
+            parse_ipc(
+                r#"{"type":"selection","path":"/a.rs","startLine":1,"startColumn":0,"endLine":1,"endColumn":8,"text":"fn hello"}"#
+            ),
+            Some(MonacoIpcMessage::Selection {
+                path: "/a.rs".into(),
+                start_line: 1,
+                start_column: 0,
+                end_line: 1,
+                end_column: 8,
+                text: Some("fn hello".into()),
             })
         );
         assert_eq!(

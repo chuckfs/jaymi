@@ -31,6 +31,7 @@ pub mod conversation_state;
 pub mod conversational;
 pub mod decision;
 pub mod dispatch;
+pub mod environmental;
 pub mod execution_plan;
 pub mod model_selection;
 pub mod paused_execution;
@@ -53,6 +54,10 @@ pub use conversational::{
     ConversationalAssemble, ConversationalTerminal, conversation_state_for_lifecycle,
     conversational_terminal_from_event, conversational_terminal_from_response,
     lifecycle_from_reasoning_response, planner_response_from_terminal,
+};
+pub use environmental::{
+    resolve_environment, EnvironmentalResolution, ResolutionConfidence, ResolvedKind,
+    ResolvedReference,
 };
 pub use model_selection::{
     prepare_reasoning_model, ModelSelection, ModelSelectionKind,
@@ -1016,7 +1021,7 @@ impl Planner {
                 primary,
                 format!("capability {} requested workspace expansion", primary.id()),
             ),
-            ..PlannerResponse::default()
+                ..PlannerResponse::default()
         })
     }
 
@@ -1065,22 +1070,36 @@ impl Planner {
             &request,
             self.context.session_inputs().workspace_kind.as_deref(),
         );
-        let hints = AssembleHints {
+        // Environmental Resolution binds deixis from Workspace Intelligence
+        // before assemble / Reasoning — LLMs never invent workspace referents.
+        let environmental = environmental::resolve_environment(
+            &request,
+            &self.context.session_inputs(),
+        );
+        let mut hints = AssembleHints {
             intent: intent.id(),
             capability_ids: capabilities
                 .iter()
                 .map(|capability| capability.id().to_string())
                 .collect(),
             complexity: Some(complexity.class_id().to_string()),
+            environmental: None,
         };
+        if environmental.needed {
+            hints.environmental = Some(environmental.to_hints());
+            if let Some(note) = environmental.summary_note() {
+                jaymi_logging::info("planner", note);
+            }
+        }
 
         jaymi_logging::info(
             "planner",
             format!(
-                "intent resolved label={} capabilities=[{}] complexity={}",
+                "intent resolved label={} capabilities=[{}] complexity={} environmental={}",
                 hints.intent.as_str(),
                 hints.capability_ids.join(","),
                 complexity.class_id(),
+                environmental.needed,
             ),
         );
 
@@ -1328,10 +1347,11 @@ impl Planner {
         Ok(self.finalize_response(response, context))
     }
 
-    /// Shared Intent → Capability → Complexity → AssembleHints → ContextBundle prelude.
+    /// Shared Intent → Capability → Complexity → Environmental Resolution →
+    /// AssembleHints → ContextBundle prelude.
     ///
-    /// Complexity never alters Intent or Capability selection — it only annotates
-    /// [`AssembleHints`] for Context relevance bias.
+    /// Complexity and environmental resolution never alter Intent or Capability
+    /// selection — they only annotate [`AssembleHints`] for Context / Reasoning.
     fn begin_conversational_assemble(
         &self,
         request: &UserRequest,
@@ -1352,11 +1372,21 @@ impl Planner {
             request,
             workspace_kind.as_deref(),
         );
-        let hints = conversational::conversational_assemble_hints(
+        let environmental = environmental::resolve_environment(
+            request,
+            &self.context.session_inputs(),
+        );
+        let mut hints = conversational::conversational_assemble_hints(
             &intent,
             capability_ids.clone(),
             Some(&complexity),
         );
+        if environmental.needed {
+            hints.environmental = Some(environmental.to_hints());
+            if let Some(note) = environmental.summary_note() {
+                jaymi_logging::info("planner", note);
+            }
+        }
         let planner_ms = planner_started.elapsed().as_millis() as u64;
         let context = self.context.assemble_with(request, Some(&hints))?;
         let mut pipeline = jaymi_reasoning::PipelineTiming::new();
@@ -1369,6 +1399,7 @@ impl Planner {
             capability_ids,
             context,
             complexity,
+            environmental,
             pipeline,
         })
     }
@@ -1698,7 +1729,7 @@ impl Planner {
                     execution_summary,
                 ));
             }
-            self.ensure_success(&output)?;
+        self.ensure_success(&output)?;
         }
 
         if let Some(reason) = call.fresh_context {
@@ -1898,8 +1929,8 @@ impl Planner {
                         content: format!(
                             "Denied before executing '{tool_id}': {explanation}"
                         ),
-                        capability: Some(capability),
-                        tool_id: Some(tool_id),
+            capability: Some(capability),
+            tool_id: Some(tool_id),
                         provider_id: Some(candidate.provider_id),
                         policy_evaluation: Some(policy_evaluation),
                         permission_result,
@@ -2234,6 +2265,7 @@ impl Planner {
                 .map(|capability| vec![capability.id().to_string()])
                 .unwrap_or_default(),
             complexity: None,
+                    environmental: None,
         };
         let request = UserRequest::new("");
         let bundle = self.context.assemble_with(&request, Some(&hints))?;
@@ -2329,7 +2361,7 @@ impl Planner {
             expected_outputs: parent.expected_outputs().to_vec(),
             deletion_method: draft.tool_input.deletion_method.or(parent.deletion_method()),
             action_preview: self
-                .orchestrator
+            .orchestrator
                 .preview(&draft.tool_id, &draft.tool_input)
                 .ok()
                 .flatten()
@@ -3391,7 +3423,7 @@ mod tests {
         tools.initialize().unwrap();
         register(
             &mut tools,
-            Arc::clone(&filesystem),
+                Arc::clone(&filesystem),
             Arc::clone(&content_api),
         );
         let tools = Arc::new(tools);

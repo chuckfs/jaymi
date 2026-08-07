@@ -31,14 +31,20 @@ ContextEngine::assemble_with(request, hints) -> ContextBundle
 
 | Subsystem | Owns | Must not |
 |-----------|------|----------|
-| **Context Providers** | Contribute their own sections | Decide policy, assemble other providers, execute tools, select capabilities |
-| **Context Policies** | Participate / priority / constraints / sensitivity | Gather context, mutate providers, execute tools |
-| **Context Engine** | Assemble under policy + relevance + budget; **sole factory** for `ContextBundle` | Determine Intent, select Capabilities, invent session state, execute tools |
+| **Context Providers** | Propose [`ContextCandidate`](context-candidates.md) nodes via `propose_candidates()` | Decide policy, assemble bundles, execute tools, select capabilities, own observation |
+| **Context Policies** | Provider participation + candidate relevance / recency / importance / privacy + deterministic [Context Selection](context-selection.md) profiles | Gather context, mutate providers, execute tools, assemble bundles, AI scoring |
+| **Context Engine** | Select candidates under budget; materialize → **sole factory** for `ContextBundle` | Determine Intent, select Capabilities, invent session state, execute tools |
 | **Planner** | Orchestrate Intent → Capability → assemble; then branch (tool-backed Action Policy → Permission → Tools, or session/plan/unsupported return); may request empty / reuse engine-minted bundles | Reimplement Context Policy, build parallel context sections, or construct `ContextBundle` directly |
 | **Behaviors** | Execute (Planned) | — |
 | **Tools** | Perform work (search / read / write / …) | Run inside Context assemble |
 
-Host (`Application`) pushes `ContextSessionInputs` (workspace, editor, diagnostics, permissions, project-open, search hits, plus **latest completed** background maintenance snapshots: git / inventory / file summaries). Request-selected capabilities arrive only via `AssembleHints`. Slow refreshes are Application-owned — see [context-maintenance.md](context-maintenance.md).
+Host (`Application`) pushes `ContextSessionInputs` (workspace, editor, diagnostics,
+permissions, project-open, search hits, plus **latest completed** ambient
+maintenance snapshots: git / inventory / file summaries / WorkspaceSnapshot /
+EditorSnapshot / ProjectSnapshot / GitSnapshot / RuntimeSnapshot / Workspace
+Memory). Request-selected capabilities arrive only via `AssembleHints`. Slow
+refreshes are Application-owned — see [context-maintenance.md](context-maintenance.md)
+and [workspace-intelligence.md](workspace-intelligence.md).
 
 **Context Policy** (`jaymi-context`) ≠ **Action Policy** (`jaymi-policies`).
 
@@ -46,32 +52,43 @@ Host (`Application`) pushes `ContextSessionInputs` (workspace, editor, diagnosti
 
 ## Context Providers
 
-Assemble is **provider-driven**. Each subsystem implements [`ContextProvider`] and may contribute data to the [`ContextBundle`].
+Assemble is **provider-driven**. Each subsystem implements [`ContextProvider`]
+and proposes [`ContextCandidate`](context-candidates.md) nodes (Sprint B2.7;
+migration completed B2.13.1). Context Policy scores candidates; the engine packs
+under budget and materializes only selected candidates into the
+[`ContextBundle`]. Providers never assemble bundles.
 
 ```text
 ProviderRequest { request, session }
         │
         ▼
 ┌───────────────────┐
-│  ContextProvider  │  contribute() → Option<ContextContribution>
+│  ContextProvider  │  propose_candidates() → Vec<ContextCandidate>
 └───────────────────┘
         │
         ▼
- Context Engine merges contributions → immutable ContextBundle
+ Context Policy (relevance · recency · importance · privacy)
+        │
+        ▼
+ Context Engine budget-selects + materializes → immutable ContextBundle
 ```
 
 Rules:
 
 * The engine orchestrates providers **without depending on their internal implementation**
 * Each provider exposes a deterministic `relevance(request) -> RelevanceScore` (0..=100)
-* The engine **skips** providers below `relevance_threshold` (default 40) before calling `contribute`
+* The engine **skips** providers below `relevance_threshold` (default 40) before proposing
 * Relevance heuristics consider user intent tags, active capabilities, workspace kind, request kind, and Planner **complexity** (via `AssembleHints`) — **no AI scoring**
 * When `AssembleHints.complexity` is set, providers marked **Excluded** for that class are skipped before policy evaluation (inspector outcome `SkippedComplexity`); **Required** providers receive a high relevance score; **Optional** providers use normal heuristics — see [complexity.md](complexity.md)
 * Each provider exposes `priority` and `estimate_size` for **Context Budgeting**
-* The engine allocates a configurable character/token budget to **higher-priority providers first**
-* Oversized contributions are **fitted** provider-agnostically: truncate → summarize → preserve metadata; otherwise skip
-* `BudgetReport` is recorded on the bundle for diagnostics and future LLM windowing
-* Providers may still return `Ok(None)` from `contribute` when they have nothing to add
+* Candidates are scored for **relevance / recency / importance / privacy**, then packed under budget — see [context-candidates.md](context-candidates.md)
+* Sprint **B2.8** [Context Selection](context-selection.md) chooses which workspace feeds participate (deterministic profiles; no AI)
+* Sprint **B2.9** [Workspace Memory](workspace-memory.md) remembers Coding activity (edits / opens / builds / failures / objective); distinct from Conversation Memory; Policy decides inclusion
+* Oversized contributions may still be **fitted** after materialize: truncate → summarize → preserve metadata; otherwise skip
+* `BudgetReport` / `PolicyReport.candidate_selection` are recorded on the bundle for diagnostics
+* Providers may return an empty candidate list when they have nothing to add
+* `contribute()` materializes proposed candidates for convenience — production
+  assemble always calls `propose_candidates` (Sprint B2.13.1)
 * Providers own their subsystem dependencies (Memory / Project / Search / session reads)
 * Boot installs the default set via `bind_sources` → `default_providers`; custom sets use `bind_providers` / `register_provider`
 
@@ -80,18 +97,20 @@ Rules:
 | Provider | Contributes | Declines when |
 |----------|-------------|----------------|
 | `ConversationProvider` | Conversation summary | No active conversation |
-| `ProjectProvider` | Active project / `ProjectContext` | No open project |
+| `ProjectProvider` | Active project / `ProjectContext` (+ ProjectSnapshot summaries) | No open project |
 | `WorkspaceProvider` | Active workspace kind + request-selected capabilities (from Planner `AssembleHints`) | Neither is set |
-| `EditorProvider` | Current file / selection / open files | No editor session data |
+| `EditorProvider` | Current file / selection / open files (+ EditorSnapshot intelligence) | No editor session data |
 | `SearchProvider` | Search coordination hint + session hits (never executes search) | No structured search, index summary, or hits |
 | `MemoryProvider` | Relevant memories + promotions | — (always contributes memory results) |
 | `DiagnosticsProvider` | Session diagnostics | Empty diagnostics |
-| `GitStatusProvider` | Session git status (completed maintenance) | Empty / non-repo without summary |
+| `GitStatusProvider` | Session git status / GitSnapshot summaries (**Current** B2.5) | Empty / non-repo without summary |
+| `RuntimeProvider` | RuntimeSnapshot summaries (**Current** B2.6) | Empty runtime observation |
+| `WorkspaceMemoryProvider` | Coding activity rings (**Current** B2.9) | Empty workspace memory |
 | `WorkspaceInventoryProvider` | Session workspace inventory (completed maintenance) | Empty inventory |
 | `FileSummariesProvider` | Session file summaries (completed maintenance) | Empty summaries |
 | `PermissionProvider` | Session permission grants | Empty permissions |
 
-The engine itself stamps **User Request Metadata** and **Planner Metadata** (assemble generation, folded `ContextSource`s, provider contribute/decline notes).
+The engine itself stamps **User Request Metadata** and **Planner Metadata** (assemble generation, folded `ContextSource`s, provider propose / decline notes).
 
 ---
 
@@ -102,7 +121,14 @@ The engine itself stamps **User Request Metadata** and **Planner Metadata** (ass
 * Stamp request / planner metadata
 * Expose session inputs the host may push before assemble (`set_session_inputs` / `set_session_workspace`)
 
-Background maintenance of git / inventory / diagnostics / file summaries is **Application-owned** — see [context-maintenance.md](context-maintenance.md). Providers only read completed session snapshots.
+Background maintenance of git / inventory / diagnostics / file summaries /
+WorkspaceSnapshot / EditorSnapshot / ProjectSnapshot / RuntimeSnapshot /
+Workspace Memory is **Application-owned** — see
+[context-maintenance.md](context-maintenance.md) and
+[workspace-intelligence.md](workspace-intelligence.md).
+Providers only read completed session snapshots. Ambient WorkspaceSnapshot
+refresh never rebuilds a ContextBundle. Conversational prepare never rebuilds
+a WorkspaceSnapshot and never runs `observe_toolchain` (Sprint B2.13.2).
 
 ---
 
@@ -110,22 +136,23 @@ Background maintenance of git / inventory / diagnostics / file summaries is **Ap
 
 Configurable via `ContextBudgetConfig` / `ContextEngine::set_budget_config` (default ~32k characters, 4 chars/token estimate, reserved stamp budget).
 
-Assemble order after relevance filtering:
+Assemble order after relevance filtering (Sprint B2.7 / B2.13.1):
 
 1. Sort providers by `priority` (desc), then relevance
-2. Ask each provider for `estimate_size`
-3. `contribute` when budget remains
-4. `fit_contribution` if the payload exceeds remaining room
-5. Record `BudgetReport` (used chars/tokens, truncated/skipped providers, summaries)
+2. Ask each provider for `estimate_size` / candidate estimates
+3. `propose_candidates` when the provider participates
+4. Context Policy scores candidates; engine budget-selects
+5. Materialize selected candidates; `fit_contribution` if a payload exceeds remaining room
+6. Record `BudgetReport` / `PolicyReport.candidate_selection` (used chars/tokens, truncated/skipped, summaries)
 
-Fitting prefers dropping bulky payloads (project detail, memory bodies, search previews) while keeping identity metadata (ids, titles, paths, decisions). Ready for future LLM context windows — no model calls.
+Fitting prefers dropping bulky payloads (project detail, memory bodies, search previews, selection text) while keeping identity metadata (ids, titles, paths, decisions). Ready for future LLM context windows — no model calls.
 
 ---
 
 ## ContextBundle caching
 
 Recently assembled bundles are reused when the cache key matches. On a hit the
-engine **skips all provider `contribute` work**, restamps planner generation /
+engine **skips provider propose / materialize work**, restamps planner generation /
 request metadata, and records `cache_hit=true` on the Context Inspector.
 
 Reuse lives **entirely inside ContextEngine**. Planner never builds keys or
@@ -269,7 +296,7 @@ These fields are **enforced during assemble**:
 | `participate` | Provider omitted (`SkippedPolicy`) |
 | `requires_user_approval` | Omitted until id is in `session.approved_context_providers` (`SkippedApproval`) |
 | `exclude_sensitive` | Expands to redaction constraints (memory bodies, search previews, selection text) |
-| Contribution constraints | Applied after `contribute`, before budget fit |
+| Contribution constraints | Applied after materialize, before budget fit |
 | `can_truncate` | When false, oversized contributions are skipped (`policy_forbids_truncation`) instead of fitted |
 | Sensitivity | Providers above `max_sensitivity` denied unless required; `Sensitive` also requires approval |
 
@@ -284,6 +311,9 @@ These fields are **enforced during assemble**:
 | Search | Only when retrieval / files / symbols are required |
 | Memory | Matching memories only; **Private bodies redacted** (`exclude_sensitive`) |
 | Diagnostics | Coding capability or debug intent |
+| Git status | Coding / project / git-shaped requests (via Context Selection profiles) |
+| Runtime | Compile / debug / terminal-shaped requests (via Context Selection profiles) |
+| Workspace Memory | Coding activity when selection profiles include it |
 | Permission | Always include **summary only** (no explanation/resource detail) |
 
 ### Sensitivity
@@ -326,21 +356,28 @@ Administrative Memory/Project CRUD APIs on Application remain for store manageme
 
 ### Sections
 
-| Section | Contents |
-|---------|----------|
-| Conversation | Active conversation id, title, status, message count |
-| Active Project | Project identity + optional full `ProjectContext` |
-| Active Workspace | UX workspace kind id (`coding`, …) |
-| Current File | Focused editor path / dirty / language |
-| Current Selection | Editor selection range + optional text |
-| Open Files | Open editor tabs |
-| Search Results | Coordination hint + any pre-attached hits (no search executed here) |
-| Memory Results | Relevant memories + promotion suggestions / ask decision |
-| Diagnostics | Attached diagnostics for the request |
-| Permissions | Attached permission grants / decisions |
-| Planner Metadata | Assemble generation, contributing `ContextSource`s, notes |
-| Active Capabilities | Capability ids recorded for the request |
-| User Request Metadata | Structured flags / content preview from `UserRequest` |
+| Section | Contents | Status |
+|---------|----------|--------|
+| Conversation | Active conversation id, title, status, message count | **Current** |
+| Active Project | Project identity + optional full `ProjectContext` / ProjectSnapshot | **Current** |
+| Active Workspace | UX workspace kind id (`coding`, …) | **Current** |
+| Current File | Focused editor path / dirty / language | **Current** |
+| Current Selection | Editor selection range + text (Monaco IPC via CodingState) | **Current** (B2.13.3) |
+| Open Files | Open editor tabs | **Current** |
+| Search Results | Coordination hint + any pre-attached hits (no search executed here) | **Current** |
+| Memory Results | Relevant memories + promotion suggestions / ask decision | **Current** |
+| Diagnostics | Attached diagnostics for the request | **Current** |
+| Git status | Branch / dirty summaries from GitSnapshot | **Current** (B2.5) |
+| Runtime intelligence | Terminal / build / test summaries from RuntimeSnapshot | **Current** (B2.6) |
+| Workspace Memory | Recent edits / opens / builds / failures / objective | **Current** (B2.9) |
+| Workspace inventory | Ambient inventory snapshot | **Current** |
+| File summaries | Ambient file head summaries | **Current** |
+| Permissions | Attached permission grants / decisions | **Current** |
+| Planner Metadata | Assemble generation, contributing `ContextSource`s, Environmental Resolution, notes | **Current** |
+| Active Capabilities | Capability ids recorded for the request | **Current** |
+| User Request Metadata | Structured flags / content preview from `UserRequest` | **Current** |
+
+**Target** (not yet assembled): Notes / Messages / Browser history feeds.
 
 ---
 
@@ -360,13 +397,20 @@ Context decision on that assemble is transparent:
 | Truncation | Per-provider truncate / summarize / budget-skip labels |
 | Cache hit/miss | `cache_status()` (`hit` / `miss`) |
 | Assembly duration | Wall-clock `duration_ms` |
-| Per-provider contribute | Optional `InspectedProvider.duration_ms` for each `contribute` call |
+| Per-provider propose | Optional `InspectedProvider.duration_ms` for each provider propose / materialize call |
 | Final bundle size | `bundle_size_characters` / `bundle_size_estimated_tokens` |
 
 * Recorded automatically after each successful `ContextEngine::assemble`
 * Read via `ContextEngine::inspect_last` / `Application::inspect_context`
 * Surfaced in **Developer Diagnostics** (and the headless diagnostics dashboard)
 * **Does not affect execution** — never re-assembles, never calls providers for side effects
+
+**Workspace Diagnostics (Sprint B2.11)** aggregates the last inspector report with
+Context Maintenance freshness / status into
+`DiagnosticsSnapshot.workspace_inspector` for the Developer Diagnostics
+**Workspace Intelligence** section (candidates, policy, budget, timings). Never
+written to the conversation transcript. See
+[workspace-diagnostics.md](workspace-diagnostics.md).
 
 ---
 
@@ -407,8 +451,14 @@ the Context Engine is one of the best-tested systems in Jaymi.
    - permission policy summary (synthesized from Permission Engine)
    - search panel hits (when present)
    - `active_capabilities` left empty (request-selected ids arrive only via Planner `AssembleHints`)
+   - canonical [`WorkspaceSnapshot`](workspace-snapshot.md) (Sprint B2.1 / B2.2 / B2.13.2) — latest **completed** ambient observation only; prepare never rebuilds or probes toolchain markers (schedules ambient refresh if missing)
+   - canonical [`EditorSnapshot`](editor-snapshot.md) (Sprint B2.3 / B2.13.3) — latest **completed** editor intelligence (selection text/range from Monaco via CodingState); providers consume; Planner/Reasoning never call LSP
+   - canonical [`ProjectSnapshot`](project-snapshot.md) (Sprint B2.4) — latest **completed** project intelligence; `ProjectProvider` consumes; Planner never scans; no FS on request path
+   - canonical [`GitSnapshot`](git-snapshot.md) (Sprint B2.5) — **Current**; latest **completed** Git intelligence; `GitStatusProvider` exposes summaries; Reasoning never runs git
+   - canonical [`RuntimeSnapshot`](runtime-snapshot.md) (Sprint B2.6) — **Current**; latest **completed** runtime intelligence; `RuntimeProvider` exposes summaries; TerminalProvider owns updates; conversation never waits; observe never re-runs cargo
+   - [`Workspace Memory`](workspace-memory.md) (Sprint B2.9) — Coding activity rings from CodingState
    Closing Coding clears editor / diagnostics / search fields so the bundle does not keep stale UI state.
-   Future Workspace Intelligence enrichments land in the same `prepare_context_session` so conversation automatically receives them.
+   Workspace Intelligence enrichments continue to land in the same `prepare_context_session` so conversation automatically receives them.
 
 ---
 
@@ -419,7 +469,7 @@ the Context Engine is one of the best-tested systems in Jaymi.
 | Field | Source |
 |-------|--------|
 | `workspace_kind` | Experience active workspace |
-| `current_file` / `current_selection` / `open_files` | Coding `OpenEditors` (selection = caret until Monaco selection IPC) |
+| `current_file` / `current_selection` / `open_files` | Coding `OpenEditors` (selection text from Monaco IPC via CodingState; caret-only when empty) |
 | `diagnostics` | Completed maintenance snapshot (else Coding Problems / raw diagnostics) |
 | `git_status` | Completed maintenance snapshot |
 | `workspace_inventory` | Completed maintenance snapshot |
@@ -427,6 +477,12 @@ the Context Engine is one of the best-tested systems in Jaymi.
 | `permissions` | Permission Engine policy matrix summary |
 | `active_capabilities` | **Deprecated / empty** — request-selected capability ids come only from Planner `AssembleHints`, never from a Capability Engine catalog |
 | `search_hits` | Coding Search panel results |
+| `workspace_snapshot` | Latest completed ambient observation ([workspace-snapshot.md](workspace-snapshot.md) / [context-maintenance.md](context-maintenance.md)) — host-refreshed; Context Engine consumes; never builds a ContextBundle |
+| `editor_snapshot` | Latest completed editor intelligence ([editor-snapshot.md](editor-snapshot.md)) — consumed by `EditorProvider` / `DiagnosticsProvider`; Planner/Reasoning never call LSP |
+| `project_snapshot` | Latest completed project intelligence ([project-snapshot.md](project-snapshot.md)) — ambient-maintained; `ProjectProvider` consumes; Planner never scans; no FS on request path |
+| `git_snapshot` | Latest completed Git intelligence ([git-snapshot.md](git-snapshot.md)) — **Current** (B2.5); ambient-maintained; `GitStatusProvider` exposes summaries; Reasoning never runs git |
+| `runtime_snapshot` | Latest completed runtime intelligence ([runtime-snapshot.md](runtime-snapshot.md)) — **Current** (B2.6); ambient-maintained; `RuntimeProvider` exposes summaries; TerminalProvider owns updates; conversation never waits |
+| `workspace_memory_snapshot` | Coding activity rings ([workspace-memory.md](workspace-memory.md)) — **Current** (B2.9); distinct from Conversation Memory |
 
 Active project and conversation still come from Project / Memory engines via providers — not duplicated into session inputs.
 
@@ -443,4 +499,8 @@ Search tools still execute through the Tool Orchestrator. `SearchProvider` only 
 
 ## Status
 
-Implemented as the sole request-context assembler for the Planner. Provider architecture is the extension point for additional context feeds.
+Implemented as the sole request-context assembler for the Planner. Workspace
+Intelligence feeds (B2.1–B2.13.3) and the Context Candidate Graph (B2.7 /
+B2.13.1) are **Current**. Provider architecture remains the extension point for
+additional context feeds (Notes / Messages / Browser history are **Target**).
+Documentation synchronized in Sprint B2.13.4.

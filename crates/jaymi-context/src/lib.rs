@@ -9,11 +9,11 @@
 //! [`ContextBundle`] (`assemble_with` / `assemble` / `empty_bundle` /
 //! `reuse_bundle`). The Planner requests bundles; it never constructs them.
 //!
-//! Assemble is provider-driven: registered [`ContextProvider`]s contribute
-//! sections to an immutable [`ContextBundle`]. The engine scores relevance,
-//! orders by priority, and assembles within a configurable character/token
-//! budget — truncating and summarizing oversized contributions while
-//! preserving important metadata. Ready for future LLM context windows.
+//! Assemble is provider-driven: registered [`ContextProvider`]s propose
+//! [`ContextCandidate`] nodes (Sprint B2.7). Context Policy scores relevance,
+//! recency, importance, privacy, and budget; only selected candidates are
+//! materialized into an immutable [`ContextBundle`]. Providers never assemble
+//! bundles. Ready for future LLM context windows.
 //!
 //! Recently assembled bundles are cached (keyed by project, workspace,
 //! conversation revision, session fingerprint, active file, and request type).
@@ -38,6 +38,7 @@
 
 mod budget;
 mod bundle;
+mod candidate;
 mod cache;
 mod history;
 mod inspector;
@@ -46,7 +47,19 @@ mod policy;
 mod provider;
 mod providers;
 mod relevance;
+mod workspace_snapshot;
+mod editor_snapshot;
+mod project_snapshot;
+mod git_snapshot;
+mod runtime_snapshot;
+mod workspace_memory;
 
+pub use candidate::{
+    candidates_from_contribution, materialize_candidates, score_candidate, score_recency,
+    select_candidates_for_budget, CandidateDecisionSummary, CandidateEdge, CandidateGraph,
+    CandidateItemDecision, CandidatePayload, CandidateScores, CandidateSelection,
+    CandidateSelectionReport, ContextCandidate, ContextCandidateId, ContextCandidateKind,
+};
 pub use budget::{
     fit_contribution, measure_contribution, BudgetEstimate, BudgetUnits, ContextBudgetConfig,
     ProviderPriority, DEFAULT_CHARS_PER_TOKEN, DEFAULT_MAX_CHARACTERS, ENGINE_RESERVED_CHARACTERS,
@@ -68,33 +81,64 @@ pub use history::{ContextHistory, ContextHistoryEntry, DEFAULT_HISTORY_CAPACITY}
 pub use llm::{
     LlmActiveCapabilities, LlmActiveProject, LlmActiveWorkspace, LlmBudgetView, LlmContext,
     LlmContextSection, LlmConversation, LlmCurrentFile, LlmCurrentSelection, LlmDiagnostic,
-    LlmDiagnostics, LlmFileSummaries, LlmFileSummaryEntry, LlmGitStatus, LlmMemoryItem,
-    LlmMemoryResults, LlmOpenFileEntry, LlmOpenFiles, LlmPermissionEntry, LlmPermissions,
-    LlmProjectDetailSummary, LlmPromotionSuggestion, LlmProviderMetadata, LlmSearchHint,
+    LlmDiagnostics, LlmEditorCodeLens, LlmEditorHover, LlmEditorIntelligence, LlmEditorReference,
+    LlmEditorSymbol, LlmEnvironmentalResolution, LlmFileSummaries, LlmFileSummaryEntry,
+    LlmGitCommit, LlmGitStatus, LlmMemoryItem, LlmMemoryResults, LlmOpenFileEntry, LlmOpenFiles,
+    LlmPermissionEntry, LlmPermissions, LlmProjectDetailSummary, LlmProjectIntelligence,
+    LlmPromotionSuggestion, LlmProviderMetadata, LlmRuntimeIntelligence, LlmSearchHint,
     LlmSearchHit, LlmSearchResults, LlmSectionContent, LlmSectionId, LlmUserRequest,
-    LlmWorkspaceInventory, LLM_CONTEXT_SCHEMA_VERSION,
+    LlmWorkspaceInventory, LlmWorkspaceMemory, LLM_CONTEXT_SCHEMA_VERSION,
 };
 pub use policy::{
-    apply_contribution_constraints, apply_policy_to_contribution, default_context_policies,
-    ContextPolicy, ContextPolicyCandidate, ContextPolicyDecision, ContextPolicyDecisionRecord,
-    ContextPolicyEngine, ContextPolicyInputs, ContributionConstraints, JaymiDefaultContextPolicy,
-    PolicyDecisionSummary, PolicyReport, Sensitivity, DEFAULT_CONTEXT_POLICY_ID,
+    apply_contribution_constraints, apply_policy_to_contribution, assess_context_selection,
+    default_context_policies, ContextPolicy, ContextPolicyCandidate, ContextPolicyDecision,
+    ContextPolicyDecisionRecord, ContextPolicyEngine, ContextPolicyInputs,
+    ContextSelectionAssessment, ContextSelectionProfile, ContributionConstraints,
+    JaymiDefaultContextPolicy, PolicyDecisionSummary, PolicyReport, Sensitivity,
+    DEFAULT_CONTEXT_POLICY_ID,
 };
 pub use provider::{ContextContribution, ContextProvider, ProviderRequest};
 pub use providers::{
     default_providers, ConversationProvider, DiagnosticsProvider, EditorProvider,
     FileSummariesProvider, GitStatusProvider, MemoryProvider, PermissionProvider, ProjectProvider,
-    ProviderDeps, SearchProvider, WorkspaceInventoryProvider, WorkspaceProvider,
+    ProviderDeps, RuntimeProvider, SearchProvider, WorkspaceInventoryProvider, WorkspaceMemoryProvider,
+    WorkspaceProvider,
 };
 pub use inspector::{
     inspect_bundle_sections, measure_bundle_size, ContextInspectorReport, InspectedBundleSection,
     InspectedProvider, ProviderInspectOutcome,
 };
 pub use relevance::{
-    complexity_provider_tier, AssembleHints, ComplexityProviderTier, IntentTag, RelevanceScore,
+    complexity_provider_tier, AssembleHints, ComplexityProviderTier, EnvironmentalHints, IntentTag,
+    RelevanceScore,
     RelevanceSignals, RequestKind, DEFAULT_RELEVANCE_THRESHOLD, RELEVANCE_MAX,
 };
-pub use jaymi_core::IntentId;
+pub use workspace_snapshot::{
+    observe_toolchain, open_files_from_entries, ActiveProjectRef, BuildSystemKind, CursorPosition,
+    PackageManagerKind, ToolchainObservation, WorkspaceSnapshot, WorkspaceSnapshotObservation,
+};
+pub use editor_snapshot::{
+    EditorCodeLens, EditorHover, EditorIntelligenceSection, EditorRange, EditorReference,
+    EditorSemanticToken, EditorSnapshot, EditorSnapshotObservation, EditorSymbol,
+};
+pub use project_snapshot::{
+    observe_project_intelligence, CargoProjectMeta, DependencyGraphSummary, NpmProjectMeta,
+    ProjectIntelligenceSection, ProjectMetadata, ProjectSnapshot, ProjectSnapshotHostFacts,
+    ProjectSnapshotObservation, RepositoryMetadata, WorkspaceLayoutSummary,
+};
+pub use git_snapshot::{
+    GitPathEntry, GitSnapshot, GitSnapshotObservation,
+};
+pub use runtime_snapshot::{
+    observe_runtime_intelligence, RuntimeCommandKind, RuntimeCommandOutcome,
+    RuntimeIntelligenceSection, RuntimeProcessRef, RuntimeSnapshot, RuntimeSnapshotHostFacts,
+    RuntimeSnapshotObservation, RuntimeTerminalSessionFact, TerminalOutputSummary,
+};
+pub use workspace_memory::{
+    observe_workspace_memory, WorkspaceMemoryCommand, WorkspaceMemoryHostFacts,
+    WorkspaceMemoryPath, WorkspaceMemorySection, WorkspaceMemorySnapshot,
+    WORKSPACE_MEMORY_SECTION_COMMAND_CAP, WORKSPACE_MEMORY_SECTION_PATH_CAP,
+};
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -284,6 +328,50 @@ impl ContextEngine {
             .lock()
             .map(|guard| guard.clone())
             .unwrap_or_default()
+    }
+
+    /// Latest Coding [`WorkspaceSnapshot`] from session inputs, when captured.
+    ///
+    /// Observational only — never assembles a ContextBundle.
+    pub fn workspace_snapshot(&self) -> Option<crate::WorkspaceSnapshot> {
+        self.session_inputs().workspace_snapshot
+    }
+
+    /// Latest [`EditorSnapshot`] from session inputs, when captured (Sprint B2.3).
+    ///
+    /// Read-only observation — never assembles a ContextBundle and never calls LSP.
+    pub fn editor_snapshot(&self) -> Option<crate::EditorSnapshot> {
+        self.session_inputs().editor_snapshot
+    }
+
+    /// Latest [`ProjectSnapshot`] from session inputs, when captured (Sprint B2.4).
+    ///
+    /// Read-only observation — never assembles a ContextBundle and never scans FS.
+    pub fn project_snapshot(&self) -> Option<crate::ProjectSnapshot> {
+        self.session_inputs().project_snapshot
+    }
+
+    /// Latest [`GitSnapshot`] from session inputs, when captured (Sprint B2.5).
+    ///
+    /// Read-only observation — never assembles a ContextBundle and never runs git.
+    pub fn git_snapshot(&self) -> Option<crate::GitSnapshot> {
+        self.session_inputs().git_snapshot
+    }
+
+    /// Latest [`RuntimeSnapshot`] from session inputs, when captured (Sprint B2.6).
+    ///
+    /// Read-only observation — never assembles a ContextBundle and never re-runs
+    /// cargo / tests.
+    pub fn runtime_snapshot(&self) -> Option<crate::RuntimeSnapshot> {
+        self.session_inputs().runtime_snapshot
+    }
+
+    /// Latest [`WorkspaceMemorySnapshot`] from session inputs, when captured (Sprint B2.9).
+    ///
+    /// Read-only observation — never writes Conversation Memory and never
+    /// assembles a ContextBundle.
+    pub fn workspace_memory_snapshot(&self) -> Option<crate::WorkspaceMemorySnapshot> {
+        self.session_inputs().workspace_memory_snapshot
     }
 
     /// Number of successful `assemble` calls since boot (tests / diagnostics).
@@ -627,9 +715,11 @@ impl ContextEngine {
             project_open,
             max_sensitivity: Sensitivity::Private,
         };
+        let selection_assessment = assess_context_selection(request, &signals);
 
-        // Policy → relevance → priority sort → budget → contribute.
-        // Policies never gather context; they only decide participation.
+        // Policy → relevance → priority sort → propose candidates → candidate policy
+        // (relevance/recency/importance/privacy) → budget select → materialize.
+        // Policies never gather context; providers never assemble bundles.
         let mut ranked: Vec<(
             Arc<dyn ContextProvider>,
             RelevanceScore,
@@ -865,6 +955,11 @@ impl ContextEngine {
             skipped_budget: Vec::new(),
             summaries: Vec::new(),
         };
+        let mut candidate_selection = CandidateSelectionReport::default();
+        let now_unix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
 
         for (allocation_order, (provider, score, decision, evaluation_order)) in
             ranked.iter().enumerate()
@@ -971,12 +1066,86 @@ impl ContextEngine {
             }
 
             match {
-                let contribute_started = Instant::now();
-                let result = provider.contribute(&provider_request);
-                let contribute_ms = contribute_started.elapsed().as_millis() as u64;
+                let propose_started = Instant::now();
+                let result = provider.propose_candidates(&provider_request);
+                let contribute_ms = propose_started.elapsed().as_millis() as u64;
                 (result, contribute_ms)
             } {
-                (Ok(Some(contribution)), contribute_ms) => {
+                (Ok(candidates), contribute_ms) if !candidates.is_empty() => {
+                    // Sprint B2.7: Context Policy evaluates each candidate;
+                    // only selected nodes materialize into bundle sections.
+                    let mut scored = Vec::new();
+                    {
+                        let policy_engine = self
+                            .policies
+                            .lock()
+                            .map_err(|_| JaymiError::new("context policy lock poisoned"))?;
+                        for candidate in candidates {
+                            let item = policy_engine.evaluate_candidate_item(
+                                &candidate,
+                                score.value(),
+                                now_unix,
+                                &policy_inputs,
+                            );
+                            candidate_selection.proposed =
+                                candidate_selection.proposed.saturating_add(1);
+                            if item.select {
+                                scored.push((candidate, item.scores, item.reason));
+                            } else {
+                                candidate_selection.rejected_policy =
+                                    candidate_selection.rejected_policy.saturating_add(1);
+                                if candidate_selection.decisions.len() < 128 {
+                                    candidate_selection.decisions.push(
+                                        CandidateDecisionSummary {
+                                            candidate_id: candidate.id.0.clone(),
+                                            provider_id: candidate.provider_id.to_string(),
+                                            kind: candidate.kind.as_str().to_string(),
+                                            selected: false,
+                                            reason: item.reason,
+                                            relevance: item.scores.relevance,
+                                            recency: item.scores.recency,
+                                            importance: item.scores.importance,
+                                            estimated_chars: candidate.estimated_chars(),
+                                        },
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    let selection = select_candidates_for_budget(&scored, remaining);
+                    candidate_selection.rejected_budget = candidate_selection
+                        .rejected_budget
+                        .saturating_add(selection.report.rejected_budget);
+                    candidate_selection.selected = candidate_selection
+                        .selected
+                        .saturating_add(selection.report.selected);
+                    for row in selection.report.decisions {
+                        if candidate_selection.decisions.len() < 128 {
+                            candidate_selection.decisions.push(row);
+                        }
+                    }
+                    if selection.selected.is_empty() {
+                        declined += 1;
+                        inspect_providers.push(
+                            InspectedProvider::new(
+                                *evaluation_order,
+                                Some(allocation_order),
+                                provider.id(),
+                                decision.priority.value(),
+                                score.value(),
+                                sensitivity,
+                                decision.requires_user_approval,
+                                approval_status,
+                                decision.can_truncate,
+                                estimate.units.characters,
+                                estimate.units.estimated_tokens,
+                                ProviderInspectOutcome::Declined,
+                            )
+                            .with_duration_ms(contribute_ms),
+                        );
+                        continue;
+                    }
+                    let contribution = materialize_candidates(&selection.selected);
                     let (contribution, enforced) =
                         apply_policy_to_contribution(contribution, decision);
                     if let Some(summary) = policy_summaries
@@ -1128,7 +1297,7 @@ impl ContextEngine {
                     }
                     builder = builder.apply_contribution(fitted);
                 }
-                (Ok(None), contribute_ms) => {
+                (Ok(_), contribute_ms) => {
                     declined += 1;
                     inspect_providers.push(
                         InspectedProvider::new(
@@ -1162,6 +1331,13 @@ impl ContextEngine {
             size_before_characters,
             size_after_characters,
             size_assembled_characters: used_characters,
+            candidate_selection,
+            selection_profile: Some(selection_assessment.profile.as_str().to_string()),
+            selection_rules: selection_assessment
+                .matched_rules
+                .iter()
+                .map(|rule| (*rule).to_string())
+                .collect(),
         };
 
         // Engine-owned stamps (not subsystem providers).
@@ -1197,6 +1373,18 @@ impl ContextEngine {
                 signals.active_capabilities.join(",")
             ));
         }
+        let environmental = hints.and_then(|h| h.environmental.clone());
+        if let Some(env) = environmental.as_ref() {
+            if env.needed {
+                notes.push(format!(
+                    "environmental_resolution ambiguous={} primary={:?} rules=[{}] bindings=[{}]",
+                    env.ambiguous,
+                    env.primary_path,
+                    env.rules.join(","),
+                    env.bindings.join("; ")
+                ));
+            }
+        }
         notes.extend(budget_report.summaries.iter().cloned());
         builder = builder.planner_metadata(PlannerMetadataSection {
             assemble_generation,
@@ -1204,6 +1392,7 @@ impl ContextEngine {
             notes,
             budget: Some(budget_report),
             policy: Some(policy_report.clone()),
+            environmental,
         });
 
         let bundle = builder.build();
@@ -1416,6 +1605,24 @@ fn session_change_reason(
     if previous.search_hits != next.search_hits {
         return "search_hits_changed";
     }
+    if previous.workspace_snapshot != next.workspace_snapshot {
+        return "workspace_snapshot_changed";
+    }
+    if previous.editor_snapshot != next.editor_snapshot {
+        return "editor_snapshot_changed";
+    }
+    if previous.project_snapshot != next.project_snapshot {
+        return "project_snapshot_changed";
+    }
+    if previous.git_snapshot != next.git_snapshot {
+        return "git_snapshot_changed";
+    }
+    if previous.runtime_snapshot != next.runtime_snapshot {
+        return "runtime_snapshot_changed";
+    }
+    if previous.workspace_memory_snapshot != next.workspace_memory_snapshot {
+        return "workspace_memory_snapshot_changed";
+    }
     "session_inputs_changed"
 }
 
@@ -1613,6 +1820,7 @@ mod tests {
                 notes: vec!["unit-test".into()],
                 budget: None,
                 policy: None,
+                environmental: None,
             })
             .active_capabilities(ActiveCapabilitiesSection {
                 capability_ids: vec!["code".into(), "search".into()],
@@ -1660,6 +1868,7 @@ mod tests {
                 notes: Vec::new(),
                 budget: None,
                 policy: None,
+                environmental: None,
             })
             .build();
 
@@ -1733,7 +1942,14 @@ mod tests {
             approved_context_providers: vec!["editor".into()],
             project_open: true,
             project_indexed_documents: None,
-        });
+        
+            workspace_snapshot: None,
+            editor_snapshot: None,
+            project_snapshot: None,
+            git_snapshot: None,
+            runtime_snapshot: None,
+            workspace_memory_snapshot: None,
+});
 
         let bundle = engine
             .assemble(&UserRequest::read_file("/proj/main.rs"))
@@ -1793,10 +2009,11 @@ mod tests {
                 BudgetEstimate::metadata(BudgetUnits::from_characters(64, 4))
             }
 
-            fn contribute(
+            fn propose_candidates(
                 &self,
                 _request: &ProviderRequest<'_>,
-            ) -> JaymiResult<Option<ContextContribution>> {
+            ) -> JaymiResult<Vec<ContextCandidate>> {
+                let contribution = (|| -> JaymiResult<Option<ContextContribution>> {
                 self.calls.fetch_add(1, AtomicOrdering::Relaxed);
                 if self.contribute_flag {
                     Ok(Some(ContextContribution {
@@ -1810,6 +2027,18 @@ mod tests {
                     self.declines.fetch_add(1, AtomicOrdering::Relaxed);
                     Ok(None)
                 }
+            
+                })()?;
+                Ok(match contribution {
+                    Some(contribution) => candidates_from_contribution(
+                        self.id(),
+                        contribution,
+                        self.sensitivity(),
+                        self.priority(),
+                        self.relevance(_request).value(),
+                    ),
+                    None => Vec::new(),
+                })
             }
         }
 
@@ -1832,7 +2061,10 @@ mod tests {
             ])
             .unwrap();
 
-        let bundle = engine.assemble(&UserRequest::new("hello")).unwrap();
+        // Non-greeting text: Greeting's strict allowlist would omit unknown providers.
+        let bundle = engine
+            .assemble(&UserRequest::new("what can you tell me"))
+            .unwrap();
         assert_eq!(calls.load(AtomicOrdering::Relaxed), 2);
         assert_eq!(declines.load(AtomicOrdering::Relaxed), 1);
         assert_eq!(bundle.workspace_kind(), Some("coding"));
@@ -1877,11 +2109,24 @@ mod tests {
                 BudgetEstimate::metadata(BudgetUnits::from_characters(32, 4))
             }
 
-            fn contribute(
+            fn propose_candidates(
                 &self,
                 _request: &ProviderRequest<'_>,
-            ) -> JaymiResult<Option<ContextContribution>> {
+            ) -> JaymiResult<Vec<ContextCandidate>> {
+                let contribution = (|| -> JaymiResult<Option<ContextContribution>> {
                 panic!("contribute must not run when relevance is below threshold");
+            
+                })()?;
+                Ok(match contribution {
+                    Some(contribution) => candidates_from_contribution(
+                        self.id(),
+                        contribution,
+                        self.sensitivity(),
+                        self.priority(),
+                        self.relevance(_request).value(),
+                    ),
+                    None => Vec::new(),
+                })
             }
         }
 
@@ -1904,10 +2149,11 @@ mod tests {
                 BudgetEstimate::metadata(BudgetUnits::from_characters(64, 4))
             }
 
-            fn contribute(
+            fn propose_candidates(
                 &self,
                 _request: &ProviderRequest<'_>,
-            ) -> JaymiResult<Option<ContextContribution>> {
+            ) -> JaymiResult<Vec<ContextCandidate>> {
+                let contribution = (|| -> JaymiResult<Option<ContextContribution>> {
                 Ok(Some(ContextContribution {
                     sources: vec![ContextSource::ActiveWorkspace],
                     active_workspace: Some(ActiveWorkspaceSection {
@@ -1915,6 +2161,18 @@ mod tests {
                     }),
                     ..ContextContribution::default()
                 }))
+            
+                })()?;
+                Ok(match contribution {
+                    Some(contribution) => candidates_from_contribution(
+                        self.id(),
+                        contribution,
+                        self.sensitivity(),
+                        self.priority(),
+                        self.relevance(_request).value(),
+                    ),
+                    None => Vec::new(),
+                })
             }
         }
 
@@ -1928,7 +2186,10 @@ mod tests {
             ])
             .unwrap();
 
-        let bundle = engine.assemble(&UserRequest::new("hello")).unwrap();
+        // Non-greeting text so custom providers are not selection-omitted.
+        let bundle = engine
+            .assemble(&UserRequest::new("explain this briefly"))
+            .unwrap();
         assert_eq!(bundle.workspace_kind(), Some("coding"));
         assert!(bundle
             .planner_metadata()
@@ -1998,10 +2259,11 @@ mod tests {
                 BudgetEstimate::flexible(BudgetUnits::from_characters(5_000, 4))
             }
 
-            fn contribute(
+            fn propose_candidates(
                 &self,
                 _request: &ProviderRequest<'_>,
-            ) -> JaymiResult<Option<ContextContribution>> {
+            ) -> JaymiResult<Vec<ContextCandidate>> {
+                let contribution = (|| -> JaymiResult<Option<ContextContribution>> {
                 Ok(Some(ContextContribution {
                     sources: vec![ContextSource::SearchResults],
                     search_results: Some(SearchResultsSection {
@@ -2021,6 +2283,18 @@ mod tests {
                     }),
                     ..ContextContribution::default()
                 }))
+            
+                })()?;
+                Ok(match contribution {
+                    Some(contribution) => candidates_from_contribution(
+                        self.id(),
+                        contribution,
+                        self.sensitivity(),
+                        self.priority(),
+                        self.relevance(_request).value(),
+                    ),
+                    None => Vec::new(),
+                })
             }
         }
 
@@ -2043,10 +2317,11 @@ mod tests {
                 BudgetEstimate::metadata(BudgetUnits::from_characters(32, 4))
             }
 
-            fn contribute(
+            fn propose_candidates(
                 &self,
                 _request: &ProviderRequest<'_>,
-            ) -> JaymiResult<Option<ContextContribution>> {
+            ) -> JaymiResult<Vec<ContextCandidate>> {
+                let contribution = (|| -> JaymiResult<Option<ContextContribution>> {
                 Ok(Some(ContextContribution {
                     sources: vec![ContextSource::ActiveWorkspace],
                     active_workspace: Some(ActiveWorkspaceSection {
@@ -2054,6 +2329,18 @@ mod tests {
                     }),
                     ..ContextContribution::default()
                 }))
+            
+                })()?;
+                Ok(match contribution {
+                    Some(contribution) => candidates_from_contribution(
+                        self.id(),
+                        contribution,
+                        self.sensitivity(),
+                        self.priority(),
+                        self.relevance(_request).value(),
+                    ),
+                    None => Vec::new(),
+                })
             }
         }
 
@@ -2073,7 +2360,10 @@ mod tests {
             ])
             .unwrap();
 
-        let bundle = engine.assemble(&UserRequest::new("hello")).unwrap();
+        // Non-greeting text so custom providers participate under GeneralChat.
+        let bundle = engine
+            .assemble(&UserRequest::new("budget ordering check"))
+            .unwrap();
         assert_eq!(bundle.workspace_kind(), Some("coding"));
         let report = bundle.budget().expect("budget report");
         assert!(report.used_characters <= 700);
@@ -2109,9 +2399,10 @@ mod tests {
         assert!(!report.providers.is_empty());
         assert!(
             report.contributed().iter().any(|p| p.id == "conversation")
+                || report.contributed().iter().any(|p| p.id == "memory")
                 || report.contributed().iter().any(|p| p.id == "permission")
                 || report.contributed().iter().any(|p| p.id == "workspace"),
-            "at least one core provider should contribute"
+            "at least one core provider should contribute (greeting → memory)"
         );
         assert!(
             report.omitted().iter().any(|p| p.id == "diagnostics"),
@@ -2413,10 +2704,11 @@ mod tests {
                     can_summarize: true,
                 }
             }
-            fn contribute(
+            fn propose_candidates(
                 &self,
-                _: &ProviderRequest<'_>,
-            ) -> JaymiResult<Option<ContextContribution>> {
+                request: &ProviderRequest<'_>,
+            ) -> JaymiResult<Vec<ContextCandidate>> {
+                let contribution = (|| -> JaymiResult<Option<ContextContribution>> {
                 Ok(Some(ContextContribution {
                     sources: vec![ContextSource::UserRequest],
                     diagnostics: Some(DiagnosticsSection {
@@ -2431,6 +2723,18 @@ mod tests {
                     }),
                     ..ContextContribution::default()
                 }))
+            
+                })()?;
+                Ok(match contribution {
+                    Some(contribution) => candidates_from_contribution(
+                        self.id(),
+                        contribution,
+                        self.sensitivity(),
+                        self.priority(),
+                        self.relevance(request).value(),
+                    ),
+                    None => Vec::new(),
+                })
             }
         }
 
@@ -2524,5 +2828,87 @@ mod tests {
                 && d.included
                 && d.constraints.iter().any(|c| c == "permission_summary_only")
         }));
+    }
+
+    #[test]
+    fn production_providers_propose_typed_candidates_not_legacy() {
+        // Sprint B2.13.1 — every default provider exposes propose_candidates with
+        // typed payloads (no LegacyContribution fallback on the production path).
+        use crate::candidate::ContextCandidateKind;
+        use crate::BundleDiagnostic;
+        use crate::OpenFileEntry;
+
+        let engine = bound_engine();
+        engine.set_session_inputs(ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: CurrentFileSection {
+                path: Some("src/main.rs".into()),
+                language: Some("rust".into()),
+                ..CurrentFileSection::default()
+            },
+            open_files: OpenFilesSection {
+                files: vec![OpenFileEntry {
+                    path: "src/lib.rs".into(),
+                    dirty: false,
+                    active: false,
+                }],
+            },
+            diagnostics: DiagnosticsSection {
+                diagnostics: vec![BundleDiagnostic {
+                    severity: "error".into(),
+                    message: "boom".into(),
+                    path: Some("src/main.rs".into()),
+                    line: Some(1),
+                    column: None,
+                    source: None,
+                }],
+            },
+            file_summaries: FileSummariesSection {
+                entries: vec![crate::FileSummaryEntry {
+                    path: "src/main.rs".into(),
+                    summary: "fn main".into(),
+                    language: Some("rust".into()),
+                    line_count: Some(10),
+                }],
+            },
+            git_status: GitStatusSection {
+                is_repository: true,
+                summary: "main · clean".into(),
+                ..GitStatusSection::default()
+            },
+            ..ContextSessionInputs::default()
+        });
+
+        let request = UserRequest::new("why won't this compile?");
+        let bundle = engine.assemble(&request).unwrap();
+        let policy = bundle.policy().expect("policy report");
+        assert!(
+            policy.candidate_selection.proposed > 0,
+            "expected candidate proposals"
+        );
+        assert!(
+            policy
+                .candidate_selection
+                .decisions
+                .iter()
+                .all(|d| d.kind != ContextCandidateKind::LegacyContribution.as_str()),
+            "production path must not emit LegacyContribution: {:?}",
+            policy.candidate_selection.decisions
+        );
+        // Editor / diagnostics fine-grained kinds should appear when selected.
+        let kinds: Vec<_> = policy
+            .candidate_selection
+            .decisions
+            .iter()
+            .map(|d| d.kind.as_str())
+            .collect();
+        assert!(
+            kinds.iter().any(|k| *k == "diagnostic"
+                || *k == "current_file"
+                || *k == "open_file"
+                || *k == "file_summary"
+                || *k == "conversation"),
+            "expected typed candidate kinds, got {kinds:?}"
+        );
     }
 }

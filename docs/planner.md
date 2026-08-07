@@ -129,9 +129,9 @@ Decision Engine    Reasoning Engine (conversational / unknown after Context)
    │               │
    └──────┬────────┘
           │
-   Intent → Capability → Complexity Assessment
+   Intent → Capability → Complexity Assessment → Environmental Resolution
           │
-   AssembleHints (intent, capability_ids, complexity)
+   AssembleHints (intent, capability_ids, complexity, environmental)
           │
    Context Policy → Providers → Context Engine → ContextBundle
           │
@@ -150,6 +150,11 @@ rule-based class (`greeting` … `research_question`) attached to
 `AssembleHints` before assemble. It biases Context relevance only — it does
 **not** change Intent routing or Capability selection. Rules:
 [docs/complexity.md](complexity.md).
+
+**Environmental Resolution** (Sprint B2.10) binds ambiguous workspace deixis
+(`rename this`, `fix it`, `why?`, `clean this up`) from session Workspace
+Intelligence before assemble / Reasoning. LLMs never invent workspace
+references. Pipeline: [docs/environmental-resolution.md](environmental-resolution.md).
 
 Reasoning is delegated.
 

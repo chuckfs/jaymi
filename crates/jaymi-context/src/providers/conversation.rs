@@ -5,7 +5,8 @@ use std::sync::Arc;
 use jaymi_core::JaymiResult;
 use jaymi_memory_engine::MemoryEngineApi;
 
-use crate::provider::{ContextContribution, ContextProvider, ProviderRequest};
+use crate::candidate::{CandidatePayload, ContextCandidate, ContextCandidateKind};
+use crate::provider::{ContextProvider, ProviderRequest};
 use crate::budget::{BudgetEstimate, BudgetUnits, ProviderPriority};
 use crate::relevance::{IntentTag, RelevanceScore, RequestKind};
 use crate::{ContextSource, ConversationSection};
@@ -19,6 +20,33 @@ impl ConversationProvider {
     /// Create a provider backed by the Memory Engine conversation APIs.
     pub fn new(memory: Arc<dyn MemoryEngineApi>) -> Self {
         Self { memory }
+    }
+
+    fn conversation_section(&self) -> Option<ConversationSection> {
+        let id = self.memory.active_conversation_id()?;
+        Some(match self.memory.load_conversation(&id) {
+            Ok(Some(conversation)) => ConversationSection {
+                id: Some(conversation.meta.id.as_str().to_string()),
+                title: conversation.meta.title.clone(),
+                status: Some(conversation.meta.status.as_str().to_string()),
+                project_id: conversation.meta.project_id.clone(),
+                message_count: Some(conversation.messages.len()),
+            },
+            Ok(None) => ConversationSection {
+                id: Some(id),
+                ..ConversationSection::default()
+            },
+            Err(error) => {
+                jaymi_logging::warn(
+                    "context.provider.conversation",
+                    format!("conversation unavailable: {}", error.message()),
+                );
+                ConversationSection {
+                    id: Some(id),
+                    ..ConversationSection::default()
+                }
+            }
+        })
     }
 }
 
@@ -52,7 +80,6 @@ impl ContextProvider for ConversationProvider {
 
     fn estimate_size(&self, request: &ProviderRequest<'_>) -> BudgetEstimate {
         let sessionish = 96usize;
-        // Conversation metadata is small; load may add title/status.
         let chars = if self.memory.active_conversation_id().is_some() {
             192
         } else {
@@ -62,42 +89,23 @@ impl ContextProvider for ConversationProvider {
         BudgetEstimate::metadata(BudgetUnits::from_characters(chars, 4))
     }
 
-    fn contribute(
+    fn propose_candidates(
         &self,
         _request: &ProviderRequest<'_>,
-    ) -> JaymiResult<Option<ContextContribution>> {
-        let Some(id) = self.memory.active_conversation_id() else {
-            return Ok(None);
+    ) -> JaymiResult<Vec<ContextCandidate>> {
+        let Some(section) = self.conversation_section() else {
+            return Ok(Vec::new());
         };
-
-        let section = match self.memory.load_conversation(&id) {
-            Ok(Some(conversation)) => ConversationSection {
-                id: Some(conversation.meta.id.as_str().to_string()),
-                title: conversation.meta.title.clone(),
-                status: Some(conversation.meta.status.as_str().to_string()),
-                project_id: conversation.meta.project_id.clone(),
-                message_count: Some(conversation.messages.len()),
-            },
-            Ok(None) => ConversationSection {
-                id: Some(id),
-                ..ConversationSection::default()
-            },
-            Err(error) => {
-                jaymi_logging::warn(
-                    "context.provider.conversation",
-                    format!("conversation unavailable: {}", error.message()),
-                );
-                ConversationSection {
-                    id: Some(id),
-                    ..ConversationSection::default()
-                }
-            }
-        };
-
-        Ok(Some(ContextContribution {
-            sources: vec![ContextSource::PreviousConversation],
-            conversation: Some(section),
-            ..ContextContribution::default()
-        }))
+        Ok(vec![ContextCandidate::new(
+            self.id(),
+            ContextCandidateKind::Conversation,
+            ContextSource::PreviousConversation,
+            "main",
+            CandidatePayload::Conversation(section),
+            self.sensitivity(),
+            95,
+            self.priority(),
+            true,
+        )])
     }
 }

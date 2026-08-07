@@ -192,12 +192,69 @@ impl IntentTag {
     }
 }
 
+/// Planner-authored environmental resolution summary (Sprint B2.10).
+///
+/// Produced by the Planner from Workspace Intelligence before assemble.
+/// Context fingerprints it; Reasoning renders it. LLMs must not invent
+/// workspace referents — they consume these bindings only.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct EnvironmentalHints {
+    /// True when the request contained workspace deixis.
+    pub needed: bool,
+    /// True when binding was ambiguous or unresolved.
+    pub ambiguous: bool,
+    /// Primary resolved path, when any.
+    pub primary_path: Option<String>,
+    /// Selection preview note, when selection was bound.
+    pub selection_preview: Option<String>,
+    /// Symbol name when known.
+    pub symbol: Option<String>,
+    /// Diagnostic summary when bound.
+    pub diagnostic: Option<String>,
+    /// Human-readable binding lines.
+    pub bindings: Vec<String>,
+    /// Rule ids that matched.
+    pub rules: Vec<String>,
+}
+
+impl EnvironmentalHints {
+    /// True when there is anything to surface to Reasoning.
+    pub fn has_content(&self) -> bool {
+        self.needed
+            && (self.primary_path.is_some()
+                || !self.bindings.is_empty()
+                || self.selection_preview.is_some()
+                || self.symbol.is_some()
+                || self.diagnostic.is_some())
+    }
+
+    /// Fingerprint for cache keys.
+    pub fn fingerprint(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.needed.hash(&mut hasher);
+        self.ambiguous.hash(&mut hasher);
+        self.primary_path.hash(&mut hasher);
+        self.selection_preview.hash(&mut hasher);
+        self.symbol.hash(&mut hasher);
+        self.diagnostic.hash(&mut hasher);
+        for binding in &self.bindings {
+            binding.hash(&mut hasher);
+        }
+        for rule in &self.rules {
+            rule.hash(&mut hasher);
+        }
+        hasher.finish()
+    }
+}
+
 /// Planner-resolved Intent + Capability passed into Context assemble.
 ///
 /// Lives in `jaymi-context` (not planner) so there is no crate cycle.
 /// Intent is the canonical [`IntentId`] — never a free-form parallel label.
 /// Optional [`Self::complexity`] is a Planner-authored conversational class
 /// id (e.g. `greeting`, `coding_question`) — Context never invents it.
+/// Optional [`Self::environmental`] carries deixis bindings (B2.10).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AssembleHints {
     /// Canonical Intent resolved by the Planner (or shared structured classifier).
@@ -206,6 +263,8 @@ pub struct AssembleHints {
     pub capability_ids: Vec<String>,
     /// Planner conversational complexity class id, when assessed.
     pub complexity: Option<String>,
+    /// Environmental resolution bindings (Sprint B2.10), when deixis was present.
+    pub environmental: Option<EnvironmentalHints>,
 }
 
 impl Default for AssembleHints {
@@ -214,6 +273,7 @@ impl Default for AssembleHints {
             intent: IntentId::Unknown,
             capability_ids: Vec::new(),
             complexity: None,
+            environmental: None,
         }
     }
 }
@@ -225,12 +285,19 @@ impl AssembleHints {
             intent,
             capability_ids: capability_ids.into_iter().collect(),
             complexity: None,
+            environmental: None,
         }
     }
 
     /// Attach a Planner complexity class id (does not change Intent / capabilities).
     pub fn with_complexity(mut self, complexity: impl Into<String>) -> Self {
         self.complexity = Some(complexity.into());
+        self
+    }
+
+    /// Attach environmental resolution (does not change Intent / capabilities).
+    pub fn with_environmental(mut self, environmental: EnvironmentalHints) -> Self {
+        self.environmental = Some(environmental);
         self
     }
 
@@ -244,6 +311,9 @@ impl AssembleHints {
         }
         if let Some(complexity) = &self.complexity {
             complexity.hash(&mut hasher);
+        }
+        if let Some(env) = &self.environmental {
+            env.fingerprint().hash(&mut hasher);
         }
         hasher.finish()
     }
@@ -388,9 +458,9 @@ pub enum ComplexityProviderTier {
 pub fn complexity_provider_tier(complexity: &str, provider_id: &str) -> ComplexityProviderTier {
     match complexity {
         "greeting" | "small_talk" => match provider_id {
-            "conversation" => ComplexityProviderTier::Required,
-            "memory" | "search" | "workspace" | "diagnostics" | "project" | "editor"
-            | "git_status" | "workspace_inventory" | "file_summaries" => {
+            "conversation" | "memory" => ComplexityProviderTier::Required,
+            "search" | "workspace" | "diagnostics" | "project" | "editor" | "git_status"
+            | "workspace_inventory" | "file_summaries" | "runtime" | "workspace_memory" => {
                 ComplexityProviderTier::Excluded
             }
             _ => ComplexityProviderTier::Optional,
@@ -401,11 +471,13 @@ pub fn complexity_provider_tier(complexity: &str, provider_id: &str) -> Complexi
         },
         "coding_question" => match provider_id {
             "conversation" | "workspace" | "diagnostics" | "project" | "editor" | "git_status"
-            | "file_summaries" => ComplexityProviderTier::Required,
+            | "file_summaries" | "runtime" | "workspace_memory" => {
+                ComplexityProviderTier::Required
+            }
             _ => ComplexityProviderTier::Optional,
         },
         "project_question" => match provider_id {
-            "conversation" | "project" | "workspace" | "workspace_inventory" => {
+            "conversation" | "project" | "workspace" | "workspace_inventory" | "git_status" => {
                 ComplexityProviderTier::Required
             }
             _ => ComplexityProviderTier::Optional,
@@ -507,7 +579,7 @@ mod tests {
         );
         assert_eq!(
             complexity_provider_tier("greeting", "memory"),
-            ComplexityProviderTier::Excluded
+            ComplexityProviderTier::Required
         );
         assert_eq!(
             complexity_provider_tier("general_question", "memory"),

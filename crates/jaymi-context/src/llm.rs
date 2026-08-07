@@ -27,7 +27,7 @@ use crate::bundle::{
 /// Bump when making breaking changes to [`LlmContext`] field layout or
 /// section ids. Additive fields / extension keys do not require a bump when
 /// consumers treat unknown keys as ignorable.
-pub const LLM_CONTEXT_SCHEMA_VERSION: u32 = 2;
+pub const LLM_CONTEXT_SCHEMA_VERSION: u32 = 7;
 
 /// Canonical section identifiers in stable emission order.
 ///
@@ -66,6 +66,14 @@ pub enum LlmSectionId {
     WorkspaceInventory,
     /// File summaries from completed maintenance.
     FileSummaries,
+    /// Editor intelligence from EditorSnapshot (symbol / hover / references / …).
+    EditorIntelligence,
+    /// Project intelligence from ProjectSnapshot (languages / deps / layout / …).
+    ProjectIntelligence,
+    /// Runtime intelligence from RuntimeSnapshot (terminal / build / test / …).
+    RuntimeIntelligence,
+    /// Workspace activity memory (edits / opens / builds / objective).
+    WorkspaceMemory,
 }
 
 impl LlmSectionId {
@@ -87,10 +95,14 @@ impl LlmSectionId {
             Self::GitStatus => "git_status",
             Self::WorkspaceInventory => "workspace_inventory",
             Self::FileSummaries => "file_summaries",
+            Self::EditorIntelligence => "editor_intelligence",
+            Self::ProjectIntelligence => "project_intelligence",
+            Self::RuntimeIntelligence => "runtime_intelligence",
+            Self::WorkspaceMemory => "workspace_memory",
         }
     }
 
-    /// Fixed section emission order (schema v2).
+    /// Fixed section emission order (schema v7).
     pub const ORDER: &'static [Self] = &[
         Self::UserRequest,
         Self::Conversation,
@@ -107,6 +119,10 @@ impl LlmSectionId {
         Self::GitStatus,
         Self::WorkspaceInventory,
         Self::FileSummaries,
+        Self::EditorIntelligence,
+        Self::ProjectIntelligence,
+        Self::RuntimeIntelligence,
+        Self::WorkspaceMemory,
     ];
 }
 
@@ -187,6 +203,9 @@ pub struct LlmProviderMetadata {
     /// Budget accounting when recorded.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget: Option<LlmBudgetView>,
+    /// Environmental resolution bindings from Planner (Sprint B2.10).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub environmental: Option<LlmEnvironmentalResolution>,
 }
 
 impl LlmProviderMetadata {
@@ -199,6 +218,41 @@ impl LlmProviderMetadata {
                 .collect(),
             notes: meta.notes.clone(),
             budget: meta.budget.as_ref().map(LlmBudgetView::from_report),
+            environmental: meta
+                .environmental
+                .as_ref()
+                .filter(|env| env.needed)
+                .map(LlmEnvironmentalResolution::from_hints),
+        }
+    }
+}
+
+/// Planner-resolved workspace deixis bindings for the model (never invent paths).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LlmEnvironmentalResolution {
+    pub ambiguous: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub primary_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection_preview: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub diagnostic: Option<String>,
+    pub bindings: Vec<String>,
+    pub rules: Vec<String>,
+}
+
+impl LlmEnvironmentalResolution {
+    fn from_hints(hints: &crate::EnvironmentalHints) -> Self {
+        Self {
+            ambiguous: hints.ambiguous,
+            primary_path: hints.primary_path.clone(),
+            selection_preview: hints.selection_preview.clone(),
+            symbol: hints.symbol.clone(),
+            diagnostic: hints.diagnostic.clone(),
+            bindings: hints.bindings.clone(),
+            rules: hints.rules.clone(),
         }
     }
 }
@@ -264,6 +318,10 @@ pub enum LlmSectionContent {
     GitStatus(LlmGitStatus),
     WorkspaceInventory(LlmWorkspaceInventory),
     FileSummaries(LlmFileSummaries),
+    EditorIntelligence(LlmEditorIntelligence),
+    ProjectIntelligence(LlmProjectIntelligence),
+    RuntimeIntelligence(LlmRuntimeIntelligence),
+    WorkspaceMemory(LlmWorkspaceMemory),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -453,7 +511,27 @@ pub struct LlmGitStatus {
     pub modified_count: usize,
     pub staged_count: usize,
     pub untracked_count: usize,
+    pub conflict_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_sha: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_short: Option<String>,
+    pub dirty_paths: Vec<String>,
+    pub staged_paths: Vec<String>,
+    pub untracked_paths: Vec<String>,
+    pub conflict_paths: Vec<String>,
+    pub recent_commits: Vec<LlmGitCommit>,
     pub sample_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LlmGitCommit {
+    pub short_sha: String,
+    pub subject: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relative_time: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -479,6 +557,102 @@ pub struct LlmFileSummaryEntry {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LlmFileSummaries {
     pub entries: Vec<LlmFileSummaryEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LlmEditorSymbol {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LlmEditorReference {
+    pub path: String,
+    pub start_line: u32,
+    pub start_column: u32,
+    pub end_line: u32,
+    pub end_column: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LlmEditorHover {
+    pub contents: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LlmEditorCodeLens {
+    pub title: String,
+    pub start_line: u32,
+    pub start_column: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LlmEditorIntelligence {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub symbol: Option<LlmEditorSymbol>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enclosing_function: Option<LlmEditorSymbol>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enclosing_type: Option<LlmEditorSymbol>,
+    pub semantic_token_count: usize,
+    pub references: Vec<LlmEditorReference>,
+    pub code_lens: Vec<LlmEditorCodeLens>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hover: Option<LlmEditorHover>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LlmProjectIntelligence {
+    pub languages: Vec<String>,
+    pub frameworks: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub package_manager: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub build_system: Option<String>,
+    pub dependency_top_level: Vec<String>,
+    pub dependency_direct_count: usize,
+    pub workspace_members: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cargo_package: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub npm_package: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository_branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub layout_shape: Option<String>,
+    pub top_level_dirs: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LlmRuntimeIntelligence {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_cargo_check: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_build: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub latest_tests: Option<String>,
+    pub session_count: usize,
+    pub alive_count: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_command: Option<String>,
+    pub output_tail: String,
+    pub running: Vec<String>,
+    pub recent_failures: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct LlmWorkspaceMemory {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub coding_objective: Option<String>,
+    pub recent_edits: Vec<String>,
+    pub recently_opened: Vec<String>,
+    pub recent_builds: Vec<String>,
+    pub recent_failures: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -723,6 +897,81 @@ fn section_for(id: LlmSectionId, bundle: &ContextBundle) -> LlmContextSection {
                 },
             )
         }
+        LlmSectionId::EditorIntelligence => {
+            let section = bundle.editor_intelligence();
+            let present = section.symbol.is_some()
+                || section.enclosing_function.is_some()
+                || section.enclosing_type.is_some()
+                || !section.semantic_tokens.is_empty()
+                || !section.references.is_empty()
+                || !section.code_lens.is_empty()
+                || section.hover.is_some();
+            (
+                present,
+                if present {
+                    LlmSectionContent::EditorIntelligence(map_editor_intelligence(section))
+                } else {
+                    LlmSectionContent::Empty
+                },
+            )
+        }
+        LlmSectionId::ProjectIntelligence => {
+            let section = bundle.project_intelligence();
+            let present = !section.languages.is_empty()
+                || !section.frameworks.is_empty()
+                || section.package_manager.is_some()
+                || section.build_system.is_some()
+                || !section.dependency_summary.top_level.is_empty()
+                || section.cargo_package.is_some()
+                || section.npm_package.is_some()
+                || section.repository_branch.is_some()
+                || section.layout_shape.is_some()
+                || !section.top_level_dirs.is_empty();
+            (
+                present,
+                if present {
+                    LlmSectionContent::ProjectIntelligence(map_project_intelligence(section))
+                } else {
+                    LlmSectionContent::Empty
+                },
+            )
+        }
+        LlmSectionId::RuntimeIntelligence => {
+            let section = bundle.runtime_intelligence();
+            let present = section.latest_cargo_check.is_some()
+                || section.latest_build.is_some()
+                || section.latest_tests.is_some()
+                || section.session_count > 0
+                || section.alive_count > 0
+                || section.last_command.is_some()
+                || !section.output_tail.is_empty()
+                || !section.running.is_empty()
+                || !section.recent_failures.is_empty();
+            (
+                present,
+                if present {
+                    LlmSectionContent::RuntimeIntelligence(map_runtime_intelligence(section))
+                } else {
+                    LlmSectionContent::Empty
+                },
+            )
+        }
+        LlmSectionId::WorkspaceMemory => {
+            let section = bundle.workspace_memory();
+            let present = section.coding_objective.is_some()
+                || !section.recent_edits.is_empty()
+                || !section.recently_opened.is_empty()
+                || !section.recent_builds.is_empty()
+                || !section.recent_failures.is_empty();
+            (
+                present,
+                if present {
+                    LlmSectionContent::WorkspaceMemory(map_workspace_memory(section))
+                } else {
+                    LlmSectionContent::Empty
+                },
+            )
+        }
     };
 
     LlmContextSection {
@@ -753,6 +1002,10 @@ fn sources_for_section(id: LlmSectionId) -> Vec<String> {
         LlmSectionId::GitStatus => &[ContextSource::GitStatus],
         LlmSectionId::WorkspaceInventory => &[ContextSource::WorkspaceInventory],
         LlmSectionId::FileSummaries => &[ContextSource::FileSummaries],
+        LlmSectionId::EditorIntelligence => &[ContextSource::EditorIntelligence],
+        LlmSectionId::ProjectIntelligence => &[ContextSource::ProjectIntelligence],
+        LlmSectionId::RuntimeIntelligence => &[ContextSource::RuntimeIntelligence],
+        LlmSectionId::WorkspaceMemory => &[ContextSource::WorkspaceMemory],
     };
     let mut labels: Vec<String> = sources.iter().map(|s| s.as_str().to_string()).collect();
     labels.sort();
@@ -943,6 +1196,23 @@ fn map_git_status(section: &GitStatusSection) -> LlmGitStatus {
         modified_count: section.modified_count,
         staged_count: section.staged_count,
         untracked_count: section.untracked_count,
+        conflict_count: section.conflict_count,
+        head_sha: section.head_sha.clone(),
+        head_short: section.head_short.clone(),
+        dirty_paths: section.dirty_paths.clone(),
+        staged_paths: section.staged_paths.clone(),
+        untracked_paths: section.untracked_paths.clone(),
+        conflict_paths: section.conflict_paths.clone(),
+        recent_commits: section
+            .recent_commits
+            .iter()
+            .map(|commit| LlmGitCommit {
+                short_sha: commit.short_sha.clone(),
+                subject: commit.subject.clone(),
+                author: commit.author.clone(),
+                relative_time: commit.relative_time.clone(),
+            })
+            .collect(),
         sample_paths: section.sample_paths.clone(),
     }
 }
@@ -969,6 +1239,92 @@ fn map_file_summaries(section: &FileSummariesSection) -> LlmFileSummaries {
                 summary: entry.summary.clone(),
             })
             .collect(),
+    }
+}
+
+fn map_editor_symbol(symbol: &crate::EditorSymbol) -> LlmEditorSymbol {
+    LlmEditorSymbol {
+        name: symbol.name.clone(),
+        kind: symbol.kind.clone(),
+        detail: symbol.detail.clone(),
+    }
+}
+
+fn map_editor_intelligence(section: &crate::EditorIntelligenceSection) -> LlmEditorIntelligence {
+    LlmEditorIntelligence {
+        symbol: section.symbol.as_ref().map(map_editor_symbol),
+        enclosing_function: section.enclosing_function.as_ref().map(map_editor_symbol),
+        enclosing_type: section.enclosing_type.as_ref().map(map_editor_symbol),
+        semantic_token_count: section.semantic_tokens.len(),
+        references: section
+            .references
+            .iter()
+            .map(|reference| LlmEditorReference {
+                path: reference.path.clone(),
+                start_line: reference.range.start_line,
+                start_column: reference.range.start_column,
+                end_line: reference.range.end_line,
+                end_column: reference.range.end_column,
+            })
+            .collect(),
+        code_lens: section
+            .code_lens
+            .iter()
+            .map(|lens| LlmEditorCodeLens {
+                title: lens.title.clone(),
+                start_line: lens.range.start_line,
+                start_column: lens.range.start_column,
+                command: lens.command.clone(),
+            })
+            .collect(),
+        hover: section.hover.as_ref().map(|hover| LlmEditorHover {
+            contents: hover.contents.clone(),
+        }),
+    }
+}
+
+fn map_project_intelligence(
+    section: &crate::ProjectIntelligenceSection,
+) -> LlmProjectIntelligence {
+    LlmProjectIntelligence {
+        languages: section.languages.clone(),
+        frameworks: section.frameworks.clone(),
+        package_manager: section.package_manager.clone(),
+        build_system: section.build_system.clone(),
+        dependency_top_level: section.dependency_summary.top_level.clone(),
+        dependency_direct_count: section.dependency_summary.direct_count,
+        workspace_members: section.dependency_summary.workspace_members.clone(),
+        cargo_package: section.cargo_package.clone(),
+        npm_package: section.npm_package.clone(),
+        repository_branch: section.repository_branch.clone(),
+        layout_shape: section.layout_shape.clone(),
+        top_level_dirs: section.top_level_dirs.clone(),
+    }
+}
+
+fn map_runtime_intelligence(
+    section: &crate::RuntimeIntelligenceSection,
+) -> LlmRuntimeIntelligence {
+    LlmRuntimeIntelligence {
+        latest_cargo_check: section.latest_cargo_check.clone(),
+        latest_build: section.latest_build.clone(),
+        latest_tests: section.latest_tests.clone(),
+        session_count: section.session_count,
+        alive_count: section.alive_count,
+        last_command: section.last_command.clone(),
+        output_tail: section.output_tail.clone(),
+        running: section.running.clone(),
+        recent_failures: section.recent_failures.clone(),
+    }
+}
+
+fn map_workspace_memory(section: &crate::WorkspaceMemorySection) -> LlmWorkspaceMemory {
+    LlmWorkspaceMemory {
+        coding_objective: section.coding_objective.clone(),
+        recent_edits: section.recent_edits.clone(),
+        recently_opened: section.recently_opened.clone(),
+        recent_builds: section.recent_builds.clone(),
+        recent_failures: section.recent_failures.clone(),
     }
 }
 
@@ -1042,6 +1398,7 @@ mod tests {
                     summaries: vec![],
                 }),
                 policy: None,
+                environmental: None,
             })
             .build()
     }

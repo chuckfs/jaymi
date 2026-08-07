@@ -74,6 +74,7 @@ mod tests {
                 view: EditorViewState {
                     scroll_top: 12.0,
                     cursor: EditorCursor { line: 2, column: 5 },
+                    selection: Default::default(),
                     folded_regions: vec![FoldedRegion {
                         start_line: 0,
                         end_line: 3,

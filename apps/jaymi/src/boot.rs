@@ -16,9 +16,9 @@ use jaymi_capabilities::{
     build_explorer_tree, is_editable_coding_extension, workspace_expansion_for, Capability,
     CapabilityDiscoveryReport, CapabilityEngine, CapabilityEngineApi, CapabilityInspectorReport,
     CapabilityState, CodingBottomTab, CodingState, CreationState, DiagnosticState, EditorPaneId,
-    EditorSettings, ExplorerPending, ExplorerStatus, FoldedRegion, GitFileEntry, GitStatusState,
-    ProblemIssue, ProblemSeverity, ProblemsCollectContext, ResearchState, SearchResultEntry,
-    SplitDirection, WorkspaceKind,
+    EditorSelection, EditorSettings, ExplorerPending, ExplorerStatus, FoldedRegion, GitFileEntry,
+    GitStatusState, ProblemIssue, ProblemSeverity, ProblemsCollectContext, ResearchState,
+    SearchResultEntry, SplitDirection, WorkspaceKind,
 };
 
 use jaymi_config::{Config, ReasoningPreferences};
@@ -78,7 +78,7 @@ use crate::experience::{ConversationTurn, ExperienceSession};
 use crate::session_cache::SessionCache;
 use crate::context_maintenance::{
     merge_completed_into_session, ContextMaintenance, MaintenanceJobRequest, MaintenanceKind,
-    MaintenanceUiUpdate,
+    MaintenanceUiUpdate, WorkspaceSnapshotCaptureInput,
 };
 
 /// In-flight pumpable conversational generation (Sprint B1.11).
@@ -169,7 +169,8 @@ pub struct Application {
     active_generation: Mutex<Option<GenerationSlot>>,
     /// Session-scoped cache for inexpensive immutable snapshots (not conversation).
     session_cache: Mutex<SessionCache>,
-    /// Background context maintenance (git / inventory / diagnostics / file summaries).
+    /// Background context maintenance (git / inventory / diagnostics / file
+    /// summaries / ambient WorkspaceSnapshot).
     context_maintenance: Arc<ContextMaintenance>,
 }
 
@@ -590,17 +591,18 @@ impl Application {
 
     /// Sync live UI / engine state into the Context Engine before handle.
     ///
-    /// Pushes a full [`ContextSessionInputs`] snapshot (workspace, editor,
-    /// Push a live host session snapshot into the Context Engine.
-    ///
     /// **Required before every Planner path that assembles context** — including
     /// conversational generation (`begin_generation` / streaming). This is the
-    /// sole Application preparation entrypoint: workspace, Coding editor,
-    /// diagnostics, permissions, project-open, search hits, plus the latest
-    /// **completed** background maintenance snapshots (git / inventory /
-    /// diagnostics / file summaries). Never waits on in-flight maintenance.
-    /// Request-selected capabilities are **not** pushed here; the Planner supplies
-    /// them via [`jaymi_context::AssembleHints`].
+    /// sole Application preparation entrypoint.
+    ///
+    /// Merges the latest **completed** ambient maintenance snapshots (git /
+    /// inventory / diagnostics / file summaries / WorkspaceSnapshot /
+    /// EditorSnapshot / ProjectSnapshot / RuntimeSnapshot). Never waits on
+    /// in-flight maintenance. Never rebuilds a WorkspaceSnapshot or probes
+    /// toolchain marker files here (Sprint B2.13.2) — if none completed yet,
+    /// schedules ambient refresh. Request-selected capabilities are **not**
+    /// pushed here; the Planner supplies them via
+    /// [`jaymi_context::AssembleHints`].
     ///
     /// Future Workspace Intelligence enrichments land here so conversation and
     /// tool-backed requests share one preparation path.
@@ -619,19 +621,8 @@ impl Application {
             .with_coding_state(|coding| coding.clone())
             .ok();
 
-        let (project_open, project_indexed_documents) = self
-            .container
-            .resolve::<Arc<ProjectEngine>>()
-            .map(|projects| {
-                let open = projects.open_project_id().is_some();
-                let indexed = projects
-                    .project_context(None)
-                    .ok()
-                    .flatten()
-                    .map(|ctx| ctx.search_index.indexed_file_count);
-                (open, indexed)
-            })
-            .unwrap_or((false, None));
+        let (project_open, project_indexed_documents, project_facts) =
+            self.workspace_snapshot_host_facts(coding.as_ref());
 
         let permissions = self.container.resolve::<Arc<PermissionEngine>>()?;
         let mut inputs = crate::context_session::build_context_session_inputs(
@@ -640,25 +631,112 @@ impl Application {
             permissions.as_ref(),
             project_open,
             project_indexed_documents,
+            project_facts,
         );
         let completed = self.context_maintenance.latest_completed();
+        // Prefer the latest **completed** ambient snapshots. WorkspaceSnapshot is
+        // never rebuilt here — ambient maintenance owns observation (including
+        // observe_toolchain). EditorSnapshot may still bootstrap from in-memory
+        // CodingState when no completed editor exists.
+        let bootstrapped_editor =
+            completed.editor_snapshot.is_none() && inputs.editor_snapshot.is_some();
+        let needs_workspace_refresh = completed.workspace_snapshot.is_none();
         merge_completed_into_session(&mut inputs, &completed);
+        if bootstrapped_editor {
+            if let Some(snapshot) = inputs.editor_snapshot.clone() {
+                self.context_maintenance.publish_editor_snapshot(snapshot);
+            }
+        }
+        if needs_workspace_refresh {
+            // Non-blocking: first conversation may assemble without a snapshot
+            // until the ambient job completes; subsequent prepares merge it.
+            let _ = self.schedule_workspace_snapshot_refresh();
+        }
+        // Keep snapshot branch aligned with the latest completed git contribution.
+        if let Some(snapshot) = inputs.workspace_snapshot.as_mut() {
+            if snapshot.active_branch.is_none() {
+                snapshot.active_branch = inputs.git_status.branch.clone();
+            }
+        }
         context.set_session_inputs(inputs);
         Ok(())
+    }
+
+    /// Project / branch facts for WorkspaceSnapshot capture (shared by prepare + ambient).
+    fn workspace_snapshot_host_facts(
+        &self,
+        coding: Option<&CodingState>,
+    ) -> (bool, Option<u64>, crate::context_session::WorkspaceSnapshotHostFacts) {
+        self.container
+            .resolve::<Arc<ProjectEngine>>()
+            .map(|projects| {
+                let open_id = projects.open_project_id();
+                let open = open_id.is_some();
+                let ctx = projects.project_context(None).ok().flatten();
+                let indexed = ctx
+                    .as_ref()
+                    .map(|ctx| ctx.search_index.indexed_file_count);
+                let (name, root) = ctx
+                    .map(|ctx| {
+                        (
+                            Some(ctx.project.name.clone()),
+                            ctx.project
+                                .root_directory
+                                .as_ref()
+                                .map(|path| path.display().to_string()),
+                        )
+                    })
+                    .unwrap_or((None, None));
+                (
+                    open,
+                    indexed,
+                    crate::context_session::WorkspaceSnapshotHostFacts {
+                        project_id: open_id,
+                        project_name: name,
+                        project_root: root.or_else(|| {
+                            coding.and_then(|state| state.explorer.project_root.clone())
+                        }),
+                        active_branch: coding
+                            .and_then(|state| state.git.as_ref())
+                            .and_then(|git| git.branch.clone())
+                            .or_else(|| {
+                                self.context_maintenance
+                                    .latest_completed()
+                                    .git_status
+                                    .as_ref()
+                                    .and_then(|git| git.branch.clone())
+                            }),
+                    },
+                )
+            })
+            .unwrap_or((
+                false,
+                None,
+                crate::context_session::WorkspaceSnapshotHostFacts {
+                    project_root: coding.and_then(|state| state.explorer.project_root.clone()),
+                    active_branch: coding
+                        .and_then(|state| state.git.as_ref())
+                        .and_then(|git| git.branch.clone()),
+                    ..Default::default()
+                },
+            ))
     }
 
     /// Drain completed background maintenance into Coding UI + snapshot store.
     ///
     /// Non-blocking. Call from the UI frame and before conversational prepare.
+    /// Also drains coalesced WorkspaceSnapshot reschedules after inflight jobs.
     pub fn pump_context_maintenance(&self) -> JaymiResult<usize> {
         let updates = self.context_maintenance.pump();
         let count = updates.len();
+        let mut refresh_workspace_snapshot = false;
         for update in updates {
             match update {
                 MaintenanceUiUpdate::Git(git) => {
                     let _ = self.with_coding_state(|coding| {
                         coding.git = Some(git.clone());
                     });
+                    refresh_workspace_snapshot = true;
                 }
                 MaintenanceUiUpdate::Explorer {
                     root,
@@ -682,8 +760,23 @@ impl Application {
                     let _ = self.with_coding_state(|coding| {
                         coding.problems = issues;
                     });
+                    refresh_workspace_snapshot = true;
                 }
             }
+        }
+        if refresh_workspace_snapshot
+            || self
+                .context_maintenance
+                .take_workspace_snapshot_reschedule()
+            || self.context_maintenance.take_editor_snapshot_reschedule()
+        {
+            self.schedule_coding_observation_refresh();
+        }
+        if self.context_maintenance.take_project_snapshot_reschedule() {
+            let _ = self.schedule_project_snapshot_refresh();
+        }
+        if self.context_maintenance.take_runtime_snapshot_reschedule() {
+            let _ = self.schedule_runtime_snapshot_refresh();
         }
         Ok(count)
     }
@@ -694,7 +787,55 @@ impl Application {
         self.context_maintenance.schedule(request)
     }
 
-    /// Schedule the coding-open maintenance set (inventory / git / diagnostics / summaries).
+    /// Schedule ambient [`jaymi_context::WorkspaceSnapshot`] refresh (Sprint B2.2).
+    ///
+    /// Observation only — never rebuilds a ContextBundle, never reasons, never
+    /// calls LLMs, never executes tools. Conversation prepare merges the latest
+    /// completed snapshot without waiting.
+    pub fn schedule_workspace_snapshot_refresh(&self) -> bool {
+        self.schedule_context_maintenance(MaintenanceKind::WorkspaceSnapshot)
+    }
+
+    /// Schedule ambient [`jaymi_context::EditorSnapshot`] refresh (Sprint B2.3).
+    ///
+    /// Read-only observation (± optional LspProvider enrichment). Never rebuilds
+    /// a ContextBundle, never reasons, never calls LLMs, never executes the
+    /// language_server tool. Planner remains the sole interactive LSP owner.
+    pub fn schedule_editor_snapshot_refresh(&self) -> bool {
+        self.schedule_context_maintenance(MaintenanceKind::EditorSnapshot)
+    }
+
+    /// Schedule ambient [`jaymi_context::ProjectSnapshot`] refresh (Sprint B2.4).
+    ///
+    /// Marker / shallow FS observation only — never rebuilds a ContextBundle,
+    /// never reasons, never calls LLMs, never executes tools. Planner never
+    /// scans projects; Context providers read the completed session snapshot.
+    pub fn schedule_project_snapshot_refresh(&self) -> bool {
+        self.schedule_context_maintenance(MaintenanceKind::ProjectSnapshot)
+    }
+
+    /// Schedule ambient [`jaymi_context::RuntimeSnapshot`] refresh (Sprint B2.6).
+    ///
+    /// Observes Coding terminal sessions (+ TerminalProvider alive list). Never
+    /// re-runs cargo / tests, never rebuilds a ContextBundle, never reasons,
+    /// never calls LLMs. Conversation never waits for runtime.
+    pub fn schedule_runtime_snapshot_refresh(&self) -> bool {
+        self.schedule_context_maintenance(MaintenanceKind::RuntimeSnapshot)
+    }
+
+    /// Schedule ambient Coding observation refreshes (workspace + editor).
+    ///
+    /// Project intelligence is scheduled separately on project / Coding open so
+    /// cursor thrash does not re-walk marker files. Runtime intelligence is
+    /// scheduled on terminal activity / Coding open.
+    pub fn schedule_coding_observation_refresh(&self) {
+        let _ = self.schedule_workspace_snapshot_refresh();
+        let _ = self.schedule_editor_snapshot_refresh();
+    }
+
+    /// Schedule the coding-open maintenance set (inventory / git / diagnostics /
+    /// summaries / WorkspaceSnapshot / EditorSnapshot / ProjectSnapshot /
+    /// RuntimeSnapshot).
     pub fn schedule_coding_context_maintenance(&self) {
         let request = self.maintenance_job_request(MaintenanceKind::WorkspaceInventory);
         self.context_maintenance.schedule_coding_open(request);
@@ -726,13 +867,162 @@ impl Application {
         // can clone one payload into the Diagnostics job without a second round-trip.
         let problems_context = Some(self.build_problems_context());
         let problems_registry = self.problems_registry().ok();
+        let workspace_snapshot_input = Some(self.workspace_snapshot_capture_input());
+        let editor_snapshot_input = Some(self.editor_snapshot_capture_input());
+        let project_snapshot_input = Some(self.project_snapshot_capture_input());
+        let runtime_snapshot_input = Some(self.runtime_snapshot_capture_input());
         MaintenanceJobRequest {
             kind,
             project_root,
             open_file_paths,
             problems_context,
             problems_registry,
+            workspace_snapshot_input,
+            editor_snapshot_input,
+            project_snapshot_input,
+            runtime_snapshot_input,
         }
+    }
+
+    fn workspace_snapshot_capture_input(&self) -> WorkspaceSnapshotCaptureInput {
+        let workspace_kind = self
+            .experience()
+            .ok()
+            .and_then(|session| session.active_workspace_kind())
+            .map(|kind| kind.id().to_string());
+        let coding = self.with_coding_state(|coding| coding.clone()).ok();
+        let (_, _, facts) = self.workspace_snapshot_host_facts(coding.as_ref());
+        WorkspaceSnapshotCaptureInput {
+            workspace_kind,
+            coding,
+            facts,
+        }
+    }
+
+    fn editor_snapshot_capture_input(&self) -> crate::context_maintenance::EditorSnapshotCaptureInput {
+        let coding = self.with_coding_state(|coding| coding.clone()).ok();
+        let project_root = self.active_project_root_path().or_else(|| {
+            coding
+                .as_ref()
+                .and_then(|state| state.explorer.project_root.as_ref().map(PathBuf::from))
+        });
+        let lsp = self
+            .container
+            .resolve::<Arc<LspProvider>>()
+            .ok()
+            .map(|provider| Arc::clone(&provider));
+        crate::context_maintenance::EditorSnapshotCaptureInput {
+            coding,
+            lsp,
+            project_root,
+        }
+    }
+
+    fn project_snapshot_capture_input(
+        &self,
+    ) -> crate::context_maintenance::ProjectSnapshotCaptureInput {
+        let project_root = self.active_project_root_path().or_else(|| {
+            self.with_coding_state(|coding| {
+                coding
+                    .explorer
+                    .project_root
+                    .as_ref()
+                    .map(PathBuf::from)
+            })
+            .ok()
+            .flatten()
+        });
+        let facts = self.project_snapshot_host_facts(project_root.as_deref());
+        crate::context_maintenance::ProjectSnapshotCaptureInput {
+            project_root,
+            facts,
+        }
+    }
+
+    /// Host-observed Coding + TerminalProvider facts for ambient RuntimeSnapshot.
+    ///
+    /// Never re-runs cargo / tests. TerminalProvider owns live session updates;
+    /// this only clones observed state for the maintenance worker.
+    fn runtime_snapshot_capture_input(
+        &self,
+    ) -> crate::context_maintenance::RuntimeSnapshotCaptureInput {
+        let coding = self.with_coding_state(|coding| coding.clone()).ok();
+        let alive_ids: std::collections::HashSet<String> = self
+            .container
+            .resolve::<Arc<TerminalProvider>>()
+            .ok()
+            .and_then(|terminal| terminal.list_sessions().ok())
+            .map(|sessions| {
+                sessions
+                    .into_iter()
+                    .filter(|session| session.alive)
+                    .map(|session| session.id)
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let (active_session_id, sessions) = match coding.as_ref() {
+            Some(coding) => {
+                let sessions = coding
+                    .terminal_sessions
+                    .iter()
+                    .map(|session| jaymi_context::RuntimeTerminalSessionFact {
+                        id: session.id.clone(),
+                        title: session.title.clone(),
+                        cwd: session.cwd.clone(),
+                        last_command: session.last_command.clone(),
+                        output: session.output.clone(),
+                        history: session.history.clone(),
+                        alive: alive_ids.contains(&session.id),
+                    })
+                    .collect();
+                (coding.active_terminal_id.clone(), sessions)
+            }
+            None => (None, Vec::new()),
+        };
+
+        crate::context_maintenance::RuntimeSnapshotCaptureInput {
+            facts: jaymi_context::RuntimeSnapshotHostFacts {
+                active_session_id,
+                sessions,
+            },
+        }
+    }
+
+    /// Lightweight Project Engine identity for ambient ProjectSnapshot (no FS).
+    fn project_snapshot_host_facts(
+        &self,
+        project_root: Option<&Path>,
+    ) -> jaymi_context::ProjectSnapshotHostFacts {
+        self.container
+            .resolve::<Arc<ProjectEngine>>()
+            .ok()
+            .and_then(|projects| {
+                let open_id = projects.open_project_id()?;
+                let project = projects.get(&open_id).ok().flatten()?;
+                Some(jaymi_context::ProjectSnapshotHostFacts {
+                    project_id: Some(open_id),
+                    name: Some(project.name),
+                    description: {
+                        let trimmed = project.description.trim();
+                        if trimmed.is_empty() {
+                            None
+                        } else {
+                            Some(project.description)
+                        }
+                    },
+                    root_directory: project
+                        .root_directory
+                        .as_ref()
+                        .map(|path| path.display().to_string())
+                        .or_else(|| project_root.map(|path| path.display().to_string())),
+                    project_type: Some(project.project_type.as_str().to_string()),
+                })
+            })
+            .unwrap_or_else(|| jaymi_context::ProjectSnapshotHostFacts {
+                root_directory: project_root.map(|path| path.display().to_string()),
+                ..Default::default()
+            })
     }
 
     /// Route a user request through the Planner (Intent → Capability → Context assemble).
@@ -1168,15 +1458,24 @@ impl Application {
     /// from Application.
     pub fn open_project(&self, project_id: &str) -> JaymiResult<ProjectContext> {
         let response = self.handle(UserRequest::open_project(project_id))?;
-        response
-            .project()
-            .cloned()
+        self.schedule_coding_observation_refresh();
+        let _ = self.schedule_project_snapshot_refresh();
+        let _ = self.schedule_runtime_snapshot_refresh();
+        if let Some(context) = response.project().cloned() {
+            return Ok(context);
+        }
+        // B2.4: ordinary assemble omits heavy ProjectContext; project-session
+        // intents still attach it. Fall back to Project Engine if the bundle
+        // accessor is empty so the Application open API stays honest.
+        self.container
+            .resolve::<Arc<ProjectEngine>>()?
+            .project_context(Some(project_id))?
             .ok_or_else(|| {
-            JaymiError::new(format!(
-                "open project did not return context: {}",
-                response.content
-            ))
-        })
+                JaymiError::new(format!(
+                    "open project did not return context: {}",
+                    response.content
+                ))
+            })
     }
 
     /// Switch the active workspace to another project by id.
@@ -1190,6 +1489,12 @@ impl Application {
     /// Does not clear the active conversation.
     pub fn close_project(&self) -> JaymiResult<Option<Project>> {
         let response = self.handle(UserRequest::close_project())?;
+        self.schedule_coding_observation_refresh();
+        self.context_maintenance
+            .publish_project_snapshot(jaymi_context::ProjectSnapshot::empty());
+        self.context_maintenance
+            .publish_runtime_snapshot(jaymi_context::RuntimeSnapshot::empty());
+        let _ = self.with_coding_state(|coding| coding.clear_workspace_activity());
         Ok(response.closed_project)
     }
 
@@ -2065,6 +2370,7 @@ impl Application {
     pub fn open_coding_file(&self, path: &str) -> JaymiResult<()> {
         let existed = self.with_coding_state(|coding| promote_and_focus_existing(coding, path))?;
         if existed {
+            self.schedule_coding_observation_refresh();
             return Ok(());
         }
 
@@ -2077,6 +2383,7 @@ impl Application {
             coding.open_permanent(path, text.clone());
         })?;
         let _ = self.coding_lsp_did_open(path, &text);
+        self.schedule_coding_observation_refresh();
         Ok(())
     }
 
@@ -2087,6 +2394,7 @@ impl Application {
     pub fn open_coding_file_preview(&self, path: &str) -> JaymiResult<()> {
         let focused = self.with_coding_state(|coding| coding.focus_tab(path))?;
         if focused {
+            self.schedule_coding_observation_refresh();
             return Ok(());
         }
 
@@ -2098,6 +2406,7 @@ impl Application {
             coding.open_preview(path, text.clone());
         })?;
         let _ = self.coding_lsp_did_open(path, &text);
+        self.schedule_coding_observation_refresh();
         Ok(())
     }
 
@@ -2123,6 +2432,7 @@ impl Application {
         if !focused {
             return Err(JaymiError::new(format!("no open tab for {path}")));
         }
+        self.schedule_coding_observation_refresh();
         Ok(())
     }
 
@@ -2132,6 +2442,7 @@ impl Application {
         if !closed {
             return Err(JaymiError::new(format!("no open tab for {path}")));
         }
+        self.schedule_coding_observation_refresh();
         Ok(())
     }
 
@@ -2141,6 +2452,7 @@ impl Application {
             coding.set_tab_content(path, content.clone());
         })?;
         let _ = self.coding_lsp_did_change(path, &content);
+        self.schedule_coding_observation_refresh();
         Ok(())
     }
 
@@ -2155,7 +2467,22 @@ impl Application {
     pub fn set_coding_tab_cursor(&self, path: &str, line: u32, column: u32) -> JaymiResult<()> {
         self.with_coding_state(|coding| {
             coding.set_cursor(path, line, column);
-        })
+        })?;
+        self.schedule_coding_observation_refresh();
+        Ok(())
+    }
+
+    /// Persist text selection for a tab (Monaco IPC → CodingState → ambient snapshots).
+    pub fn set_coding_tab_selection(
+        &self,
+        path: &str,
+        selection: EditorSelection,
+    ) -> JaymiResult<()> {
+        self.with_coding_state(|coding| {
+            coding.set_selection(path, selection);
+        })?;
+        self.schedule_coding_observation_refresh();
+        Ok(())
     }
 
     /// Open a Find in Files / Quick Open result in the Coding Editor.
@@ -2175,6 +2502,9 @@ impl Application {
         self.open_coding_file(path)?;
         if let (Some(line), Some(column)) = (line, column) {
             self.set_coding_tab_cursor(path, line, column)?;
+            // Clear any prior span so Environmental Resolution does not bind
+            // stale selected text after a jump-to-match.
+            self.set_coding_tab_selection(path, EditorSelection::caret(line, column))?;
         }
         Ok(())
     }
@@ -2321,6 +2651,7 @@ impl Application {
                 "no open tab for {path} in pane {pane_id}"
             )));
         }
+        self.schedule_coding_observation_refresh();
         Ok(())
     }
 
@@ -2336,6 +2667,7 @@ impl Application {
                 "no open tab for {path} in pane {pane_id}"
             )));
         }
+        self.schedule_coding_observation_refresh();
         Ok(())
     }
 
@@ -2353,6 +2685,7 @@ impl Application {
             coding.set_tab_content(path, content.clone());
         })?;
         let _ = self.coding_lsp_did_change(path, &content);
+        self.schedule_coding_observation_refresh();
         Ok(())
     }
 
@@ -2385,7 +2718,27 @@ impl Application {
                 line,
                 column,
             );
-        })
+        })?;
+        self.schedule_coding_observation_refresh();
+        Ok(())
+    }
+
+    /// Persist text selection for a tab in a specific pane.
+    pub fn set_coding_tab_selection_in_pane(
+        &self,
+        pane_id: &str,
+        path: &str,
+        selection: EditorSelection,
+    ) -> JaymiResult<()> {
+        self.with_coding_state(|coding| {
+            coding.editors.set_selection_in_pane(
+                &EditorPaneId(pane_id.to_string()),
+                path,
+                selection,
+            );
+        })?;
+        self.schedule_coding_observation_refresh();
+        Ok(())
     }
 
     /// Persist folded regions for a tab in a specific pane (workspace-owned; not Monaco).
@@ -2422,6 +2775,7 @@ impl Application {
                 "cannot close pane {pane_id} (missing or the only pane)"
             )));
         }
+        self.schedule_coding_observation_refresh();
         Ok(())
     }
 
@@ -2435,6 +2789,7 @@ impl Application {
         if !focused {
             return Err(JaymiError::new(format!("no such editor pane {pane_id}")));
         }
+        self.schedule_coding_observation_refresh();
         Ok(())
     }
 
@@ -2502,6 +2857,7 @@ impl Application {
             coding.mark_tab_clean(path);
         })?;
         let _ = self.coding_lsp_did_change(path, &content);
+        self.schedule_coding_observation_refresh();
         Ok(())
     }
 
@@ -2738,6 +3094,7 @@ impl Application {
             }
         });
         let _ = self.refresh_coding_problems();
+        self.schedule_coding_observation_refresh();
     }
 
     /// Save the active editor tab, when any.
@@ -2937,9 +3294,11 @@ impl Application {
             .unwrap_or_else(|| DEFAULT_TERMINAL_SESSION_ID.to_string());
 
         if response.terminal_alive == Some(false) {
-            return self.with_coding_state(|coding| {
+            self.with_coding_state(|coding| {
                 coding.remove_terminal_session(&session_id);
-            });
+            })?;
+            let _ = self.schedule_runtime_snapshot_refresh();
+            return Ok(());
         }
 
         let cwd = response
@@ -2977,7 +3336,36 @@ impl Application {
                 session.title = title;
             }
             session.apply_result(cwd, last_command, scrollback, history);
-        })
+            // Workspace Memory: remember build / check / test outcomes.
+            if let Some(cmd) = session.last_command.clone() {
+                let lower = cmd.to_ascii_lowercase();
+                let is_buildish = lower.contains("cargo check")
+                    || lower.contains("cargo build")
+                    || lower.contains("cargo test")
+                    || lower.contains("npm test")
+                    || lower.contains("npm run build")
+                    || lower.contains("pnpm test")
+                    || lower.contains("yarn test");
+                if is_buildish {
+                    let scroll = session.output.to_ascii_lowercase();
+                    let ok = !(scroll.contains("error:")
+                        || scroll.contains("error[")
+                        || scroll.contains("failed")
+                        || scroll.contains("panicked"));
+                    let summary = if ok {
+                        "ok".to_string()
+                    } else {
+                        "failed".to_string()
+                    };
+                    coding.record_workspace_build(&cmd, &summary, ok);
+                }
+            }
+        })?;
+        // Workspace/editor observation + ambient runtime intelligence. Terminal
+        // Provider owns the PTY; Application only observes — never blocks chat.
+        self.schedule_coding_observation_refresh();
+        let _ = self.schedule_runtime_snapshot_refresh();
+        Ok(())
     }
 
     /// Refresh Coding Workspace Git status through background maintenance.
@@ -3191,7 +3579,27 @@ impl Application {
                 modified_count: response.git_modified.len(),
                 staged_count: response.git_staged.len(),
                 untracked_count: response.git_untracked.len(),
+                conflict_count: 0,
+                dirty_paths: response
+                    .git_modified
+                    .iter()
+                    .map(|item| item.path.clone())
+                    .take(16)
+                    .collect(),
+                staged_paths: response
+                    .git_staged
+                    .iter()
+                    .map(|item| item.path.clone())
+                    .take(16)
+                    .collect(),
+                untracked_paths: response
+                    .git_untracked
+                    .iter()
+                    .map(|item| item.path.clone())
+                    .take(16)
+                    .collect(),
                 sample_paths,
+                ..jaymi_context::GitStatusSection::default()
             }
         };
         self.with_coding_state(|coding| {
@@ -3219,6 +3627,9 @@ impl Application {
             coding.git = Some(state);
         })?;
         self.context_maintenance.publish_git_section(section);
+        // Ambient GitSnapshot refresh fills HEAD / conflicts / recent commits.
+        let _ = self.schedule_context_maintenance(MaintenanceKind::GitStatus);
+        self.schedule_coding_observation_refresh();
         Ok(())
     }
 
@@ -3272,6 +3683,18 @@ impl Application {
         if let Ok(terminal) = self.container.resolve::<Arc<TerminalProvider>>() {
             let _ = terminal.close_all_sessions();
         }
+        // Clear ambient Coding observation so conversation does not keep a stale snapshot.
+        self.context_maintenance
+            .publish_workspace_snapshot(jaymi_context::WorkspaceSnapshot::empty());
+        self.context_maintenance
+            .publish_editor_snapshot(jaymi_context::EditorSnapshot::empty());
+        self.context_maintenance
+            .publish_project_snapshot(jaymi_context::ProjectSnapshot::empty());
+        self.context_maintenance
+            .publish_git_snapshot(jaymi_context::GitSnapshot::empty());
+        self.context_maintenance
+            .publish_runtime_snapshot(jaymi_context::RuntimeSnapshot::empty());
+        let _ = self.with_coding_state(|coding| coding.clear_workspace_activity());
         self.prepare_context_session()?;
         Ok(closed)
     }
@@ -3527,6 +3950,23 @@ impl Application {
         if cancel.load(Ordering::Relaxed) {
             return GenerationStartOutcome::Cancelled;
         }
+        // Soft-update Workspace Memory coding objective before prepare/assemble.
+        let _ = self.with_coding_state(|coding| {
+            let lower = content.to_ascii_lowercase();
+            let codingish = lower.contains("compile")
+                || lower.contains("error")
+                || lower.contains("fix")
+                || lower.contains("refactor")
+                || lower.contains("implement")
+                || lower.contains("build")
+                || lower.contains("test ")
+                || lower.contains("bug")
+                || coding.workspace_activity.has_activity();
+            if codingish {
+                let objective = content.chars().take(160).collect::<String>();
+                coding.set_coding_objective(Some(objective));
+            }
+        });
         let history = match self.prepare_conversational_host_excluding(Some(content)) {
             Ok(history) => history,
             Err(error) => {
@@ -4761,6 +5201,26 @@ impl Application {
         ))
     }
 
+    /// Assemble Workspace Intelligence diagnostics (Sprint B2.11).
+    ///
+    /// Developer Diagnostics only — never writes transcript / Memory / Planner state.
+    /// Observation only: does not schedule maintenance or re-assemble Context.
+    pub fn workspace_diagnostics(
+        &self,
+    ) -> JaymiResult<crate::workspace_diagnostics::WorkspaceDiagnosticsReport> {
+        let context_inspector = self
+            .container
+            .resolve::<Arc<ContextEngine>>()
+            .ok()
+            .and_then(|engine| engine.inspect_last());
+        Ok(
+            crate::workspace_diagnostics::WorkspaceDiagnosticsReport::from_maintenance(
+                &self.context_maintenance,
+                context_inspector,
+            ),
+        )
+    }
+
     /// Build diagnostics including an optional Planner response.
     pub fn diagnostics_from_response(
         &self,
@@ -4895,6 +5355,7 @@ impl Application {
             .map(|engine| engine.history())
             .unwrap_or_default();
         let reasoning_inspector = self.reasoning_diagnostics().ok();
+        let workspace_inspector = self.workspace_diagnostics().ok();
         let provider_ids: Vec<String> = providers
             .list()
             .unwrap_or_default()
@@ -5409,6 +5870,7 @@ impl Application {
             capability_inspector,
             context_inspector,
             reasoning_inspector,
+            workspace_inspector,
             context_history,
             parser_count: parsers.len(),
             parser_ids,

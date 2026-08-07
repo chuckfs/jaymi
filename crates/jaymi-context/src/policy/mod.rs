@@ -1,14 +1,17 @@
-//! Context Policies — decide which providers may contribute to a bundle.
+//! Context Policies — decide which providers / candidates may contribute.
 //!
 //! The [`ContextPolicyEngine`] filters and prioritizes [`crate::ContextProvider`]s
-//! before assembly. Policies never gather context and never mutate providers.
-//! They only decide what is allowed to participate, why, at what priority, and
-//! under which contribution constraints.
+//! before assembly, and (Sprint B2.7) scores individual [`crate::ContextCandidate`]
+//! nodes by relevance, recency, importance, privacy, and budget. Sprint **B2.8**
+//! adds deterministic [`ContextSelectionProfile`] allowlists so workspace
+//! context is chosen intelligently without AI scoring. Policies never gather
+//! context and never mutate providers.
 //!
 //! Independent of the LLM and of the action-oriented `jaymi-policies` Policy Engine.
 
 mod builtin;
 mod decision;
+mod selection;
 mod sensitivity;
 
 pub use builtin::{default_context_policies, JaymiDefaultContextPolicy, DEFAULT_CONTEXT_POLICY_ID};
@@ -17,11 +20,17 @@ pub use decision::{
     ContextPolicyDecision, ContextPolicyDecisionRecord, ContextPolicyInputs,
     ContributionConstraints, PolicyDecisionSummary, PolicyReport,
 };
+pub use selection::{
+    assess_context_selection, ContextSelectionAssessment, ContextSelectionProfile,
+};
 pub use sensitivity::Sensitivity;
 
 use std::sync::Arc;
 
 use crate::budget::BudgetEstimate;
+use crate::candidate::{
+    score_candidate, CandidateItemDecision, CandidateScores, ContextCandidate,
+};
 use crate::provider::ContextProvider;
 use crate::relevance::RelevanceScore;
 
@@ -34,8 +43,50 @@ pub trait ContextPolicy: Send + Sync {
     /// Stable policy identity for diagnostics / explainability.
     fn id(&self) -> &'static str;
 
-    /// Evaluate whether `candidate` may participate and under what constraints.
+    /// Evaluate whether a provider may participate and under what constraints.
     fn evaluate(&self, candidate: &ContextPolicyCandidate<'_>) -> ContextPolicyDecision;
+
+    /// Evaluate one [`ContextCandidate`] item (Sprint B2.7).
+    ///
+    /// Default scores relevance / recency / importance / privacy. Override for
+    /// specialized rules. Never gathers context.
+    fn evaluate_candidate_item(
+        &self,
+        candidate: &ContextCandidate,
+        provider_relevance: u8,
+        now_unix: i64,
+        inputs: &ContextPolicyInputs<'_>,
+    ) -> CandidateItemDecision {
+        let scores = score_candidate(
+            candidate,
+            provider_relevance,
+            now_unix,
+            inputs.max_sensitivity,
+        );
+        if !scores.privacy_ok {
+            return CandidateItemDecision::deny(
+                format!(
+                    "Candidate privacy '{}' exceeds request maximum '{}'",
+                    candidate.sensitivity.as_str(),
+                    inputs.max_sensitivity.as_str()
+                ),
+                scores,
+            );
+        }
+        if !candidate.required && scores.relevance < 20 && scores.importance < 40 {
+            return CandidateItemDecision::deny(
+                "Candidate relevance/importance below inclusion floor",
+                scores,
+            );
+        }
+        CandidateItemDecision::allow(
+            format!(
+                "Selected · relevance={} recency={} importance={}",
+                scores.relevance, scores.recency, scores.importance
+            ),
+            scores,
+        )
+    }
 }
 
 /// Engine that evaluates registered [`ContextPolicy`]s for each provider.
@@ -177,6 +228,76 @@ impl ContextPolicyEngine {
             estimate_characters: candidate.estimate.units.characters,
             decision,
             applied_policies: applied,
+        }
+    }
+
+    /// Evaluate all policies for one content candidate (Sprint B2.7).
+    ///
+    /// Merge: any deny wins; scores take the minimum combined among allows
+    /// (more restrictive ranking).
+    pub fn evaluate_candidate_item(
+        &self,
+        candidate: &ContextCandidate,
+        provider_relevance: u8,
+        now_unix: i64,
+        inputs: &ContextPolicyInputs<'_>,
+    ) -> CandidateItemDecision {
+        if self.policies.is_empty() {
+            let scores = score_candidate(
+                candidate,
+                provider_relevance,
+                now_unix,
+                inputs.max_sensitivity,
+            );
+            if !scores.privacy_ok {
+                return CandidateItemDecision::deny("privacy gate", scores);
+            }
+            return CandidateItemDecision::allow("no policies; retained", scores);
+        }
+
+        let mut allowed = true;
+        let mut deny_reason: Option<String> = None;
+        let mut best_scores: Option<CandidateScores> = None;
+        let mut allow_reasons: Vec<String> = Vec::new();
+
+        for policy in &self.policies {
+            let decision = policy.evaluate_candidate_item(
+                candidate,
+                provider_relevance,
+                now_unix,
+                inputs,
+            );
+            if !decision.select {
+                allowed = false;
+                if deny_reason.is_none() {
+                    deny_reason = Some(format!("{}: {}", policy.id(), decision.reason));
+                }
+                continue;
+            }
+            allow_reasons.push(format!("{}: {}", policy.id(), decision.reason));
+            best_scores = Some(match best_scores {
+                Some(prev) if prev.combined <= decision.scores.combined => prev,
+                _ => decision.scores,
+            });
+        }
+
+        if allowed {
+            CandidateItemDecision::allow(
+                allow_reasons.join("; "),
+                best_scores.unwrap_or_else(|| {
+                    score_candidate(
+                        candidate,
+                        provider_relevance,
+                        now_unix,
+                        inputs.max_sensitivity,
+                    )
+                }),
+            )
+        } else {
+            CandidateItemDecision::deny(
+                deny_reason.unwrap_or_else(|| "Excluded by context policy".into()),
+                best_scores.unwrap_or_default(),
+            )
         }
     }
 

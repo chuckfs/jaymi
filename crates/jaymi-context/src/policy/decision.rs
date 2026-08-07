@@ -261,6 +261,15 @@ pub struct PolicyReport {
     pub size_after_characters: usize,
     /// Final assembled characters after budget fitting.
     pub size_assembled_characters: usize,
+    /// Sprint B2.7 candidate selection explainability.
+    #[serde(default)]
+    pub candidate_selection: crate::candidate::CandidateSelectionReport,
+    /// Sprint B2.8 Context Selection profile id.
+    #[serde(default)]
+    pub selection_profile: Option<String>,
+    /// Sprint B2.8 matched selection rule ids.
+    #[serde(default)]
+    pub selection_rules: Vec<String>,
 }
 
 impl PolicyReport {
@@ -308,6 +317,22 @@ impl PolicyReport {
             self.excluded_providers().join(","),
             self.pending_approval_providers().join(",")
         ));
+        if self.candidate_selection.proposed > 0 {
+            lines.push(format!(
+                "candidates proposed={} selected={} rejected_policy={} rejected_budget={}",
+                self.candidate_selection.proposed,
+                self.candidate_selection.selected,
+                self.candidate_selection.rejected_policy,
+                self.candidate_selection.rejected_budget
+            ));
+        }
+        if let Some(profile) = &self.selection_profile {
+            lines.push(format!(
+                "selection_profile={} rules=[{}]",
+                profile,
+                self.selection_rules.join(",")
+            ));
+        }
         lines.push(String::new());
         lines.push(format!(
             "{:<14} {:<10} {:<10} {:<12} {}",

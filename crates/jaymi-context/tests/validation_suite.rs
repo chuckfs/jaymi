@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jaymi_context::{
+    candidates_from_contribution, ContextCandidate,
     ActiveWorkspaceSection, AssembleHints, BudgetEstimate, BudgetUnits, BundleDiagnostic,
     BundleSearchHit, ContextBudgetConfig, ContextBundle, ContextContribution, ContextEngine,
     ContextPolicy, ContextPolicyCandidate, ContextPolicyDecision, ContextProvider,
@@ -135,10 +136,11 @@ impl ContextProvider for WorkspaceMark {
         }
     }
 
-    fn contribute(
+    fn propose_candidates(
         &self,
         _request: &ProviderRequest<'_>,
-    ) -> JaymiResult<Option<ContextContribution>> {
+    ) -> JaymiResult<Vec<ContextCandidate>> {
+        let contribution = (|| -> JaymiResult<Option<ContextContribution>> {
         self.contribute_calls.fetch_add(1, AtomicOrdering::SeqCst);
         Ok(Some(ContextContribution {
             sources: vec![ContextSource::ActiveWorkspace],
@@ -147,6 +149,18 @@ impl ContextProvider for WorkspaceMark {
             }),
             ..ContextContribution::default()
         }))
+    
+        })()?;
+        Ok(match contribution {
+            Some(contribution) => candidates_from_contribution(
+                self.id(),
+                contribution,
+                self.sensitivity(),
+                self.priority(),
+                self.relevance(_request).value(),
+            ),
+            None => Vec::new(),
+        })
     }
 }
 
@@ -180,10 +194,11 @@ impl ContextProvider for SearchBlob {
         ))
     }
 
-    fn contribute(
+    fn propose_candidates(
         &self,
         _request: &ProviderRequest<'_>,
-    ) -> JaymiResult<Option<ContextContribution>> {
+    ) -> JaymiResult<Vec<ContextCandidate>> {
+        let contribution = (|| -> JaymiResult<Option<ContextContribution>> {
         self.contribute_calls.fetch_add(1, AtomicOrdering::SeqCst);
         Ok(Some(ContextContribution {
             sources: vec![ContextSource::SearchResults],
@@ -204,6 +219,18 @@ impl ContextProvider for SearchBlob {
             }),
             ..ContextContribution::default()
         }))
+    
+        })()?;
+        Ok(match contribution {
+            Some(contribution) => candidates_from_contribution(
+                self.id(),
+                contribution,
+                self.sensitivity(),
+                self.priority(),
+                self.relevance(_request).value(),
+            ),
+            None => Vec::new(),
+        })
     }
 }
 
@@ -226,11 +253,24 @@ impl ContextProvider for DecliningProvider {
         BudgetEstimate::metadata(BudgetUnits::from_characters(8, 4))
     }
 
-    fn contribute(
+    fn propose_candidates(
         &self,
         _request: &ProviderRequest<'_>,
-    ) -> JaymiResult<Option<ContextContribution>> {
+    ) -> JaymiResult<Vec<ContextCandidate>> {
+        let contribution = (|| -> JaymiResult<Option<ContextContribution>> {
         Ok(None)
+    
+        })()?;
+        Ok(match contribution {
+            Some(contribution) => candidates_from_contribution(
+                self.id(),
+                contribution,
+                self.sensitivity(),
+                self.priority(),
+                self.relevance(_request).value(),
+            ),
+            None => Vec::new(),
+        })
     }
 }
 
@@ -255,10 +295,11 @@ impl ContextProvider for CountingLowRelevance {
         BudgetEstimate::metadata(BudgetUnits::from_characters(16, 4))
     }
 
-    fn contribute(
+    fn propose_candidates(
         &self,
         _request: &ProviderRequest<'_>,
-    ) -> JaymiResult<Option<ContextContribution>> {
+    ) -> JaymiResult<Vec<ContextCandidate>> {
+        let contribution = (|| -> JaymiResult<Option<ContextContribution>> {
         self.contribute_calls.fetch_add(1, AtomicOrdering::SeqCst);
         Ok(Some(ContextContribution {
             sources: vec![ContextSource::Diagnostics],
@@ -274,6 +315,18 @@ impl ContextProvider for CountingLowRelevance {
             }),
             ..ContextContribution::default()
         }))
+    
+        })()?;
+        Ok(match contribution {
+            Some(contribution) => candidates_from_contribution(
+                self.id(),
+                contribution,
+                self.sensitivity(),
+                self.priority(),
+                self.relevance(_request).value(),
+            ),
+            None => Vec::new(),
+        })
     }
 }
 
@@ -633,10 +686,11 @@ fn budget_enforcement_policy_forbids_truncation() {
                 can_summarize: true,
             }
         }
-        fn contribute(
+        fn propose_candidates(
             &self,
-            _: &ProviderRequest<'_>,
-        ) -> JaymiResult<Option<ContextContribution>> {
+            request: &ProviderRequest<'_>,
+        ) -> JaymiResult<Vec<ContextCandidate>> {
+            let contribution = (|| -> JaymiResult<Option<ContextContribution>> {
             Ok(Some(ContextContribution {
                 sources: vec![ContextSource::Diagnostics],
                 diagnostics: Some(DiagnosticsSection {
@@ -651,6 +705,18 @@ fn budget_enforcement_policy_forbids_truncation() {
                 }),
                 ..ContextContribution::default()
             }))
+        
+            })()?;
+            Ok(match contribution {
+                Some(contribution) => candidates_from_contribution(
+                    self.id(),
+                    contribution,
+                    self.sensitivity(),
+                    self.priority(),
+                    self.relevance(request).value(),
+                ),
+                None => Vec::new(),
+            })
         }
     }
 
@@ -764,7 +830,7 @@ fn approval_requirements_block_editor_selection_until_approved() {
             text: Some("secret selection".into()),
         },
         ..ContextSessionInputs::default()
-    });
+        });
 
     let blocked = engine
         .assemble(&UserRequest::read_file("/proj/main.rs"))
@@ -797,7 +863,7 @@ fn approval_requirements_block_editor_selection_until_approved() {
         },
         approved_context_providers: vec!["editor".into()],
         ..ContextSessionInputs::default()
-    });
+        });
     engine.invalidate_cache("approval granted");
     let allowed = engine
         .assemble(&UserRequest::read_file("/proj/main.rs"))
@@ -903,7 +969,7 @@ fn diagnostics_change_requests_fresh_context() {
             }],
         },
         ..ContextSessionInputs::default()
-    });
+        });
     let stats = engine.cache_stats();
     assert!(stats.invalidations >= 1);
     assert_eq!(
@@ -1121,13 +1187,13 @@ fn lightweight_greeting_skips_expensive_providers() {
         .unwrap();
     let inspection = engine.inspect_last().unwrap();
     for id in [
-        "memory",
         "search",
         "workspace",
         "diagnostics",
         "git_status",
         "workspace_inventory",
         "file_summaries",
+        "workspace_memory",
     ] {
         assert!(
             inspection.providers.iter().any(|p| {
@@ -1145,13 +1211,15 @@ fn lightweight_greeting_skips_expensive_providers() {
                 .map(|p| &p.outcome)
         );
     }
-    assert!(
-        !inspection.providers.iter().any(|p| {
-            p.id == "conversation"
-                && matches!(p.outcome, ProviderInspectOutcome::SkippedComplexity { .. })
-        }),
-        "conversation must not be complexity-excluded for greeting"
-    );
+    for id in ["conversation", "memory"] {
+        assert!(
+            !inspection.providers.iter().any(|p| {
+                p.id == id
+                    && matches!(p.outcome, ProviderInspectOutcome::SkippedComplexity { .. })
+            }),
+            "{id} must not be complexity-excluded for greeting"
+        );
+    }
 }
 
 #[test]
@@ -1196,7 +1264,7 @@ fn lightweight_coding_does_not_complexity_exclude_core_providers() {
             }],
         },
         ..ContextSessionInputs::default()
-    });
+        });
     let hints = AssembleHints::new(IntentId::Unknown, Vec::<String>::new())
         .with_complexity("coding_question");
     engine

@@ -7,7 +7,8 @@ use jaymi_memory_engine::{
     AssembleContextRequest, MemoryEngineApi, PromotionAskDecision, PromotionSuggestQuery,
 };
 
-use crate::provider::{ContextContribution, ContextProvider, ProviderRequest};
+use crate::candidate::{CandidatePayload, ContextCandidate, ContextCandidateKind};
+use crate::provider::{ContextProvider, ProviderRequest};
 use crate::budget::{BudgetEstimate, BudgetUnits, ProviderPriority};
 use crate::relevance::{IntentTag, RelevanceScore, RequestKind};
 use crate::{ContextSource, MemoryResultsSection};
@@ -50,7 +51,6 @@ impl ContextProvider for MemoryProvider {
             } else {
                 0
             },
-            // Pure mechanical discover/index still gets a modest score via baseline.
             if matches!(signals.request_kind, RequestKind::Index | RequestKind::Discover) {
                 5
             } else {
@@ -61,17 +61,13 @@ impl ContextProvider for MemoryProvider {
 
     fn estimate_size(&self, request: &ProviderRequest<'_>) -> BudgetEstimate {
         let _ = request;
-        // Default assemble limit is 12 memories + a few promotions.
         BudgetEstimate::flexible(BudgetUnits::from_characters(8_000, 4))
     }
 
-    fn contribute(
+    fn propose_candidates(
         &self,
         request: &ProviderRequest<'_>,
-    ) -> JaymiResult<Option<ContextContribution>> {
-        // Memory Engine retrieve (not a Tool). Always contributes a snapshot
-        // section when called so promotion suggestions can surface even when no
-        // memory bodies matched the request text.
+    ) -> JaymiResult<Vec<ContextCandidate>> {
         let memory = self.memory.assemble_context(&AssembleContextRequest {
             text: request.request.content.clone(),
             conversation_id: self.memory.active_conversation_id(),
@@ -88,24 +84,21 @@ impl ContextProvider for MemoryProvider {
         })?;
         let promotion_ask = PromotionAskDecision::from_suggestions(&promotion_suggestions);
 
-        // Always contribute the Memory Engine snapshot when called — including
-        // empty matching sets — so promotion suggestions still surface even when
-        // no memory bodies matched the request text. Decline only if both the
-        // retrieve and promotion APIs failed to produce a section (impossible
-        // after successful calls above); keep the section for explainability.
-        let mut sources = vec![ContextSource::RetrievedMemories];
-        if !promotion_suggestions.is_empty() {
-            sources.push(ContextSource::PromotionSuggestions);
-        }
-
-        Ok(Some(ContextContribution {
-            sources,
-            memory_results: Some(MemoryResultsSection {
+        let importance = self.relevance(request).value().saturating_add(10).min(100);
+        Ok(vec![ContextCandidate::new(
+            self.id(),
+            ContextCandidateKind::MemoryResults,
+            ContextSource::RetrievedMemories,
+            "memory",
+            CandidatePayload::MemoryResults(MemoryResultsSection {
                 memory,
                 promotion_suggestions,
                 promotion_ask,
             }),
-            ..ContextContribution::default()
-        }))
+            self.sensitivity(),
+            importance,
+            self.priority(),
+            false,
+        )])
     }
 }

@@ -54,6 +54,10 @@ impl ProviderPriority {
     pub const SEARCH: Self = Self(60);
     /// Git status (maintenance snapshot).
     pub const GIT_STATUS: Self = Self(55);
+    /// Runtime intelligence (terminal / build / test outcomes).
+    pub const RUNTIME: Self = Self(52);
+    /// Workspace activity memory (edits / opens / builds / objective).
+    pub const WORKSPACE_MEMORY: Self = Self(51);
     /// Diagnostics.
     pub const DIAGNOSTICS: Self = Self(50);
     /// File summaries (maintenance snapshot).
@@ -251,9 +255,127 @@ pub fn measure_contribution(contribution: &ContextContribution, chars_per_token:
             .sum::<usize>()
             + 8;
     }
+    if let Some(section) = &contribution.editor_intelligence {
+        chars += measure_editor_intelligence(section);
+    }
+    if let Some(section) = &contribution.project_intelligence {
+        chars += measure_project_intelligence(section);
+    }
+    if let Some(section) = &contribution.runtime_intelligence {
+        chars += measure_runtime_intelligence(section);
+    }
+    if let Some(section) = &contribution.workspace_memory {
+        chars += measure_workspace_memory(section);
+    }
     chars += contribution.sources.len().saturating_mul(12);
 
     BudgetUnits::from_characters(chars, chars_per_token)
+}
+
+fn measure_editor_intelligence(section: &crate::EditorIntelligenceSection) -> usize {
+    let mut chars = 16usize;
+    if let Some(symbol) = &section.symbol {
+        chars += char_len(&symbol.name) + opt_str(symbol.kind.as_ref()) + opt_str(symbol.detail.as_ref());
+    }
+    if let Some(symbol) = &section.enclosing_function {
+        chars += char_len(&symbol.name) + 16;
+    }
+    if let Some(symbol) = &section.enclosing_type {
+        chars += char_len(&symbol.name) + 16;
+    }
+    chars += section.semantic_tokens.len().saturating_mul(12);
+    chars += section
+        .references
+        .iter()
+        .map(|reference| char_len(&reference.path) + 24)
+        .sum::<usize>();
+    chars += section
+        .code_lens
+        .iter()
+        .map(|lens| char_len(&lens.title) + 16)
+        .sum::<usize>();
+    if let Some(hover) = &section.hover {
+        chars += hover.contents.chars().count().min(2_048) + 16;
+    }
+    chars
+}
+
+fn measure_project_intelligence(section: &crate::ProjectIntelligenceSection) -> usize {
+    let mut chars = 24usize;
+    chars += section
+        .languages
+        .iter()
+        .map(|lang| char_len(lang) + 2)
+        .sum::<usize>();
+    chars += section
+        .frameworks
+        .iter()
+        .map(|fw| char_len(fw) + 2)
+        .sum::<usize>();
+    chars += opt_str(section.package_manager.as_ref());
+    chars += opt_str(section.build_system.as_ref());
+    chars += section
+        .dependency_summary
+        .top_level
+        .iter()
+        .map(|dep| char_len(dep) + 2)
+        .sum::<usize>();
+    chars += opt_str(section.cargo_package.as_ref());
+    chars += opt_str(section.npm_package.as_ref());
+    chars += opt_str(section.repository_branch.as_ref());
+    chars += opt_str(section.layout_shape.as_ref());
+    chars += section
+        .top_level_dirs
+        .iter()
+        .map(|dir| char_len(dir) + 2)
+        .sum::<usize>();
+    chars
+}
+
+fn measure_runtime_intelligence(section: &crate::RuntimeIntelligenceSection) -> usize {
+    let mut chars = 24usize;
+    chars += opt_str(section.latest_cargo_check.as_ref());
+    chars += opt_str(section.latest_build.as_ref());
+    chars += opt_str(section.latest_tests.as_ref());
+    chars += opt_str(section.last_command.as_ref());
+    chars += section.output_tail.chars().count().min(640);
+    chars += section
+        .running
+        .iter()
+        .map(|line| char_len(line) + 2)
+        .sum::<usize>();
+    chars += section
+        .recent_failures
+        .iter()
+        .map(|line| char_len(line) + 2)
+        .sum::<usize>();
+    chars
+}
+
+fn measure_workspace_memory(section: &crate::WorkspaceMemorySection) -> usize {
+    let mut chars = 24usize;
+    chars += opt_str(section.coding_objective.as_ref());
+    chars += section
+        .recent_edits
+        .iter()
+        .map(|p| char_len(p) + 2)
+        .sum::<usize>();
+    chars += section
+        .recently_opened
+        .iter()
+        .map(|p| char_len(p) + 2)
+        .sum::<usize>();
+    chars += section
+        .recent_builds
+        .iter()
+        .map(|p| char_len(p) + 2)
+        .sum::<usize>();
+    chars += section
+        .recent_failures
+        .iter()
+        .map(|p| char_len(p) + 2)
+        .sum::<usize>();
+    chars
 }
 
 fn measure_conversation(section: &ConversationSection) -> usize {
@@ -345,12 +467,29 @@ fn measure_diagnostics(section: &DiagnosticsSection) -> usize {
 fn measure_git_status(section: &GitStatusSection) -> usize {
     opt_str(section.branch.as_ref())
         + char_len(&section.summary)
+        + opt_str(section.head_sha.as_ref())
+        + opt_str(section.head_short.as_ref())
         + section
-            .sample_paths
+            .dirty_paths
             .iter()
+            .chain(section.staged_paths.iter())
+            .chain(section.untracked_paths.iter())
+            .chain(section.conflict_paths.iter())
+            .chain(section.sample_paths.iter())
             .map(|path| char_len(path) + 1)
             .sum::<usize>()
-        + 48
+        + section
+            .recent_commits
+            .iter()
+            .map(|commit| {
+                char_len(&commit.short_sha)
+                    + char_len(&commit.subject)
+                    + opt_str(commit.author.as_ref())
+                    + opt_str(commit.relative_time.as_ref())
+                    + 8
+            })
+            .sum::<usize>()
+        + 64
 }
 
 fn measure_workspace_inventory(section: &WorkspaceInventorySection) -> usize {

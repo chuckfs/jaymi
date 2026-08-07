@@ -235,6 +235,21 @@ pub struct GitPathStatus {
     pub status: String,
 }
 
+/// One recent commit summary for ambient Git intelligence (not a full log dump).
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+pub struct GitCommitSummary {
+    /// Full commit object name when known.
+    pub sha: String,
+    /// Abbreviated SHA.
+    pub short_sha: String,
+    /// Subject line.
+    pub subject: String,
+    /// Author name when known.
+    pub author: Option<String>,
+    /// Relative time label from git (e.g. `2 days ago`), when known.
+    pub relative_time: Option<String>,
+}
+
 /// Structured Git request mediated by the Planner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitRequest {

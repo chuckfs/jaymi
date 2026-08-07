@@ -28,6 +28,14 @@ pub enum ContextSource {
     PromotionSuggestions,
     /// Current editor file / selection / open tabs from the session.
     EditorState,
+    /// Editor intelligence (symbol / hover / references / …) from EditorSnapshot.
+    EditorIntelligence,
+    /// Project intelligence (languages / deps / layout / …) from ProjectSnapshot.
+    ProjectIntelligence,
+    /// Runtime intelligence (terminal / build / test outcomes) from RuntimeSnapshot.
+    RuntimeIntelligence,
+    /// Workspace activity memory (edits / opens / builds / objective).
+    WorkspaceMemory,
     /// Diagnostics attached for the request.
     Diagnostics,
     /// Permission grants / decisions attached for the request.
@@ -55,6 +63,10 @@ impl ContextSource {
             Self::ActiveWorkspace => "active_workspace",
             Self::PromotionSuggestions => "promotion_suggestions",
             Self::EditorState => "editor_state",
+            Self::EditorIntelligence => "editor_intelligence",
+            Self::ProjectIntelligence => "project_intelligence",
+            Self::RuntimeIntelligence => "runtime_intelligence",
+            Self::WorkspaceMemory => "workspace_memory",
             Self::Diagnostics => "diagnostics",
             Self::Permissions => "permissions",
             Self::ActiveCapabilities => "active_capabilities",
@@ -244,7 +256,7 @@ pub struct DiagnosticsSection {
 /// Compact Git status for conversational context (never a full porcelain dump).
 ///
 /// Populated by Application background maintenance from the latest **completed**
-/// snapshot — providers must not shell out to git during assemble.
+/// [`crate::GitSnapshot`] — providers must not shell out to git during assemble.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct GitStatusSection {
     /// Whether the project root is inside a Git work tree.
@@ -253,13 +265,29 @@ pub struct GitStatusSection {
     pub branch: Option<String>,
     /// Short status summary (e.g. "clean", "2 modified").
     pub summary: String,
-    /// Count of modified (unstaged) paths.
+    /// Count of modified (unstaged / dirty) paths.
     pub modified_count: usize,
     /// Count of staged paths.
     pub staged_count: usize,
     /// Count of untracked paths.
     pub untracked_count: usize,
-    /// Sample paths (capped) for prompt context.
+    /// Count of merge conflict / unmerged paths.
+    pub conflict_count: usize,
+    /// Full HEAD object name, when known.
+    pub head_sha: Option<String>,
+    /// Abbreviated HEAD, when known.
+    pub head_short: Option<String>,
+    /// Sample dirty paths (capped).
+    pub dirty_paths: Vec<String>,
+    /// Sample staged paths (capped).
+    pub staged_paths: Vec<String>,
+    /// Sample untracked paths (capped).
+    pub untracked_paths: Vec<String>,
+    /// Sample conflict paths (capped).
+    pub conflict_paths: Vec<String>,
+    /// Recent commits (capped; newest first).
+    pub recent_commits: Vec<jaymi_core::GitCommitSummary>,
+    /// Combined sample paths (capped) for prompt context.
     pub sample_paths: Vec<String>,
 }
 
@@ -352,6 +380,8 @@ pub struct PlannerMetadataSection {
     pub budget: Option<BudgetReport>,
     /// Context Policy explainability report.
     pub policy: Option<crate::PolicyReport>,
+    /// Environmental resolution bindings from Planner (Sprint B2.10).
+    pub environmental: Option<crate::EnvironmentalHints>,
 }
 
 /// Active capabilities recorded for this request.
@@ -440,6 +470,14 @@ pub struct ContextBundle {
     planner_metadata: PlannerMetadataSection,
     active_capabilities: ActiveCapabilitiesSection,
     user_request: UserRequestMetadataSection,
+    /// Editor intelligence derived from [`crate::EditorSnapshot`].
+    editor_intelligence: crate::EditorIntelligenceSection,
+    /// Project intelligence derived from [`crate::ProjectSnapshot`].
+    project_intelligence: crate::ProjectIntelligenceSection,
+    /// Runtime intelligence derived from [`crate::RuntimeSnapshot`].
+    runtime_intelligence: crate::RuntimeIntelligenceSection,
+    /// Workspace activity memory derived from [`crate::WorkspaceMemorySnapshot`].
+    workspace_memory: crate::WorkspaceMemorySection,
 }
 
 impl Default for ContextBundle {
@@ -537,6 +575,26 @@ impl ContextBundle {
     /// User request metadata section.
     pub fn user_request(&self) -> &UserRequestMetadataSection {
         &self.user_request
+    }
+
+    /// Editor intelligence section (from EditorSnapshot via providers).
+    pub fn editor_intelligence(&self) -> &crate::EditorIntelligenceSection {
+        &self.editor_intelligence
+    }
+
+    /// Project intelligence section (from ProjectSnapshot via providers).
+    pub fn project_intelligence(&self) -> &crate::ProjectIntelligenceSection {
+        &self.project_intelligence
+    }
+
+    /// Runtime intelligence section (from RuntimeSnapshot via providers).
+    pub fn runtime_intelligence(&self) -> &crate::RuntimeIntelligenceSection {
+        &self.runtime_intelligence
+    }
+
+    /// Workspace activity memory section.
+    pub fn workspace_memory(&self) -> &crate::WorkspaceMemorySection {
+        &self.workspace_memory
     }
 
     // --- Compatibility accessors used by Planner / existing tests ---
@@ -637,6 +695,10 @@ pub struct ContextBundleBuilder {
     planner_metadata: PlannerMetadataSection,
     active_capabilities: ActiveCapabilitiesSection,
     user_request: UserRequestMetadataSection,
+    editor_intelligence: crate::EditorIntelligenceSection,
+    project_intelligence: crate::ProjectIntelligenceSection,
+    runtime_intelligence: crate::RuntimeIntelligenceSection,
+    workspace_memory: crate::WorkspaceMemorySection,
 }
 
 impl ContextBundleBuilder {
@@ -717,6 +779,30 @@ impl ContextBundleBuilder {
         self
     }
 
+    /// Set the editor intelligence section (from EditorSnapshot).
+    pub fn editor_intelligence(mut self, section: crate::EditorIntelligenceSection) -> Self {
+        self.editor_intelligence = section;
+        self
+    }
+
+    /// Set the project intelligence section (from ProjectSnapshot).
+    pub fn project_intelligence(mut self, section: crate::ProjectIntelligenceSection) -> Self {
+        self.project_intelligence = section;
+        self
+    }
+
+    /// Set the runtime intelligence section (from RuntimeSnapshot).
+    pub fn runtime_intelligence(mut self, section: crate::RuntimeIntelligenceSection) -> Self {
+        self.runtime_intelligence = section;
+        self
+    }
+
+    /// Set the workspace activity memory section (from WorkspaceMemorySnapshot).
+    pub fn workspace_memory(mut self, section: crate::WorkspaceMemorySection) -> Self {
+        self.workspace_memory = section;
+        self
+    }
+
     /// Set the permissions section.
     pub fn permissions(mut self, section: PermissionsSection) -> Self {
         self.permissions = section;
@@ -788,6 +874,18 @@ impl ContextBundleBuilder {
         if let Some(section) = contribution.active_capabilities {
             self.active_capabilities = section;
         }
+        if let Some(section) = contribution.editor_intelligence {
+            self.editor_intelligence = section;
+        }
+        if let Some(section) = contribution.project_intelligence {
+            self.project_intelligence = section;
+        }
+        if let Some(section) = contribution.runtime_intelligence {
+            self.runtime_intelligence = section;
+        }
+        if let Some(section) = contribution.workspace_memory {
+            self.workspace_memory = section;
+        }
         let _ = contribution.sources;
         self
     }
@@ -811,6 +909,10 @@ impl ContextBundleBuilder {
             planner_metadata: self.planner_metadata,
             active_capabilities: self.active_capabilities,
             user_request: self.user_request,
+            editor_intelligence: self.editor_intelligence,
+            project_intelligence: self.project_intelligence,
+            runtime_intelligence: self.runtime_intelligence,
+            workspace_memory: self.workspace_memory,
         }
     }
 }
@@ -860,4 +962,34 @@ pub struct ContextSessionInputs {
     /// When a policy sets `requires_user_approval`, the provider is omitted
     /// until its id appears here.
     pub approved_context_providers: Vec<String>,
+    /// Canonical Coding workspace observation (Sprint B2.1).
+    ///
+    /// Host-built, observational only. Context Engine consumes this; it never
+    /// creates a ContextBundle from the snapshot alone.
+    pub workspace_snapshot: Option<crate::WorkspaceSnapshot>,
+    /// Canonical editor intelligence observation (Sprint B2.3).
+    ///
+    /// Host-built / ambient-maintained, read-only. Context providers consume
+    /// this; Planner and Reasoning never call LSP to fill it.
+    pub editor_snapshot: Option<crate::EditorSnapshot>,
+    /// Canonical project intelligence observation (Sprint B2.4).
+    ///
+    /// Ambient-maintained. Context providers consume it; Planner never scans
+    /// projects and providers never filesystem-scan during requests.
+    pub project_snapshot: Option<crate::ProjectSnapshot>,
+    /// Canonical Git intelligence observation (Sprint B2.5).
+    ///
+    /// Ambient-maintained via read-only `GitProvider`. Context providers expose
+    /// summaries; Reasoning never runs git commands.
+    pub git_snapshot: Option<crate::GitSnapshot>,
+    /// Canonical runtime intelligence observation (Sprint B2.6).
+    ///
+    /// Ambient-maintained from TerminalProvider / Coding terminal sessions.
+    /// Context providers expose summaries; Conversation never blocks waiting.
+    pub runtime_snapshot: Option<crate::RuntimeSnapshot>,
+    /// Canonical workspace activity memory (Sprint B2.9).
+    ///
+    /// Host-built from CodingState activity rings. Distinct from Conversation
+    /// Memory. Context Policy decides when it enters the bundle.
+    pub workspace_memory_snapshot: Option<crate::WorkspaceMemorySnapshot>,
 }
