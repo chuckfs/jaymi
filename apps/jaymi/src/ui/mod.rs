@@ -404,11 +404,12 @@ struct JaymiApp {
 /// [`ease_out_cubic`], which approximates its cubic-bezier(.32,.72,0,1)).
 const WORKSPACE_EXPAND_ANIM_SECS: f32 = 0.32;
 
-/// Left padding so the top bar's own content never sits under macOS's
-/// native traffic-light buttons (the window uses `with_fullsize_content_view`
-/// so the (now-transparent) title bar area is ours to paint into, but the
-/// traffic lights themselves stay put at their standard inset).
-const TRAFFIC_LIGHT_INSET: f32 = 56.0;
+/// Left padding (added on top of the top bar's own 20px margin) so its
+/// content never sits under macOS's native traffic-light buttons. Measured
+/// directly from a running build: the green button's right edge sits ~68.5pt
+/// from the window's left edge; this clears it with the same ~16px breathing
+/// room the design spec uses between its own chrome groups.
+const TRAFFIC_LIGHT_INSET: f32 = 65.0;
 
 /// Ease-out cubic — quick start, gentle settle (used for the expand animation).
 fn ease_out_cubic(t: f32) -> f32 {
@@ -514,7 +515,9 @@ impl eframe::App for JaymiApp {
             .frame(
                 egui::Frame::new()
                     .fill(self.theme.background)
-                    .inner_margin(inset(space::LG, space::SM))
+                    // Spec: `padding: 0 20px` — horizontal only, vertical
+                    // centering comes from `horizontal_centered` below.
+                    .inner_margin(egui::Margin::symmetric(20, 0))
                     .stroke(egui::Stroke::NONE),
             )
             .show(ctx, |ui| {
@@ -1643,7 +1646,11 @@ impl JaymiApp {
             .corner_radius(egui::CornerRadius::same(radius::PILL as u8))
             .inner_margin(egui::Margin::same(4))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                // `ui.horizontal` inherits right-to-left from the ambient
+                // layout (this is called from `render_top_bar`'s
+                // right-to-left wrapper) — force left-to-right explicitly so
+                // the icons render Coding→Settings, not reversed.
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
                     for (icon, label, kind) in entries {
                         let is_active = match kind {
