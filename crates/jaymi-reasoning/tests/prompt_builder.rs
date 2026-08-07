@@ -30,6 +30,7 @@ fn rich_context() -> LlmContext {
             ],
             notes: vec!["assembled".into()],
             budget: None,
+            environmental: None,
         },
         sections: vec![
             section(
@@ -656,6 +657,7 @@ fn absent_sections_are_excluded_not_silent() {
             sources: vec![],
             notes: vec![],
             budget: None,
+            environmental: None,
         },
         sections: LlmSectionId::ORDER
             .iter()
@@ -693,4 +695,79 @@ fn absent_sections_are_excluded_not_silent() {
         assert!(!contribution.included);
         assert!(contribution.note.is_some());
     }
+}
+
+#[test]
+fn coding_understanding_extension_becomes_prompt_section() {
+    let mut context = rich_context();
+    context.extensions.insert(
+        "coding_understanding".into(),
+        serde_json::json!({
+            "focus": "file",
+            "instruction": "Respond with Coding Understanding for focus=`file`.\n### Purpose\n- demo",
+        }),
+    );
+    let prompt = PromptBuilder::new().build(&context, &[], "Explain this file.");
+    assert!(
+        prompt
+            .section_ids()
+            .contains(&PromptSectionId::CodingUnderstanding),
+        "section ids: {:?}",
+        prompt.section_ids()
+    );
+    assert!(prompt.text.contains("Coding Understanding"));
+    assert!(prompt.text.contains("focus: file"));
+    let contribution = prompt
+        .diagnostics
+        .sections
+        .iter()
+        .find(|section| section.id == PromptSectionId::CodingUnderstanding)
+        .expect("disposition");
+    assert_eq!(
+        contribution.disposition,
+        jaymi_reasoning::PromptSectionDisposition::Included
+    );
+}
+
+#[test]
+fn coding_review_extension_becomes_prompt_section() {
+    let mut context = rich_context();
+    context.extensions.insert(
+        "coding_review".into(),
+        serde_json::json!({
+            "focus": "file",
+            "instruction": "Respond with Coding Review for focus=`file`.\n### Strengths\n- demo",
+        }),
+    );
+    let prompt = PromptBuilder::new().build(&context, &[], "Review this file.");
+    assert!(
+        prompt
+            .section_ids()
+            .contains(&PromptSectionId::CodingReview),
+        "section ids: {:?}",
+        prompt.section_ids()
+    );
+    assert!(prompt.text.contains("Coding Review"));
+    assert!(prompt.text.contains("focus: file"));
+}
+
+#[test]
+fn coding_plan_extension_becomes_prompt_section() {
+    let mut context = rich_context();
+    context.extensions.insert(
+        "coding_plan".into(),
+        serde_json::json!({
+            "kind": "new_project",
+            "goal": "Build Pong.",
+            "instruction": "Respond with a Coding Plan (kind=`new_project`).\n### Plan\n- demo",
+        }),
+    );
+    let prompt = PromptBuilder::new().build(&context, &[], "Build Pong.");
+    assert!(
+        prompt.section_ids().contains(&PromptSectionId::CodingPlan),
+        "section ids: {:?}",
+        prompt.section_ids()
+    );
+    assert!(prompt.text.contains("Coding Plan"));
+    assert!(prompt.text.contains("kind: new_project"));
 }

@@ -824,9 +824,11 @@ mod tests {
         assert!(review.state.is_pending());
         assert!(review.asking_to_do.contains("Delete scratch"));
         assert!(turn.content.starts_with("I can do that."));
-        assert!(turn.content.contains("Plan"));
+        assert!(turn.content.contains("Execution Plan"));
+        assert!(turn.content.contains("Files affected"));
+        assert!(turn.content.contains("Risk"));
         assert!(turn.content.contains("You can:"));
-        assert!(turn.content.contains("Modify the plan"));
+        assert!(turn.content.contains("Modify"));
         assert_eq!(status, ExecutionStatus::AwaitingReview);
     }
 

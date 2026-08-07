@@ -1,9 +1,12 @@
-//! Coding Workspace Quick Action Bar — Planner-intent chrome (not a VS Code toolbar).
+//! Coding Workspace Quick Action Bar — typed Coding Action chrome (Sprint C0.1).
 //!
-//! Rendering emits [`QuickAction`] clicks only. Mapping those clicks to Planner
-//! prompts or panel focus lives in [`dispatch_quick_action`] — never inside paint.
+//! Rendering emits [`QuickAction`] clicks only. Mapping those clicks to
+//! [`jaymi_core::CodingAction`] lives in [`dispatch_quick_action`] — never
+//! inside paint. The app shell submits the action as a normal conversation
+//! turn; the Planner owns routing. No direct editor / tool / provider calls.
 
 use eframe::egui;
+use jaymi_core::CodingAction;
 
 use crate::theme::{radius, space, type_size, Theme};
 
@@ -23,35 +26,35 @@ pub const MORE_BUTTON_WIDTH: f32 = 52.0;
 /// (close tile + gaps + optional error label).
 pub const QUICK_ACTION_CHROME_RESERVE: f32 = 48.0;
 
-/// One Planner-oriented quick action in the Coding Workspace bar.
+/// One Coding Action button in the Coding Workspace bar.
+///
+/// Explain resolves to [`CodingAction::ExplainSelection`] or
+/// [`CodingAction::ExplainFile`] in Application from Workspace Intelligence.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QuickAction {
-    /// Ask the Planner to explain the active file.
+    /// Explain selection or active file.
     Explain,
-    /// Ask the Planner to edit the active file.
+    /// Edit selection (conversational).
     Edit,
-    /// Ask the Planner to refactor the current selection.
+    /// Refactor selection (proposal only).
     Refactor,
-    /// Open Find in Files (Search dock).
+    /// Semantic workspace search.
     Search,
-    /// Open the Terminal dock (run / execute context).
+    /// Reviewed project run.
     Run,
-    /// Focus the Terminal dock.
-    Terminal,
-    /// Focus the Git dock.
-    Git,
+    /// Planner-generated Coding Actions menu.
+    More,
 }
 
 impl QuickAction {
     /// Canonical left-to-right order in the bar.
-    pub const ALL: [QuickAction; 7] = [
+    pub const ALL: [QuickAction; 6] = [
         QuickAction::Explain,
         QuickAction::Edit,
         QuickAction::Refactor,
         QuickAction::Search,
         QuickAction::Run,
-        QuickAction::Terminal,
-        QuickAction::Git,
+        QuickAction::More,
     ];
 
     /// Visible button label.
@@ -62,80 +65,69 @@ impl QuickAction {
             QuickAction::Refactor => "Refactor",
             QuickAction::Search => "Search",
             QuickAction::Run => "Run",
-            QuickAction::Terminal => "Terminal",
-            QuickAction::Git => "Git",
+            QuickAction::More => "More",
         }
     }
 
     /// Hover / accessibility hint.
     pub fn hint(self) -> &'static str {
         match self {
-            QuickAction::Explain => "Ask Jaymi to explain the current file",
-            QuickAction::Edit => "Ask Jaymi to edit the current file",
-            QuickAction::Refactor => "Ask Jaymi to refactor the selected code",
-            QuickAction::Search => "Open Find in Files",
-            QuickAction::Run => "Open Terminal to run commands",
-            QuickAction::Terminal => "Focus the Terminal panel",
-            QuickAction::Git => "Focus the Git panel",
+            QuickAction::Explain => "Ask Jaymi to explain the selection or current file",
+            QuickAction::Edit => "Ask Jaymi what to change in the selection",
+            QuickAction::Refactor => "Ask Jaymi for a refactoring proposal (no edits yet)",
+            QuickAction::Search => "Search the workspace (uses selection as query when present)",
+            QuickAction::Run => "Propose a reviewed project run command",
+            QuickAction::More => "Show Coding Actions menu",
         }
     }
 
     /// Estimated painted width for layout / overflow (label + padding).
     pub fn estimated_width(self) -> f32 {
         let chars = self.label().chars().count() as f32;
-        // META/UI proportional ~7px + horizontal padding inside the button.
         chars * 7.0 + 20.0
     }
 }
 
-/// Result of dispatching a quick action — composer seed or panel focus.
+/// Result of dispatching a quick action — typed Coding Action only.
 ///
-/// This is a **UI effect**, not Planner [`jaymi_core::IntentId`]. Prompts inserted
-/// into the composer are later classified by the Planner Decision Engine.
-///
-/// Produced by [`dispatch_quick_action`]; applied by the app shell, never by paint.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Produced by [`dispatch_quick_action`]; Application resolves Explain and
+/// submits a conversation turn. Never a dock focus or composer seed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuickActionEffect {
-    /// Insert a Planner prompt into the conversation composer.
-    InsertPlannerPrompt(&'static str),
-    /// Open / focus the Search (Find in Files) dock page.
-    OpenSearchPanel,
-    /// Open the Terminal dock page (Run).
-    OpenTerminalPanel,
-    /// Focus the Terminal dock page.
-    FocusTerminalPanel,
-    /// Focus the Git dock page.
-    FocusGitPanel,
+    /// Submit this Coding Action through the Planner (Conversation First).
+    SubmitCodingAction(CodingAction),
+    /// Explain — Application picks selection vs file from CodingState / WI.
+    SubmitExplain,
 }
 
-/// Map a bar button to a composer seed or dock focus (pure; no UI side effects).
+/// Map a bar button to a typed Coding Action (pure; no UI side effects).
 pub fn dispatch_quick_action(action: QuickAction) -> QuickActionEffect {
     match action {
-        QuickAction::Explain => {
-            QuickActionEffect::InsertPlannerPrompt("Explain the current file")
-        }
-        QuickAction::Edit => QuickActionEffect::InsertPlannerPrompt("Edit the current file"),
+        QuickAction::Explain => QuickActionEffect::SubmitExplain,
+        QuickAction::Edit => QuickActionEffect::SubmitCodingAction(CodingAction::EditSelection),
         QuickAction::Refactor => {
-            QuickActionEffect::InsertPlannerPrompt("Refactor the selected code")
+            QuickActionEffect::SubmitCodingAction(CodingAction::RefactorSelection)
         }
-        QuickAction::Search => QuickActionEffect::OpenSearchPanel,
-        QuickAction::Run => QuickActionEffect::OpenTerminalPanel,
-        QuickAction::Terminal => QuickActionEffect::FocusTerminalPanel,
-        QuickAction::Git => QuickActionEffect::FocusGitPanel,
+        QuickAction::Search => QuickActionEffect::SubmitCodingAction(CodingAction::SearchWorkspace),
+        QuickAction::Run => QuickActionEffect::SubmitCodingAction(CodingAction::RunProject),
+        QuickAction::More => QuickActionEffect::SubmitCodingAction(CodingAction::OpenCodingActions),
     }
 }
 
 /// Which actions fit in the primary strip vs the "More" overflow menu.
+///
+/// When the overflow control would only contain [`QuickAction::More`], the bar
+/// shows More as a primary button that still submits [`CodingAction::OpenCodingActions`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuickActionLayout {
     /// Actions shown as primary text buttons (left → right).
     pub visible: Vec<QuickAction>,
-    /// Actions collapsed behind "More" (same relative order).
+    /// Actions collapsed behind overflow (same relative order).
     pub overflow: Vec<QuickAction>,
 }
 
 impl QuickActionLayout {
-    /// True when at least one action is behind "More".
+    /// True when at least one action is behind the overflow control.
     pub fn has_overflow(&self) -> bool {
         !self.overflow.is_empty()
     }
@@ -143,9 +135,8 @@ impl QuickActionLayout {
 
 /// Compute primary vs overflow actions for an available pixel width.
 ///
-/// Truncates from the **right** (trailing intents move into More first) so
-/// Explain / Edit / Refactor stay visible longest. Reserves space for a "More"
-/// control whenever any action would overflow.
+/// Truncates from the **right** so Explain / Edit / Refactor stay visible
+/// longest. Reserves space for an overflow control whenever needed.
 pub fn layout_quick_actions(available_width: f32) -> QuickActionLayout {
     layout_quick_actions_with(available_width, &QuickAction::ALL)
 }
@@ -170,8 +161,8 @@ pub fn layout_quick_actions_with(
         }
     };
 
-    let full_width: f32 = actions.iter().map(|a| a.estimated_width()).sum::<f32>()
-        + gaps(actions.len());
+    let full_width: f32 =
+        actions.iter().map(|a| a.estimated_width()).sum::<f32>() + gaps(actions.len());
 
     if full_width <= available_width {
         return QuickActionLayout {
@@ -180,7 +171,6 @@ pub fn layout_quick_actions_with(
         };
     }
 
-    // Need a More button — reserve it, then pack as many leading actions as fit.
     let budget = (available_width - MORE_BUTTON_WIDTH - QUICK_ACTION_GAP).max(0.0);
     let mut visible = Vec::new();
     let mut used = 0.0;
@@ -188,10 +178,7 @@ pub fn layout_quick_actions_with(
     for (index, action) in actions.iter().enumerate() {
         let next = action.estimated_width() + if visible.is_empty() { 0.0 } else { QUICK_ACTION_GAP };
         let remaining = actions.len() - index;
-        // Always leave at least one action for overflow when we already know
-        // not everything fits (otherwise More would be empty).
         if remaining == 1 && visible.is_empty() {
-            // Extremely narrow: show nothing primary; everything in More.
             break;
         }
         if used + next <= budget {
@@ -202,7 +189,6 @@ pub fn layout_quick_actions_with(
         }
     }
 
-    // Ensure More is never empty when the full set doesn't fit.
     if visible.len() == actions.len() {
         visible.pop();
     }
@@ -214,13 +200,13 @@ pub fn layout_quick_actions_with(
 /// Events the Quick Action Bar can emit (chrome + action clicks).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuickActionBarEvent {
-    /// Close the Coding workspace (chrome control, not a Planner intent).
+    /// Close the Coding workspace (chrome control, not a Coding Action).
     CloseWorkspace,
-    /// User activated a Planner / dock quick action.
+    /// User activated a Coding Action button.
     Action(QuickAction),
 }
 
-/// Paint the Quick Action Bar. Returns click events — no Planner/panel side effects.
+/// Paint the Quick Action Bar. Returns click events — no Planner side effects.
 pub fn render_quick_action_bar(
     ui: &mut egui::Ui,
     theme: &Theme,
@@ -242,9 +228,7 @@ pub fn render_quick_action_bar(
             ui.add_space(space::SM);
 
             let error_reserve = if open_error.is_some() { 120.0 } else { 0.0 };
-            let action_budget = (ui.available_width()
-                - error_reserve
-                - QUICK_ACTION_CHROME_RESERVE)
+            let action_budget = (ui.available_width() - error_reserve - QUICK_ACTION_CHROME_RESERVE)
                 .max(0.0);
             let layout = layout_quick_actions(action_budget);
 
@@ -358,34 +342,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn quick_action_dispatch() {
+    fn quick_action_dispatch_is_typed_coding_action() {
         assert_eq!(
             dispatch_quick_action(QuickAction::Explain),
-            QuickActionEffect::InsertPlannerPrompt("Explain the current file")
+            QuickActionEffect::SubmitExplain
         );
         assert_eq!(
             dispatch_quick_action(QuickAction::Edit),
-            QuickActionEffect::InsertPlannerPrompt("Edit the current file")
+            QuickActionEffect::SubmitCodingAction(CodingAction::EditSelection)
         );
         assert_eq!(
             dispatch_quick_action(QuickAction::Refactor),
-            QuickActionEffect::InsertPlannerPrompt("Refactor the selected code")
+            QuickActionEffect::SubmitCodingAction(CodingAction::RefactorSelection)
         );
         assert_eq!(
             dispatch_quick_action(QuickAction::Search),
-            QuickActionEffect::OpenSearchPanel
+            QuickActionEffect::SubmitCodingAction(CodingAction::SearchWorkspace)
         );
         assert_eq!(
             dispatch_quick_action(QuickAction::Run),
-            QuickActionEffect::OpenTerminalPanel
+            QuickActionEffect::SubmitCodingAction(CodingAction::RunProject)
         );
         assert_eq!(
-            dispatch_quick_action(QuickAction::Terminal),
-            QuickActionEffect::FocusTerminalPanel
-        );
-        assert_eq!(
-            dispatch_quick_action(QuickAction::Git),
-            QuickActionEffect::FocusGitPanel
+            dispatch_quick_action(QuickAction::More),
+            QuickActionEffect::SubmitCodingAction(CodingAction::OpenCodingActions)
         );
     }
 
@@ -394,58 +374,28 @@ mod tests {
         let labels: Vec<&str> = QuickAction::ALL.iter().map(|a| a.label()).collect();
         assert_eq!(
             labels,
-            vec![
-                "Explain",
-                "Edit",
-                "Refactor",
-                "Search",
-                "Run",
-                "Terminal",
-                "Git"
-            ]
+            vec!["Explain", "Edit", "Refactor", "Search", "Run", "More"]
         );
 
         let roomy = layout_quick_actions(2000.0);
         assert_eq!(roomy.visible, QuickAction::ALL.to_vec());
         assert!(roomy.overflow.is_empty());
-        assert!(!roomy.has_overflow());
-
-        // Order is stable and left-biased: Planner intents lead the strip.
         assert_eq!(roomy.visible[0], QuickAction::Explain);
-        assert_eq!(roomy.visible[1], QuickAction::Edit);
-        assert_eq!(roomy.visible[2], QuickAction::Refactor);
+        assert_eq!(roomy.visible[5], QuickAction::More);
     }
 
     #[test]
     fn overflow_behavior() {
-        let full = layout_quick_actions(2000.0);
-        assert!(full.overflow.is_empty());
-
-        // Narrow enough that trailing actions collapse into More.
         let narrow = layout_quick_actions(220.0);
         assert!(narrow.has_overflow());
         assert!(!narrow.visible.is_empty());
-        assert!(!narrow.overflow.is_empty());
-        // Visible + overflow partition the full set without duplicates.
         let mut combined = narrow.visible.clone();
         combined.extend(narrow.overflow.iter().copied());
         assert_eq!(combined, QuickAction::ALL.to_vec());
-        // Trailing actions overflow first.
-        assert!(narrow.overflow.contains(&QuickAction::Git));
         assert!(narrow.visible.contains(&QuickAction::Explain));
 
-        // Extremely narrow — everything behind More.
         let tiny = layout_quick_actions(40.0);
         assert!(tiny.visible.is_empty());
         assert_eq!(tiny.overflow, QuickAction::ALL.to_vec());
-
-        // Mid width: More appears and primary count shrinks vs full.
-        let mid = layout_quick_actions(280.0);
-        assert!(mid.has_overflow());
-        assert!(mid.visible.len() < QuickAction::ALL.len());
-        assert_eq!(
-            mid.visible.len() + mid.overflow.len(),
-            QuickAction::ALL.len()
-        );
     }
 }

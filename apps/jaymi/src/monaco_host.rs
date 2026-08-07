@@ -305,31 +305,6 @@ impl MonacoHost {
         }
     }
 
-    /// Release keyboard so egui TextEdit (terminal, search, …) can receive keys.
-    ///
-    /// Child WKWebView stays first-responder after Monaco clicks. Blur the JS
-    /// editor and briefly toggle visibility (no `unsafe`) so the parent window
-    /// can deliver keys to egui. Call at most once per focus episode.
-    pub fn release_keyboard(&mut self) -> Result<(), String> {
-        if self.keyboard_released {
-            return Ok(());
-        }
-        let _ = self.webview.evaluate_script(
-            "(function(){try{if(window.editor&&editor.blur)editor.blur();var a=document.activeElement;if(a&&a.blur)a.blur();}catch(e){}})();",
-        );
-        if self.ready && self.last_bounds.is_some() {
-            let _ = self.webview.set_visible(false);
-            let _ = self.webview.set_visible(true);
-        }
-        self.keyboard_released = true;
-        Ok(())
-    }
-
-    /// Allow Monaco to take keyboard again after egui chrome is done.
-    pub fn clear_keyboard_release(&mut self) {
-        self.keyboard_released = false;
-    }
-
     /// Whether Monaco finished loading and can accept documents.
     pub fn is_ready(&self) -> bool {
         self.ready

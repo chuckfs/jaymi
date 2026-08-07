@@ -2162,39 +2162,46 @@ impl JaymiApp {
                     })
                 }
                 CodingShellEvent::QuickAction(action) => {
-                    match dispatch_quick_action(action) {
-                        QuickActionEffect::InsertPlannerPrompt(text) => {
-                            self.prompt = text.to_string();
-                            self.focus_composer = true;
-                            Ok(())
-                        }
-                        QuickActionEffect::OpenSearchPanel => {
-                            let result = self.app.with_coding_state(|coding| {
-                                coding.show_bottom_tab(CodingBottomTab::Search);
-                            });
-                            if result.is_ok() {
-                                let _ = self.app.persist_coding_editor_workspace();
+                    if self.awaiting_reply || self.app.generation_active() {
+                        Ok(())
+                    } else {
+                        self.awaiting_reply = true;
+                        self.loading_started_at = Some(std::time::Instant::now());
+                        let result = match dispatch_quick_action(action) {
+                            QuickActionEffect::SubmitExplain => {
+                                self.app.begin_explain_coding_action()
                             }
-                            result
-                        }
-                        QuickActionEffect::OpenTerminalPanel
-                        | QuickActionEffect::FocusTerminalPanel => {
-                            let result = self.app.with_coding_state(|coding| {
-                                coding.show_bottom_tab(CodingBottomTab::Terminal);
-                            });
-                            if result.is_ok() {
-                                let _ = self.app.persist_coding_editor_workspace();
+                            QuickActionEffect::SubmitCodingAction(coding_action) => {
+                                self.app.begin_coding_action(coding_action)
                             }
-                            result
-                        }
-                        QuickActionEffect::FocusGitPanel => {
-                            let result = self.app.with_coding_state(|coding| {
-                                coding.show_bottom_tab(CodingBottomTab::Git);
-                            });
-                            if result.is_ok() {
-                                let _ = self.app.persist_coding_editor_workspace();
+                        };
+                        match result {
+                            Ok(BeginGeneration::Started) => {
+                                self.error = None;
+                                self.status = None;
+                                if let Ok(session) = self.app.experience() {
+                                    self.experience = session;
+                                }
+                                Ok(())
                             }
-                            result
+                            Ok(BeginGeneration::Completed(response)) => {
+                                self.awaiting_reply = false;
+                                self.loading_started_at = None;
+                                self.error = None;
+                                self.status = None;
+                                if let Ok(session) = self.app.experience() {
+                                    self.experience = session;
+                                } else {
+                                    self.experience
+                                        .mirror_conversation_state(response.conversation_state);
+                                }
+                                Ok(())
+                            }
+                            Err(error) => {
+                                self.awaiting_reply = false;
+                                self.loading_started_at = None;
+                                Err(error)
+                            }
                         }
                     }
                 }

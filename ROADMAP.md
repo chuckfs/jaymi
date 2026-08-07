@@ -238,7 +238,7 @@ Capabilities also change the user experience.
 
 Conversation stays permanent. Workspaces expand beside it.
 
-**Current:** conversation shell + Coding Workspace shell (five dock pages — Terminal / Problems / Search / Git / Diagnostics — plus an Output placeholder not listed in `pages()`) + `CodingState` + workspace expansion model + capability state / inspector + **WorkspaceSnapshot** (B2.1 / B2.2 / B2.13.2) + **EditorSnapshot** (B2.3 / B2.13.3 editor intelligence) + **ProjectSnapshot** (B2.4 project intelligence) + **GitSnapshot** (B2.5 — **Current**) + **RuntimeSnapshot** (B2.6 — **Current**) + **Context Candidate Graph** (B2.7 / B2.13.1 — **Current**) + **Context Selection** (B2.8) + **Workspace Memory** (B2.9) + **Environmental Resolution** (B2.10) + **Workspace Diagnostics** (B2.11) + **Constitutional Audit** (B2.12) + **docs sync** (B2.13.4).
+**Current:** conversation shell + Coding Workspace shell (five dock pages — Terminal / Problems / Search / Git / Diagnostics — plus an Output placeholder not listed in `pages()`) + `CodingState` + workspace expansion model + capability state / inspector + **WorkspaceSnapshot** (B2.1 / B2.2 / B2.13.2) + **EditorSnapshot** (B2.3 / B2.13.3 editor intelligence) + **ProjectSnapshot** (B2.4 project intelligence) + **GitSnapshot** (B2.5 — **Current**) + **RuntimeSnapshot** (B2.6 — **Current**) + **Context Candidate Graph** (B2.7 / B2.13.1 — **Current**) + **Context Selection** (B2.8) + **Workspace Memory** (B2.9) + **Environmental Resolution** (B2.10) + **Workspace Diagnostics** (B2.11) + **Constitutional Audit** (B2.12) + **docs sync** (B2.13.4) + **Coding Actions** (C0.1) + **Coding Understanding** (C1.1) + **Project Understanding** (C1.2) + **Coding Review** (C1.3) + **Coding Plan / Generation Planning** (C1.4) + **Code Generation** (C1.5) + **Coding Execution Plans** (C1.6).
 
 **Target UX:**
 
@@ -359,6 +359,51 @@ Workspace Intelligence (including **Current** GitSnapshot, RuntimeSnapshot, and
 Context Candidate Graph) is documented accurately; stale B2 Target residuals
 removed. Docs only — no implementation changes. See
 [docs/workspace-intelligence.md](docs/workspace-intelligence.md).
+
+**C0.1:** Coding Actions — Quick Action Bar submits typed `CodingAction`
+intents (`ExplainSelection` / `ExplainFile` / `EditSelection` /
+`RefactorSelection` / `SearchWorkspace` / `RunProject` / `OpenCodingActions`)
+as Conversation First turns. UI emits intents only; Planner routes;
+Workspace Intelligence supplies context; Run uses reviewed Execution Plans.
+Honest replies when search/run cannot proceed. See
+[docs/coding-actions.md](docs/coding-actions.md).
+
+**C1.1:** Coding Understanding — Understand Before Acting. Explain actions and
+free-text understanding questions return structured Purpose / Responsibilities /
+Key Symbols / Relationships / Potential Issues / Suggested Next Actions built
+only from already-assembled Workspace Intelligence. No new context systems,
+provider bypasses, filesystem scans, tools, or edits. Constitutional audit in
+[docs/coding-understanding.md](docs/coding-understanding.md).
+
+**C1.2:** Project Understanding — whole-project orientation from
+WorkspaceSnapshot / ProjectSnapshot / GitSnapshot / Workspace Memory /
+Conversation (assembled sections only). Structured Overview · Architecture ·
+Important Modules · Relationships · Activity & Risks · Suggested Next Actions.
+Angles: overview, architecture, feature placement, important modules. No file
+modifications, tools, planning, or execution. Constitutional audit in
+[docs/project-understanding.md](docs/project-understanding.md).
+
+**C1.3:** Coding Review — structured Strengths · Weaknesses · Potential Bugs ·
+Complexity · Performance · Maintainability · Architecture for file / function /
+changes review requests. No edits, execution, or Execution Plans. Constitutional
+audit in [docs/coding-review.md](docs/coding-review.md).
+
+**C1.4:** Generation Planning — Coding Plans (Plan · Files to Create · Files to
+Modify · Dependencies · Estimated Risk · Summary) before any code generation.
+Examples: “Build Pong.”, “Create a parser.”, “Write tests.” No codegen, tool
+execution, file writes, or Execution Plans. Constitutional audit in
+[docs/coding-plan.md](docs/coding-plan.md).
+
+**C1.5:** Code Generation — approved Coding Plans become CreateFile /
+ModifyFile / DeleteFile ops; Planner converts them into Execution Plans with
+mandatory Review Before Action. No provider writes or LLM edits directly.
+Constitutional audit in [docs/code-generation.md](docs/code-generation.md).
+
+**C1.6:** Coding Execution Plans — extend the universal Review Card for coding
+workflows (Execution Plan · Files affected · Diff Preview · Risk ·
+Approve / Modify / Cancel). Every mutation still uses the existing Execution
+Plan architecture; no coding or editor bypass. Constitutional audit in
+[docs/coding-execution-plans.md](docs/coding-execution-plans.md).
 
 ⸻
 

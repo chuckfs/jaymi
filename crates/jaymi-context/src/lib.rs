@@ -1385,6 +1385,15 @@ impl ContextEngine {
                 ));
             }
         }
+        if let Some(understanding) = hints.and_then(|h| h.understanding.as_ref()) {
+            notes.push(format!("coding_understanding={understanding}"));
+        }
+        if let Some(review) = hints.and_then(|h| h.review.as_ref()) {
+            notes.push(format!("coding_review={review}"));
+        }
+        if let Some(coding_plan) = hints.and_then(|h| h.coding_plan.as_ref()) {
+            notes.push(format!("coding_plan={coding_plan}"));
+        }
         notes.extend(budget_report.summaries.iter().cloned());
         builder = builder.planner_metadata(PlannerMetadataSection {
             assemble_generation,

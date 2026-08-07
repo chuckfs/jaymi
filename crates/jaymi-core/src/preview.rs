@@ -49,6 +49,23 @@ impl PreviewKind {
             Self::Unavailable => "unavailable",
         }
     }
+
+    /// Review Card section title (Sprint C1.6 Coding Execution Plans).
+    ///
+    /// Diff-like previews use **Diff Preview**; path / git / unavailable keep
+    /// a shorter **Preview** label so the universal card stays readable.
+    pub fn review_section_title(self) -> &'static str {
+        match self {
+            Self::UnifiedDiff | Self::LspWorkspaceEdit => "Diff Preview",
+            Self::PathRename
+            | Self::PathMove
+            | Self::PathCreate
+            | Self::PathDelete
+            | Self::GitImpact
+            | Self::ImageStub
+            | Self::Unavailable => "Preview",
+        }
+    }
 }
 
 impl std::fmt::Display for PreviewKind {
@@ -128,7 +145,7 @@ impl ActionPreview {
     /// Plain-text render for chat / Review Card bodies.
     pub fn render_text(&self, expanded: bool) -> String {
         let mut lines = Vec::new();
-        lines.push(format!("Preview · {}", self.title));
+        lines.push(format!("{} · {}", self.kind.review_section_title(), self.title));
         for summary in &self.summary_lines {
             lines.push(format!("• {summary}"));
         }

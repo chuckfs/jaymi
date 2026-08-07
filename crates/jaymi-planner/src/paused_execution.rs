@@ -40,6 +40,11 @@ pub struct PausedExecution {
     pub permission_result: Option<PermissionCheckResult>,
     /// When the Planner paused (for timeout).
     pub paused_at: Instant,
+    /// Optional multi-op generation batch (Sprint C1.5).
+    ///
+    /// When non-empty, Approve executes every `(tool_id, ToolInput)` in order
+    /// under the same reviewed plan. Empty ⇒ single [`Self::tool_input`] resume.
+    pub generation_calls: Vec<(String, ToolInput)>,
 }
 
 impl PausedExecution {
@@ -481,6 +486,7 @@ mod tests {
             policy_evaluation: None,
             permission_result: None,
             paused_at: Instant::now(),
+            generation_calls: Vec::new(),
         }
     }
 

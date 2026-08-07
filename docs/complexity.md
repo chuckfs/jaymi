@@ -16,7 +16,7 @@ Planner
     ├─ Intent Resolution          (unchanged)
     ├─ Capability Resolution      (unchanged)
     ├─ Complexity Assessment      ← new, deterministic
-    └─ AssembleHints { intent, capability_ids, complexity }
+    └─ AssembleHints { intent, capability_ids, complexity, environmental?, understanding? }
             │
             ▼
         Context Engine assemble

@@ -7,7 +7,8 @@ use std::path::PathBuf;
 
 use jaymi_capabilities::Capability;
 use jaymi_core::{
-    DiscoveryQueryKind, GitOperation, IntentId, SearchRequest, TerminalOperation, UserRequest,
+    CodingAction, DiscoveryQueryKind, GitOperation, IntentId, SearchRequest, TerminalOperation,
+    UserRequest,
 };
 
 /// Deterministic intents recognized by the Planner.
@@ -162,6 +163,45 @@ pub struct DecisionEngine;
 impl DecisionEngine {
     /// Determine user intent without language-model reasoning.
     pub fn determine_intent(&self, request: &UserRequest) -> Intent {
+        // Typed Coding Actions (Sprint C0.1) — UI emits these; Planner routes.
+        // Structured search/terminal fields set by Application win when present.
+        if let Some(action) = request.coding_action {
+            match action {
+                CodingAction::SearchWorkspace => {
+                    if let Some(search) = &request.search {
+                        return Intent::SearchKnowledge {
+                            request: search.clone(),
+                        };
+                    }
+                    // No query yet — conversational / deterministic ask.
+                    return Intent::Unknown;
+                }
+                CodingAction::RunProject => {
+                    if let Some(terminal) = &request.terminal {
+                        let session_id_ok = terminal.operation == TerminalOperation::Create
+                            || !terminal.session_id.trim().is_empty();
+                        if session_id_ok && !terminal.cwd.as_os_str().is_empty() {
+                            return Intent::RunTerminal {
+                                operation: terminal.operation,
+                                session_id: terminal.session_id.clone(),
+                                cwd: terminal.cwd.clone(),
+                                command: terminal.command.clone(),
+                                title: terminal.title.clone(),
+                            };
+                        }
+                    }
+                    return Intent::Unknown;
+                }
+                CodingAction::ExplainSelection
+                | CodingAction::ExplainFile
+                | CodingAction::EditSelection
+                | CodingAction::RefactorSelection
+                | CodingAction::OpenCodingActions => {
+                    return Intent::Unknown;
+                }
+            }
+        }
+
         if let Some(query) = &request.project_knowledge {
             return Intent::SearchProjectKnowledge {
                 project_id: query.project_id.clone(),

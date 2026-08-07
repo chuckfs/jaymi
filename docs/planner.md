@@ -130,8 +130,11 @@ Decision Engine    Reasoning Engine (conversational / unknown after Context)
    └──────┬────────┘
           │
    Intent → Capability → Complexity Assessment → Environmental Resolution
+   → Coding Review / Coding Plan / Coding Understanding (observational modes)
+   → AssembleHints → ContextBundle → Reasoning / tools
           │
-   AssembleHints (intent, capability_ids, complexity, environmental)
+   AssembleHints (intent, capability_ids, complexity, environmental,
+                  review, coding_plan, understanding)
           │
    Context Policy → Providers → Context Engine → ContextBundle
           │
@@ -155,6 +158,39 @@ rule-based class (`greeting` … `research_question`) attached to
 (`rename this`, `fix it`, `why?`, `clean this up`) from session Workspace
 Intelligence before assemble / Reasoning. LLMs never invent workspace
 references. Pipeline: [docs/environmental-resolution.md](environmental-resolution.md).
+
+**Coding Understanding** (Sprint C1.1) detects Explain / understanding questions,
+scaffolds Purpose → Suggested Next Actions from the assembled ContextBundle,
+and instructs Reasoning via a prompt section — still no tools, edits, or
+filesystem scans. Spec: [docs/coding-understanding.md](coding-understanding.md).
+
+**Project Understanding** (Sprint C1.2) deepens the project focus with angles
+(overview / architecture / feature placement / important modules) and structured
+Overview → Suggested Next Actions from ProjectSnapshot, GitSnapshot, Workspace
+Memory, Conversation, and WorkspaceSnapshot-derived sections — understanding
+only (no plans, tools, or edits). Spec:
+[docs/project-understanding.md](project-understanding.md).
+
+**Coding Review** (Sprint C1.3) returns structured Strengths → Architecture for
+“review this file / function / my changes” — review only (no edits, execution,
+or Execution Plans). Spec: [docs/coding-review.md](coding-review.md).
+
+**Coding Plan / Generation Planning** (Sprint C1.4) returns Plan · Files to
+Create · Files to Modify · Dependencies · Estimated Risk · Summary for
+generation asks (“Build Pong.”, “Create a parser.”, “Write tests.”) — planning
+only (no codegen, tools, writes, or Execution Plans). Spec:
+[docs/coding-plan.md](coding-plan.md).
+
+**Code Generation** (Sprint C1.5) turns an approved Coding Plan into
+CreateFile / ModifyFile / DeleteFile ops, converts them into Execution Plans,
+and requires Review Before Action before tools run. Spec:
+[docs/code-generation.md](code-generation.md).
+
+**Coding Execution Plans** (Sprint C1.6) extend the universal Review Card for
+coding mutations — Execution Plan · Files affected · Diff Preview · Risk ·
+Approve / Modify / Cancel — still the same Execution Plan architecture (no
+coding or editor bypass). Spec:
+[docs/coding-execution-plans.md](coding-execution-plans.md).
 
 Reasoning is delegated.
 

@@ -25,6 +25,11 @@
 #![forbid(unsafe_code)]
 
 pub mod approval_history;
+pub mod coding_actions;
+pub mod code_generation;
+pub mod coding_plan;
+pub mod coding_review;
+pub mod coding_understanding;
 pub mod complexity;
 pub mod conversation_history;
 pub mod conversation_state;
@@ -54,6 +59,14 @@ pub use conversational::{
     ConversationalAssemble, ConversationalTerminal, conversation_state_for_lifecycle,
     conversational_terminal_from_event, conversational_terminal_from_response,
     lifecycle_from_reasoning_response, planner_response_from_terminal,
+};
+pub use coding_plan::{CodingPlan, CodingPlanAssessment, CodingPlanKind};
+pub use code_generation::{
+    CodeGeneration, GenerationOp, GenerationOpKind, GenerationToolCall,
+};
+pub use coding_review::{CodingReview, ReviewAssessment, ReviewFocus};
+pub use coding_understanding::{
+    CodingUnderstanding, ProjectUnderstandingAngle, UnderstandingAssessment, UnderstandingFocus,
 };
 pub use environmental::{
     resolve_environment, EnvironmentalResolution, ResolutionConfidence, ResolvedKind,
@@ -248,6 +261,14 @@ pub struct PlannerResponse {
     pub conversation_state: ConversationState,
     /// Conversational pipeline stage timings (Developer Diagnostics only).
     pub pipeline_timing: Option<jaymi_reasoning::PipelineTiming>,
+    /// Coding Understanding scaffold (Sprint C1.1) when Understand Before Acting ran.
+    pub coding_understanding: Option<coding_understanding::CodingUnderstanding>,
+    /// Coding Review scaffold (Sprint C1.3) when review-only mode ran.
+    pub coding_review: Option<coding_review::CodingReview>,
+    /// Coding Plan scaffold (Sprint C1.4) when generation-planning mode ran.
+    pub coding_plan: Option<coding_plan::CodingPlan>,
+    /// Code Generation batch (Sprint C1.5) when ops were proposed for review.
+    pub code_generation: Option<code_generation::CodeGeneration>,
 }
 
 impl PlannerResponse {
@@ -344,6 +365,12 @@ pub struct Planner {
     preferred_model: Mutex<Option<jaymi_reasoning::ModelIdentifier>>,
     /// Last model resolution for conversational diagnostics (B1.13.6).
     last_model_selection: Mutex<Option<LastModelSelection>>,
+    /// Last Coding Understanding scaffold for conversational diagnostics (C1.1).
+    last_understanding: Mutex<Option<coding_understanding::CodingUnderstanding>>,
+    /// Last Coding Review scaffold for conversational diagnostics (C1.3).
+    last_review: Mutex<Option<coding_review::CodingReview>>,
+    /// Last Coding Plan scaffold for conversational diagnostics (C1.4).
+    last_coding_plan: Mutex<Option<coding_plan::CodingPlan>>,
     /// How many times [`Self::handle`] has been entered (integrity tests).
     handle_count: AtomicU64,
     /// Plans waiting on conversational review (resume without replan).
@@ -380,6 +407,9 @@ impl Planner {
             model_registry: deps.model_registry,
             preferred_model: Mutex::new(None),
             last_model_selection: Mutex::new(None),
+            last_understanding: Mutex::new(None),
+            last_review: Mutex::new(None),
+            last_coding_plan: Mutex::new(None),
             handle_count: AtomicU64::new(0),
             paused: Mutex::new(PausedPlanStore::default()),
             plan_history: Mutex::new(Vec::new()),
@@ -488,6 +518,95 @@ impl Planner {
                 )
             })
             .unwrap_or((None, None, false))
+    }
+
+    fn remember_understanding(
+        &self,
+        understanding: Option<coding_understanding::CodingUnderstanding>,
+    ) {
+        if let Ok(mut guard) = self.last_understanding.lock() {
+            *guard = understanding;
+        }
+    }
+
+    fn take_understanding(&self) -> Option<coding_understanding::CodingUnderstanding> {
+        self.last_understanding
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take())
+    }
+
+    fn remember_review(&self, review: Option<coding_review::CodingReview>) {
+        if let Ok(mut guard) = self.last_review.lock() {
+            *guard = review;
+        }
+    }
+
+    fn take_review(&self) -> Option<coding_review::CodingReview> {
+        self.last_review.lock().ok().and_then(|mut guard| guard.take())
+    }
+
+    fn remember_coding_plan(&self, plan: Option<coding_plan::CodingPlan>) {
+        if let Ok(mut guard) = self.last_coding_plan.lock() {
+            *guard = plan;
+        }
+    }
+
+    fn take_coding_plan(&self) -> Option<coding_plan::CodingPlan> {
+        self.last_coding_plan
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take())
+    }
+
+    fn llm_context_for_understanding(
+        &self,
+        context: &ContextBundle,
+        understanding: Option<&coding_understanding::UnderstandingAssessment>,
+        review: Option<&coding_review::ReviewAssessment>,
+        coding_plan: Option<&coding_plan::CodingPlanAssessment>,
+    ) -> LlmContext {
+        let mut llm = LlmContext::from_bundle(context);
+        if let Some(assessment) = understanding {
+            let instruction = assessment.scaffold.prompt_instruction_with_angle(
+                assessment.focus,
+                assessment.project_angle,
+                assessment.feature_hint.as_deref(),
+            );
+            llm = llm.with_extension(
+                coding_understanding::LLM_EXTENSION_KEY,
+                serde_json::json!({
+                    "focus": assessment.focus.as_str(),
+                    "angle": assessment.project_angle.map(|a| a.as_str()),
+                    "feature_hint": assessment.feature_hint,
+                    "instruction": instruction,
+                }),
+            );
+        }
+        if let Some(assessment) = review {
+            let instruction = assessment.scaffold.prompt_instruction(assessment.focus);
+            llm = llm.with_extension(
+                coding_review::LLM_EXTENSION_KEY,
+                serde_json::json!({
+                    "focus": assessment.focus.as_str(),
+                    "instruction": instruction,
+                }),
+            );
+        }
+        if let Some(assessment) = coding_plan {
+            let instruction = assessment
+                .scaffold
+                .prompt_instruction(assessment.kind, &assessment.goal);
+            llm = llm.with_extension(
+                coding_plan::LLM_EXTENSION_KEY,
+                serde_json::json!({
+                    "kind": assessment.kind.as_str(),
+                    "goal": assessment.goal,
+                    "instruction": instruction,
+                }),
+            );
+        }
+        llm
     }
 
     /// Current conversation runtime state (Planner-owned).
@@ -1084,12 +1203,24 @@ impl Planner {
                 .collect(),
             complexity: Some(complexity.class_id().to_string()),
             environmental: None,
+            understanding: None,
+            review: None,
+            coding_plan: None,
         };
         if environmental.needed {
             hints.environmental = Some(environmental.to_hints());
             if let Some(note) = environmental.summary_note() {
                 jaymi_logging::info("planner", note);
             }
+        }
+        // Observational modes annotate hints only (review > coding plan > understanding).
+        if let Some(assessment) = coding_review::detect_review_request(&request) {
+            hints.review = Some(assessment.hint_id());
+        } else if let Some(assessment) = coding_plan::detect_coding_plan_request(&request) {
+            hints.coding_plan = Some(assessment.hint_id());
+        } else if let Some(assessment) = coding_understanding::detect_understanding_request(&request)
+        {
+            hints.understanding = Some(assessment.hint_id());
         }
 
         jaymi_logging::info(
@@ -1143,11 +1274,92 @@ impl Planner {
             // History is empty on the generic handle path; Application
             // conversational UX passes prior turns via
             // handle_conversational_with_observer / start_conversation_stream.
+            if let Some(action) = request.coding_action {
+                if let Some(response) =
+                    coding_actions::deterministic_coding_action_response(action)
+                {
+                    self.transition_conversation(ConversationState::Completed);
+                    return Ok(self.finalize_response(response, context));
+                }
+            }
+            if code_generation::detect_generation_request(&request) {
+                return self.complete_code_generation_from_request(&request, context);
+            }
+            let review = coding_review::detect_review_request(&request).map(|assessment| {
+                coding_review::finalize_assessment(assessment, &context)
+            });
+            let coding_plan = if review.is_none() {
+                coding_plan::detect_coding_plan_request(&request).map(|assessment| {
+                    coding_plan::finalize_assessment(assessment, &context)
+                })
+            } else {
+                None
+            };
+            let understanding = if review.is_none() && coding_plan.is_none() {
+                coding_understanding::detect_understanding_request(&request).map(|assessment| {
+                    coding_understanding::finalize_assessment(assessment, &context)
+                })
+            } else {
+                None
+            };
             let mut early_pipeline = jaymi_reasoning::PipelineTiming::new();
             if let Some(inspection) = self.context.last_inspection() {
                 early_pipeline.merge(conversational::pipeline_from_context_inspection(
                     &inspection,
                 ));
+            }
+            if let Some(assessment) = review.clone() {
+                if !self.reasoning.is_implemented() {
+                    self.transition_conversation(ConversationState::Completed);
+                    let response = PlannerResponse {
+                        content: assessment.scaffold.to_markdown(),
+                        reasoning_used: false,
+                        stream_lifecycle: Some(StreamingLifecycle::Idle),
+                        coding_review: Some(assessment.scaffold),
+                        pipeline_timing: if early_pipeline.is_empty() {
+                            None
+                        } else {
+                            Some(early_pipeline)
+                        },
+                        ..PlannerResponse::default()
+                    };
+                    return Ok(self.finalize_response(response, context));
+                }
+            } else if let Some(assessment) = coding_plan.clone() {
+                self.remember_coding_plan(Some(assessment.scaffold.clone()));
+                if !self.reasoning.is_implemented() {
+                    self.transition_conversation(ConversationState::Completed);
+                    let response = PlannerResponse {
+                        content: assessment.scaffold.to_markdown(),
+                        reasoning_used: false,
+                        stream_lifecycle: Some(StreamingLifecycle::Idle),
+                        coding_plan: Some(assessment.scaffold),
+                        pipeline_timing: if early_pipeline.is_empty() {
+                            None
+                        } else {
+                            Some(early_pipeline)
+                        },
+                        ..PlannerResponse::default()
+                    };
+                    return Ok(self.finalize_response(response, context));
+                }
+            } else if let Some(assessment) = understanding.clone() {
+                if !self.reasoning.is_implemented() {
+                    self.transition_conversation(ConversationState::Completed);
+                    let response = PlannerResponse {
+                        content: assessment.scaffold.to_markdown_for(assessment.focus),
+                        reasoning_used: false,
+                        stream_lifecycle: Some(StreamingLifecycle::Idle),
+                        coding_understanding: Some(assessment.scaffold),
+                        pipeline_timing: if early_pipeline.is_empty() {
+                            None
+                        } else {
+                            Some(early_pipeline)
+                        },
+                        ..PlannerResponse::default()
+                    };
+                    return Ok(self.finalize_response(response, context));
+                }
             }
             return self.handle_conversational_request_with_observer(
                 &request,
@@ -1155,6 +1367,9 @@ impl Planner {
                 &intent,
                 Vec::new(),
                 early_pipeline,
+                understanding,
+                review,
+                coding_plan,
                 |_| {},
             );
         };
@@ -1251,12 +1466,121 @@ impl Planner {
             // Not a conversational turn — fall back to full handle.
             return self.handle(request);
         }
+        if let Some(action) = request.coding_action {
+            if matches!(assembled.intent, Intent::Unknown) {
+                if let Some(response) =
+                    coding_actions::deterministic_coding_action_response(action)
+                {
+                    self.transition_conversation(ConversationState::Completed);
+                    return Ok(self.finalize_response(response, assembled.context));
+                }
+            }
+        }
+        if code_generation::detect_generation_request(&request) {
+            return self.complete_code_generation_from_request(&request, assembled.context);
+        }
+        // Coding Review — WI scaffold without tools / edits / plans.
+        if let Some(assessment) = assembled.review.clone() {
+            self.remember_review(Some(assessment.scaffold.clone()));
+            if !self.reasoning.is_implemented() {
+                self.transition_conversation(ConversationState::Completed);
+                let mut response = PlannerResponse {
+                    content: assessment.scaffold.to_markdown(),
+                    reasoning_used: false,
+                    stream_lifecycle: Some(StreamingLifecycle::Idle),
+                    coding_review: Some(assessment.scaffold),
+                    ..PlannerResponse::default()
+                };
+                response.pipeline_timing = if assembled.pipeline.is_empty() {
+                    None
+                } else {
+                    Some(assembled.pipeline)
+                };
+                return Ok(self.finalize_response(response, assembled.context));
+            }
+            return self.handle_conversational_request_with_observer(
+                &request,
+                assembled.context,
+                &assembled.intent,
+                history,
+                assembled.pipeline,
+                None,
+                Some(assessment),
+                None,
+                on_event,
+            );
+        }
+        // Generation Planning — Coding Plan without codegen / tools / writes.
+        if let Some(assessment) = assembled.coding_plan.clone() {
+            self.remember_coding_plan(Some(assessment.scaffold.clone()));
+            if !self.reasoning.is_implemented() {
+                self.transition_conversation(ConversationState::Completed);
+                let mut response = PlannerResponse {
+                    content: assessment.scaffold.to_markdown(),
+                    reasoning_used: false,
+                    stream_lifecycle: Some(StreamingLifecycle::Idle),
+                    coding_plan: Some(assessment.scaffold),
+                    ..PlannerResponse::default()
+                };
+                response.pipeline_timing = if assembled.pipeline.is_empty() {
+                    None
+                } else {
+                    Some(assembled.pipeline)
+                };
+                return Ok(self.finalize_response(response, assembled.context));
+            }
+            return self.handle_conversational_request_with_observer(
+                &request,
+                assembled.context,
+                &assembled.intent,
+                history,
+                assembled.pipeline,
+                None,
+                None,
+                Some(assessment),
+                on_event,
+            );
+        }
+        // Understand Before Acting — WI scaffold without tools / edits.
+        if let Some(assessment) = assembled.understanding.clone() {
+            self.remember_understanding(Some(assessment.scaffold.clone()));
+            if !self.reasoning.is_implemented() {
+                self.transition_conversation(ConversationState::Completed);
+                let mut response = PlannerResponse {
+                    content: assessment.scaffold.to_markdown_for(assessment.focus),
+                    reasoning_used: false,
+                    stream_lifecycle: Some(StreamingLifecycle::Idle),
+                    coding_understanding: Some(assessment.scaffold),
+                    ..PlannerResponse::default()
+                };
+                response.pipeline_timing = if assembled.pipeline.is_empty() {
+                    None
+                } else {
+                    Some(assembled.pipeline)
+                };
+                return Ok(self.finalize_response(response, assembled.context));
+            }
+            return self.handle_conversational_request_with_observer(
+                &request,
+                assembled.context,
+                &assembled.intent,
+                history,
+                assembled.pipeline,
+                Some(assessment),
+                None,
+                None,
+                on_event,
+            );
+        }
         self.handle_conversational_request_with_observer(
             &request,
             assembled.context,
             &assembled.intent,
             history,
             assembled.pipeline,
+            None,
+            None,
+            None,
             on_event,
         )
     }
@@ -1289,12 +1613,63 @@ impl Planner {
                 "start_conversation_stream requires a conversational / unknown request",
             ));
         }
+        if let Some(action) = request.coding_action {
+            if matches!(assembled.intent, Intent::Unknown)
+                && coding_actions::deterministic_coding_action_response(action).is_some()
+            {
+                return Err(JaymiError::new(
+                    "coding action uses deterministic planner reply",
+                ));
+            }
+        }
+        // Review / coding plan / understanding without a reasoning backend → soft path.
+        if assembled.review.is_some() && !self.reasoning.is_implemented() {
+            if let Some(assessment) = &assembled.review {
+                self.remember_review(Some(assessment.scaffold.clone()));
+            }
+            return Err(JaymiError::new(
+                "coding review uses deterministic scaffold without reasoning backend",
+            ));
+        }
+        if assembled.coding_plan.is_some() && !self.reasoning.is_implemented() {
+            if let Some(assessment) = &assembled.coding_plan {
+                self.remember_coding_plan(Some(assessment.scaffold.clone()));
+            }
+            return Err(JaymiError::new(
+                "coding plan uses deterministic scaffold without reasoning backend",
+            ));
+        }
+        if assembled.understanding.is_some() && !self.reasoning.is_implemented() {
+            if let Some(assessment) = &assembled.understanding {
+                self.remember_understanding(Some(assessment.scaffold.clone()));
+            }
+            return Err(JaymiError::new(
+                "coding understanding uses deterministic scaffold without reasoning backend",
+            ));
+        }
         let mut pipeline = assembled.pipeline;
         let context = assembled.context;
         if !self.reasoning.is_implemented() {
             return Err(JaymiError::new("no reasoning backend is available"));
         }
-        let llm = LlmContext::from_bundle(&context);
+        let understanding = assembled.understanding.clone();
+        let review = assembled.review.clone();
+        let coding_plan = assembled.coding_plan.clone();
+        if let Some(assessment) = &understanding {
+            self.remember_understanding(Some(assessment.scaffold.clone()));
+        }
+        if let Some(assessment) = &review {
+            self.remember_review(Some(assessment.scaffold.clone()));
+        }
+        if let Some(assessment) = &coding_plan {
+            self.remember_coding_plan(Some(assessment.scaffold.clone()));
+        }
+        let llm = self.llm_context_for_understanding(
+            &context,
+            understanding.as_ref(),
+            review.as_ref(),
+            coding_plan.as_ref(),
+        );
         let reasoning_request =
             self.build_reasoning_request(request.content.trim(), llm, history)?;
         self.transition_conversation(ConversationState::Reasoning);
@@ -1333,6 +1708,9 @@ impl Planner {
             provider_model,
             model_fallback,
         );
+        response.coding_understanding = self.take_understanding();
+        response.coding_review = self.take_review();
+        response.coding_plan = self.take_coding_plan();
         if let Some(early) = early_pipeline {
             let mut merged = early;
             if let Some(later) = response.pipeline_timing.take() {
@@ -1387,8 +1765,62 @@ impl Planner {
                 jaymi_logging::info("planner", note);
             }
         }
+        let review_detect = coding_review::detect_review_request(request);
+        let coding_plan_detect = if review_detect.is_none() {
+            coding_plan::detect_coding_plan_request(request)
+        } else {
+            None
+        };
+        let understanding_detect =
+            if review_detect.is_none() && coding_plan_detect.is_none() {
+                coding_understanding::detect_understanding_request(request)
+            } else {
+                None
+            };
+        if let Some(assessment) = &review_detect {
+            hints.review = Some(assessment.hint_id());
+            jaymi_logging::info(
+                "planner",
+                format!(
+                    "coding review focus={} rules=[{}]",
+                    assessment.focus.as_str(),
+                    assessment.matched_rules.join(",")
+                ),
+            );
+        }
+        if let Some(assessment) = &coding_plan_detect {
+            hints.coding_plan = Some(assessment.hint_id());
+            jaymi_logging::info(
+                "planner",
+                format!(
+                    "coding plan kind={} rules=[{}]",
+                    assessment.kind.as_str(),
+                    assessment.matched_rules.join(",")
+                ),
+            );
+        }
+        if let Some(assessment) = &understanding_detect {
+            hints.understanding = Some(assessment.hint_id());
+            jaymi_logging::info(
+                "planner",
+                format!(
+                    "coding understanding focus={} rules=[{}]",
+                    assessment.focus.as_str(),
+                    assessment.matched_rules.join(",")
+                ),
+            );
+        }
         let planner_ms = planner_started.elapsed().as_millis() as u64;
         let context = self.context.assemble_with(request, Some(&hints))?;
+        let review = review_detect.map(|assessment| {
+            coding_review::finalize_assessment(assessment, &context)
+        });
+        let coding_plan = coding_plan_detect.map(|assessment| {
+            coding_plan::finalize_assessment(assessment, &context)
+        });
+        let understanding = understanding_detect.map(|assessment| {
+            coding_understanding::finalize_assessment(assessment, &context)
+        });
         let mut pipeline = jaymi_reasoning::PipelineTiming::new();
         pipeline.set_stage("planner", planner_ms);
         if let Some(inspection) = self.context.last_inspection() {
@@ -1400,6 +1832,9 @@ impl Planner {
             context,
             complexity,
             environmental,
+            understanding,
+            review,
+            coding_plan,
             pipeline,
         })
     }
@@ -1484,6 +1919,9 @@ impl Planner {
         intent: &Intent,
         history: Vec<jaymi_reasoning::ConversationTurn>,
         early_pipeline: jaymi_reasoning::PipelineTiming,
+        understanding: Option<coding_understanding::UnderstandingAssessment>,
+        review: Option<coding_review::ReviewAssessment>,
+        coding_plan: Option<coding_plan::CodingPlanAssessment>,
         mut on_event: F,
     ) -> JaymiResult<PlannerResponse>
     where
@@ -1506,13 +1944,72 @@ impl Planner {
 
         if !self.reasoning.is_implemented() {
             self.transition_conversation(ConversationState::Completed);
+            if let Some(assessment) = review {
+                let response = PlannerResponse {
+                    content: assessment.scaffold.to_markdown(),
+                    reasoning_used: false,
+                    stream_lifecycle: Some(StreamingLifecycle::Idle),
+                    coding_review: Some(assessment.scaffold),
+                    pipeline_timing: if early_pipeline.is_empty() {
+                        None
+                    } else {
+                        Some(early_pipeline)
+                    },
+                    ..PlannerResponse::default()
+                };
+                return Ok(self.finalize_response(response, context));
+            }
+            if let Some(assessment) = coding_plan {
+                let response = PlannerResponse {
+                    content: assessment.scaffold.to_markdown(),
+                    reasoning_used: false,
+                    stream_lifecycle: Some(StreamingLifecycle::Idle),
+                    coding_plan: Some(assessment.scaffold),
+                    pipeline_timing: if early_pipeline.is_empty() {
+                        None
+                    } else {
+                        Some(early_pipeline)
+                    },
+                    ..PlannerResponse::default()
+                };
+                return Ok(self.finalize_response(response, context));
+            }
+            if let Some(assessment) = understanding {
+                let response = PlannerResponse {
+                    content: assessment.scaffold.to_markdown_for(assessment.focus),
+                    reasoning_used: false,
+                    stream_lifecycle: Some(StreamingLifecycle::Idle),
+                    coding_understanding: Some(assessment.scaffold),
+                    pipeline_timing: if early_pipeline.is_empty() {
+                        None
+                    } else {
+                        Some(early_pipeline)
+                    },
+                    ..PlannerResponse::default()
+                };
+                return Ok(self.finalize_response(response, context));
+            }
             return Ok(self.finalize_response(
                 conversational::no_backend_soft_response(),
                 context,
             ));
         }
 
-        let llm = LlmContext::from_bundle(&context);
+        if let Some(assessment) = &understanding {
+            self.remember_understanding(Some(assessment.scaffold.clone()));
+        }
+        if let Some(assessment) = &review {
+            self.remember_review(Some(assessment.scaffold.clone()));
+        }
+        if let Some(assessment) = &coding_plan {
+            self.remember_coding_plan(Some(assessment.scaffold.clone()));
+        }
+        let llm = self.llm_context_for_understanding(
+            &context,
+            understanding.as_ref(),
+            review.as_ref(),
+            coding_plan.as_ref(),
+        );
         let reasoning_request =
             self.build_reasoning_request(request.content.trim(), llm, history)?;
         let (configured_model, provider_model, model_fallback) =
@@ -1528,12 +2025,27 @@ impl Planner {
                 );
                 self.transition_conversation(ConversationState::Failed);
                 return Ok(self.finalize_response(
-                    conversational::stream_start_failed_response(
-                        &error.message(),
-                        configured_model,
-                        provider_model,
-                        model_fallback,
-                    ),
+                    {
+                        let mut response = conversational::stream_start_failed_response(
+                            &error.message(),
+                            configured_model,
+                            provider_model,
+                            model_fallback,
+                        );
+                        response.coding_understanding = understanding
+                            .as_ref()
+                            .map(|a| a.scaffold.clone())
+                            .or_else(|| self.take_understanding());
+                        response.coding_review = review
+                            .as_ref()
+                            .map(|a| a.scaffold.clone())
+                            .or_else(|| self.take_review());
+                        response.coding_plan = coding_plan
+                            .as_ref()
+                            .map(|a| a.scaffold.clone())
+                            .or_else(|| self.take_coding_plan());
+                        response
+                    },
                     context,
                 ));
             }
@@ -1581,6 +2093,15 @@ impl Planner {
                             provider_model,
                             model_fallback,
                         );
+                        response.coding_understanding = understanding
+                            .map(|a| a.scaffold)
+                            .or_else(|| self.take_understanding());
+                        response.coding_review = review
+                            .map(|a| a.scaffold)
+                            .or_else(|| self.take_review());
+                        response.coding_plan = coding_plan
+                            .map(|a| a.scaffold)
+                            .or_else(|| self.take_coding_plan());
                         let mut merged = early_pipeline.clone();
                         if let Some(later) = response.pipeline_timing.take() {
                             merged.merge(later);
@@ -1610,6 +2131,15 @@ impl Planner {
                             provider_model,
                             model_fallback,
                         );
+                        response.coding_understanding = understanding
+                            .map(|a| a.scaffold)
+                            .or_else(|| self.take_understanding());
+                        response.coding_review = review
+                            .map(|a| a.scaffold)
+                            .or_else(|| self.take_review());
+                        response.coding_plan = coding_plan
+                            .map(|a| a.scaffold)
+                            .or_else(|| self.take_coding_plan());
                         response.pipeline_timing = if early_pipeline.is_empty() {
                             None
                         } else {
@@ -1873,6 +2403,7 @@ impl Planner {
             ReviewRequirement::NotRequired
         };
 
+        let action_preview = self.generate_action_preview(&tool_id, tool_input, &gate);
         let mut plan = self.create_action_plan(
             intent,
             originating_request,
@@ -1886,7 +2417,7 @@ impl Planner {
             review_requirement,
             expected_outputs,
             tool_input.deletion_method,
-            self.generate_action_preview(&tool_id, tool_input, &gate),
+            action_preview,
         );
         plan.mark_ready()
             .map_err(|error| JaymiError::new(error.to_string()))?;
@@ -1963,6 +2494,7 @@ impl Planner {
                     policy_evaluation: Some(policy_evaluation.clone()),
                     permission_result: permission_result.clone(),
                     paused_at: Instant::now(),
+                    generation_calls: Vec::new(),
                 })?;
                 let summary = ExecutionSummary::from_plan(
                     &plan,
@@ -2033,6 +2565,16 @@ impl Planner {
         deletion_method: Option<DeletionMethod>,
         action_preview: Option<ActionPreview>,
     ) -> ExecutionPlan {
+        let mut affected_resources = vec![resource.to_string()];
+        if let Some(preview) = &action_preview {
+            for path in &preview.resources {
+                if !path.trim().is_empty()
+                    && !affected_resources.iter().any(|existing| existing == path)
+                {
+                    affected_resources.push(path.clone());
+                }
+            }
+        }
         ExecutionPlan::create(ExecutionPlanParams {
             originating_request: originating_request.to_string(),
             planner_intent: intent,
@@ -2063,7 +2605,7 @@ impl Planner {
                 }
             },
             estimated_risk: EstimatedRisk::from_tool_risk(tool_risk),
-            affected_resources: vec![resource.to_string()],
+            affected_resources,
             permissions_required: vec![PlanPermissionRequirement::from_enums(
                 permission_category,
                 permission_action,
@@ -2146,6 +2688,452 @@ impl Planner {
                 Err(error)
             }
         }
+    }
+
+    /// Propose a Code Generation batch as a reviewed [`ExecutionPlan`] (Sprint C1.5).
+    ///
+    /// Converts CreateFile / ModifyFile / DeleteFile ops into tool-backed plan
+    /// steps. Review Before Action is **mandatory** — providers and Reasoning
+    /// never write files directly.
+    pub fn begin_code_generation(
+        &self,
+        generation: code_generation::CodeGeneration,
+    ) -> JaymiResult<PlannerResponse> {
+        self.ensure_ready()?;
+        if generation.is_empty() {
+            return Err(JaymiError::new("code generation has no operations"));
+        }
+        let prepared = self.prepare_code_generation_execution(&generation)?;
+        if let Some(mut blocked) = prepared.blocked_response {
+            blocked.code_generation = Some(generation);
+            self.transition_conversation(ConversationState::WaitingForReview);
+            // Caller attaches the request ContextBundle via finalize_response.
+            return Ok(blocked);
+        }
+        // Generation always requires review — Allowed path is unexpected.
+        Err(JaymiError::new(
+            "code generation must pause for Review Before Action",
+        ))
+    }
+
+    /// Apply the last Coding Plan as Code Generation (detect path helper).
+    fn complete_code_generation_from_request(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let Some(plan) = self.clone_last_coding_plan() else {
+            self.transition_conversation(ConversationState::Completed);
+            let response = PlannerResponse {
+                content: "I don't have a Coding Plan to generate from yet. \
+Ask me to plan first (for example \"Build Pong.\" or \"Create a parser.\"), \
+then say \"Generate the code.\""
+                    .into(),
+                reasoning_used: false,
+                stream_lifecycle: Some(StreamingLifecycle::Idle),
+                ..PlannerResponse::default()
+            };
+            return Ok(self.finalize_response(response, context));
+        };
+        let root = context
+            .active_project()
+            .root_directory
+            .as_ref()
+            .map(PathBuf::from)
+            .or_else(|| self.active_project_root());
+        let goal = plan
+            .summary
+            .iter()
+            .find(|line| line.starts_with("Goal:"))
+            .cloned()
+            .unwrap_or_else(|| {
+                plan.summary
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| request.content.trim().to_string())
+            });
+        let generation =
+            code_generation::generation_from_coding_plan(&plan, goal, root.as_deref());
+        let response = self.begin_code_generation(generation)?;
+        Ok(self.finalize_response(response, context))
+    }
+
+    fn clone_last_coding_plan(&self) -> Option<coding_plan::CodingPlan> {
+        self.last_coding_plan
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    /// Build + gate a generation Execution Plan (always RequiresApproval).
+    fn prepare_code_generation_execution(
+        &self,
+        generation: &code_generation::CodeGeneration,
+    ) -> JaymiResult<PreparedExecution> {
+        let deletion_method = self.resolve_deletion_method(None, "")?;
+        let calls = code_generation::tool_calls_for_generation(generation, deletion_method)
+            .map_err(JaymiError::new)?;
+        for call in &calls {
+            let tool = self
+                .tools
+                .get(&call.tool_id)
+                .map_err(|_| unknown_tool_error(&call.tool_id))?;
+            if !tool
+                .metadata()
+                .capabilities
+                .contains(&Capability::FileManagement)
+            {
+                return Err(missing_capability_error(
+                    &call.tool_id,
+                    Capability::FileManagement,
+                ));
+            }
+        }
+
+        let first = &calls[0];
+        let capability = Capability::FileManagement;
+        let intent = if calls
+            .iter()
+            .any(|call| call.tool_id == MANAGE_PATH_TOOL_ID)
+        {
+            IntentId::ManagePath
+        } else {
+            IntentId::WriteFile
+        };
+
+        let mut tool_risk = jaymi_tools::ToolRisk::Modify;
+        for call in &calls {
+            let tool = self.tools.get(&call.tool_id)?;
+            let metadata = tool.metadata();
+            let risk = metadata
+                .risk
+                .effective_for(&call.input, metadata.internet);
+            if matches!(
+                risk,
+                jaymi_tools::ToolRisk::Destructive | jaymi_tools::ToolRisk::External
+            ) {
+                tool_risk = risk;
+            } else if matches!(risk, jaymi_tools::ToolRisk::Modify)
+                && !matches!(
+                    tool_risk,
+                    jaymi_tools::ToolRisk::Destructive | jaymi_tools::ToolRisk::External
+                )
+            {
+                tool_risk = jaymi_tools::ToolRisk::Modify;
+            }
+        }
+
+        let primary_tool = self.tools.get(&first.tool_id)?;
+        let metadata = primary_tool.metadata().clone();
+        let provider_id = metadata.provider.clone();
+        let resource = first.path.display().to_string();
+        let candidate = ExecutionCandidate {
+            tool_id: first.tool_id.clone(),
+            provider_id: provider_id.clone(),
+            requires_internet: matches!(metadata.internet, InternetRequirement::Required),
+            local_only: matches!(metadata.privacy, PrivacyMode::LocalOnly),
+            cloud_only: matches!(metadata.privacy, PrivacyMode::CloudOnly),
+        };
+        let policy_evaluation = self.policies.evaluate(&candidate)?;
+        let permission_result = if matches!(policy_evaluation.decision, PolicyDecision::Denied) {
+            None
+        } else {
+            let permission_request = PermissionRequest {
+                category: PermissionCategory::Filesystem,
+                action: first.permission_action,
+                scope: PermissionScope::Once,
+                explanation: format!(
+                    "Code generation ({} op(s)) starting at {resource}",
+                    calls.len()
+                ),
+                resource: Some(resource.clone()),
+            };
+            Some(self.permissions.check(&permission_request)?)
+        };
+
+        let mut gate =
+            combine_gate_decision(&policy_evaluation, permission_result.as_ref(), tool_risk);
+        // Constitutional: generation always requires Review Before Action.
+        if matches!(gate, GateDecision::Allowed) {
+            gate = GateDecision::RequiresApproval {
+                explanation: "code generation requires Review Before Action".into(),
+            };
+        }
+
+        match &gate {
+            GateDecision::Denied { explanation } => {
+                let mut plan = self.create_generation_plan(
+                    generation,
+                    &calls,
+                    intent,
+                    tool_risk,
+                    ReviewRequirement::NotRequired,
+                    calls
+                        .iter()
+                        .find_map(|c| c.input.deletion_method)
+                        .or(Some(deletion_method)),
+                    None,
+                );
+                plan.mark_ready()
+                    .map_err(|error| JaymiError::new(error.to_string()))?;
+                let _ = plan.cancel();
+                self.record_plan_history(&plan)?;
+                let summary = ExecutionSummary::from_plan(
+                    &plan,
+                    Vec::new(),
+                    Vec::new(),
+                    Some(explanation.clone()),
+                );
+                return Ok(PreparedExecution {
+                    plan: plan.clone(),
+                    tool_id: first.tool_id.clone(),
+                    provider_id: Some(provider_id),
+                    policy_evaluation: Some(policy_evaluation.clone()),
+                    permission_result: permission_result.clone(),
+                    blocked_response: Some(PlannerResponse {
+                        content: format!(
+                            "Denied before code generation: {explanation}"
+                        ),
+                        capability: Some(capability),
+                        tool_id: Some(first.tool_id.clone()),
+                        provider_id: Some(candidate.provider_id),
+                        policy_evaluation: Some(policy_evaluation),
+                        permission_result,
+                        blocked: true,
+                        awaiting_review: false,
+                        execution_plan: Some(plan),
+                        execution_summary: Some(summary),
+                        code_generation: Some(generation.clone()),
+                        ..PlannerResponse::default()
+                    }),
+                });
+            }
+            GateDecision::RequiresApproval { explanation } => {
+                let preview = self.generate_action_preview(&first.tool_id, &first.input, &gate);
+                let mut plan = self.create_generation_plan(
+                    generation,
+                    &calls,
+                    intent,
+                    tool_risk,
+                    ReviewRequirement::Required,
+                    calls
+                        .iter()
+                        .find_map(|c| c.input.deletion_method)
+                        .or(Some(deletion_method)),
+                    preview,
+                );
+                plan.mark_ready()
+                    .map_err(|error| JaymiError::new(error.to_string()))?;
+                plan.mark_awaiting_review()
+                    .map_err(|error| JaymiError::new(error.to_string()))?;
+                self.record_plan_history(&plan)?;
+                let generation_calls = calls
+                    .iter()
+                    .map(|call| (call.tool_id.clone(), call.input.clone()))
+                    .collect::<Vec<_>>();
+                self.pause_execution(PausedExecution {
+                    plan: plan.clone(),
+                    tool_input: first.input.clone(),
+                    tool_id: first.tool_id.clone(),
+                    provider_id: Some(provider_id.clone()),
+                    capability,
+                    policy_evaluation: Some(policy_evaluation.clone()),
+                    permission_result: permission_result.clone(),
+                    paused_at: Instant::now(),
+                    generation_calls,
+                })?;
+                let summary = ExecutionSummary::from_plan(
+                    &plan,
+                    Vec::new(),
+                    Vec::new(),
+                    Some(explanation.clone()),
+                );
+                let review = ReviewCardModel::from_plan(&plan, Some(explanation.as_str()));
+                // Prefix generation markdown so the conversation shows ops + Review Card.
+                let content = format!(
+                    "{}\n\n{}",
+                    generation.to_markdown(),
+                    review.render_text()
+                );
+                return Ok(PreparedExecution {
+                    plan: plan.clone(),
+                    tool_id: first.tool_id.clone(),
+                    provider_id: Some(provider_id),
+                    policy_evaluation: Some(policy_evaluation.clone()),
+                    permission_result: permission_result.clone(),
+                    blocked_response: Some(PlannerResponse {
+                        content,
+                        capability: Some(capability),
+                        tool_id: Some(first.tool_id.clone()),
+                        provider_id: Some(candidate.provider_id),
+                        policy_evaluation: Some(policy_evaluation),
+                        permission_result,
+                        blocked: true,
+                        awaiting_review: true,
+                        execution_plan: Some(plan),
+                        execution_summary: Some(summary),
+                        code_generation: Some(generation.clone()),
+                        ..PlannerResponse::default()
+                    }),
+                });
+            }
+            GateDecision::Allowed => unreachable!("generation forces RequiresApproval"),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn create_generation_plan(
+        &self,
+        generation: &code_generation::CodeGeneration,
+        calls: &[code_generation::GenerationToolCall],
+        intent: IntentId,
+        tool_risk: jaymi_tools::ToolRisk,
+        review_requirement: ReviewRequirement,
+        deletion_method: Option<DeletionMethod>,
+        action_preview: Option<ActionPreview>,
+    ) -> ExecutionPlan {
+        let mut proposed_tools = Vec::new();
+        for call in calls {
+            if !proposed_tools.iter().any(|id| id == &call.tool_id) {
+                proposed_tools.push(call.tool_id.clone());
+            }
+        }
+        let steps = calls
+            .iter()
+            .enumerate()
+            .map(|(index, call)| ExecutionStep {
+                order: index + 1,
+                description: call.action_label.clone(),
+                tool_id: Some(call.tool_id.clone()),
+                resource: Some(call.path.display().to_string()),
+            })
+            .collect();
+        let mut affected_resources = calls
+            .iter()
+            .map(|call| call.path.display().to_string())
+            .collect::<Vec<_>>();
+        if let Some(preview) = &action_preview {
+            for path in &preview.resources {
+                if !path.trim().is_empty()
+                    && !affected_resources.iter().any(|existing| existing == path)
+                {
+                    affected_resources.push(path.clone());
+                }
+            }
+        }
+        let mut permissions_required = vec![PlanPermissionRequirement::from_enums(
+            PermissionCategory::Filesystem,
+            PermissionAction::Write,
+        )];
+        if calls
+            .iter()
+            .any(|call| call.permission_action == PermissionAction::Delete)
+        {
+            permissions_required.push(PlanPermissionRequirement::from_enums(
+                PermissionCategory::Filesystem,
+                PermissionAction::Delete,
+            ));
+        }
+        ExecutionPlan::create(ExecutionPlanParams {
+            originating_request: format!("Code generation: {}", generation.goal),
+            planner_intent: intent,
+            capability: Capability::FileManagement,
+            proposed_tools,
+            steps,
+            estimated_risk: EstimatedRisk::from_tool_risk(tool_risk),
+            affected_resources,
+            permissions_required,
+            review_requirement,
+            estimated_reversibility: EstimatedReversibility::from_tool_risk(tool_risk),
+            expected_outputs: vec![format!(
+                "Applied {} generation operation(s)",
+                calls.len()
+            )],
+            deletion_method,
+            action_preview,
+            lineage: PlanLineage::root(),
+        })
+    }
+
+    /// Execute every tool call in an approved generation batch (Planner-owned).
+    fn execute_approved_generation(
+        &self,
+        plan: &mut ExecutionPlan,
+        calls: &[(String, ToolInput)],
+    ) -> JaymiResult<(jaymi_tools::ToolOutput, ExecutionSummary)> {
+        if !plan.status().may_execute() {
+            return Err(JaymiError::new(format!(
+                "execution plan {} is not approved (status={})",
+                plan.id(),
+                plan.status()
+            )));
+        }
+        if calls.is_empty() {
+            return Err(JaymiError::new("generation batch is empty"));
+        }
+        plan.mark_executing()
+            .map_err(|error| JaymiError::new(error.to_string()))?;
+        self.transition_conversation(ConversationState::Executing);
+        jaymi_logging::info(
+            "planner",
+            format!(
+                "execution plan {} executing generation batch ops={}",
+                plan.id(),
+                calls.len()
+            ),
+        );
+        let started = Instant::now();
+        let mut messages = Vec::new();
+        let mut last_output = None;
+        for (tool_id, input) in calls {
+            jaymi_logging::info(
+                "planner",
+                format!(
+                    "generation op tool={} path={:?}",
+                    tool_id,
+                    input.path.as_ref().map(|p| p.display().to_string())
+                ),
+            );
+            match self.orchestrator.execute(tool_id, input.clone()) {
+                Ok(output) => {
+                    if !output.success {
+                        let duration_ms = started.elapsed().as_millis() as u64;
+                        let _ = plan.mark_failed();
+                        let summary = ExecutionSummary::from_tool_result(
+                            plan,
+                            tool_id.clone(),
+                            &output,
+                            duration_ms,
+                        );
+                        return Ok((output, summary));
+                    }
+                    if let Some(message) = &output.message {
+                        messages.push(message.clone());
+                    } else {
+                        messages.push(format!("completed {tool_id}"));
+                    }
+                    last_output = Some(output);
+                }
+                Err(error) => {
+                    let _ = plan.mark_failed();
+                    return Err(error);
+                }
+            }
+        }
+        let duration_ms = started.elapsed().as_millis() as u64;
+        let _ = plan.mark_completed();
+        let mut output = last_output.ok_or_else(|| {
+            JaymiError::new("generation batch produced no tool output")
+        })?;
+        output.message = Some(format!(
+            "Code generation completed ({} op(s)): {}",
+            calls.len(),
+            messages.join(" · ")
+        ));
+        let summary =
+            ExecutionSummary::from_tool_result(plan, calls[0].0.clone(), &output, duration_ms);
+        self.context.request_fresh_context("files_changed");
+        Ok((output, summary))
     }
 
     /// Number of plans currently paused awaiting review.
@@ -2265,7 +3253,10 @@ impl Planner {
                 .map(|capability| vec![capability.id().to_string()])
                 .unwrap_or_default(),
             complexity: None,
-                    environmental: None,
+            environmental: None,
+            understanding: None,
+            review: None,
+            coding_plan: None,
         };
         let request = UserRequest::new("");
         let bundle = self.context.assemble_with(&request, Some(&hints))?;
@@ -2480,6 +3471,7 @@ impl Planner {
             policy_evaluation: Some(policy_evaluation.clone()),
             permission_result: permission_result.clone(),
             paused_at: Instant::now(),
+            generation_calls: entry.generation_calls.clone(),
         })?;
         self.update_plan_history_status(child.id(), ExecutionStatus::AwaitingReview)?;
 
@@ -2535,8 +3527,11 @@ impl Planner {
             ),
         );
 
-        let (output, execution_summary) =
-            self.execute_approved_plan(&mut entry.plan, entry.tool_input)?;
+        let (output, execution_summary) = if entry.generation_calls.is_empty() {
+            self.execute_approved_plan(&mut entry.plan, entry.tool_input)?
+        } else {
+            self.execute_approved_generation(&mut entry.plan, &entry.generation_calls)?
+        };
         self.ensure_success(&output)?;
 
         let content = output.message.clone().unwrap_or_else(|| {
@@ -3054,7 +4049,7 @@ impl Lifecycle for Planner {
 mod tests {
     use super::*;
     use jaymi_capabilities::CapabilityEngine;
-    use jaymi_core::{EntryType, FileType, Lifecycle};
+    use jaymi_core::{CodingAction, EntryType, FileType, Lifecycle};
     use jaymi_database::Database;
     use jaymi_knowledge::SqliteKnowledgeStore;
     use jaymi_memory_engine::{InMemoryMemoryStore, MemoryEngine};
@@ -3603,6 +4598,371 @@ mod tests {
         assert!(!response.blocked);
         assert!(!response.content.contains("Unsupported request"));
         assert!(response.context_bundle.is_some());
+    }
+
+    #[test]
+    fn explain_file_returns_structured_understanding_without_tools() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/main.rs".into()),
+                dirty: true,
+                language: Some("rust".into()),
+            },
+            current_selection: jaymi_context::CurrentSelectionSection {
+                path: Some("/proj/main.rs".into()),
+                start_line: 1,
+                start_column: 0,
+                end_line: 1,
+                end_column: 0,
+                text: None,
+            },
+            diagnostics: jaymi_context::DiagnosticsSection {
+                diagnostics: vec![jaymi_context::BundleDiagnostic {
+                    severity: "error".into(),
+                    path: Some("/proj/main.rs".into()),
+                    message: "unused variable".into(),
+                    line: Some(2),
+                    column: Some(4),
+                    source: None,
+                }],
+            },
+            approved_context_providers: vec!["editor".into(), "diagnostics".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+
+        let response = planner
+            .handle(UserRequest::coding_action(CodingAction::ExplainFile))
+            .unwrap();
+
+        assert!(!response.awaiting_review);
+        assert!(!response.reasoning_used);
+        assert!(response.tool_id.is_none());
+        assert!(response.capability.is_none());
+        assert!(response.execution_plan.is_none());
+
+        let understanding = response
+            .coding_understanding
+            .as_ref()
+            .expect("coding_understanding attached");
+        assert!(
+            understanding.purpose.iter().any(|p| p.contains("main.rs")),
+            "{:?}",
+            understanding.purpose
+        );
+        assert!(response.content.contains("### Purpose"));
+        assert!(response.content.contains("### Responsibilities"));
+        assert!(response.content.contains("### Key Symbols"));
+        assert!(response.content.contains("### Relationships"));
+        assert!(response.content.contains("### Potential Issues"));
+        assert!(response.content.contains("### Suggested Next Actions"));
+
+        let notes = &response
+            .context_bundle
+            .as_ref()
+            .unwrap()
+            .planner_metadata()
+            .notes;
+        assert!(
+            notes.iter().any(|n| n.contains("coding_understanding=")),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn free_text_project_question_triggers_understanding() {
+        let planner = planner_with_search_and_read();
+        let response = planner
+            .handle(UserRequest::new("How does this project work?"))
+            .unwrap();
+        assert!(response.coding_understanding.is_some());
+        assert!(!response.awaiting_review);
+        assert!(response.tool_id.is_none());
+        assert!(response.execution_plan.is_none());
+        assert!(response.content.contains("## Project Understanding"));
+        assert!(response.content.contains("### Overview"));
+        assert!(response.content.contains("### Architecture"));
+        assert!(response.content.contains("### Important Modules"));
+        assert!(response.content.contains("### Suggested Next Actions"));
+    }
+
+    #[test]
+    fn explain_this_project_is_not_selection_and_stays_understanding_only() {
+        let planner = planner_with_search_and_read();
+        let response = planner
+            .handle(UserRequest::new("Explain this project."))
+            .unwrap();
+        let understanding = response.coding_understanding.expect("project understanding");
+        assert!(!understanding.suggested_next_actions.is_empty());
+        assert!(!response.awaiting_review);
+        assert!(response.capability.is_none());
+        assert!(response.tool_id.is_none());
+        assert!(response.execution_plan.is_none());
+        assert!(response.content.contains("## Project Understanding"));
+    }
+
+    #[test]
+    fn review_this_file_returns_structured_review_without_plans() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/main.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            diagnostics: jaymi_context::DiagnosticsSection {
+                diagnostics: vec![jaymi_context::BundleDiagnostic {
+                    severity: "warning".into(),
+                    path: Some("/proj/main.rs".into()),
+                    message: "unused import".into(),
+                    line: Some(1),
+                    column: Some(0),
+                    source: None,
+                }],
+            },
+            approved_context_providers: vec!["editor".into(), "diagnostics".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+
+        let response = planner
+            .handle(UserRequest::new("Review this file."))
+            .unwrap();
+
+        assert!(!response.awaiting_review);
+        assert!(!response.reasoning_used);
+        assert!(response.tool_id.is_none());
+        assert!(response.capability.is_none());
+        assert!(response.execution_plan.is_none());
+        assert!(response.coding_understanding.is_none());
+
+        let review = response.coding_review.expect("coding_review attached");
+        assert!(review.strengths.iter().any(|s| s.contains("main.rs")));
+        assert!(response.content.contains("## Coding Review"));
+        assert!(response.content.contains("### Strengths"));
+        assert!(response.content.contains("### Weaknesses"));
+        assert!(response.content.contains("### Potential Bugs"));
+        assert!(response.content.contains("### Complexity"));
+        assert!(response.content.contains("### Performance"));
+        assert!(response.content.contains("### Maintainability"));
+        assert!(response.content.contains("### Architecture"));
+
+        let notes = &response
+            .context_bundle
+            .as_ref()
+            .unwrap()
+            .planner_metadata()
+            .notes;
+        assert!(
+            notes.iter().any(|n| n.contains("coding_review=")),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn review_my_changes_is_review_only() {
+        let planner = planner_with_search_and_read();
+        let response = planner
+            .handle(UserRequest::new("Review my changes."))
+            .unwrap();
+        assert!(response.coding_review.is_some());
+        assert!(response.execution_plan.is_none());
+        assert!(!response.awaiting_review);
+        assert!(response.content.contains("## Coding Review"));
+    }
+
+    #[test]
+    fn build_pong_returns_coding_plan_without_codegen() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/main.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            approved_context_providers: vec!["editor".into(), "project".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+
+        let response = planner.handle(UserRequest::new("Build Pong.")).unwrap();
+
+        assert!(!response.awaiting_review);
+        assert!(!response.reasoning_used);
+        assert!(response.tool_id.is_none());
+        assert!(response.capability.is_none());
+        assert!(response.execution_plan.is_none());
+        assert!(response.coding_review.is_none());
+        assert!(response.coding_understanding.is_none());
+
+        let plan = response.coding_plan.expect("coding_plan attached");
+        assert!(!plan.summary.is_empty());
+        assert!(response.content.contains("## Coding Plan"));
+        assert!(response.content.contains("### Plan"));
+        assert!(response.content.contains("### Files to Create"));
+        assert!(response.content.contains("### Files to Modify"));
+        assert!(response.content.contains("### Dependencies"));
+        assert!(response.content.contains("### Estimated Risk"));
+        assert!(response.content.contains("### Summary"));
+
+        let notes = &response
+            .context_bundle
+            .as_ref()
+            .unwrap()
+            .planner_metadata()
+            .notes;
+        assert!(
+            notes.iter().any(|n| n.contains("coding_plan=")),
+            "{notes:?}"
+        );
+    }
+
+    #[test]
+    fn create_parser_and_write_tests_are_coding_plans_only() {
+        let planner = planner_with_search_and_read();
+        for prompt in ["Create a parser.", "Write tests."] {
+            let response = planner.handle(UserRequest::new(prompt)).unwrap();
+            assert!(
+                response.coding_plan.is_some(),
+                "expected coding_plan for {prompt}"
+            );
+            assert!(response.execution_plan.is_none());
+            assert!(!response.awaiting_review);
+            assert!(response.tool_id.is_none());
+            assert!(response.capability.is_none());
+            assert!(response.content.contains("## Coding Plan"));
+        }
+    }
+
+    #[test]
+    fn generate_the_code_from_coding_plan_requires_review() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let create_path = dir.join("pong.rs");
+        // Seed a Coding Plan the generation path will remember.
+        let plan = CodingPlan {
+            files_to_create: vec![format!("`{}` pong entry", create_path.display())],
+            files_to_modify: vec![],
+            summary: vec!["Goal: Build Pong.".into()],
+            ..Default::default()
+        };
+        planner.remember_coding_plan(Some(plan));
+
+        let response = planner
+            .handle(UserRequest::new("Generate the code."))
+            .unwrap();
+
+        assert!(response.awaiting_review);
+        assert!(response.blocked);
+        assert!(response.code_generation.is_some());
+        let generation = response.code_generation.as_ref().unwrap();
+        assert!(generation.operations.iter().any(|op| {
+            op.kind == GenerationOpKind::CreateFile && op.path == create_path
+        }));
+        assert!(response.content.contains("## Code Generation"));
+        assert!(response.content.contains("create_file"));
+        let plan = response.execution_plan.expect("execution plan");
+        assert_eq!(plan.status(), ExecutionStatus::AwaitingReview);
+        assert!(plan.steps().len() >= 1);
+        assert!(!create_path.exists(), "must not write before review");
+
+        let plan_id = plan.id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        assert!(!resumed.awaiting_review);
+        assert!(create_path.exists(), "create_file should run after approve");
+        let body = fs::read_to_string(&create_path).unwrap();
+        assert!(body.contains("Generated by Jaymi Planner"));
+    }
+
+    #[test]
+    fn begin_code_generation_owns_create_modify_delete_ops() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let create = dir.join("new.rs");
+        let modify = dir.join("existing.rs");
+        fs::write(&modify, b"old").unwrap();
+
+        // Create + Modify execute after Approve. DeleteFile is proposed/cancelled
+        // in `generation_plan_lists_delete_file_step_without_executing` (Trash may
+        // be unavailable in sandboxed CI).
+        let generation = CodeGeneration {
+            goal: "Apply sample ops".into(),
+            operations: vec![
+                GenerationOp::create_file(&create, "// created\n", "create"),
+                GenerationOp::modify_file(&modify, "// modified\n", "modify"),
+            ],
+            coding_plan_summary: vec![],
+        };
+        let response = planner.begin_code_generation(generation).unwrap();
+        assert!(response.awaiting_review);
+        assert_eq!(
+            response.code_generation.as_ref().unwrap().operations.len(),
+            2
+        );
+        let plan = response.execution_plan.expect("plan");
+        assert_eq!(plan.steps().len(), 2);
+        assert!(plan
+            .proposed_tools()
+            .iter()
+            .any(|t| t == jaymi_tools::WRITE_FILE_TOOL_ID));
+        assert!(!create.exists());
+        assert_eq!(fs::read_to_string(&modify).unwrap(), "old");
+
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve {
+                plan_id: plan.id().clone(),
+            })
+            .unwrap();
+        assert!(create.exists());
+        assert_eq!(fs::read_to_string(&modify).unwrap(), "// modified\n");
+        assert!(
+            resumed.content.contains("Code generation completed")
+                || resumed.execution_summary.is_some()
+        );
+    }
+
+    #[test]
+    fn generation_plan_lists_delete_file_step_without_executing() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let path = dir.join("stale.rs");
+        fs::write(&path, b"x").unwrap();
+        let generation = CodeGeneration {
+            goal: "Remove stale".into(),
+            operations: vec![GenerationOp::delete_file(&path, "delete")],
+            coding_plan_summary: vec![],
+        };
+        let response = planner.begin_code_generation(generation).unwrap();
+        assert!(response.awaiting_review);
+        assert!(response.content.contains("delete_file"));
+        let plan = response.execution_plan.expect("plan");
+        assert_eq!(plan.steps().len(), 1);
+        assert_eq!(
+            plan.steps()[0].tool_id.as_deref(),
+            Some(jaymi_tools::MANAGE_PATH_TOOL_ID)
+        );
+        assert!(path.exists(), "delete must wait for Approve");
+        // Cancel rather than Approve — Trash may be unavailable in sandbox CI.
+        let _ = planner
+            .resolve_review(ReviewIntent::Cancel {
+                plan_id: plan.id().clone(),
+            })
+            .unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn generate_without_coding_plan_is_honest() {
+        let planner = planner_with_write();
+        let response = planner
+            .handle(UserRequest::new("Generate the code."))
+            .unwrap();
+        assert!(!response.awaiting_review);
+        assert!(response.execution_plan.is_none());
+        assert!(response.content.contains("Coding Plan"));
     }
 
     #[test]
@@ -4767,6 +6127,7 @@ mod tests {
                 plan: plan.clone(),
                 policy_evaluation: None,
                 permission_result: None,
+                generation_calls: Vec::new(),
                 paused_at: Instant::now(),
             })
             .unwrap();
@@ -4937,6 +6298,7 @@ mod tests {
                 plan: plan.clone(),
                 policy_evaluation: None,
                 permission_result: None,
+                generation_calls: Vec::new(),
                 paused_at: Instant::now(),
             })
             .unwrap();
@@ -5170,6 +6532,7 @@ mod tests {
                 plan,
                 policy_evaluation: None,
                 permission_result: None,
+                generation_calls: Vec::new(),
                 paused_at: Instant::now() - Duration::from_secs(5),
             })
             .unwrap();

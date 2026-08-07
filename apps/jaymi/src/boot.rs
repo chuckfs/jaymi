@@ -24,8 +24,9 @@ use jaymi_capabilities::{
 use jaymi_config::{Config, ReasoningPreferences};
 use jaymi_context::{ContextBundle, ContextEngine, ContextHistoryEntry, ContextInspectorReport};
 use jaymi_core::{
-    AppState, DiscoveryQueryKind, EntryType, GitOperation, HealthReport, JaymiError, JaymiResult,
-    Lifecycle, SearchRequest, ServiceContainer, UserRequest,
+    AppState, CodingAction, DiscoveryQueryKind, EntryType, GitOperation, HealthReport, JaymiError,
+    JaymiResult, Lifecycle, SearchRequest, ServiceContainer, TerminalOperation, TerminalRequest,
+    UserRequest,
 };
 use jaymi_database::Database;
 use jaymi_discovery::{DiscoveryEngine, FilesystemWatcher};
@@ -3890,13 +3891,128 @@ impl Application {
         self: &Arc<Self>,
         content: impl Into<String>,
     ) -> JaymiResult<BeginGeneration> {
+        self.begin_user_request(UserRequest::new(content))
+    }
+
+    /// Submit a typed Coding Action as a normal conversation turn (Sprint C0.1).
+    ///
+    /// UI emits the action only; Application binds Workspace Intelligence
+    /// (selection / file / run hint) into the [`UserRequest`], then the Planner
+    /// owns routing. No direct editor, terminal, or provider bypass.
+    pub fn begin_coding_action(
+        self: &Arc<Self>,
+        action: CodingAction,
+    ) -> JaymiResult<BeginGeneration> {
+        let request = self.build_coding_action_request(action)?;
+        self.begin_user_request(request)
+    }
+
+    /// Resolve Explain to selection vs file from CodingState, then submit.
+    pub fn begin_explain_coding_action(self: &Arc<Self>) -> JaymiResult<BeginGeneration> {
+        let action = self.with_coding_state(|coding| {
+            let has_selection = coding
+                .editors
+                .active_session()
+                .map(|session| {
+                    let selection = &session.view.selection;
+                    !selection.is_empty()
+                        && selection
+                            .text
+                            .as_ref()
+                            .map(|text| !text.trim().is_empty())
+                            .unwrap_or(false)
+                })
+                .unwrap_or(false);
+            if has_selection {
+                CodingAction::ExplainSelection
+            } else {
+                CodingAction::ExplainFile
+            }
+        })?;
+        self.begin_coding_action(action)
+    }
+
+    /// Build a Planner [`UserRequest`] for a Coding Action (WI-enriched).
+    pub fn build_coding_action_request(&self, action: CodingAction) -> JaymiResult<UserRequest> {
+        let mut request = UserRequest::coding_action(action);
+        match action {
+            CodingAction::SearchWorkspace => {
+                if let Ok(Some(query)) = self.with_coding_state(|coding| {
+                    coding.editors.active_session().and_then(|session| {
+                        session
+                            .view
+                            .selection
+                            .text
+                            .as_ref()
+                            .map(|text| text.trim().to_string())
+                            .filter(|text| !text.is_empty())
+                    })
+                }) {
+                    let preview: String = query.chars().take(80).collect();
+                    request.content = format!("Search the workspace for: {preview}");
+                    request.search = Some(SearchRequest::free_text(query));
+                }
+            }
+            CodingAction::RunProject => {
+                if let Some((session_id, cwd, command)) = self.suggest_project_run()? {
+                    request.content = format!("Run the project (`{command}`).");
+                    request.terminal = Some(TerminalRequest {
+                        operation: TerminalOperation::Run,
+                        session_id,
+                        cwd,
+                        command: Some(command),
+                        title: None,
+                    });
+                }
+            }
+            CodingAction::ExplainSelection
+            | CodingAction::ExplainFile
+            | CodingAction::EditSelection
+            | CodingAction::RefactorSelection
+            | CodingAction::OpenCodingActions => {}
+        }
+        Ok(request)
+    }
+
+    /// Suggest a reviewed run command from the open project (observation only).
+    fn suggest_project_run(&self) -> JaymiResult<Option<(String, PathBuf, String)>> {
+        let cwd = match self.coding_terminal_cwd(None)? {
+            Some(cwd) => cwd,
+            None => return Ok(None),
+        };
+        let command = if cwd.join("Cargo.toml").is_file() {
+            "cargo test".to_string()
+        } else if cwd.join("package.json").is_file() {
+            "npm test".to_string()
+        } else if cwd.join("pyproject.toml").is_file() || cwd.join("pytest.ini").is_file() {
+            "pytest".to_string()
+        } else if cwd.join("go.mod").is_file() {
+            "go test ./...".to_string()
+        } else {
+            return Ok(None);
+        };
+        let session_id = self
+            .with_coding_state(|coding| {
+                coding
+                    .active_terminal_id
+                    .clone()
+                    .or_else(|| coding.terminal_sessions.first().map(|s| s.id.clone()))
+            })?
+            .unwrap_or_else(|| DEFAULT_TERMINAL_SESSION_ID.to_string());
+        Ok(Some((session_id, cwd, command)))
+    }
+
+    /// Begin generation from a fully formed [`UserRequest`] (Conversation First).
+    pub fn begin_user_request(
+        self: &Arc<Self>,
+        request: UserRequest,
+    ) -> JaymiResult<BeginGeneration> {
         if self.generation_active() {
             return Err(JaymiError::new(
                 "a generation is already in progress — cancel it first",
             ));
         }
-        let content = content.into();
-        let trimmed = content.trim();
+        let trimmed = request.content.trim();
         if trimmed.is_empty() {
             return Err(JaymiError::new("empty prompt"));
         }
@@ -3932,9 +4048,9 @@ impl Application {
         }
 
         let app = Arc::clone(self);
-        let user_text = trimmed.to_string();
+        let worker_request = request;
         thread::spawn(move || {
-            let outcome = app.run_generation_start(&user_text, &cancel);
+            let outcome = app.run_generation_start(worker_request, &cancel);
             let _ = tx.send(outcome);
         });
 
@@ -3944,12 +4060,13 @@ impl Application {
     /// Background: prepare session, assemble, open stream (or soft/tool fallback).
     fn run_generation_start(
         &self,
-        content: &str,
+        request: UserRequest,
         cancel: &AtomicBool,
     ) -> GenerationStartOutcome {
         if cancel.load(Ordering::Relaxed) {
             return GenerationStartOutcome::Cancelled;
         }
+        let content = request.content.clone();
         // Soft-update Workspace Memory coding objective before prepare/assemble.
         let _ = self.with_coding_state(|coding| {
             let lower = content.to_ascii_lowercase();
@@ -3961,13 +4078,14 @@ impl Application {
                 || lower.contains("build")
                 || lower.contains("test ")
                 || lower.contains("bug")
+                || request.coding_action.is_some()
                 || coding.workspace_activity.has_activity();
             if codingish {
                 let objective = content.chars().take(160).collect::<String>();
                 coding.set_coding_objective(Some(objective));
             }
         });
-        let history = match self.prepare_conversational_host_excluding(Some(content)) {
+        let history = match self.prepare_conversational_host_excluding(Some(content.as_str())) {
             Ok(history) => history,
             Err(error) => {
                 if let Ok(planner) = self.container.resolve::<Planner>() {
@@ -3979,7 +4097,6 @@ impl Application {
         if cancel.load(Ordering::Relaxed) {
             return GenerationStartOutcome::Cancelled;
         }
-        let request = UserRequest::new(content);
         let planner = match self.container.resolve::<Planner>() {
             Ok(planner) => planner,
             Err(error) => return GenerationStartOutcome::Failed(error.message().to_string()),
@@ -4006,7 +4123,7 @@ impl Application {
                 }
                 // Tool-backed or soft conversational — user turn already recorded;
                 // empty assistant turn is finalized when pump installs Completed.
-                match self.soft_or_tool_generation_fallback(content) {
+                match self.soft_or_tool_generation_fallback(request) {
                     Ok(response) => GenerationStartOutcome::Completed(response),
                     Err(fallback_error) => {
                         planner.transition_conversation(jaymi_planner::ConversationState::Failed);
@@ -4022,10 +4139,9 @@ impl Application {
     }
 
     /// Soft-fail / tool path after UI ack (no second user-message record).
-    fn soft_or_tool_generation_fallback(&self, content: &str) -> JaymiResult<PlannerResponse> {
-        let history = self.prepare_conversational_host_excluding(Some(content))?;
+    fn soft_or_tool_generation_fallback(&self, request: UserRequest) -> JaymiResult<PlannerResponse> {
+        let history = self.prepare_conversational_host_excluding(Some(request.content.as_str()))?;
         let planner = self.container.resolve::<Planner>()?;
-        let request = UserRequest::new(content);
         let started = std::time::Instant::now();
         // Empty observer: Experience already has the Thinking assistant turn.
         let response =

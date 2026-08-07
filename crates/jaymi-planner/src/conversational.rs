@@ -287,6 +287,9 @@ pub fn conversational_assemble_hints(
         capability_ids,
         complexity: None,
         environmental: None,
+        understanding: None,
+        review: None,
+        coding_plan: None,
     };
     if let Some(assessment) = complexity {
         hints.complexity = Some(assessment.class_id().to_string());
@@ -306,6 +309,12 @@ pub struct ConversationalAssemble {
     pub complexity: ComplexityAssessment,
     /// Environmental resolution (Planner-owned; unused when no deixis).
     pub environmental: crate::environmental::EnvironmentalResolution,
+    /// Coding Understanding assessment (Sprint C1.1; unused when not understanding).
+    pub understanding: Option<crate::coding_understanding::UnderstandingAssessment>,
+    /// Coding Review assessment (Sprint C1.3; unused when not reviewing).
+    pub review: Option<crate::coding_review::ReviewAssessment>,
+    /// Coding Plan assessment (Sprint C1.4; unused when not generation-planning).
+    pub coding_plan: Option<crate::coding_plan::CodingPlanAssessment>,
     /// Lightweight stage timings for Planner + Context (diagnostics only).
     pub pipeline: jaymi_reasoning::PipelineTiming,
 }

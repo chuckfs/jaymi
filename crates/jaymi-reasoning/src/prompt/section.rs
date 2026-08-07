@@ -36,6 +36,12 @@ pub enum PromptSectionId {
     WorkspaceMemory,
     /// Planner-resolved workspace deixis (Sprint B2.10).
     EnvironmentalResolution,
+    /// Coding Understanding instructions (Sprint C1.1 — Understand Before Acting).
+    CodingUnderstanding,
+    /// Coding Review instructions (Sprint C1.3).
+    CodingReview,
+    /// Coding Plan / generation planning (Sprint C1.4).
+    CodingPlan,
     /// Search coordination / attached hits.
     SearchResults,
     /// Attached diagnostics.
@@ -65,6 +71,9 @@ impl PromptSectionId {
         Self::RuntimeIntelligence,
         Self::WorkspaceMemory,
         Self::EnvironmentalResolution,
+        Self::CodingUnderstanding,
+        Self::CodingReview,
+        Self::CodingPlan,
         Self::SearchResults,
         Self::Diagnostics,
         Self::Permissions,
@@ -88,6 +97,9 @@ impl PromptSectionId {
             Self::RuntimeIntelligence => "runtime_intelligence",
             Self::WorkspaceMemory => "workspace_memory",
             Self::EnvironmentalResolution => "environmental_resolution",
+            Self::CodingUnderstanding => "coding_understanding",
+            Self::CodingReview => "coding_review",
+            Self::CodingPlan => "coding_plan",
             Self::SearchResults => "search_results",
             Self::Diagnostics => "diagnostics",
             Self::Permissions => "permissions",
@@ -112,6 +124,9 @@ impl PromptSectionId {
             Self::RuntimeIntelligence => "Runtime Intelligence",
             Self::WorkspaceMemory => "Workspace Memory",
             Self::EnvironmentalResolution => "Environmental Resolution",
+            Self::CodingUnderstanding => "Coding Understanding",
+            Self::CodingReview => "Coding Review",
+            Self::CodingPlan => "Coding Plan",
             Self::SearchResults => "Search Results",
             Self::Diagnostics => "Diagnostics",
             Self::Permissions => "Permissions",
@@ -135,6 +150,9 @@ impl PromptSectionId {
             Self::RuntimeIntelligence => 68,
             Self::WorkspaceMemory => 66,
             Self::EnvironmentalResolution => 88,
+            Self::CodingUnderstanding => 90,
+            Self::CodingReview => 91,
+            Self::CodingPlan => 92,
             Self::Capabilities => 55,
             Self::WorkspaceState => 50,
             Self::SearchResults => 45,
@@ -162,6 +180,9 @@ impl PromptSectionId {
             Self::RuntimeIntelligence => &["runtime_intelligence"],
             Self::WorkspaceMemory => &["workspace_memory"],
             Self::EnvironmentalResolution => &[], // from LlmContext.providers.environmental
+            Self::CodingUnderstanding => &[], // from LlmContext.extensions["coding_understanding"]
+            Self::CodingReview => &[], // from LlmContext.extensions["coding_review"]
+            Self::CodingPlan => &[], // from LlmContext.extensions["coding_plan"]
             Self::SearchResults => &["search_results"],
             Self::Diagnostics => &["diagnostics"],
             Self::Permissions => &["permissions"],

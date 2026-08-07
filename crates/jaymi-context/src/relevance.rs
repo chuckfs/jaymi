@@ -265,6 +265,12 @@ pub struct AssembleHints {
     pub complexity: Option<String>,
     /// Environmental resolution bindings (Sprint B2.10), when deixis was present.
     pub environmental: Option<EnvironmentalHints>,
+    /// Coding Understanding focus id (Sprint C1.1), when understanding mode.
+    pub understanding: Option<String>,
+    /// Coding Review focus id (Sprint C1.3), when review mode.
+    pub review: Option<String>,
+    /// Coding Plan kind id (Sprint C1.4), when generation-planning mode.
+    pub coding_plan: Option<String>,
 }
 
 impl Default for AssembleHints {
@@ -274,6 +280,9 @@ impl Default for AssembleHints {
             capability_ids: Vec::new(),
             complexity: None,
             environmental: None,
+            understanding: None,
+            review: None,
+            coding_plan: None,
         }
     }
 }
@@ -286,6 +295,9 @@ impl AssembleHints {
             capability_ids: capability_ids.into_iter().collect(),
             complexity: None,
             environmental: None,
+            understanding: None,
+            review: None,
+            coding_plan: None,
         }
     }
 
@@ -298,6 +310,24 @@ impl AssembleHints {
     /// Attach environmental resolution (does not change Intent / capabilities).
     pub fn with_environmental(mut self, environmental: EnvironmentalHints) -> Self {
         self.environmental = Some(environmental);
+        self
+    }
+
+    /// Attach Coding Understanding focus (does not change Intent / capabilities).
+    pub fn with_understanding(mut self, understanding: impl Into<String>) -> Self {
+        self.understanding = Some(understanding.into());
+        self
+    }
+
+    /// Attach Coding Review focus (does not change Intent / capabilities).
+    pub fn with_review(mut self, review: impl Into<String>) -> Self {
+        self.review = Some(review.into());
+        self
+    }
+
+    /// Attach Coding Plan kind (does not change Intent / capabilities).
+    pub fn with_coding_plan(mut self, coding_plan: impl Into<String>) -> Self {
+        self.coding_plan = Some(coding_plan.into());
         self
     }
 
@@ -314,6 +344,15 @@ impl AssembleHints {
         }
         if let Some(env) = &self.environmental {
             env.fingerprint().hash(&mut hasher);
+        }
+        if let Some(understanding) = &self.understanding {
+            understanding.hash(&mut hasher);
+        }
+        if let Some(review) = &self.review {
+            review.hash(&mut hasher);
+        }
+        if let Some(coding_plan) = &self.coding_plan {
+            coding_plan.hash(&mut hasher);
         }
         hasher.finish()
     }

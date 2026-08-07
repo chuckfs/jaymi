@@ -85,7 +85,7 @@ pub fn render_review_card(
 
             ui.add_space(space::MD);
             ui.label(
-                egui::RichText::new("Plan")
+                egui::RichText::new("Execution Plan")
                     .size(type_size::UI)
                     .strong()
                     .color(theme.text_primary),
@@ -107,10 +107,34 @@ pub fn render_review_card(
                 }
             }
 
+            ui.add_space(space::MD);
+            ui.label(
+                egui::RichText::new("Files affected")
+                    .size(type_size::UI)
+                    .strong()
+                    .color(theme.text_primary),
+            );
+            ui.add_space(space::XS);
+            if model.affected_resources.is_empty() {
+                ui.label(
+                    egui::RichText::new("• (none listed)")
+                        .size(type_size::BODY)
+                        .color(theme.text_secondary),
+                );
+            } else {
+                for resource in &model.affected_resources {
+                    ui.label(
+                        egui::RichText::new(format!("• {resource}"))
+                            .size(type_size::BODY)
+                            .color(theme.text_primary),
+                    );
+                }
+            }
+
             if let Some(preview) = &model.action_preview {
                 ui.add_space(space::MD);
                 ui.label(
-                    egui::RichText::new("Preview")
+                    egui::RichText::new(preview.kind.review_section_title())
                         .size(type_size::UI)
                         .strong()
                         .color(theme.text_primary),
@@ -196,7 +220,7 @@ pub fn render_review_card(
                     );
                     ui.add_space(space::XS);
                     ui.label(
-                        egui::RichText::new("Approve · Cancel · Modify the plan")
+                        egui::RichText::new("Approve · Modify · Cancel")
                             .size(type_size::META)
                             .color(theme.text_secondary),
                     );

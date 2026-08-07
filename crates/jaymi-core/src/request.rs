@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use crate::coding_action::CodingAction;
 use crate::search::SearchRequest;
 
 /// Structured discovery query kinds answered from the knowledge database.
@@ -304,6 +305,11 @@ pub struct UserRequest {
     pub open_project_id: Option<String>,
     /// When true, close the active project workspace through the Planner.
     pub close_project: bool,
+    /// Optional typed Coding Action from the Coding toolbar (Sprint C0.1).
+    ///
+    /// UI emits this only; the Planner Decision Engine owns routing. Never a
+    /// parallel IntentId taxonomy — maps onto conversational / search / terminal.
+    pub coding_action: Option<CodingAction>,
 }
 
 impl UserRequest {
@@ -325,12 +331,22 @@ impl UserRequest {
             project_knowledge: None,
             open_project_id: None,
             close_project: false,
+            coding_action: None,
         }
     }
 
     /// Create a new user request from free-form content.
     pub fn new(content: impl Into<String>) -> Self {
         Self::bare(content)
+    }
+
+    /// Create a typed Coding Action request (Conversation First turn text).
+    pub fn coding_action(action: CodingAction) -> Self {
+        Self {
+            content: action.conversation_text().to_string(),
+            coding_action: Some(action),
+            ..Self::bare("")
+        }
     }
 
     /// Create a structured request to list a single directory.

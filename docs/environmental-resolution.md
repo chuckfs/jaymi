@@ -35,7 +35,8 @@ Environmental Resolution       ★ Sprint B2.10
     ▼
 AssembleHints {
   intent, capability_ids, complexity,
-  environmental: EnvironmentalHints
+  environmental: EnvironmentalHints,
+  understanding: Option<String>   // C1.1 when Explain / understanding
 }
     │
     ▼

@@ -49,6 +49,13 @@ CodingState / Monaco / FS / GitProvider (read-only) / Terminal
 | Context Selection | B2.8 | [context-selection.md](context-selection.md) | Deterministic feed profiles |
 | Workspace Memory | B2.9 | [workspace-memory.md](workspace-memory.md) | Recent edits / opens / builds / objective |
 | Environmental Resolution | B2.10 | [environmental-resolution.md](environmental-resolution.md) | Planner binds `this` / `it` / `why?` |
+| Coding Actions | C0.1 | [coding-actions.md](coding-actions.md) | Quick Action Bar → typed Planner intents |
+| Coding Understanding | C1.1 | [coding-understanding.md](coding-understanding.md) | Structured understand-before-acting from WI |
+| Project Understanding | C1.2 | [project-understanding.md](project-understanding.md) | Whole-project orientation (no tools / plans / edits) |
+| Coding Review | C1.3 | [coding-review.md](coding-review.md) | Structured review (no edits / execution / plans) |
+| Coding Plan | C1.4 | [coding-plan.md](coding-plan.md) | Generation planning (no codegen / tools / writes) |
+| Code Generation | C1.5 | [code-generation.md](code-generation.md) | Ops → Execution Plan → Review → tools |
+| Coding Execution Plans | C1.6 | [coding-execution-plans.md](coding-execution-plans.md) | Universal Review Card for coding mutations |
 | Workspace Diagnostics | B2.11 | [workspace-diagnostics.md](workspace-diagnostics.md) | Developer Diagnostics only |
 | Constitutional Audit | B2.12 | — | Ownership verified; residuals closed in B2.13.x |
 | Docs sync | B2.13.4 | this file | Documentation matches implementation |

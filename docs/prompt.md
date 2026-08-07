@@ -41,23 +41,31 @@ Default emission order (`PromptSectionId::ORDER`):
 2. Conversation
 3. Relevant Memories
 4. Active Project
-5. Workspace State (workspace kind + open files — intentional fold)
+5. Workspace State (workspace kind + open files + git / inventory / summaries fold)
 6. Current File
 7. Selection
-8. Search Results
-9. Diagnostics
-10. Permissions
-11. Capabilities
-12. Planner Metadata
-13. User Request
+8. Editor Intelligence
+9. Project Intelligence
+10. Runtime Intelligence
+11. Workspace Memory
+12. Environmental Resolution (Planner deixis bindings)
+13. Coding Understanding (Planner WI scaffold + fill rules — Sprint C1.1 / C1.2 Project Understanding)
+14. Coding Review (Planner WI scaffold — Sprint C1.3)
+15. Coding Plan (Planner WI scaffold — Sprint C1.4 Generation Planning)
+16. Search Results
+17. Diagnostics
+18. Permissions
+19. Capabilities
+20. Planner Metadata
+21. User Request
 
 Retention priority (higher kept longer under budget pressure): System → User Request
-→ Conversation → Active Project → … → Memories → Planner Metadata.
+→ Coding Plan → Coding Review → Coding Understanding → Environmental Resolution → Conversation → …
 
 ### LlmContext → Prompt mapping (B1.13.2)
 
-| `LlmSectionId` | Prompt section | Notes |
-|----------------|----------------|-------|
+| `LlmSectionId` / source | Prompt section | Notes |
+|-------------------------|----------------|-------|
 | `user_request` | User Request | Plus request `goal` |
 | `conversation` | Conversation | Plus `ReasoningRequest.history` turns (B1.13.3 multi-turn) |
 | `active_project` | Active Project | |
@@ -65,12 +73,20 @@ Retention priority (higher kept longer under budget pressure): System → User R
 | `open_files` | Workspace State | Folded with workspace kind |
 | `current_file` | Current File | |
 | `current_selection` | Selection | |
+| `editor_intelligence` | Editor Intelligence | |
+| `project_intelligence` | Project Intelligence | |
+| `runtime_intelligence` | Runtime Intelligence | |
+| `workspace_memory` | Workspace Memory | |
 | `search_results` | Search Results | |
 | `memory_results` | Relevant Memories | |
 | `diagnostics` | Diagnostics | |
 | `permissions` | Permissions | |
 | `active_capabilities` | Capabilities | |
 | *(engine)* | System Instructions | Template / override — not from bundle |
+| *(providers.environmental)* | Environmental Resolution | Planner bindings (B2.10) |
+| *(extensions.coding_understanding)* | Coding Understanding | Planner scaffold (C1.1 / C1.2) |
+| *(extensions.coding_review)* | Coding Review | Planner scaffold (C1.3) |
+| *(extensions.coding_plan)* | Coding Plan | Planner scaffold (C1.4) |
 | *(providers meta)* | Planner Metadata | From `LlmContext.providers` |
 
 Nothing disappears silently. Absent Llm sections are **Excluded** with a note.

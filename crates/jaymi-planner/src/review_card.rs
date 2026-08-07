@@ -1,13 +1,24 @@
 //! Review Card — conversational approval surface for Execution Plans.
 //!
-//! Review happens **inside the conversation**, never as a modal. The card
-//! speaks like Jaymi: a short lead-in, a clear Plan, an approval notice, and
-//! Approve / Modify / Cancel as [`ReviewIntent`] only — with example modify
-//! phrases the user can type.
+//! Review happens **inside the conversation**, never as a modal. Sprint C1.6
+//! Coding Execution Plans use the **same** card for coding mutations
+//! (rename / write / generate / …):
+//!
+//! ```text
+//! Execution Plan
+//! Files affected
+//! Diff Preview
+//! Risk
+//! Approve · Modify · Cancel
+//! ```
+//!
+//! The card speaks like Jaymi and emits Approve / Modify / Cancel as
+//! [`ReviewIntent`] only — with example modify phrases the user can type.
 //!
 //! **Invariant:** ReviewCard never executes tools and never talks to
 //! providers. Callers map intents to [`crate::Planner::resolve_review`], which
-//! resumes, revises, or invalidates the paused plan.
+//! resumes, revises, or invalidates the paused plan. There is no coding or
+//! editor bypass — Review Before Action stays universal.
 
 use serde::{Deserialize, Serialize};
 
@@ -279,6 +290,10 @@ impl ReviewCardModel {
             .map(|permission| permission.label())
             .collect();
 
+        let action_preview = plan.action_preview().cloned();
+        let affected_resources =
+            merge_affected_resources(plan.affected_resources(), action_preview.as_ref());
+
         Self {
             plan_id: plan.id().clone(),
             plan_status: plan.status(),
@@ -291,7 +306,7 @@ impl ReviewCardModel {
             why_proposed,
             after_approval,
             summary: plan.summary(),
-            affected_resources: plan.affected_resources().to_vec(),
+            affected_resources,
             risk_level: plan.estimated_risk(),
             permissions,
             estimated_duration: EstimatedDuration::from_plan(
@@ -300,7 +315,7 @@ impl ReviewCardModel {
             ),
             reversibility: plan.estimated_reversibility(),
             deletion_method: plan.deletion_method(),
-            action_preview: plan.action_preview().cloned(),
+            action_preview,
             state: ReviewCardState::Pending,
             revision: plan.revision(),
             parent_plan_id: plan.parent_plan_id().cloned(),
@@ -337,11 +352,14 @@ impl ReviewCardModel {
     }
 
     /// Conversational body with optional expanded preview.
+    ///
+    /// Sprint C1.6 Coding Execution Plans surface (universal Review Card):
+    /// Execution Plan · Files affected · Diff Preview · Risk · Approve / Modify / Cancel.
     pub fn render_text_with_preview(&self, expand_preview: bool) -> String {
         let mut lines = Vec::new();
         lines.push(self.opening.clone());
         lines.push(String::new());
-        lines.push("Plan".into());
+        lines.push("Execution Plan".into());
         if self.plan_items.is_empty() {
             lines.push("• (no concrete steps)".into());
         } else {
@@ -349,6 +367,17 @@ impl ReviewCardModel {
                 lines.push(format!("• {item}"));
             }
         }
+
+        lines.push(String::new());
+        lines.push("Files affected".into());
+        if self.affected_resources.is_empty() {
+            lines.push("• (none listed)".into());
+        } else {
+            for resource in &self.affected_resources {
+                lines.push(format!("• {resource}"));
+            }
+        }
+
         if let Some(preview) = &self.action_preview {
             lines.push(String::new());
             let display = if expand_preview {
@@ -361,6 +390,14 @@ impl ReviewCardModel {
             };
             lines.push(display.render_text(expand_preview));
         }
+
+        lines.push(String::new());
+        lines.push("Risk".into());
+        lines.push(format!("• {}", self.risk_level.as_str()));
+        if let Some(method) = self.deletion_method {
+            lines.push(format!("• deletion method: {}", method.as_str()));
+        }
+
         if self.revision > 1 || !self.revision_changes.is_empty() {
             lines.push(String::new());
             lines.push(format!("Changes in revision {}", self.revision));
@@ -376,8 +413,8 @@ impl ReviewCardModel {
         lines.push(String::new());
         lines.push("You can:".into());
         lines.push("• Approve".into());
+        lines.push("• Modify".into());
         lines.push("• Cancel".into());
-        lines.push("• Modify the plan".into());
         if !self.modify_examples.is_empty() {
             lines.push("  For example:".into());
             for example in &self.modify_examples {
@@ -393,6 +430,24 @@ impl ReviewCardModel {
         }
         lines.join("\n")
     }
+}
+
+/// Union plan resources with preview-described paths (e.g. multi-file LSP rename).
+fn merge_affected_resources(
+    plan_resources: &[String],
+    preview: Option<&jaymi_core::ActionPreview>,
+) -> Vec<String> {
+    let mut resources = plan_resources.to_vec();
+    if let Some(preview) = preview {
+        for resource in &preview.resources {
+            if !resource.trim().is_empty()
+                && !resources.iter().any(|existing| existing == resource)
+            {
+                resources.push(resource.clone());
+            }
+        }
+    }
+    resources
 }
 
 fn display_resource_label(resource: &str) -> String {
@@ -675,15 +730,74 @@ mod tests {
         let card = ReviewCardModel::from_plan(&plan, None);
         let text = card.render_text();
         assert!(text.starts_with("I can do that."));
-        assert!(text.contains("Plan"));
+        assert!(text.contains("Execution Plan"));
+        assert!(text.contains("Files affected"));
+        assert!(text.contains("/tmp/project/build"));
+        assert!(text.contains("Risk"));
         assert!(text.contains("Delete"));
         assert!(text.contains("destructive"));
         assert!(text.contains("You can:"));
         assert!(text.contains("Approve"));
-        assert!(text.contains("Modify the plan"));
+        assert!(text.contains("Modify"));
+        assert!(text.contains("Cancel"));
         assert!(text.contains("Keep today's files."));
         assert!(text.contains("Only delete the cache."));
         assert!(text.contains("Show me the files first."));
+    }
+
+    #[test]
+    fn coding_execution_plan_merges_preview_resources() {
+        use jaymi_core::{ActionPreview, PreviewKind};
+
+        let preview = ActionPreview {
+            kind: PreviewKind::LspWorkspaceEdit,
+            title: "Rename → new_name".into(),
+            summary_lines: vec!["3 edits across 2 files".into()],
+            body: Some("a.rs:1 → new_name\nb.rs:4 → new_name".into()),
+            truncated: false,
+            total_lines: None,
+            added_lines: None,
+            removed_lines: None,
+            resources: vec![
+                "/tmp/project/a.rs".into(),
+                "/tmp/project/b.rs".into(),
+            ],
+        };
+        let mut plan = ExecutionPlan::create(ExecutionPlanParams {
+            originating_request: "Rename variable".into(),
+            planner_intent: IntentId::Unknown,
+            capability: Capability::Code,
+            proposed_tools: vec!["language_server".into()],
+            steps: vec![ExecutionStep {
+                order: 1,
+                description: "LSP rename".into(),
+                tool_id: Some("language_server".into()),
+                resource: Some("/tmp/project".into()),
+            }],
+            estimated_risk: EstimatedRisk::Medium,
+            affected_resources: vec!["/tmp/project".into()],
+            permissions_required: vec![],
+            review_requirement: ReviewRequirement::Required,
+            estimated_reversibility: EstimatedReversibility::PartiallyReversible,
+            expected_outputs: vec!["renamed symbol".into()],
+            deletion_method: None,
+            action_preview: Some(preview),
+            lineage: Default::default(),
+        });
+        plan.mark_ready().unwrap();
+        plan.mark_awaiting_review().unwrap();
+
+        let card = ReviewCardModel::from_plan(&plan, None);
+        assert!(card.affected_resources.iter().any(|r| r.ends_with("a.rs")));
+        assert!(card.affected_resources.iter().any(|r| r.ends_with("b.rs")));
+        let text = card.render_text();
+        assert!(text.contains("Execution Plan"));
+        assert!(text.contains("Files affected"));
+        assert!(text.contains("Diff Preview"));
+        assert!(text.contains("Risk"));
+        assert!(text.contains("Approve"));
+        assert!(text.contains("Modify"));
+        assert!(text.contains("Cancel"));
     }
 
     #[test]

@@ -409,6 +409,23 @@ impl PromptBuilder {
                     ),
                 }
             }
+            PromptSectionId::CodingUnderstanding => {
+                match format_coding_understanding(context) {
+                    Some(body) => DraftSection::included(id, body),
+                    None => DraftSection::excluded(
+                        id,
+                        "no planner coding understanding extension",
+                    ),
+                }
+            }
+            PromptSectionId::CodingReview => match format_coding_review(context) {
+                Some(body) => DraftSection::included(id, body),
+                None => DraftSection::excluded(id, "no planner coding review extension"),
+            }
+            PromptSectionId::CodingPlan => match format_coding_plan(context) {
+                Some(body) => DraftSection::included(id, body),
+                None => DraftSection::excluded(id, "no planner coding plan extension"),
+            }
             PromptSectionId::SearchResults => {
                 match find_content(context, LlmSectionId::SearchResults) {
                     Some(LlmSectionContent::SearchResults(search)) => match format_search(search) {
@@ -1225,6 +1242,47 @@ fn format_environmental_resolution(context: &LlmContext) -> Option<String> {
         lines.push(format!("rules: {}", env.rules.join(", ")));
     }
     Some(lines.join("\n"))
+}
+
+fn format_coding_understanding(context: &LlmContext) -> Option<String> {
+    let value = context.extensions.get("coding_understanding")?;
+    let instruction = value
+        .get("instruction")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())?;
+    let focus = value
+        .get("focus")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    Some(format!(
+        "focus: {focus}\n\n{instruction}"
+    ))
+}
+
+fn format_coding_review(context: &LlmContext) -> Option<String> {
+    let value = context.extensions.get("coding_review")?;
+    let instruction = value
+        .get("instruction")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())?;
+    let focus = value
+        .get("focus")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    Some(format!("focus: {focus}\n\n{instruction}"))
+}
+
+fn format_coding_plan(context: &LlmContext) -> Option<String> {
+    let value = context.extensions.get("coding_plan")?;
+    let instruction = value
+        .get("instruction")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.trim().is_empty())?;
+    let kind = value
+        .get("kind")
+        .and_then(|v| v.as_str())
+        .unwrap_or("unknown");
+    Some(format!("kind: {kind}\n\n{instruction}"))
 }
 
 fn format_selection(selection: &LlmCurrentSelection) -> Option<String> {
