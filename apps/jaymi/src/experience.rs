@@ -11,8 +11,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use jaymi_capabilities::{
-    CapabilityState, CodingState, CreationState, ResearchState, WorkspaceExpansion, WorkspaceKind,
-    WorkspacePanel,
+    CapabilityState, CodingState, CreationState, KnowledgeState, ResearchState, WorkspaceExpansion,
+    WorkspaceKind, WorkspacePanel,
 };
 use jaymi_core::{JaymiError, JaymiResult};
 use jaymi_memory::{ConversationMessage, MessageRole};
@@ -369,6 +369,20 @@ impl ExperienceSession {
             JaymiError::new("active capability state is not a research workspace")
         })?;
         Ok(update(research))
+    }
+
+    /// Update knowledge workspace state (isolated to Knowledge).
+    pub fn with_knowledge_state<R>(
+        &mut self,
+        update: impl FnOnce(&mut KnowledgeState) -> R,
+    ) -> JaymiResult<R> {
+        let state = self.capability_state_mut().ok_or_else(|| {
+            JaymiError::new("no active capability state — expand a knowledge workspace first")
+        })?;
+        let knowledge = state.knowledge_mut().ok_or_else(|| {
+            JaymiError::new("active capability state is not a knowledge workspace")
+        })?;
+        Ok(update(knowledge))
     }
 
     /// Promote one capability-state entry into durable session notes.

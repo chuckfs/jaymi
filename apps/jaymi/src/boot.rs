@@ -3741,6 +3741,44 @@ impl Application {
         experience.with_research_state(update)
     }
 
+    /// Mutate knowledge workspace state (fails when Knowledge is not active).
+    pub fn with_knowledge_state<R>(
+        &self,
+        update: impl FnOnce(&mut jaymi_capabilities::KnowledgeState) -> R,
+    ) -> JaymiResult<R> {
+        let mut experience = self
+            .experience
+            .lock()
+            .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
+        experience.with_knowledge_state(update)
+    }
+
+    /// Search the local knowledge inventory by filename (Knowledge workspace).
+    pub fn search_knowledge(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> JaymiResult<Vec<jaymi_knowledge::KnowledgeItem>> {
+        let store = self.container.resolve::<Arc<SqliteKnowledgeStore>>()?;
+        store.find_by_name(query, Some(limit))
+    }
+
+    /// List active knowledge collections ("vaults" in the Knowledge workspace).
+    pub fn list_knowledge_collections(&self) -> JaymiResult<Vec<jaymi_knowledge::Collection>> {
+        let store = self.container.resolve::<Arc<SqliteKnowledgeStore>>()?;
+        store.list_collections()
+    }
+
+    /// Items belonging to one knowledge collection (selecting a vault).
+    pub fn knowledge_items_in_collection(
+        &self,
+        name: &str,
+        limit: usize,
+    ) -> JaymiResult<Vec<jaymi_knowledge::KnowledgeItem>> {
+        let store = self.container.resolve::<Arc<SqliteKnowledgeStore>>()?;
+        store.items_in_collection(name, false, Some(limit))
+    }
+
     /// Promote a capability-state entry into the durable conversation.
     ///
     /// The temporary workspace entry is summarized into conversation; the
@@ -4912,6 +4950,21 @@ impl Application {
             }
         }
         Ok(self.load_settings_uncached()?.theme)
+    }
+
+    /// Persist a new theme preference and invalidate the cached settings so
+    /// [`Self::theme_preference`] reflects it on the next read.
+    pub fn set_theme_preference(&self, theme: jaymi_config::Theme) -> JaymiResult<()> {
+        let config = self.container.resolve::<Arc<Mutex<Config>>>()?;
+        let mut config = config
+            .lock()
+            .map_err(|_| JaymiError::new("config lock poisoned"))?;
+        config.settings_mut().theme = theme;
+        config.settings_mut().version = jaymi_config::CURRENT_SETTINGS_VERSION;
+        config.save()?;
+        drop(config);
+        self.notify_settings_changed();
+        Ok(())
     }
 
     /// Immutable settings snapshot from the session cache (falls back to Config).

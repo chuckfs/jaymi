@@ -14,14 +14,17 @@ pub mod command_palette;
 pub mod context_maintenance;
 pub mod context_session;
 pub mod conversation_ux;
+pub mod creation_workspace;
 pub mod diagnostics;
 pub mod editor_workspace;
 pub mod execution_diagnostics;
 pub mod experience;
+pub mod knowledge_workspace;
 pub mod monaco_host;
 mod problems;
 pub mod performance_diagnostics;
 pub mod quick_open;
+pub mod research_workspace;
 pub mod session_cache;
 pub mod settings_workspace;
 pub mod workspace_diagnostics;
@@ -68,3 +71,8 @@ pub use settings_workspace::{
     ReasoningSettingsProvider, ReasoningSettingsSnapshot, SettingsCategory, SettingsWorkspaceEvent,
     SettingsWorkspaceState,
 };
+pub use knowledge_workspace::{
+    render_knowledge_workspace, KnowledgeWorkspaceEvent, KnowledgeWorkspaceState,
+};
+pub use research_workspace::render_research_workspace;
+pub use creation_workspace::render_creation_workspace;

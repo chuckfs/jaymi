@@ -1286,6 +1286,47 @@ impl ResearchState {
     }
 }
 
+/// One browsable vault/import source in the Knowledge workspace (an
+/// Obsidian vault, a Claude/ChatGPT import batch, a project docs folder).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeVaultState {
+    /// Stable vault id.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// Short meta line (e.g. "412 notes", "86 conversations").
+    pub meta: String,
+}
+
+/// One search hit in the Knowledge workspace.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KnowledgeHitState {
+    /// Stable hit id.
+    pub id: String,
+    /// Source vault id this hit belongs to.
+    pub vault_id: String,
+    /// Display title.
+    pub title: String,
+    /// Short matched snippet.
+    pub snippet: String,
+}
+
+/// Temporary state for the Knowledge workspace.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct KnowledgeState {
+    /// Vaults / import sources available to browse.
+    pub vaults: Vec<KnowledgeVaultState>,
+    /// Current search hits, when a query is active.
+    pub hits: Vec<KnowledgeHitState>,
+}
+
+impl KnowledgeState {
+    /// Number of tracked vaults and hits.
+    pub fn entry_count(&self) -> usize {
+        self.vaults.len() + self.hits.len()
+    }
+}
+
 /// Independent runtime state for one expanded capability workspace.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(clippy::large_enum_variant)]
@@ -1296,6 +1337,8 @@ pub enum CapabilityState {
     Creation(CreationState),
     /// Research temporary state.
     Research(ResearchState),
+    /// Knowledge temporary state.
+    Knowledge(KnowledgeState),
 }
 
 impl CapabilityState {
@@ -1306,6 +1349,7 @@ impl CapabilityState {
             WorkspaceKind::Coding => Some(Self::Coding(CodingState::default())),
             WorkspaceKind::Creation => Some(Self::Creation(CreationState::default())),
             WorkspaceKind::Research => Some(Self::Research(ResearchState::default())),
+            WorkspaceKind::Knowledge => Some(Self::Knowledge(KnowledgeState::default())),
         }
     }
 
@@ -1320,6 +1364,7 @@ impl CapabilityState {
             Self::Coding(_) => WorkspaceKind::Coding,
             Self::Creation(_) => WorkspaceKind::Creation,
             Self::Research(_) => WorkspaceKind::Research,
+            Self::Knowledge(_) => WorkspaceKind::Knowledge,
         }
     }
 
@@ -1329,6 +1374,7 @@ impl CapabilityState {
             Self::Coding(state) => state.entry_count(),
             Self::Creation(state) => state.entry_count(),
             Self::Research(state) => state.entry_count(),
+            Self::Knowledge(state) => state.entry_count(),
         }
     }
 
@@ -1376,6 +1422,22 @@ impl CapabilityState {
     pub fn research_mut(&mut self) -> Option<&mut ResearchState> {
         match self {
             Self::Research(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    /// Knowledge state borrow.
+    pub fn knowledge(&self) -> Option<&KnowledgeState> {
+        match self {
+            Self::Knowledge(state) => Some(state),
+            _ => None,
+        }
+    }
+
+    /// Mutable knowledge state borrow.
+    pub fn knowledge_mut(&mut self) -> Option<&mut KnowledgeState> {
+        match self {
+            Self::Knowledge(state) => Some(state),
             _ => None,
         }
     }
@@ -1438,6 +1500,18 @@ impl CapabilityState {
                                     .unwrap_or_default()
                             )
                         })
+                }),
+            Self::Knowledge(state) => state
+                .hits
+                .iter()
+                .find(|hit| hit.id == entry_id)
+                .map(|hit| format!("{}: {}", hit.title, hit.snippet))
+                .or_else(|| {
+                    state
+                        .vaults
+                        .iter()
+                        .find(|vault| vault.id == entry_id)
+                        .map(|vault| format!("Vault: {} ({})", vault.name, vault.meta))
                 }),
         }
     }

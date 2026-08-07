@@ -1296,14 +1296,6 @@ fn render_workspace_tab_strip(
         })
         .response;
 
-    ui.painter().line_segment(
-        [
-            strip_response.rect.left_bottom(),
-            strip_response.rect.right_bottom(),
-        ],
-        egui::Stroke::new(stroke::HAIRLINE, theme.accent),
-    );
-
     let drop = ui.interact(
         strip_response.rect,
         ui.id().with("coding_workspace_tab_drop"),
@@ -1321,10 +1313,12 @@ fn render_workspace_tab_strip(
     }
 }
 
-/// Flat region chrome — fill + margin only (no nested card Frames).
+/// Flat region chrome — fill + margin only (no nested card Frames). The
+/// Coding shell sits on `--panel`, one step deeper than the conversation's
+/// cream ground, so the workspace reads as its own surface.
 fn region_frame(theme: &Theme, margin: egui::Margin) -> egui::Frame {
     egui::Frame::new()
-        .fill(theme.background)
+        .fill(theme.panel)
         .inner_margin(margin)
         .stroke(egui::Stroke::NONE)
 }
@@ -1339,30 +1333,44 @@ fn render_bottom_dock_tabs(
 ) {
     ui.horizontal(|ui| {
         ui.set_min_height(DOCK_TAB_BAR_HEIGHT - 4.0);
-        ui.spacing_mut().item_spacing.x = space::SM;
+        ui.spacing_mut().item_spacing.x = space::XS;
         for &tab in WorkspacePanels::dock_tabs() {
             let selected = bottom_tab == tab;
-            let label = egui::RichText::new(tab.label())
-                .size(type_size::UI)
-                .color(if selected {
+            let galley = ui.painter().layout_no_wrap(
+                tab.label().to_string(),
+                egui::FontId::proportional(type_size::META),
+                egui::Color32::PLACEHOLDER,
+            );
+            let size = egui::vec2(galley.size().x + space::SM * 2.0, 24.0);
+            let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+            let response = response
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(format!("Show {} panel", tab.label()));
+            let hovered = response.hovered();
+            if selected {
+                ui.painter().rect_filled(
+                    rect,
+                    egui::CornerRadius::same(radius::PILL as u8),
+                    theme.surface,
+                );
+            } else if hovered {
+                ui.painter().rect_filled(
+                    rect,
+                    egui::CornerRadius::same(radius::PILL as u8),
+                    theme.selection(),
+                );
+            }
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                tab.label(),
+                egui::FontId::proportional(type_size::META),
+                if selected || hovered {
                     theme.text_primary
                 } else {
                     theme.text_secondary
-                });
-            let response = ui
-                .add(
-                    egui::Button::new(label)
-                        .frame(false)
-                        .min_size(egui::vec2(0.0, 22.0)),
-                )
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text(format!("Show {} panel", tab.label()));
-            if selected {
-                ui.painter().line_segment(
-                    [response.rect.left_bottom(), response.rect.right_bottom()],
-                    egui::Stroke::new(1.5, theme.accent),
-                );
-            }
+                },
+            );
             if response.clicked() {
                 // Clicking the active tab collapses the dock completely.
                 let next = if selected {
@@ -2151,13 +2159,7 @@ fn render_pane_tab(
     };
     if bg != egui::Color32::TRANSPARENT {
         ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(radius::SM as u8), bg);
-    }
-    if active {
-        ui.painter().line_segment(
-            [rect.left_bottom(), rect.right_bottom()],
-            egui::Stroke::new(1.5, theme.accent),
-        );
+            .rect_filled(rect, egui::CornerRadius::same(radius::PILL as u8), bg);
     }
 
     let text_color = if active || hovered {
@@ -2187,7 +2189,7 @@ fn render_pane_tab(
         if close_hovered {
             ui.painter().rect_filled(
                 close_rect,
-                egui::CornerRadius::same(radius::SM as u8),
+                egui::CornerRadius::same(radius::PILL as u8),
                 theme.selection(),
             );
         }
@@ -2490,45 +2492,59 @@ fn render_terminal_session(
     let gap = space::XS;
     let output_h = (ui.available_height() - INPUT_ROW_H - gap).max(48.0);
 
-    let scroll = egui::ScrollArea::vertical()
-        .id_salt(("terminal_scroll", &session.id))
-        .vertical_scroll_offset(session.scroll_offset)
-        .auto_shrink([false, false])
-        .max_height(output_h)
-        .min_scrolled_height(48.0)
-        .stick_to_bottom(true)
+    // The terminal is always a dark "ink" surface, like Monaco's chrome —
+    // independent of the app's own light/dark mode. Pull text colors from
+    // the dark palette regardless of which theme is active.
+    let ink_theme = Theme::dark();
+    let mut clicked_transcript = false;
+    egui::Frame::new()
+        .fill(theme.ink)
+        .corner_radius(radius::LG)
+        .inner_margin(inset(space::SM, space::XS))
         .show(ui, |ui| {
-            let output = if session.output.is_empty() {
-                "(no output yet — type a command below and press Enter)"
-            } else {
-                session.output.as_str()
-            };
-            let label = ui.add(
-                egui::Label::new(
-                    egui::RichText::new(output)
-                        .monospace()
-                        .color(if session.output.is_empty() {
-                            theme.text_secondary
-                        } else {
-                            theme.text_primary
-                        }),
-                )
-                .wrap()
-                .selectable(true)
-                .sense(egui::Sense::click()),
-            );
-            // Clicking the transcript focuses the command field.
-            if label.clicked() {
-                events.push(CodingShellEvent::TerminalFocusInput {
+            let scroll = egui::ScrollArea::vertical()
+                .id_salt(("terminal_scroll", &session.id))
+                .vertical_scroll_offset(session.scroll_offset)
+                .auto_shrink([false, false])
+                .max_height(output_h)
+                .min_scrolled_height(48.0)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    let output = if session.output.is_empty() {
+                        "(no output yet — type a command below and press Enter)"
+                    } else {
+                        session.output.as_str()
+                    };
+                    let label = ui.add(
+                        egui::Label::new(
+                            egui::RichText::new(output)
+                                .monospace()
+                                .color(if session.output.is_empty() {
+                                    ink_theme.text_secondary
+                                } else {
+                                    ink_theme.text_primary
+                                }),
+                        )
+                        .wrap()
+                        .selectable(true)
+                        .sense(egui::Sense::click()),
+                    );
+                    // Clicking the transcript focuses the command field.
+                    if label.clicked() {
+                        clicked_transcript = true;
+                    }
+                });
+            let new_offset = scroll.state.offset.y;
+            if (new_offset - session.scroll_offset).abs() > f32::EPSILON {
+                events.push(CodingShellEvent::TerminalScroll {
                     session_id: session.id.clone(),
+                    offset: new_offset,
                 });
             }
         });
-    let new_offset = scroll.state.offset.y;
-    if (new_offset - session.scroll_offset).abs() > f32::EPSILON {
-        events.push(CodingShellEvent::TerminalScroll {
+    if clicked_transcript {
+        events.push(CodingShellEvent::TerminalFocusInput {
             session_id: session.id.clone(),
-            offset: new_offset,
         });
     }
 

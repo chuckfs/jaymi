@@ -22,8 +22,9 @@ const ICON_COL: f32 = 16.0;
 const ICON_NAME_GAP: f32 = space::SM;
 /// Trailing space reserved for the dirty marker.
 const DIRTY_COL: f32 = 16.0;
-/// Corner radius for row hover / selection fills.
-const ROW_RADIUS: f32 = radius::XS;
+/// Corner radius for row hover / selection fills — pill rows, like every
+/// other selectable list in the shell (sidebar conversations, dock tabs).
+const ROW_RADIUS: f32 = radius::PILL;
 
 /// Render the Project Explorer into `ui`, appending interaction events.
 ///

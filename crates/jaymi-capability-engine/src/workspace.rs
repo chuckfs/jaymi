@@ -16,6 +16,9 @@ pub enum WorkspaceKind {
     Creation,
     /// Research workspace (sources, documents, notes, citations, search).
     Research,
+    /// Knowledge workspace (vaults, imports, search over the local
+    /// inventory).
+    Knowledge,
 }
 
 impl WorkspaceKind {
@@ -26,6 +29,7 @@ impl WorkspaceKind {
             Self::Coding => "coding",
             Self::Creation => "creation",
             Self::Research => "research",
+            Self::Knowledge => "knowledge",
         }
     }
 
@@ -36,6 +40,7 @@ impl WorkspaceKind {
             Self::Coding => "Coding Workspace",
             Self::Creation => "Creation Workspace",
             Self::Research => "Research Workspace",
+            Self::Knowledge => "Knowledge Workspace",
         }
     }
 
@@ -51,6 +56,7 @@ impl WorkspaceKind {
             "coding" | "ide" => Some(Self::Coding),
             "creation" | "canvas" => Some(Self::Creation),
             "research" => Some(Self::Research),
+            "knowledge" => Some(Self::Knowledge),
             _ => None,
         }
     }
@@ -91,6 +97,8 @@ pub enum WorkspacePanel {
     Notes,
     Citations,
     Search,
+    Vaults,
+    Inspector,
 }
 
 impl WorkspacePanel {
@@ -113,6 +121,8 @@ impl WorkspacePanel {
             Self::Notes => "notes",
             Self::Citations => "citations",
             Self::Search => "search",
+            Self::Vaults => "vaults",
+            Self::Inspector => "inspector",
         }
     }
 
@@ -135,6 +145,8 @@ impl WorkspacePanel {
             Self::Notes => "Notes",
             Self::Citations => "Citations",
             Self::Search => "Search",
+            Self::Vaults => "Vaults",
+            Self::Inspector => "Inspector",
         }
     }
 }
@@ -208,6 +220,11 @@ pub fn workspace_panels(kind: WorkspaceKind) -> Vec<WorkspacePanel> {
             WorkspacePanel::Citations,
             WorkspacePanel::Search,
         ],
+        WorkspaceKind::Knowledge => vec![
+            WorkspacePanel::Vaults,
+            WorkspacePanel::Search,
+            WorkspacePanel::Inspector,
+        ],
     }
 }
 
@@ -218,11 +235,12 @@ pub fn capability_workspace(capability: Capability) -> Option<WorkspaceKind> {
     match capability {
         Capability::Code => Some(WorkspaceKind::Coding),
         Capability::GenerateImages => Some(WorkspaceKind::Creation),
-        Capability::Search
-        | Capability::ReadDocuments
-        | Capability::Discover
-        | Capability::BrowseTheWeb
-        | Capability::Embeddings => Some(WorkspaceKind::Research),
+        Capability::Search | Capability::ReadDocuments | Capability::BrowseTheWeb | Capability::Embeddings => {
+            Some(WorkspaceKind::Research)
+        }
+        // Querying the local knowledge inventory browses vaults/imports, not
+        // web/citation synthesis — that's the Knowledge workspace, not Research.
+        Capability::Discover => Some(WorkspaceKind::Knowledge),
         Capability::Chat => None,
         // Other capabilities stay conversation-first until they earn a surface.
         _ => None,

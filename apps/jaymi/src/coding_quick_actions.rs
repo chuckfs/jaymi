@@ -81,10 +81,10 @@ impl QuickAction {
         }
     }
 
-    /// Estimated painted width for layout / overflow (label + padding).
+    /// Estimated painted width for layout / overflow (label + pill padding).
     pub fn estimated_width(self) -> f32 {
         let chars = self.label().chars().count() as f32;
-        chars * 7.0 + 20.0
+        chars * 7.0 + 36.0
     }
 }
 
@@ -289,16 +289,28 @@ pub fn render_quick_action_bar(
     events
 }
 
+/// A sage-tinted pill chip — these are Jaymi-offered actions (quick actions
+/// submit a conversation turn), so they read as proposals, not plain UI.
 fn quick_action_button(ui: &mut egui::Ui, theme: &Theme, label: &str) -> egui::Response {
-    let text = egui::RichText::new(label.to_owned())
-        .size(type_size::UI)
-        .color(theme.text_primary);
-    ui.add(
-        egui::Button::new(text)
-            .frame(false)
-            .min_size(egui::vec2(0.0, 26.0)),
-    )
-    .on_hover_cursor(egui::CursorIcon::PointingHand)
+    let font = egui::FontId::proportional(type_size::UI);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font.clone(), egui::Color32::PLACEHOLDER);
+    let size = egui::vec2(galley.size().x + space::SM * 2.0, 26.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let hovered = response.hovered();
+    ui.painter().rect_filled(
+        rect,
+        egui::CornerRadius::same(radius::PILL as u8),
+        if hovered { theme.accent2_soft } else { theme.accent2_tint },
+    );
+    ui.painter().text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        label,
+        font,
+        theme.accent2_deep,
+    );
+    response
 }
 
 /// Compact Coding glyph — accent tile with `{}`; hover flips to × to close.
@@ -310,7 +322,7 @@ fn coding_close_tile(ui: &mut egui::Ui, theme: &Theme) -> egui::Response {
 
     let fill = if hovered { theme.error } else { theme.accent };
     ui.painter()
-        .rect_filled(rect, egui::CornerRadius::same(radius::SM as u8), fill);
+        .rect_filled(rect, egui::CornerRadius::same(radius::PILL as u8), fill);
 
     if hovered {
         let c = rect.center();

@@ -9,6 +9,7 @@ use eframe::egui;
 use jaymi_commands::score_text;
 
 use crate::theme::{radius, space, stroke, type_size, Theme};
+use crate::ui::icons::{self, Icon};
 
 /// Which catalog a palette row came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -453,10 +454,9 @@ pub fn render_command_palette(
         .frame(
             egui::Frame::new()
                 .fill(theme.surface)
-                .stroke(egui::Stroke::new(stroke::HAIRLINE, theme.border))
-                .corner_radius(egui::CornerRadius::same(radius::LG as u8))
-                .inner_margin(egui::Margin::same(space::MD as i8))
-                .shadow(theme.elevation_shadow()),
+                .corner_radius(egui::CornerRadius::same(radius::XL as u8))
+                .inner_margin(egui::Margin::same(space::SM as i8))
+                .shadow(theme.shadow_lg()),
         )
         .order(egui::Order::Foreground)
         .show(ctx, |ui| {
@@ -467,33 +467,49 @@ pub fn render_command_palette(
             match &mut state.mode {
                 CommandPaletteMode::Closed => {}
                 CommandPaletteMode::Search { query, selected } => {
+                    ui.add_space(2.0);
                     ui.horizontal(|ui| {
-                        ui.label(
-                            egui::RichText::new("⌘P")
-                                .size(type_size::META)
-                                .color(theme.text_secondary),
-                        );
+                        ui.add_space(space::XS);
+                        let (rect, _) =
+                            ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+                        icons::paint(ui.painter(), Icon::Search, rect.center(), 7.5, theme.text_secondary);
+                        ui.add_space(space::XS);
                         let response = ui.add(
                             egui::TextEdit::singleline(query)
                                 .hint_text(
                                     egui::RichText::new(
-                                        "Search projects, files, commands, knowledge…",
+                                        "Do anything — files, commands, knowledge, the web…",
                                     )
-                                    .color(theme.text_secondary),
+                                    .color(theme.text_faint),
                                 )
+                                .font(egui::FontId::proportional(type_size::BODY))
                                 .text_color(theme.text_primary)
                                 .frame(false)
-                                .desired_width(panel_width - 72.0),
+                                .desired_width(panel_width - 130.0),
                         );
                         response.request_focus();
                         if response.changed() {
                             *selected = 0;
                             outcome = CommandPaletteOutcome::QueryChanged(query.clone());
                         }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.add_space(space::XS);
+                            egui::Frame::new()
+                                .stroke(egui::Stroke::new(1.5, theme.border))
+                                .corner_radius(6)
+                                .inner_margin(egui::Margin::symmetric(6, 1))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        egui::RichText::new("esc")
+                                            .size(type_size::META - 1.0)
+                                            .color(theme.text_faint),
+                                    );
+                                });
+                        });
                     });
                     ui.add_space(space::SM);
                     ui.painter().hline(
-                        ui.max_rect().x_range(),
+                        ui.max_rect().x_range().shrink(space::SM),
                         ui.cursor().top(),
                         egui::Stroke::new(stroke::HAIRLINE, theme.border),
                     );
@@ -593,51 +609,70 @@ pub fn render_command_palette(
     }
 }
 
+/// Icon + tint pairing for a palette row's badge — sage for what Jaymi
+/// already knows (knowledge, capabilities), terracotta for things the user
+/// navigates to directly (projects, files), neutral for commands.
+fn source_badge(theme: &Theme, source: PaletteSource) -> (Icon, egui::Color32, egui::Color32) {
+    match source {
+        PaletteSource::Command => (Icon::Settings, theme.surface_alt, theme.text_secondary),
+        PaletteSource::Project => (Icon::Folder, theme.accent_tint, theme.accent_deep),
+        PaletteSource::File => (Icon::File, theme.surface_alt, theme.text_secondary),
+        PaletteSource::Capability => (Icon::Creation, theme.accent2_tint, theme.accent2_deep),
+        PaletteSource::Conversation => (Icon::Send, theme.accent_tint, theme.accent_deep),
+        PaletteSource::Knowledge => (Icon::Knowledge, theme.accent2_tint, theme.accent2_deep),
+    }
+}
+
 fn render_palette_row(
     ui: &mut egui::Ui,
     theme: &Theme,
     item: &PaletteItem,
     selected: bool,
 ) -> egui::Response {
-    let fill = if selected {
-        theme.accent.linear_multiply(0.18)
-    } else {
-        egui::Color32::TRANSPARENT
-    };
-    let (rect, response) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), 36.0),
-        egui::Sense::click(),
-    );
-    if fill.a() > 0 {
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(radius::SM as u8), fill);
+    let row_h = 44.0;
+    let (rect, response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::click());
+    let hovered = response.hovered();
+    if selected || hovered {
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(radius::LG as u8),
+            theme.surface_alt,
+        );
     }
-    let text_color = if selected {
-        theme.text_primary
-    } else {
-        theme.text_primary
-    };
-    let source_color = theme.text_secondary;
+
+    let (icon, badge_fill, icon_color) = source_badge(theme, item.source);
+    let badge_center = egui::pos2(rect.left() + space::SM + 12.0, rect.center().y);
+    ui.painter().circle_filled(badge_center, 12.0, badge_fill);
+    icons::paint(ui.painter(), icon, badge_center, 6.0, icon_color);
+
+    let text_x = badge_center.x + 12.0 + space::SM;
     ui.painter().text(
-        egui::pos2(rect.left() + space::SM, rect.center().y - 7.0),
+        egui::pos2(text_x, rect.center().y - 8.0),
         egui::Align2::LEFT_CENTER,
         &item.title,
         egui::FontId::proportional(type_size::UI),
-        text_color,
+        theme.text_primary,
     );
-    let detail = match &item.subtitle {
-        Some(subtitle) if !subtitle.is_empty() => {
-            format!("{} · {subtitle}", item.source.label())
+    if let Some(subtitle) = &item.subtitle {
+        if !subtitle.is_empty() {
+            ui.painter().text(
+                egui::pos2(text_x, rect.center().y + 8.0),
+                egui::Align2::LEFT_CENTER,
+                subtitle,
+                egui::FontId::proportional(type_size::META),
+                theme.text_faint,
+            );
         }
-        _ => item.source.label().to_string(),
-    };
+    }
     ui.painter().text(
-        egui::pos2(rect.left() + space::SM, rect.center().y + 8.0),
-        egui::Align2::LEFT_CENTER,
-        detail,
-        egui::FontId::proportional(type_size::META),
-        source_color,
+        egui::pos2(rect.right() - space::SM, rect.center().y),
+        egui::Align2::RIGHT_CENTER,
+        item.source.label().to_uppercase(),
+        egui::FontId::proportional(type_size::META - 1.0),
+        theme.text_faint,
     );
+
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 

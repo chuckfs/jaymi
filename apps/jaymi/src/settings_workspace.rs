@@ -7,7 +7,9 @@
 
 use eframe::egui::{self, Align, Layout, RichText};
 
-use crate::theme::{inset, radius, space, stroke, type_size, Theme};
+use crate::theme::{inset, radius, space, type_size, Theme};
+use crate::ui::components::{pill_button, segmented, tag, ButtonStyle, TagStyle};
+use jaymi_config::Theme as ThemePreference;
 
 /// Categories in the Settings left rail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
@@ -195,6 +197,8 @@ pub enum SettingsWorkspaceEvent {
     RefreshModels,
     /// Probe connection via Application.
     TestConnection,
+    /// User changed the appearance preference (Light / Dark / System).
+    SetThemePreference(ThemePreference),
 }
 
 /// Inputs required to paint Settings.
@@ -207,6 +211,8 @@ pub struct SettingsWorkspaceContext<'a> {
     pub reasoning: &'a ReasoningSettingsSnapshot,
     /// True while Application is refreshing / testing.
     pub busy: bool,
+    /// Persisted appearance preference (Light / Dark / System).
+    pub theme_preference: ThemePreference,
 }
 
 /// Render the Settings Workspace surface.
@@ -217,80 +223,74 @@ pub fn render_settings_workspace(
 ) {
     let theme = ctx.theme;
     ui.horizontal(|ui| {
-        ui.heading(
+        ui.label(
             RichText::new("Settings")
-                .size(type_size::DISPLAY)
-                .color(theme.text_primary),
+                .font(crate::theme::display_font(type_size::TITLE)),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if ui
-                .add(
-                    egui::Button::new(RichText::new("Done").size(type_size::UI))
-                        .fill(theme.surface_alt)
-                        .corner_radius(radius::MD),
-                )
-                .clicked()
-            {
+            if pill_button(ui, theme, "Done", ButtonStyle::Secondary).clicked() {
                 events.push(SettingsWorkspaceEvent::Close);
             }
         });
     });
     ui.add_space(space::MD);
-    ui.separator();
 
-    egui::SidePanel::left("jaymi_settings_categories")
-        .exact_width(200.0)
-        .resizable(false)
-        .frame(
-            egui::Frame::new()
-                .fill(theme.surface)
-                .inner_margin(inset(space::SM, space::MD)),
-        )
-        .show_inside(ui, |ui| {
-            ui.label(
-                RichText::new("Categories")
-                    .size(type_size::META)
-                    .color(theme.text_secondary),
-            );
-            ui.add_space(space::SM);
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = space::MD;
+        ui.vertical(|ui| {
+            ui.set_width(160.0);
             for category in SettingsCategory::all() {
                 let selected = ctx.state.category == *category;
-                let label = RichText::new(category.label()).size(type_size::UI).color(
-                    if selected {
-                        theme.accent
-                    } else {
-                        theme.text_primary
-                    },
-                );
-                let response = ui.add_sized(
-                    [ui.available_width(), 32.0],
-                    egui::SelectableLabel::new(selected, label),
-                );
-                if response.clicked() {
+                if category_row(ui, theme, category.label(), selected).clicked() {
                     events.push(SettingsWorkspaceEvent::SelectCategory(*category));
                 }
-                ui.add_space(space::XS);
             }
         });
 
-    egui::CentralPanel::default()
-        .frame(
-            egui::Frame::new()
-                .fill(theme.background)
-                .inner_margin(inset(space::LG, space::MD)),
-        )
-        .show_inside(ui, |ui| {
-            match ctx.state.category {
-                SettingsCategory::Reasoning => render_reasoning_page(ui, theme, ctx, events),
-                other => render_coming_soon(ui, theme, other),
-            }
+        ui.vertical(|ui| {
+            ui.set_min_width(ui.available_width());
+            egui::ScrollArea::vertical()
+                .id_salt("jaymi_settings_content_scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| match ctx.state.category {
+                    SettingsCategory::Reasoning => render_reasoning_page(ui, theme, ctx, events),
+                    SettingsCategory::Appearance => render_appearance_page(ui, theme, ctx, events),
+                    other => render_coming_soon(ui, theme, other),
+                });
         });
+    });
+}
+
+fn category_row(ui: &mut egui::Ui, theme: &Theme, label: &str, selected: bool) -> egui::Response {
+    let (rect, mut response) =
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
+    response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let hovered = response.hovered();
+    if selected {
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(radius::PILL as u8), theme.surface);
+    } else if hovered {
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(radius::PILL as u8), theme.selection());
+    }
+    ui.painter().text(
+        egui::pos2(rect.left() + space::MD, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        egui::FontId::proportional(type_size::UI),
+        if selected {
+            theme.text_primary
+        } else {
+            theme.text_secondary
+        },
+    );
+    response
 }
 
 fn render_coming_soon(ui: &mut egui::Ui, theme: &Theme, category: SettingsCategory) {
-    ui.heading(
+    ui.label(
         RichText::new(category.label())
-            .size(type_size::TITLE)
+            .font(crate::theme::display_font(type_size::TITLE))
             .color(theme.text_primary),
     );
     ui.add_space(space::SM);
@@ -305,6 +305,55 @@ fn render_coming_soon(ui: &mut egui::Ui, theme: &Theme, category: SettingsCatego
             .size(type_size::META)
             .color(theme.text_secondary),
     );
+}
+
+fn render_appearance_page(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    ctx: &SettingsWorkspaceContext<'_>,
+    events: &mut Vec<SettingsWorkspaceEvent>,
+) {
+    ui.label(
+        RichText::new("Appearance")
+            .font(crate::theme::display_font(type_size::TITLE))
+            .color(theme.text_primary),
+    );
+    ui.add_space(space::SM);
+
+    egui::Frame::new()
+        .fill(theme.surface)
+        .corner_radius(radius::XL)
+        .shadow(theme.shadow_sm())
+        .inner_margin(inset(space::MD, space::MD))
+        .show(ui, |ui| {
+            ui.label(
+                RichText::new("Theme")
+                    .size(type_size::UI)
+                    .strong()
+                    .color(theme.text_primary),
+            );
+            ui.add_space(space::SM);
+            let options = ["Light", "Dark", "System"];
+            let selected = match ctx.theme_preference {
+                ThemePreference::Light => 0,
+                ThemePreference::Dark => 1,
+                ThemePreference::System => 2,
+            };
+            if let Some(index) = segmented(ui, theme, &options, selected) {
+                let next = match index {
+                    0 => ThemePreference::Light,
+                    1 => ThemePreference::Dark,
+                    _ => ThemePreference::System,
+                };
+                events.push(SettingsWorkspaceEvent::SetThemePreference(next));
+            }
+            ui.add_space(space::SM);
+            ui.label(
+                RichText::new("System follows your Mac's appearance setting.")
+                    .size(type_size::META)
+                    .color(theme.text_secondary),
+            );
+        });
 }
 
 fn render_reasoning_page(
@@ -328,9 +377,9 @@ fn render_reasoning_page_body(
     events: &mut Vec<SettingsWorkspaceEvent>,
 ) {
     let snap = ctx.reasoning;
-    ui.heading(
+    ui.label(
         RichText::new("Reasoning")
-            .size(type_size::TITLE)
+            .font(crate::theme::display_font(type_size::TITLE))
             .color(theme.text_primary),
     );
     ui.add_space(space::XS);
@@ -346,9 +395,9 @@ fn render_reasoning_page_body(
     ui.add_space(space::SM);
     egui::Frame::new()
         .fill(theme.surface)
-        .corner_radius(radius::LG)
+        .corner_radius(radius::XL)
         .inner_margin(inset(space::MD, space::MD))
-        .stroke(egui::Stroke::new(stroke::HAIRLINE, theme.border))
+        .shadow(theme.shadow_sm())
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 status_pill(ui, theme, if ctx.busy {
@@ -377,19 +426,20 @@ fn render_reasoning_page_body(
             }
             ui.add_space(space::MD);
             ui.horizontal(|ui| {
-                let refresh = ui.add_enabled(
-                    !ctx.busy,
-                    egui::Button::new(RichText::new("Refresh Models").size(type_size::UI))
-                        .corner_radius(radius::MD),
-                );
+                ui.spacing_mut().item_spacing.x = space::SM;
+                let refresh = ui
+                    .add_enabled_ui(!ctx.busy, |ui| {
+                        pill_button(ui, theme, "Refresh Models", ButtonStyle::Primary)
+                    })
+                    .inner;
                 if refresh.clicked() {
                     events.push(SettingsWorkspaceEvent::RefreshModels);
                 }
-                let test = ui.add_enabled(
-                    !ctx.busy,
-                    egui::Button::new(RichText::new("Test Connection").size(type_size::UI))
-                        .corner_radius(radius::MD),
-                );
+                let test = ui
+                    .add_enabled_ui(!ctx.busy, |ui| {
+                        pill_button(ui, theme, "Test Connection", ButtonStyle::Secondary)
+                    })
+                    .inner;
                 if test.clicked() {
                     events.push(SettingsWorkspaceEvent::TestConnection);
                 }
@@ -402,7 +452,7 @@ fn render_reasoning_page_body(
     if snap.models.is_empty() {
         egui::Frame::new()
             .fill(theme.surface)
-            .corner_radius(radius::LG)
+            .corner_radius(radius::XL)
             .inner_margin(inset(space::MD, space::MD))
             .show(ui, |ui| {
                 ui.label(
@@ -414,9 +464,9 @@ fn render_reasoning_page_body(
     } else {
         egui::Frame::new()
             .fill(theme.surface)
-            .corner_radius(radius::LG)
+            .corner_radius(radius::XL)
             .inner_margin(inset(space::MD, space::SM))
-            .stroke(egui::Stroke::new(stroke::HAIRLINE, theme.border))
+            .shadow(theme.shadow_sm())
             .show(ui, |ui| {
                 let mut last_provider = String::new();
                 for model in &snap.models {
@@ -464,9 +514,9 @@ fn render_reasoning_page_body(
     for model in &snap.models {
         egui::Frame::new()
             .fill(theme.surface)
-            .corner_radius(radius::LG)
+            .corner_radius(radius::XL)
             .inner_margin(inset(space::MD, space::MD))
-            .stroke(egui::Stroke::new(stroke::HAIRLINE, theme.border))
+            .shadow(theme.shadow_sm())
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
@@ -476,11 +526,7 @@ fn render_reasoning_page_body(
                             .color(theme.text_primary),
                     );
                     if model.is_default {
-                        ui.label(
-                            RichText::new("Default")
-                                .size(type_size::META)
-                                .color(theme.accent),
-                        );
+                        tag(ui, theme, "Default", TagStyle::Accent);
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         ui.label(
@@ -510,18 +556,9 @@ fn render_reasoning_page_body(
                 if !model.capability_labels.is_empty() {
                     ui.add_space(space::XS);
                     ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(space::XS, space::XS);
                         for label in &model.capability_labels {
-                            egui::Frame::new()
-                                .fill(theme.surface_alt)
-                                .corner_radius(radius::SM)
-                                .inner_margin(inset(space::SM, 2.0))
-                                .show(ui, |ui| {
-                                    ui.label(
-                                        RichText::new(label)
-                                            .size(type_size::META)
-                                            .color(theme.text_secondary),
-                                    );
-                                });
+                            tag(ui, theme, label, TagStyle::Neutral);
                         }
                     });
                 }
@@ -535,9 +572,9 @@ fn render_reasoning_page_body(
     for provider in &snap.providers {
         egui::Frame::new()
             .fill(theme.surface)
-            .corner_radius(radius::LG)
+            .corner_radius(radius::XL)
             .inner_margin(inset(space::MD, space::MD))
-            .stroke(egui::Stroke::new(stroke::HAIRLINE, theme.border))
+            .shadow(theme.shadow_sm())
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(
@@ -585,7 +622,7 @@ fn status_pill(ui: &mut egui::Ui, theme: &Theme, status: ReasoningConnectionStat
     };
     egui::Frame::new()
         .fill(fill)
-        .corner_radius(radius::SM)
+        .corner_radius(radius::PILL)
         .inner_margin(inset(space::SM, 2.0))
         .show(ui, |ui| {
             ui.label(

@@ -1,12 +1,13 @@
-//! In-conversation Review Card (egui).
+//! In-conversation Review Card (egui) — the Organic system's "signature card".
 //!
 //! Renders a [`ReviewCardModel`] inside the conversation scroll area — never
-//! as a modal. The card is conversational: opening, Plan, approval notice,
-//! and Approve / Modify / Cancel. Buttons emit [`ReviewIntent`] only.
+//! as a modal. Sage kicker = this is Jaymi's proposal; terracotta buttons =
+//! the user's decision. Buttons emit [`ReviewIntent`] only.
 
 use eframe::egui;
 
 use crate::theme::{inset, radius, space, type_size, Theme};
+use crate::ui::components::{pill_button, tag, ButtonStyle, TagStyle};
 use jaymi_planner::{ReviewCardModel, ReviewCardState, ReviewIntent};
 
 /// Paint a Review Card and return any newly chosen intent.
@@ -29,21 +30,15 @@ pub fn render_review_card(
     let pending = model.state.is_pending();
 
     egui::Frame::new()
-        .corner_radius(radius::LG)
-        .inner_margin(inset(space::MD, space::MD))
+        .corner_radius(radius::XL)
+        .inner_margin(inset(space::MD + space::XS, space::MD))
         .fill(theme.surface)
-        .stroke(egui::Stroke::new(1.0, theme.border))
-        .shadow(theme.elevation_shadow())
+        .shadow(theme.shadow_md())
         .show(ui, |ui| {
             ui.set_max_width(ui.available_width());
 
             ui.horizontal(|ui| {
-                ui.label(
-                    egui::RichText::new(&model.opening)
-                        .size(type_size::TITLE)
-                        .strong()
-                        .color(theme.text_primary),
-                );
+                tag(ui, theme, "Review before action", TagStyle::Accent2);
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let revision_label = if model.revision > 1 {
                         format!("{} · rev {}", model.plan_id.as_str(), model.revision)
@@ -53,10 +48,17 @@ pub fn render_review_card(
                     ui.label(
                         egui::RichText::new(revision_label)
                             .size(type_size::META)
-                            .color(theme.text_secondary),
+                            .color(theme.text_faint),
                     );
                 });
             });
+
+            ui.add_space(space::SM + space::XS);
+            ui.label(
+                egui::RichText::new(&model.opening)
+                    .font(crate::theme::display_font(type_size::TITLE))
+                    .color(theme.text_primary),
+            );
 
             if model.revision > 1 || !model.revision_changes.is_empty() {
                 ui.add_space(space::MD);
@@ -84,51 +86,29 @@ pub fn render_review_card(
             }
 
             ui.add_space(space::MD);
-            ui.label(
-                egui::RichText::new("Execution Plan")
-                    .size(type_size::UI)
-                    .strong()
-                    .color(theme.text_primary),
-            );
-            ui.add_space(space::XS);
             if model.plan_items.is_empty() {
                 ui.label(
-                    egui::RichText::new("• (no concrete steps)")
+                    egui::RichText::new("(no concrete steps)")
                         .size(type_size::BODY)
                         .color(theme.text_secondary),
                 );
             } else {
-                for item in &model.plan_items {
-                    ui.label(
-                        egui::RichText::new(format!("• {item}"))
-                            .size(type_size::BODY)
-                            .color(theme.text_primary),
-                    );
-                }
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = space::SM;
+                    for (index, item) in model.plan_items.iter().enumerate() {
+                        step_row(ui, theme, index + 1, item);
+                    }
+                });
             }
 
-            ui.add_space(space::MD);
-            ui.label(
-                egui::RichText::new("Files affected")
-                    .size(type_size::UI)
-                    .strong()
-                    .color(theme.text_primary),
-            );
-            ui.add_space(space::XS);
-            if model.affected_resources.is_empty() {
-                ui.label(
-                    egui::RichText::new("• (none listed)")
-                        .size(type_size::BODY)
-                        .color(theme.text_secondary),
-                );
-            } else {
-                for resource in &model.affected_resources {
-                    ui.label(
-                        egui::RichText::new(format!("• {resource}"))
-                            .size(type_size::BODY)
-                            .color(theme.text_primary),
-                    );
-                }
+            if !model.affected_resources.is_empty() {
+                ui.add_space(space::MD);
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(space::XS, space::XS);
+                    for resource in &model.affected_resources {
+                        tag(ui, theme, resource, TagStyle::Neutral);
+                    }
+                });
             }
 
             if let Some(preview) = &model.action_preview {
@@ -171,18 +151,7 @@ pub fn render_review_card(
                     } else {
                         "Expand preview"
                     };
-                    if ui
-                        .add(
-                            egui::Button::new(
-                                egui::RichText::new(label)
-                                    .size(type_size::META)
-                                    .color(theme.text_secondary),
-                            )
-                            .fill(theme.surface_alt)
-                            .corner_radius(radius::SM),
-                        )
-                        .clicked()
-                    {
+                    if pill_button(ui, theme, label, ButtonStyle::Ghost).clicked() {
                         *preview_expanded = !*preview_expanded;
                     }
                 }
@@ -212,37 +181,23 @@ pub fn render_review_card(
             ui.add_space(space::MD);
             match &model.state {
                 ReviewCardState::Pending => {
-                    ui.label(
-                        egui::RichText::new("You can:")
-                            .size(type_size::UI)
-                            .strong()
-                            .color(theme.text_primary),
-                    );
-                    ui.add_space(space::XS);
-                    ui.label(
-                        egui::RichText::new("Approve · Modify · Cancel")
-                            .size(type_size::META)
-                            .color(theme.text_secondary),
-                    );
-
                     if !model.modify_examples.is_empty() {
-                        ui.add_space(space::SM);
                         ui.label(
                             egui::RichText::new("For example:")
                                 .size(type_size::META)
-                                .color(theme.text_secondary),
+                                .color(theme.text_faint),
                         );
                         for example in &model.modify_examples {
                             ui.label(
                                 egui::RichText::new(format!("“{example}”"))
                                     .size(type_size::META)
                                     .italics()
-                                    .color(theme.text_secondary),
+                                    .color(theme.text_faint),
                             );
                         }
+                        ui.add_space(space::SM);
                     }
 
-                    ui.add_space(space::SM);
                     ui.add(
                         egui::TextEdit::multiline(modify_note)
                             .desired_width(ui.available_width())
@@ -250,48 +205,44 @@ pub fn render_review_card(
                             .hint_text(modify_hint(model))
                             .frame(true),
                     );
-                    ui.add_space(space::SM);
+                    ui.add_space(space::SM + space::XS);
 
                     ui.horizontal(|ui| {
-                        let approve = egui::Button::new(
-                            egui::RichText::new("Approve")
-                                .size(type_size::UI)
-                                .color(theme.on_accent()),
-                        )
-                        .fill(theme.accent)
-                        .corner_radius(radius::SM);
-                        if ui.add_enabled(pending, approve).clicked() {
+                        ui.spacing_mut().item_spacing.x = space::SM;
+                        if ui
+                            .add_enabled_ui(pending, |ui| {
+                                pill_button(ui, theme, "Approve", ButtonStyle::Primary)
+                            })
+                            .inner
+                            .clicked()
+                        {
                             chosen = Some(ReviewIntent::Approve {
                                 plan_id: model.plan_id.clone(),
                             });
                         }
 
-                        ui.add_space(space::SM);
                         let note = modify_note.trim();
                         let can_modify = pending && !note.is_empty();
-                        let modify = egui::Button::new(
-                            egui::RichText::new("Modify")
-                                .size(type_size::UI)
-                                .color(theme.text_primary),
-                        )
-                        .fill(theme.surface_alt)
-                        .corner_radius(radius::SM);
-                        if ui.add_enabled(can_modify, modify).clicked() {
+                        if ui
+                            .add_enabled_ui(can_modify, |ui| {
+                                pill_button(ui, theme, "Modify", ButtonStyle::Secondary)
+                            })
+                            .inner
+                            .clicked()
+                        {
                             chosen = Some(ReviewIntent::Modify {
                                 plan_id: model.plan_id.clone(),
                                 note: Some(note.to_string()),
                             });
                         }
 
-                        ui.add_space(space::SM);
-                        let cancel = egui::Button::new(
-                            egui::RichText::new("Cancel")
-                                .size(type_size::UI)
-                                .color(theme.text_secondary),
-                        )
-                        .fill(theme.surface_alt)
-                        .corner_radius(radius::SM);
-                        if ui.add_enabled(pending, cancel).clicked() {
+                        if ui
+                            .add_enabled_ui(pending, |ui| {
+                                pill_button(ui, theme, "Cancel", ButtonStyle::Ghost)
+                            })
+                            .inner
+                            .clicked()
+                        {
                             chosen = Some(ReviewIntent::Cancel {
                                 plan_id: model.plan_id.clone(),
                             });
@@ -303,8 +254,7 @@ pub fn render_review_card(
                             "Approve runs the plan. Modify revises it. Cancel drops it. Nothing runs until then.",
                         )
                         .size(type_size::META)
-                        .italics()
-                        .color(theme.text_secondary),
+                        .color(theme.text_faint),
                     );
                 }
                 ReviewCardState::Resolved { intent } => {
@@ -318,6 +268,31 @@ pub fn render_review_card(
         });
 
     chosen
+}
+
+/// One numbered plan step — a small terracotta-tint badge, matching the
+/// signature card spec (sage kicker = proposal, terracotta = the user acting
+/// on it; the step numbers sit in the terracotta ramp since Approve/Modify
+/// are the user's calls to make).
+fn step_row(ui: &mut egui::Ui, theme: &Theme, index: usize, text: &str) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = space::SM;
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
+        ui.painter()
+            .circle_filled(rect.center(), 10.0, theme.accent_tint);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            index.to_string(),
+            egui::FontId::proportional(type_size::META),
+            theme.accent_deep,
+        );
+        ui.label(
+            egui::RichText::new(text)
+                .size(type_size::BODY)
+                .color(theme.text_primary),
+        );
+    });
 }
 
 fn modify_hint(model: &ReviewCardModel) -> String {
