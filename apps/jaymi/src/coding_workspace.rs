@@ -585,6 +585,10 @@ pub enum CodingShellEvent {
     TerminalInput { session_id: String, input: String },
     /// Run the current terminal draft (or an explicit command).
     TerminalRun { session_id: String, command: String },
+    /// egui terminal command field needs keyboard focus (release Monaco WebView).
+    TerminalWantsKeyboard,
+    /// Focus the terminal command field (e.g. click transcript / open Terminal dock).
+    TerminalFocusInput { session_id: String },
     /// Navigate terminal history (`-1` older, `+1` newer).
     TerminalHistory { session_id: String, direction: i8 },
     /// Persist terminal output scroll offset.
@@ -2470,22 +2474,45 @@ fn render_terminal_session(
     });
     ui.add_space(space::XS);
 
+    // Reserve the command row first so ScrollArea cannot eat the whole dock
+    // height (common with min_scrolled_height ≈ panel height → zero-height input).
+    const INPUT_ROW_H: f32 = 28.0;
+    let gap = space::XS;
+    let output_h = (ui.available_height() - INPUT_ROW_H - gap).max(48.0);
+
     let scroll = egui::ScrollArea::vertical()
         .id_salt(("terminal_scroll", &session.id))
         .vertical_scroll_offset(session.scroll_offset)
         .auto_shrink([false, false])
-        .min_scrolled_height(160.0)
+        .max_height(output_h)
+        .min_scrolled_height(48.0)
         .stick_to_bottom(true)
         .show(ui, |ui| {
-            ui.add(
+            let output = if session.output.is_empty() {
+                "(no output yet — type a command below and press Enter)"
+            } else {
+                session.output.as_str()
+            };
+            let label = ui.add(
                 egui::Label::new(
-                    egui::RichText::new(&session.output)
+                    egui::RichText::new(output)
                         .monospace()
-                        .color(theme.text_primary),
+                        .color(if session.output.is_empty() {
+                            theme.text_secondary
+                        } else {
+                            theme.text_primary
+                        }),
                 )
                 .wrap()
-                .selectable(true),
+                .selectable(true)
+                .sense(egui::Sense::click()),
             );
+            // Clicking the transcript focuses the command field.
+            if label.clicked() {
+                events.push(CodingShellEvent::TerminalFocusInput {
+                    session_id: session.id.clone(),
+                });
+            }
         });
     let new_offset = scroll.state.offset.y;
     if (new_offset - session.scroll_offset).abs() > f32::EPSILON {
@@ -2495,51 +2522,75 @@ fn render_terminal_session(
         });
     }
 
-    ui.horizontal(|ui| {
-        ui.label("$");
-        let mut draft = session.input.clone();
-        let response = ui.add(
-            egui::TextEdit::singleline(&mut draft)
-                .id_salt(("terminal_input", &session.id))
-                .desired_width(f32::INFINITY)
-                .hint_text("cargo test · git status · npm test · python …"),
-        );
-        if response.changed() {
-            events.push(CodingShellEvent::TerminalInput {
-                session_id: session.id.clone(),
-                input: draft.clone(),
-            });
-        }
-        if response.has_focus() {
-            if ui.input(|input| input.key_pressed(egui::Key::ArrowUp)) {
-                events.push(CodingShellEvent::TerminalHistory {
+    ui.add_space(gap);
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), INPUT_ROW_H),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.label(egui::RichText::new("$").monospace().color(theme.text_secondary));
+            let run_w = 52.0;
+            let edit_w = (ui.available_width() - run_w - space::SM).max(80.0);
+            let mut draft = session.input.clone();
+            let response = ui.add_sized(
+                [edit_w, INPUT_ROW_H - 4.0],
+                egui::TextEdit::singleline(&mut draft)
+                    .id_salt(("terminal_input", &session.id))
+                    .font(egui::TextStyle::Monospace)
+                    .hint_text("cargo test · git status · npm test · …"),
+            );
+            if response.changed() {
+                events.push(CodingShellEvent::TerminalInput {
                     session_id: session.id.clone(),
-                    direction: -1,
+                    input: draft.clone(),
                 });
             }
-            if ui.input(|input| input.key_pressed(egui::Key::ArrowDown)) {
-                events.push(CodingShellEvent::TerminalHistory {
-                    session_id: session.id.clone(),
-                    direction: 1,
-                });
+            if response.clicked() || response.gained_focus() || response.has_focus() {
+                // Signal host to release Monaco WKWebView first-responder so keys
+                // reach this TextEdit (native child WebView otherwise eats typing).
+                events.push(CodingShellEvent::TerminalWantsKeyboard);
             }
-        }
-        let submit = response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter))
-            || ui.button("Run").clicked();
-        if submit {
-            let command = if draft.trim().is_empty() {
-                session.input.clone()
-            } else {
-                draft
-            };
-            if !command.trim().is_empty() {
-                events.push(CodingShellEvent::TerminalRun {
-                    session_id: session.id.clone(),
-                    command,
-                });
+            // External request to focus (click output / open Terminal dock).
+            let focus_id = egui::Id::new(("terminal_request_focus", &session.id));
+            let wants_focus = ui.data(|data| data.get_temp::<bool>(focus_id).unwrap_or(false));
+            if wants_focus {
+                response.request_focus();
+                ui.data_mut(|data| data.insert_temp(focus_id, false));
+                events.push(CodingShellEvent::TerminalWantsKeyboard);
             }
-        }
-    });
+            if response.has_focus() {
+                if ui.input(|input| input.key_pressed(egui::Key::ArrowUp)) {
+                    events.push(CodingShellEvent::TerminalHistory {
+                        session_id: session.id.clone(),
+                        direction: -1,
+                    });
+                }
+                if ui.input(|input| input.key_pressed(egui::Key::ArrowDown)) {
+                    events.push(CodingShellEvent::TerminalHistory {
+                        session_id: session.id.clone(),
+                        direction: 1,
+                    });
+                }
+            }
+            let submit = (response.has_focus()
+                && ui.input(|input| input.key_pressed(egui::Key::Enter)))
+                || ui
+                    .add_sized([run_w, INPUT_ROW_H - 4.0], egui::Button::new("Run"))
+                    .clicked();
+            if submit {
+                let command = if draft.trim().is_empty() {
+                    session.input.clone()
+                } else {
+                    draft
+                };
+                if !command.trim().is_empty() {
+                    events.push(CodingShellEvent::TerminalRun {
+                        session_id: session.id.clone(),
+                        command,
+                    });
+                }
+            }
+        },
+    );
 }
 
 fn render_git(

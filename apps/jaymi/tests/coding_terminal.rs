@@ -42,6 +42,17 @@ fn spawn_shell_execute_command_and_capture_stdout() {
             .any(|session| session.id == DEFAULT_TERMINAL_SESSION_ID),
         "expected default terminal session after coding start"
     );
+    let default_session = coding
+        .terminal_sessions
+        .iter()
+        .find(|session| session.id == DEFAULT_TERMINAL_SESSION_ID)
+        .expect("default session");
+    let expected_root = fs::canonicalize(&root).unwrap_or_else(|_| root.clone());
+    assert_eq!(
+        default_session.cwd.as_deref(),
+        Some(expected_root.to_string_lossy().into_owned().as_str()),
+        "default terminal must bind to project root so PTY opens on Coding start"
+    );
 
     let response = app
         .complete_user_initiated(

@@ -118,6 +118,8 @@ pub struct MonacoHost {
     /// Last Logical bounds applied (x, y from bottom, w, h) — skip redundant set_bounds.
     last_bounds: Option<(f64, f64, f64, f64)>,
     assets_dir: PathBuf,
+    /// True after we forced the WebView to resign keyboard for egui chrome.
+    keyboard_released: bool,
 }
 
 impl MonacoHost {
@@ -163,6 +165,7 @@ impl MonacoHost {
             last_theme_id: None,
             last_bounds: None,
             assets_dir,
+            keyboard_released: false,
         })
     }
 
@@ -188,6 +191,31 @@ impl MonacoHost {
             }
         }
         messages
+    }
+
+    /// Release keyboard so egui TextEdit (terminal, search, …) can receive keys.
+    ///
+    /// Child WKWebView stays first-responder after Monaco clicks. Blur the JS
+    /// editor and briefly toggle visibility (no `unsafe`) so the parent window
+    /// can deliver keys to egui. Call at most once per focus episode.
+    pub fn release_keyboard(&mut self) -> Result<(), String> {
+        if self.keyboard_released {
+            return Ok(());
+        }
+        let _ = self.webview.evaluate_script(
+            "(function(){try{if(window.editor&&editor.blur)editor.blur();var a=document.activeElement;if(a&&a.blur)a.blur();}catch(e){}})();",
+        );
+        if self.ready && self.last_bounds.is_some() {
+            let _ = self.webview.set_visible(false);
+            let _ = self.webview.set_visible(true);
+        }
+        self.keyboard_released = true;
+        Ok(())
+    }
+
+    /// Allow Monaco to take keyboard again after egui chrome is done.
+    pub fn clear_keyboard_release(&mut self) {
+        self.keyboard_released = false;
     }
 
     /// Show or hide the overlay and update its bounds to match the egui rect.

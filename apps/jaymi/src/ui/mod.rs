@@ -104,6 +104,8 @@ pub fn run_diagnostics(
                 status: None,
                 monaco: None,
                 monaco_last_error: None,
+                egui_wants_keyboard: false,
+                pending_terminal_focus: None,
                 command_palette: CommandPaletteState::default(),
                 workspace_was_expanded: false,
                 workspace_anim_start: None,
@@ -345,6 +347,10 @@ struct JaymiApp {
     monaco: Option<MonacoHost>,
     /// Last Monaco host error (assets / webview create).
     monaco_last_error: Option<String>,
+    /// When set, Monaco must resign first-responder so egui TextEdit receives keys.
+    egui_wants_keyboard: bool,
+    /// Focus the terminal command field for this session id on the next paint.
+    pending_terminal_focus: Option<String>,
     /// VS Code–style Command Palette (⌘P).
     command_palette: CommandPaletteState,
     /// Whether the workspace SidePanel was expanded on the previous frame
@@ -1935,6 +1941,7 @@ impl JaymiApp {
                     self.update_editor_setting(|settings| settings.font_size = size.max(8))
                 }
                 CodingShellEvent::SetBottomTab(tab) => {
+                    let focus_terminal = tab == CodingBottomTab::Terminal;
                     let result = self.app.with_coding_state(|coding| {
                         if tab.is_page() {
                             coding.show_bottom_tab(tab);
@@ -1944,6 +1951,16 @@ impl JaymiApp {
                     });
                     if result.is_ok() {
                         let _ = self.app.persist_coding_editor_workspace();
+                        if focus_terminal {
+                            if let Ok(Some(id)) = self.app.with_coding_state(|coding| {
+                                coding.active_terminal_id.clone().or_else(|| {
+                                    coding.terminal_sessions.first().map(|s| s.id.clone())
+                                })
+                            }) {
+                                self.pending_terminal_focus = Some(id);
+                                self.egui_wants_keyboard = true;
+                            }
+                        }
                     }
                     result
                 }
@@ -2011,6 +2028,15 @@ impl JaymiApp {
                     session_id,
                     command,
                 } => self.app.run_coding_terminal_command(&session_id, &command),
+                CodingShellEvent::TerminalWantsKeyboard => {
+                    self.egui_wants_keyboard = true;
+                    Ok(())
+                }
+                CodingShellEvent::TerminalFocusInput { session_id } => {
+                    self.pending_terminal_focus = Some(session_id);
+                    self.egui_wants_keyboard = true;
+                    Ok(())
+                }
                 CodingShellEvent::TerminalHistory {
                     session_id,
                     direction,
@@ -2211,6 +2237,15 @@ impl JaymiApp {
         let workspace = self.experience.active_workspace().cloned()?;
 
         if workspace.kind == WorkspaceKind::Coding {
+            // Apply pending terminal focus before paint so TextEdit can request_focus.
+            if let Some(session_id) = self.pending_terminal_focus.take() {
+                let focus_id = egui::Id::new(("terminal_request_focus", session_id));
+                ui.ctx()
+                    .data_mut(|data| data.insert_temp(focus_id, true));
+            }
+            // Reset each frame; TerminalWantsKeyboard / focus events set it again.
+            self.egui_wants_keyboard = false;
+
             let coding = self
                 .experience
                 .capability_state()
@@ -2439,16 +2474,24 @@ impl JaymiApp {
         let zoom = ctx.pixels_per_point();
         // Native WKWebView paints above egui — hide it while modal overlays own
         // the foreground so Quick Open / Command Palette are not covered by code.
-        let overlay_blocking = self.command_palette.is_open();
+        // Also hide while the terminal command field needs keys (WKWebView would
+        // otherwise keep first-responder and swallow typing).
+        let block_for_keyboard =
+            self.command_palette.is_open() || self.egui_wants_keyboard;
         let document = surface
-            .filter(|_| !overlay_blocking)
+            .filter(|_| !block_for_keyboard)
             .map(|surface| self.monaco_document_from_state(surface));
-        let surface = surface.filter(|_| !overlay_blocking);
+        let surface = surface.filter(|_| !block_for_keyboard);
         let theme_id = self.theme.monaco_theme_id().to_string();
         let definition = self.theme.monaco_definition_json();
         let Some(host) = self.monaco.as_mut() else {
             return;
         };
+        if block_for_keyboard {
+            let _ = host.release_keyboard();
+        } else {
+            host.clear_keyboard_release();
+        }
         if let (Some(surface), Some(document)) = (surface, document) {
             if let Err(error) = host.set_viewport(Some(surface.viewport), screen_height, zoom) {
                 self.monaco_last_error = Some(error);

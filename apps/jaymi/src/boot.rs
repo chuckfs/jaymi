@@ -1678,7 +1678,40 @@ impl Application {
             self.with_coding_state(|coding| coding.clear_editors())?;
         }
 
-        self.ensure_coding_terminal()?;
+        // Seed explorer.project_root before ensuring a PTY so the terminal is
+        // not stuck as a UI-only tab with no working directory.
+        if let Some(root) = self.active_project_root_path() {
+            let root_display = root.to_string_lossy().into_owned();
+            self.with_coding_state(|coding| {
+                if coding.explorer.project_root.as_deref() != Some(root_display.as_str()) {
+                    coding.explorer.project_root = Some(root_display);
+                }
+            })?;
+        }
+
+        // Soft-fail: Coding must open even when PTY is unavailable (restricted
+        // environments). First Run / Create will surface the error.
+        if let Err(error) = self.ensure_coding_terminal() {
+            jaymi_logging::warn(
+                "application",
+                format!("coding terminal ensure deferred: {error}"),
+            );
+            let _ = self.with_coding_state(|coding| {
+                if coding.terminal_sessions.is_empty() {
+                    let cwd = coding.explorer.project_root.clone();
+                    coding.push_terminal_session(
+                        jaymi_capabilities::TerminalSessionState::new(
+                            DEFAULT_TERMINAL_SESSION_ID,
+                            cwd,
+                        ),
+                    );
+                }
+                if coding.active_terminal_id.is_none() {
+                    coding.active_terminal_id = Some(DEFAULT_TERMINAL_SESSION_ID.to_string());
+                }
+            });
+        }
+
         // Slow refreshes (explorer / git / problems / file summaries) run in
         // background maintenance so opening Coding never blocks conversation.
         self.schedule_coding_context_maintenance();
@@ -2718,7 +2751,7 @@ impl Application {
 
     /// Ensure the Coding Workspace has a persistent PTY session.
     pub fn ensure_coding_terminal(&self) -> JaymiResult<()> {
-        let cwd = self.with_coding_state(|coding| coding.explorer.project_root.clone())?;
+        let cwd = self.coding_terminal_cwd(None)?;
         let Some(cwd) = cwd else {
             return self.with_coding_state(|coding| {
                 if coding.terminal_sessions.is_empty() {
@@ -2726,6 +2759,9 @@ impl Application {
                         DEFAULT_TERMINAL_SESSION_ID,
                         None,
                     ));
+                }
+                if coding.active_terminal_id.is_none() {
+                    coding.active_terminal_id = Some(DEFAULT_TERMINAL_SESSION_ID.to_string());
                 }
             });
         };
@@ -2742,12 +2778,35 @@ impl Application {
         Ok(())
     }
 
+    /// Resolve a terminal working directory: session cwd → explorer root →
+    /// active project root.
+    fn coding_terminal_cwd(&self, session_id: Option<&str>) -> JaymiResult<Option<PathBuf>> {
+        let from_coding = self.with_coding_state(|coding| {
+            if let Some(session_id) = session_id {
+                if let Some(cwd) = coding
+                    .terminal_sessions
+                    .iter()
+                    .find(|session| session.id == session_id)
+                    .and_then(|session| session.cwd.clone())
+                {
+                    return Some(PathBuf::from(cwd));
+                }
+            }
+            coding
+                .explorer
+                .project_root
+                .as_ref()
+                .map(PathBuf::from)
+        })?;
+        Ok(from_coding.or_else(|| self.active_project_root_path()))
+    }
+
     /// Spawn a new terminal tab in the Coding Workspace (cwd = project root)
     /// and make it the active tab.
     pub fn create_coding_terminal(&self, title: Option<String>) -> JaymiResult<()> {
-        let cwd = self
-            .with_coding_state(|coding| coding.explorer.project_root.clone())?
-            .ok_or_else(|| JaymiError::new("cannot create terminal — open a project first"))?;
+        let cwd = self.coding_terminal_cwd(None)?.ok_or_else(|| {
+            JaymiError::new("cannot create terminal — open a project first")
+        })?;
 
         let response = self.complete_user_initiated(self.create_terminal(&cwd, title)?)?;
         let session_id = response
@@ -2768,19 +2827,9 @@ impl Application {
         if title.is_empty() {
             return Err(JaymiError::new("terminal title must not be empty"));
         }
-        let cwd = self.with_coding_state(|coding| {
-            coding
-                .terminal_sessions
-                .iter()
-                .find(|session| session.id == session_id)
-                .and_then(|session| session.cwd.clone())
-                .or_else(|| coding.explorer.project_root.clone())
+        let cwd = self.coding_terminal_cwd(Some(session_id))?.ok_or_else(|| {
+            JaymiError::new("coding terminal has no working directory — open a project first")
         })?;
-        let Some(cwd) = cwd else {
-            return Err(JaymiError::new(
-                "coding terminal has no working directory — open a project first",
-            ));
-        };
 
         let response =
             self.complete_user_initiated(self.rename_terminal(session_id, &cwd, title)?)?;
@@ -2790,17 +2839,14 @@ impl Application {
 
     /// Kill a Coding Workspace terminal tab and pick a new active tab.
     pub fn kill_coding_terminal(&self, session_id: &str) -> JaymiResult<()> {
-        let cwd = self.with_coding_state(|coding| {
-            coding
-                .terminal_sessions
-                .iter()
-                .find(|session| session.id == session_id)
-                .and_then(|session| session.cwd.clone())
-                .or_else(|| coding.explorer.project_root.clone())
-        })?;
-        let cwd = cwd.unwrap_or_default();
-
-        self.complete_user_initiated(self.kill_terminal(session_id, &cwd)?)?;
+        let cwd = self.coding_terminal_cwd(Some(session_id))?;
+        if let Some(cwd) = cwd {
+            // Best-effort PTY teardown — still remove the UI tab if the tool fails
+            // (e.g. phantom UI-only session that never opened a PTY).
+            if let Ok(response) = self.kill_terminal(session_id, &cwd) {
+                let _ = self.complete_user_initiated(response);
+            }
+        }
         self.with_coding_state(|coding| {
             coding.remove_terminal_session(session_id);
         })?;
@@ -2820,19 +2866,15 @@ impl Application {
         if command.is_empty() {
             return Err(JaymiError::new("terminal command must not be empty"));
         }
-        let cwd = self.with_coding_state(|coding| {
-            coding
-                .terminal_sessions
-                .iter()
-                .find(|session| session.id == session_id)
-                .and_then(|session| session.cwd.clone())
-                .or_else(|| coding.explorer.project_root.clone())
+        let cwd = self.coding_terminal_cwd(Some(session_id))?.ok_or_else(|| {
+            JaymiError::new("coding terminal has no working directory — open a project first")
         })?;
-        let Some(cwd) = cwd else {
-            return Err(JaymiError::new(
-                "coding terminal has no working directory — open a project first",
-            ));
-        };
+
+        // Ensure the dock is visible when the user runs a command.
+        let _ = self.with_coding_state(|coding| {
+            coding.show_bottom_tab(CodingBottomTab::Terminal);
+            coding.active_terminal_id = Some(session_id.to_string());
+        });
 
         let response =
             self.complete_user_initiated(self.run_terminal(session_id, &cwd, command)?)?;
