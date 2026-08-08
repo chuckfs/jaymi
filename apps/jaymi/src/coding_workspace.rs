@@ -28,6 +28,7 @@ use crate::diagnostics::DiagnosticsSnapshot;
 use crate::experience::ExperienceSession;
 use crate::monaco_host::{language_for_path, MonacoDocument, MonacoViewport};
 use crate::theme::{inset, radius, space, stroke, type_size, Theme};
+use crate::ui::icons::Icon;
 use jaymi_project_engine::Project;
 
 /// Surface describing where Monaco should be positioned this frame.
@@ -994,6 +995,45 @@ pub fn render_coding_shell(
         .map(|coding| matches!(coding.editors.layout, EditorLayoutNode::Leaf { .. }))
         .unwrap_or(true);
 
+    // --- Workspace header (icon + title + subtitle) -------------------------
+    egui::TopBottomPanel::top("coding_workspace_header")
+        .exact_height(WORKSPACE_HEADER_HEIGHT)
+        .show_separator_line(false)
+        .frame(region_frame(
+            theme,
+            egui::Margin::symmetric(space::LG as i8, 0),
+        ))
+        .show_inside(ui, |ui| {
+            ui.horizontal_centered(|ui| {
+                let subtitle = state.and_then(|coding| {
+                    let name = coding
+                        .active_tab_path()
+                        .and_then(|path| path.rsplit('/').next())
+                        .unwrap_or("No open files");
+                    let dirty = coding
+                        .editors
+                        .sessions()
+                        .into_iter()
+                        .filter(|session| session.dirty)
+                        .count();
+                    Some(if dirty > 0 {
+                        format!("{name} · {dirty} edit{} pending", if dirty == 1 { "" } else { "s" })
+                    } else {
+                        name.to_string()
+                    })
+                });
+                crate::ui::components::render_workspace_header(
+                    ui,
+                    theme,
+                    Icon::Coding,
+                    theme.accent_tint,
+                    theme.accent_deep,
+                    "Coding",
+                    subtitle.as_deref(),
+                );
+            });
+        });
+
     // --- Quick Action Bar (Planner intents; not a VS Code toolbar) ----------
     egui::TopBottomPanel::top("coding_quick_actions")
         .exact_height(QUICK_ACTION_BAR_HEIGHT)
@@ -1005,9 +1045,6 @@ pub fn render_coding_shell(
         .show_inside(ui, |ui| {
             for event in coding_quick_actions::render_quick_action_bar(ui, theme, open_error) {
                 match event {
-                    QuickActionBarEvent::CloseWorkspace => {
-                        events.push(CodingShellEvent::CloseWorkspace);
-                    }
                     QuickActionBarEvent::Action(action) => {
                         events.push(CodingShellEvent::QuickAction(action));
                     }
@@ -1472,6 +1509,8 @@ fn render_output_panel(ui: &mut egui::Ui, theme: &Theme) {
         });
 }
 
+/// Workspace header (icon + title + subtitle) — spec: `height:56px`.
+const WORKSPACE_HEADER_HEIGHT: f32 = 56.0;
 /// Full-width editor tab strip under the toolbar.
 const EDITOR_TAB_STRIP_HEIGHT: f32 = 32.0;
 /// Dock tab strip height when the bottom dock is open.
@@ -2599,9 +2638,14 @@ fn render_terminal_session(
             }
             let submit = (response.has_focus()
                 && ui.input(|input| input.key_pressed(egui::Key::Enter)))
-                || ui
-                    .add_sized([run_w, INPUT_ROW_H - 4.0], egui::Button::new("Run"))
-                    .clicked();
+                || crate::ui::components::mini_pill_button(
+                    ui,
+                    theme,
+                    "Run",
+                    crate::ui::components::ButtonStyle::Primary,
+                    true,
+                )
+                .clicked();
             if submit {
                 let command = if draft.trim().is_empty() {
                     session.input.clone()
@@ -2652,9 +2696,19 @@ fn render_git(
             );
             ui.label(egui::RichText::new(&git.summary).color(theme.text_secondary));
         }
-        if ui.small_button("Refresh").clicked() {
-            events.push(CodingShellEvent::GitRefresh);
-        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if crate::ui::components::mini_pill_button(
+                ui,
+                theme,
+                "Refresh",
+                crate::ui::components::ButtonStyle::Secondary,
+                true,
+            )
+            .clicked()
+            {
+                events.push(CodingShellEvent::GitRefresh);
+            }
+        });
     });
     if let Some(root) = &git.repo_root {
         ui.label(egui::RichText::new(root).color(theme.text_secondary));
@@ -2673,10 +2727,27 @@ fn render_git(
                 ),
             );
             ui.horizontal(|ui| {
-                if ui.button("Confirm Discard").clicked() {
+                ui.spacing_mut().item_spacing.x = space::SM;
+                if crate::ui::components::mini_pill_button(
+                    ui,
+                    theme,
+                    "Confirm Discard",
+                    crate::ui::components::ButtonStyle::Primary,
+                    true,
+                )
+                .clicked()
+                {
                     events.push(CodingShellEvent::GitDiscardConfirm);
                 }
-                if ui.button("Cancel").clicked() {
+                if crate::ui::components::mini_pill_button(
+                    ui,
+                    theme,
+                    "Cancel",
+                    crate::ui::components::ButtonStyle::Ghost,
+                    true,
+                )
+                .clicked()
+                {
                     events.push(CodingShellEvent::GitDiscardCancel);
                 }
             });
@@ -2746,9 +2817,14 @@ fn render_git(
         events.push(CodingShellEvent::GitCommitMessage(message.clone()));
     }
     let can_commit = !git.staged.is_empty() && !git.commit_message.trim().is_empty();
-    if ui
-        .add_enabled(can_commit, egui::Button::new("Commit"))
-        .clicked()
+    if crate::ui::components::mini_pill_button(
+        ui,
+        theme,
+        "Commit",
+        crate::ui::components::ButtonStyle::Primary,
+        can_commit,
+    )
+    .clicked()
     {
         events.push(CodingShellEvent::GitCommit);
     }
@@ -2846,7 +2922,14 @@ fn render_search_panel(
                 filename_only: None,
             });
         }
-        let run_clicked = ui.button("Search").clicked()
+        let run_clicked = crate::ui::components::mini_pill_button(
+            ui,
+            theme,
+            "Search",
+            crate::ui::components::ButtonStyle::Primary,
+            true,
+        )
+        .clicked()
             || (response.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)));
         if run_clicked {
             events.push(CodingShellEvent::RunSearch);
@@ -2920,12 +3003,14 @@ fn render_search_panel(
                 filename_only: None,
             });
         }
-        if ui
-            .add_enabled(
-                !panel.query.trim().is_empty() && !panel.filename_only,
-                egui::Button::new("Replace All"),
-            )
-            .clicked()
+        if crate::ui::components::mini_pill_button(
+            ui,
+            theme,
+            "Replace All",
+            crate::ui::components::ButtonStyle::Secondary,
+            !panel.query.trim().is_empty() && !panel.filename_only,
+        )
+        .clicked()
         {
             events.push(CodingShellEvent::ReplaceAll);
         }

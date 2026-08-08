@@ -1,0 +1,74 @@
+{
+  "version": 2,
+  "tabs": [
+    {
+      "path": "apps/jaymi/src/ui/review_card.rs",
+      "preview": false,
+      "view": {
+        "scroll_top": 1.0,
+        "cursor": {
+          "line": 0,
+          "column": 0
+        },
+        "selection": {
+          "start_line": 0,
+          "start_column": 0,
+          "end_line": 0,
+          "end_column": 0,
+          "text": null
+        },
+        "folded_regions": []
+      }
+    }
+  ],
+  "active_path": "apps/jaymi/src/ui/review_card.rs",
+  "recently_opened": [
+    "apps/jaymi/src/ui/review_card.rs"
+  ],
+  "settings": {
+    "minimap": true,
+    "word_wrap": false,
+    "font_size": 13
+  },
+  "panes": [
+    {
+      "id": "pane-1",
+      "tabs": [
+        {
+          "path": "apps/jaymi/src/ui/review_card.rs",
+          "preview": false,
+          "view": {
+            "scroll_top": 1.0,
+            "cursor": {
+              "line": 0,
+              "column": 0
+            },
+            "selection": {
+              "start_line": 0,
+              "start_column": 0,
+              "end_line": 0,
+              "end_column": 0,
+              "text": null
+            },
+            "folded_regions": []
+          }
+        }
+      ],
+      "active_path": "apps/jaymi/src/ui/review_card.rs",
+      "recently_opened": [
+        "apps/jaymi/src/ui/review_card.rs"
+      ]
+    }
+  ],
+  "layout": {
+    "type": "leaf",
+    "pane": "pane-1"
+  },
+  "focused_pane": "pane-1",
+  "explorer_width": 280.0,
+  "explorer_visible": true,
+  "bottom_panel_height": 180.0,
+  "workspace_panel_width": 719.96875,
+  "bottom_tab": "hidden",
+  "last_bottom_tab": "terminal"
+}

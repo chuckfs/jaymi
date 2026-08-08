@@ -86,6 +86,124 @@ pub fn pill_button(ui: &mut Ui, theme: &Theme, label: &str, style: ButtonStyle) 
     response
 }
 
+/// Shared workspace header — icon blob + Caprasimo title + optional muted
+/// subtitle. Every capability workspace (Coding, Research, Knowledge,
+/// Creation) opens with this same row; closing stays with the app's single
+/// top-bar close button (see `render_close_panel_button`), so this never
+/// paints its own close control.
+pub fn render_workspace_header(
+    ui: &mut Ui,
+    theme: &Theme,
+    icon: Icon,
+    icon_bg: Color32,
+    icon_color: Color32,
+    title: &str,
+    subtitle: Option<&str>,
+) {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), Sense::hover());
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius { nw: 16, ne: 13, sw: 15, se: 17 },
+            icon_bg,
+        );
+        icons::paint(ui.painter(), icon, rect.center(), 7.5, icon_color);
+        ui.add_space(space::SM);
+        ui.label(
+            egui::RichText::new(title)
+                .font(crate::theme::display_font(type_size::TITLE))
+                .color(theme.text_primary),
+        );
+        if let Some(subtitle) = subtitle {
+            if !subtitle.is_empty() {
+                ui.add_space(space::XS);
+                ui.label(egui::RichText::new(subtitle).size(type_size::META).color(theme.text_secondary));
+            }
+        }
+    });
+}
+
+/// A compact pill button for dense chrome (dock/panel toolbars) where
+/// [`pill_button`]'s 34px height doesn't fit — same solid/hairline/ghost
+/// language, sized down (height 24, tighter padding, `type_size::META`).
+pub fn mini_pill_button(
+    ui: &mut Ui,
+    theme: &Theme,
+    label: &str,
+    style: ButtonStyle,
+    enabled: bool,
+) -> Response {
+    let font = egui::FontId::proportional(type_size::META);
+    let galley = ui.painter().layout_no_wrap(label.to_string(), font.clone(), Color32::PLACEHOLDER);
+    let pad_x = space::SM;
+    let height = 24.0;
+    let size = egui::vec2(galley.size().x + pad_x * 2.0, height);
+    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+    let response = if enabled {
+        response.on_hover_cursor(egui::CursorIcon::PointingHand)
+    } else {
+        response
+    };
+
+    if ui.is_rect_visible(rect) {
+        let (fill, text_color, outline) = match style {
+            ButtonStyle::Primary => {
+                let base = if enabled { theme.accent } else { theme.border };
+                let fill = if enabled && response.is_pointer_button_down_on() {
+                    theme.accent_deep
+                } else if enabled && response.hovered() {
+                    mix(theme.accent, theme.accent_deep, 0.5)
+                } else {
+                    base
+                };
+                let text = if enabled { theme.on_accent() } else { theme.text_faint };
+                (Some(fill), text, None)
+            }
+            ButtonStyle::Secondary => {
+                let fill = if enabled && response.hovered() {
+                    Some(theme.surface_alt)
+                } else {
+                    None
+                };
+                let text = if enabled { theme.text_primary } else { theme.text_faint };
+                (fill, text, Some(theme.border))
+            }
+            ButtonStyle::Ghost => {
+                let fill = if enabled && response.hovered() {
+                    Some(theme.accent_tint)
+                } else {
+                    None
+                };
+                let text = if enabled { theme.accent_deep } else { theme.text_faint };
+                (fill, text, None)
+            }
+        };
+
+        let corner = egui::CornerRadius::same(radius::PILL as u8);
+        if let Some(fill) = fill {
+            ui.painter().rect_filled(rect, corner, fill);
+        }
+        if let Some(outline) = outline {
+            ui.painter().rect_stroke(
+                rect,
+                corner,
+                egui::Stroke::new(stroke::HAIRLINE, outline),
+                egui::StrokeKind::Inside,
+            );
+        }
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            font,
+            text_color,
+        );
+    }
+
+    response
+}
+
 /// A circular pill icon button (send, close, attach, workspace switch).
 pub fn icon_pill_button(
     ui: &mut Ui,
@@ -226,7 +344,15 @@ pub fn suggestion_chip(ui: &mut Ui, theme: &Theme, label: &str) -> Response {
         .shadow(theme.shadow_sm())
         .inner_margin(egui::Margin::symmetric(space::MD as i8, (space::SM + 2.0) as i8))
         .show(ui, |ui| {
-            ui.label(egui::RichText::new(label).size(type_size::UI).color(theme.text_primary));
+            // `horizontal_wrapped` sizes children against the row's remaining
+            // width; a wrapping label measures against that shrunken width
+            // instead of its own natural size, so a chip landing near the
+            // row's edge can fold into a one-character-per-line column
+            // before the layout ever moves it to the next row. Force a
+            // single line so the chip always measures its true width.
+            ui.add(egui::Label::new(
+                egui::RichText::new(label).size(type_size::UI).color(theme.text_primary),
+            ).wrap_mode(egui::TextWrapMode::Extend));
         })
         .response
         .interact(Sense::click())

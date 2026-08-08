@@ -9,7 +9,7 @@
 use eframe::egui::{self, Align, Layout, RichText};
 
 use crate::theme::{inset, radius, space, type_size, Theme};
-use crate::ui::components::{card_frame, pill_button, tag, ButtonStyle, TagStyle};
+use crate::ui::components::{card_frame, pill_button, render_workspace_header, tag, ButtonStyle, TagStyle};
 use crate::ui::icons::{self, Icon};
 use jaymi_capabilities::{KnowledgeHitState, KnowledgeState, KnowledgeVaultState};
 
@@ -54,6 +54,28 @@ pub fn render_knowledge_workspace(
     events: &mut Vec<KnowledgeWorkspaceEvent>,
 ) {
     let theme = ctx.theme;
+
+    let vault_count = ctx.knowledge.map(|k| k.vaults.len()).unwrap_or(0);
+    let hit_count = ctx.knowledge.map(|k| k.hits.len()).unwrap_or(0);
+    let subtitle = match (vault_count, hit_count) {
+        (0, _) => None,
+        (v, 0) => Some(format!("{v} vault{}", if v == 1 { "" } else { "s" })),
+        (v, h) => Some(format!(
+            "{v} vault{} · {h} match{}",
+            if v == 1 { "" } else { "s" },
+            if h == 1 { "" } else { "es" }
+        )),
+    };
+    render_workspace_header(
+        ui,
+        theme,
+        Icon::Knowledge,
+        theme.accent2_tint,
+        theme.accent2_deep,
+        "Knowledge",
+        subtitle.as_deref(),
+    );
+    ui.add_space(space::MD);
 
     render_search_bar(ui, ctx, events);
     ui.add_space(space::MD);

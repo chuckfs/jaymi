@@ -9,6 +9,7 @@
 use eframe::egui::{self, RichText};
 
 use crate::theme::{inset, radius, space, type_size, Theme};
+use crate::ui::components::render_workspace_header;
 use crate::ui::components::tag;
 use crate::ui::components::TagStyle;
 use crate::ui::icons::{self, Icon};
@@ -16,7 +17,18 @@ use jaymi_capabilities::CreationState;
 
 /// Render the Creation workspace surface.
 pub fn render_creation_workspace(ui: &mut egui::Ui, theme: &Theme, state: Option<&CreationState>) {
-    header(ui, theme);
+    let asset_count = state.map(|s| s.generated_assets.len()).unwrap_or(0);
+    let subtitle = (asset_count > 0)
+        .then(|| format!("{asset_count} asset{}", if asset_count == 1 { "" } else { "s" }));
+    render_workspace_header(
+        ui,
+        theme,
+        Icon::Creation,
+        theme.accent_tint,
+        theme.accent_deep,
+        "Creation",
+        subtitle.as_deref(),
+    );
     ui.add_space(space::MD);
 
     let assets = state.map(|s| s.generated_assets.as_slice()).unwrap_or(&[]);
@@ -55,24 +67,6 @@ pub fn render_creation_workspace(ui: &mut egui::Ui, theme: &Theme, state: Option
             );
         }
     }
-}
-
-fn header(ui: &mut egui::Ui, theme: &Theme) {
-    ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
-        ui.painter().rect_filled(
-            rect,
-            egui::CornerRadius { nw: 16, ne: 13, sw: 15, se: 17 },
-            theme.accent_tint,
-        );
-        icons::paint(ui.painter(), Icon::Creation, rect.center(), 7.5, theme.accent_deep);
-        ui.add_space(space::SM);
-        ui.label(
-            RichText::new("Creation")
-                .font(crate::theme::display_font(type_size::TITLE))
-                .color(theme.text_primary),
-        );
-    });
 }
 
 fn empty_state(ui: &mut egui::Ui, theme: &Theme) {

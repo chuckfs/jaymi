@@ -8,7 +8,7 @@ use eframe::egui;
 
 use jaymi_commands::score_text;
 
-use crate::theme::{radius, space, stroke, type_size, Theme};
+use crate::theme::{space, stroke, type_size, Theme};
 use crate::ui::icons::{self, Icon};
 
 /// Which catalog a palette row came from.
@@ -438,7 +438,8 @@ pub fn render_command_palette(
             }
         });
 
-    let panel_width = (screen.width() * 0.55).clamp(440.0, 680.0);
+    // Spec: `width:580px; max-width:82%`.
+    let panel_width = 580.0_f32.min(screen.width() * 0.82);
     let panel_height = match &state.mode {
         CommandPaletteMode::Argument { .. } => 128.0,
         _ => 420.0,
@@ -454,8 +455,9 @@ pub fn render_command_palette(
         .frame(
             egui::Frame::new()
                 .fill(theme.surface)
-                .corner_radius(egui::CornerRadius::same(radius::XL as u8))
-                .inner_margin(egui::Margin::same(space::SM as i8))
+                // Spec: `border-radius:24px; padding:10px`.
+                .corner_radius(egui::CornerRadius::same(24))
+                .inner_margin(egui::Margin::same(10))
                 .shadow(theme.shadow_lg()),
         )
         .order(egui::Order::Foreground)
@@ -497,7 +499,8 @@ pub fn render_command_palette(
                             egui::Frame::new()
                                 .stroke(egui::Stroke::new(1.5, theme.border))
                                 .corner_radius(6)
-                                .inner_margin(egui::Margin::symmetric(6, 1))
+                                // Spec: esc badge `padding:2px 7px`.
+                                .inner_margin(egui::Margin::symmetric(7, 2))
                                 .show(ui, |ui| {
                                     ui.label(
                                         egui::RichText::new("esc")
@@ -634,11 +637,9 @@ fn render_palette_row(
         ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::click());
     let hovered = response.hovered();
     if selected || hovered {
-        ui.painter().rect_filled(
-            rect,
-            egui::CornerRadius::same(radius::LG as u8),
-            theme.surface_alt,
-        );
+        // Spec: palette row `border-radius:14px`.
+        ui.painter()
+            .rect_filled(rect, egui::CornerRadius::same(14), theme.surface_alt);
     }
 
     let (icon, badge_fill, icon_color) = source_badge(theme, item.source);

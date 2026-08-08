@@ -8,13 +8,25 @@
 use eframe::egui::{self, RichText};
 
 use crate::theme::{inset, radius, space, type_size, Theme};
-use crate::ui::components::{card_frame, tag, TagStyle};
-use crate::ui::icons::{self, Icon};
+use crate::ui::components::{card_frame, render_workspace_header, tag, TagStyle};
+use crate::ui::icons::Icon;
 use jaymi_capabilities::ResearchState;
 
 /// Render the Research workspace surface.
 pub fn render_research_workspace(ui: &mut egui::Ui, theme: &Theme, state: Option<&ResearchState>) {
-    header(ui, theme);
+    let source_count = state.map(|s| s.sources.len()).unwrap_or(0);
+    let subtitle = (source_count > 0).then(|| {
+        format!("{source_count} source{}", if source_count == 1 { "" } else { "s" })
+    });
+    render_workspace_header(
+        ui,
+        theme,
+        Icon::Research,
+        theme.accent2_tint,
+        theme.accent2_deep,
+        "Research",
+        subtitle.as_deref(),
+    );
     ui.add_space(space::MD);
 
     let sources = state.map(|s| s.sources.as_slice()).unwrap_or(&[]);
@@ -55,24 +67,6 @@ pub fn render_research_workspace(ui: &mut egui::Ui, theme: &Theme, state: Option
                 }
             }
         });
-    });
-}
-
-fn header(ui: &mut egui::Ui, theme: &Theme) {
-    ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
-        ui.painter().rect_filled(
-            rect,
-            egui::CornerRadius { nw: 16, ne: 13, sw: 15, se: 17 },
-            theme.accent2_tint,
-        );
-        icons::paint(ui.painter(), Icon::Research, rect.center(), 7.5, theme.accent2_deep);
-        ui.add_space(space::SM);
-        ui.label(
-            RichText::new("Research")
-                .font(crate::theme::display_font(type_size::TITLE))
-                .color(theme.text_primary),
-        );
     });
 }
 

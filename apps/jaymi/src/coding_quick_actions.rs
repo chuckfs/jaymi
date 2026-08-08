@@ -197,11 +197,9 @@ pub fn layout_quick_actions_with(
     QuickActionLayout { visible, overflow }
 }
 
-/// Events the Quick Action Bar can emit (chrome + action clicks).
+/// Events the Quick Action Bar can emit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuickActionBarEvent {
-    /// Close the Coding workspace (chrome control, not a Coding Action).
-    CloseWorkspace,
     /// User activated a Coding Action button.
     Action(QuickAction),
 }
@@ -220,12 +218,6 @@ pub fn render_quick_action_bar(
         |ui| {
             ui.set_min_height(QUICK_ACTION_BAR_HEIGHT);
             ui.set_max_height(QUICK_ACTION_BAR_HEIGHT);
-
-            let close = coding_close_tile(ui, theme);
-            if close.clicked() {
-                events.push(QuickActionBarEvent::CloseWorkspace);
-            }
-            ui.add_space(space::SM);
 
             let error_reserve = if open_error.is_some() { 120.0 } else { 0.0 };
             let action_budget = (ui.available_width() - error_reserve - QUICK_ACTION_CHROME_RESERVE)
@@ -311,42 +303,6 @@ fn quick_action_button(ui: &mut egui::Ui, theme: &Theme, label: &str) -> egui::R
         theme.accent2_deep,
     );
     response
-}
-
-/// Compact Coding glyph — accent tile with `{}`; hover flips to × to close.
-fn coding_close_tile(ui: &mut egui::Ui, theme: &Theme) -> egui::Response {
-    let size = egui::vec2(24.0, 24.0);
-    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click());
-    response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-    let hovered = response.hovered();
-
-    let fill = if hovered { theme.error } else { theme.accent };
-    ui.painter()
-        .rect_filled(rect, egui::CornerRadius::same(radius::PILL as u8), fill);
-
-    if hovered {
-        let c = rect.center();
-        let arm = 4.5;
-        let stroke = egui::Stroke::new(1.75, theme.on_accent());
-        ui.painter().line_segment(
-            [c + egui::vec2(-arm, -arm), c + egui::vec2(arm, arm)],
-            stroke,
-        );
-        ui.painter().line_segment(
-            [c + egui::vec2(arm, -arm), c + egui::vec2(-arm, arm)],
-            stroke,
-        );
-    } else {
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "{}",
-            egui::FontId::monospace(type_size::META),
-            theme.on_accent(),
-        );
-    }
-
-    response.on_hover_text("Close Coding")
 }
 
 #[cfg(test)]

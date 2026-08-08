@@ -6,8 +6,8 @@
 
 use eframe::egui;
 
-use crate::theme::{inset, radius, space, type_size, Theme};
-use crate::ui::components::{pill_button, tag, ButtonStyle, TagStyle};
+use crate::theme::{space, type_size, Theme};
+use crate::ui::components::{pill_button, ButtonStyle};
 use jaymi_planner::{ReviewCardModel, ReviewCardState, ReviewIntent};
 
 /// Paint a Review Card and return any newly chosen intent.
@@ -29,31 +29,30 @@ pub fn render_review_card(
     let mut chosen: Option<ReviewIntent> = None;
     let pending = model.state.is_pending();
 
+    // Spec: `border-radius:20px; padding:20px; box-shadow:var(--sh-md)`.
     egui::Frame::new()
-        .corner_radius(radius::XL)
-        .inner_margin(inset(space::MD + space::XS, space::MD))
+        .corner_radius(20)
+        .inner_margin(egui::Margin::same(20))
         .fill(theme.surface)
         .shadow(theme.shadow_md())
         .show(ui, |ui| {
             ui.set_max_width(ui.available_width());
 
             ui.horizontal(|ui| {
-                tag(ui, theme, "Review before action", TagStyle::Accent2);
+                kicker_chip(ui, theme, "Review before action");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let revision_label = if model.revision > 1 {
                         format!("{} · rev {}", model.plan_id.as_str(), model.revision)
                     } else {
                         model.plan_id.as_str().to_string()
                     };
-                    ui.label(
-                        egui::RichText::new(revision_label)
-                            .size(type_size::META)
-                            .color(theme.text_faint),
-                    );
+                    // Spec: `font-size:12px; color:var(--faint)`.
+                    ui.label(egui::RichText::new(revision_label).size(12.0).color(theme.text_faint));
                 });
             });
 
-            ui.add_space(space::SM + space::XS);
+            // Spec: title `margin-top:12px`, Caprasimo 19px.
+            ui.add_space(12.0);
             ui.label(
                 egui::RichText::new(&model.opening)
                     .font(crate::theme::display_font(type_size::TITLE))
@@ -85,7 +84,8 @@ pub fn render_review_card(
                 }
             }
 
-            ui.add_space(space::MD);
+            // Spec: steps container `margin-top:14px; gap:10px`.
+            ui.add_space(14.0);
             if model.plan_items.is_empty() {
                 ui.label(
                     egui::RichText::new("(no concrete steps)")
@@ -94,7 +94,7 @@ pub fn render_review_card(
                 );
             } else {
                 ui.vertical(|ui| {
-                    ui.spacing_mut().item_spacing.y = space::SM;
+                    ui.spacing_mut().item_spacing.y = 10.0;
                     for (index, item) in model.plan_items.iter().enumerate() {
                         step_row(ui, theme, index + 1, item);
                     }
@@ -102,11 +102,12 @@ pub fn render_review_card(
             }
 
             if !model.affected_resources.is_empty() {
-                ui.add_space(space::MD);
+                // Spec: file chips `margin-top:14px; gap:6px`, monospace 12px.
+                ui.add_space(14.0);
                 ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(space::XS, space::XS);
+                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
                     for resource in &model.affected_resources {
-                        tag(ui, theme, resource, TagStyle::Neutral);
+                        file_chip(ui, theme, resource);
                     }
                 });
             }
@@ -208,7 +209,8 @@ pub fn render_review_card(
                     ui.add_space(space::SM + space::XS);
 
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = space::SM;
+                        // Spec: button row `gap:8px`.
+                        ui.spacing_mut().item_spacing.x = 8.0;
                         if ui
                             .add_enabled_ui(pending, |ui| {
                                 pill_button(ui, theme, "Approve", ButtonStyle::Primary)
@@ -276,7 +278,8 @@ pub fn render_review_card(
 /// are the user's calls to make).
 fn step_row(ui: &mut egui::Ui, theme: &Theme, index: usize, text: &str) {
     ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = space::SM;
+        // Spec: step row `gap:10px`.
+        ui.spacing_mut().item_spacing.x = 10.0;
         let (rect, _) = ui.allocate_exact_size(egui::vec2(20.0, 20.0), egui::Sense::hover());
         ui.painter()
             .circle_filled(rect.center(), 10.0, theme.accent_tint);
@@ -289,10 +292,56 @@ fn step_row(ui: &mut egui::Ui, theme: &Theme, index: usize, text: &str) {
         );
         ui.label(
             egui::RichText::new(text)
-                .size(type_size::BODY)
+                .size(13.5)
                 .color(theme.text_primary),
         );
     });
+}
+
+/// Spec: `font-size:11px; font-weight:700; letter-spacing:.08em;
+/// text-transform:uppercase; color:var(--sage-deep);
+/// background:var(--sage-tint); border-radius:999px; padding:4px 10px`.
+fn kicker_chip(ui: &mut egui::Ui, theme: &Theme, label: &str) {
+    egui::Frame::new()
+        .fill(theme.accent2_tint)
+        .corner_radius(egui::CornerRadius::same(255))
+        .inner_margin(egui::Margin::symmetric(10, 4))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(letter_spaced(&label.to_uppercase(), 0.08))
+                    .size(11.0)
+                    .strong()
+                    .color(theme.accent2_deep),
+            );
+        });
+}
+
+/// Spec: `font-family:ui-monospace,Menlo,monospace; font-size:12px;
+/// color:var(--muted); background:var(--card2); border-radius:999px;
+/// padding:4px 10px`.
+fn file_chip(ui: &mut egui::Ui, theme: &Theme, path: &str) {
+    egui::Frame::new()
+        .fill(theme.surface_alt)
+        .corner_radius(egui::CornerRadius::same(255))
+        .inner_margin(egui::Margin::symmetric(10, 4))
+        .show(ui, |ui| {
+            ui.label(
+                egui::RichText::new(path)
+                    .monospace()
+                    .size(12.0)
+                    .color(theme.text_secondary),
+            );
+        });
+}
+
+/// egui has no CSS `letter-spacing` equivalent for `RichText`; approximate it
+/// by interposing thin spaces between characters (closest possible version
+/// per the exception clause — exact tracking isn't reachable in egui).
+fn letter_spaced(text: &str, _em: f32) -> String {
+    text.chars()
+        .map(|c| c.to_string())
+        .collect::<Vec<_>>()
+        .join("\u{2009}")
 }
 
 fn modify_hint(model: &ReviewCardModel) -> String {

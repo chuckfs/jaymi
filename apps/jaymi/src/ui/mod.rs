@@ -41,7 +41,7 @@ use crate::settings_workspace::{
     render_settings_workspace, ReasoningSettingsSnapshot, SettingsCategory, SettingsWorkspaceContext,
     SettingsWorkspaceEvent, SettingsWorkspaceState,
 };
-use crate::theme::{inset, radius, space, stroke, type_size, Theme};
+use crate::theme::{inset, radius, space, type_size, Theme};
 use crate::ui::components::{icon_pill_button, pulse_alpha, suggestion_chip};
 use crate::ui::explorer::ExplorerEvent;
 use crate::ui::icons::Icon;
@@ -105,9 +105,19 @@ pub fn run_diagnostics(
                 .system_theme()
                 .map(|theme| matches!(theme, egui::Theme::Dark))
                 .unwrap_or(false);
+            // TEMPORARY — visual-audit hook, removed before this work ships.
+            let preference = if std::env::var("JAYMI_FORCE_DARK").is_ok() {
+                ThemePreference::Dark
+            } else {
+                preference
+            };
             let theme = Theme::resolve(preference, system_dark);
             theme.apply_egui(&cc.egui_ctx);
-            Ok(Box::new(JaymiApp {
+            // Populate Reasoning status up front so the sidebar's "Local ·
+            // offline" card has real data from the first frame, not just
+            // after Settings has been opened once.
+            let initial_reasoning = app.reasoning_settings_snapshot().unwrap_or_default();
+            let mut jaymi_app = JaymiApp {
                 app,
                 snapshot: initial_snapshot,
                 list_path_input: initial_list_path,
@@ -143,10 +153,128 @@ pub fn run_diagnostics(
                 settings: SettingsWorkspaceState {
                     category: SettingsCategory::Reasoning,
                 },
-                reasoning_settings: ReasoningSettingsSnapshot::default(),
+                reasoning_settings: initial_reasoning,
                 settings_busy: false,
                 knowledge: KnowledgeWorkspaceState::default(),
-            }))
+            };
+            // TEMPORARY — visual-audit hook, removed before this work ships.
+            // JAYMI_DEBUG_SCREEN forces a screen open on launch so it can be
+            // screenshotted without needing working click automation.
+            if let Ok(screen) = std::env::var("JAYMI_DEBUG_SCREEN") {
+                match screen.as_str() {
+                    "nav" => jaymi_app.nav_open = true,
+                    "settings" => jaymi_app.settings_open = true,
+                    "coding" => {
+                        // Open the real jaymi repo + a real file so Monaco and
+                        // the Explorer render actual content for screenshot
+                        // comparison, instead of an empty "No open files" shell.
+                        if jaymi_app.app.open_project_from_path("/Users/charlie/jaymi").is_ok() {
+                            let _ = jaymi_app.app.start_coding_project();
+                            let _ = jaymi_app
+                                .app
+                                .open_coding_file("apps/jaymi/src/ui/review_card.rs");
+                        }
+                        let _ = jaymi_app.app.expand_ui_workspace(
+                            jaymi_capabilities::workspace_expansion_for(
+                                jaymi_capabilities::Capability::Code,
+                                "debug screen",
+                            )
+                            .unwrap(),
+                        );
+                    }
+                    "research" => {
+                        let _ = jaymi_app.app.expand_ui_workspace(
+                            jaymi_capabilities::workspace_expansion_for(
+                                jaymi_capabilities::Capability::Search,
+                                "debug screen",
+                            )
+                            .unwrap(),
+                        );
+                    }
+                    "knowledge" => {
+                        let _ = jaymi_app.app.expand_ui_workspace(
+                            jaymi_capabilities::workspace_expansion_for(
+                                jaymi_capabilities::Capability::Discover,
+                                "debug screen",
+                            )
+                            .unwrap(),
+                        );
+                    }
+                    "creation" => {
+                        let _ = jaymi_app.app.expand_ui_workspace(
+                            jaymi_capabilities::workspace_expansion_for(
+                                jaymi_capabilities::Capability::GenerateImages,
+                                "debug screen",
+                            )
+                            .unwrap(),
+                        );
+                    }
+                    "palette" => jaymi_app.command_palette.open(),
+                    "review" => {
+                        use jaymi_planner::{
+                            EstimatedReversibility, EstimatedRisk, ExecutionPlan,
+                            ExecutionPlanParams, ExecutionStep, PlanPermissionRequirement,
+                            ReviewCardModel, ReviewRequirement,
+                        };
+                        let mut plan = ExecutionPlan::create(ExecutionPlanParams {
+                            originating_request: "Modify Approve/Modify/Cancel gating".into(),
+                            planner_intent: jaymi_core::IntentId::ManagePath,
+                            capability: Capability::Code,
+                            proposed_tools: vec!["edit_file".into()],
+                            steps: vec![
+                                ExecutionStep {
+                                    order: 1,
+                                    description: "Change Modify's gate to allow inline per-step suggestions".into(),
+                                    tool_id: Some("edit_file".into()),
+                                    resource: Some("ui/review_card.rs".into()),
+                                },
+                                ExecutionStep {
+                                    order: 2,
+                                    description: "Wire inline suggestions through the conversation loop".into(),
+                                    tool_id: Some("edit_file".into()),
+                                    resource: Some("ui/mod.rs".into()),
+                                },
+                            ],
+                            estimated_risk: EstimatedRisk::Medium,
+                            affected_resources: vec![
+                                "ui/review_card.rs".into(),
+                                "ui/mod.rs".into(),
+                            ],
+                            permissions_required: vec![PlanPermissionRequirement {
+                                category: "filesystem".into(),
+                                action: "write".into(),
+                            }],
+                            review_requirement: ReviewRequirement::Required,
+                            estimated_reversibility: EstimatedReversibility::PartiallyReversible,
+                            expected_outputs: vec!["updated review card".into()],
+                            deletion_method: None,
+                            action_preview: None,
+                            lineage: Default::default(),
+                        });
+                        plan.mark_ready().unwrap();
+                        plan.mark_awaiting_review().unwrap();
+                        let model = ReviewCardModel::from_plan(&plan, None);
+                        jaymi_app.experience.append_turn(
+                            crate::experience::ConversationTurn::user(
+                                "How would you improve the Modify flow?",
+                            ),
+                        );
+                        jaymi_app.experience.append_turn(
+                            crate::experience::ConversationTurn::assistant_with_review(
+                                "Agreed. Right now render_review_card gates Modify on a non-empty note, which hides the affordance. Here's the plan:",
+                                model,
+                            ),
+                        );
+                    }
+                    _ => {}
+                }
+                if screen != "review" {
+                    if let Ok(session) = jaymi_app.app.experience() {
+                        jaymi_app.experience = session;
+                    }
+                }
+            }
+            Ok(Box::new(jaymi_app))
         }),
     )
 }
@@ -476,8 +604,15 @@ impl eframe::App for JaymiApp {
         self.pump_active_generation(ctx);
         let _ = self.app.pump_context_maintenance();
 
-        if let Ok(session) = self.app.experience() {
-            self.experience = session;
+        // TEMPORARY — visual-audit hook. JAYMI_DEBUG_SCREEN=review injects a
+        // synthetic in-memory review card directly into `self.experience`;
+        // the backend has no knowledge of it, so skip the resync that would
+        // otherwise overwrite it every frame.
+        let is_debug_review = std::env::var("JAYMI_DEBUG_SCREEN").as_deref() == Ok("review");
+        if !is_debug_review {
+            if let Ok(session) = self.app.experience() {
+                self.experience = session;
+            }
         }
 
         // Escape cancels an in-flight generation (Conversation First).
@@ -644,12 +779,13 @@ impl eframe::App for JaymiApp {
                 egui::TopBottomPanel::bottom("chat_composer")
                     .show_separator_line(false)
                     .frame(
+                        // Spec: composer wrapper `padding:8px 28px 22px 28px`.
                         egui::Frame::new()
                             .inner_margin(egui::Margin {
-                                left: space::XL as i8,
-                                right: space::XL as i8,
-                                top: space::MD as i8,
-                                bottom: space::LG as i8,
+                                left: 28,
+                                right: 28,
+                                top: 8,
+                                bottom: 22,
                             })
                             .fill(self.theme.background)
                             .stroke(egui::Stroke::NONE),
@@ -678,6 +814,12 @@ impl eframe::App for JaymiApp {
 impl JaymiApp {
     /// Resolve config + OS appearance into [`Theme`] and push to egui / Monaco.
     fn sync_theme(&mut self, ctx: &egui::Context) {
+        // TEMPORARY — visual-audit hook. JAYMI_FORCE_DARK pins the theme for
+        // screenshotting; without this early return the per-frame resync
+        // below immediately overwrites it with the real (light) preference.
+        if std::env::var("JAYMI_FORCE_DARK").is_ok() {
+            return;
+        }
         let preference = self
             .app
             .theme_preference()
@@ -1042,14 +1184,16 @@ impl JaymiApp {
                     // Full-bleed welcome — centered in the conversation column.
                     self.render_conversation_empty_state(ui);
                 } else {
-                    ui.add_space(space::MD);
+                    // Spec: `max-width:720px; margin:0 auto;
+                    // padding:8px 28px 24px 28px`.
+                    let outer_width = ui.available_width();
+                    let content_width = outer_width.min(720.0);
+                    let side_inset = ((outer_width - content_width) * 0.5).max(0.0);
+                    ui.add_space(8.0);
                     ui.horizontal(|ui| {
-                        ui.add_space(space::LG);
+                        ui.add_space(side_inset + 28.0);
                         ui.vertical(|ui| {
-                            // Fixed conversation column width so user bubbles can
-                            // Align::Max against the right edge; right LG inset
-                            // tracks workspace growth (CentralPanel shrinks).
-                            let column_width = (ui.available_width() - space::LG).max(120.0);
+                            let column_width = (content_width - 56.0).max(120.0);
                             ui.set_min_width(column_width);
                             ui.set_max_width(column_width);
                             let mut last_day: Option<i64> = None;
@@ -1253,15 +1397,16 @@ impl JaymiApp {
     }
 
     fn render_timestamp_separator(&self, ui: &mut egui::Ui, created_at: i64) {
-        ui.add_space(space::MD);
+        // Spec: `font-size:12px; color:var(--faint); padding:14px 0`.
+        ui.add_space(14.0);
         ui.vertical_centered(|ui| {
             ui.label(
                 egui::RichText::new(format_day_separator(created_at))
-                    .size(type_size::META)
+                    .size(12.0)
                     .color(self.theme.text_faint),
             );
         });
-        ui.add_space(space::MD);
+        ui.add_space(14.0);
     }
 
     /// Presence, not spinners — a breathing sage dot with a live status verb.
@@ -1316,18 +1461,19 @@ impl JaymiApp {
         content: &str,
         streaming: bool,
     ) {
-        // Cap only — short messages shrink-wrap; long ones wrap at this width.
-        let max_bubble = (ui.available_width() * 0.78).clamp(240.0, 720.0);
+        // Spec: `max-width:82%`.
+        let max_bubble = (ui.available_width() * 0.82).clamp(240.0, 720.0);
 
         match role {
             MessageRole::User => {
                 // Terracotta is the user's voice — a soft tint fill, not a
                 // solid block; deep-accent text carries the contrast instead.
-                let pad_x = space::MD;
-                let pad_y = space::SM + space::XS;
+                // Spec: `padding:12px 18px; font-size:14px; line-height:1.5`.
+                let pad_x = 18.0;
+                let pad_y = 12.0;
                 let max_inner = (max_bubble - pad_x * 2.0).max(48.0);
                 let color = self.theme.accent_deep;
-                let body_font = egui::FontId::proportional(type_size::BODY);
+                let body_font = egui::FontId::proportional(14.0);
 
                 // Measure intrinsic width so the bubble shrink-wraps (cap at max_inner).
                 let inner_w = ui.fonts(|fonts| {
@@ -1339,14 +1485,14 @@ impl JaymiApp {
                 });
 
                 // Dock to the conversation column's right edge; text right-aligned.
-                // A small tail: sharp bottom-right corner, round everywhere else.
+                // Spec: `border-radius: 22px 22px 6px 22px` — sharp bottom-right tail.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
                     egui::Frame::new()
                         .corner_radius(egui::CornerRadius {
-                            nw: radius::LG as u8,
-                            ne: radius::LG as u8,
-                            sw: radius::LG as u8,
-                            se: radius::XS as u8,
+                            nw: 22,
+                            ne: 22,
+                            se: 6,
+                            sw: 22,
                         })
                         .inner_margin(inset(pad_x, pad_y))
                         .fill(self.theme.accent_soft)
@@ -1355,9 +1501,7 @@ impl JaymiApp {
                             ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
                                 ui.add(
                                     egui::Label::new(
-                                        egui::RichText::new(content)
-                                            .size(type_size::BODY)
-                                            .color(color),
+                                        egui::RichText::new(content).size(14.0).color(color),
                                     )
                                     .wrap(),
                                 );
@@ -1413,20 +1557,36 @@ impl JaymiApp {
             ui.add_space(space::SM);
         }
 
+        let generation_active = self.awaiting_reply || self.app.generation_active();
+
+        // Spec: composer card `max-width:720px; margin:0 auto`.
+        let outer_width = ui.available_width();
+        let content_width = outer_width.min(720.0);
+        let side_inset = ((outer_width - content_width) * 0.5).max(0.0);
+        ui.horizontal(|ui| {
+            ui.add_space(side_inset);
+            ui.vertical(|ui| {
+                ui.set_min_width(content_width);
+                ui.set_max_width(content_width);
+                self.render_chat_composer_card(ui, generation_active);
+            });
+        });
+    }
+
+    /// Spec: composer card `border-radius:26px; padding:12px 14px;
+    /// box-shadow:var(--sh-md)`.
+    fn render_chat_composer_card(&mut self, ui: &mut egui::Ui, generation_active: bool) {
         let mut attach_clicked = false;
         let mut quick_open_clicked = false;
         let mut send_clicked = false;
         let mut stop_clicked = false;
-        let generation_active = self.awaiting_reply || self.app.generation_active();
-
         const MAX_COMPOSER_ROWS: usize = 8;
-        // Rough width of ⌘P chip + send + gaps on the trailing edge.
         const TRAILING_CONTROLS_W: f32 = 108.0;
-        const LEADING_PLUS_W: f32 = 28.0;
+        const LEADING_PLUS_W: f32 = 30.0;
 
         egui::Frame::new()
-            .corner_radius(radius::XL)
-            .inner_margin(egui::Margin::symmetric(space::MD as i8, space::SM as i8))
+            .corner_radius(26)
+            .inner_margin(egui::Margin::symmetric(14, 12))
             .fill(self.theme.surface)
             .shadow(self.theme.elevation_shadow())
             .stroke(egui::Stroke::NONE)
@@ -1485,7 +1645,7 @@ impl JaymiApp {
                                     .desired_rows(visible_rows)
                                     .return_key(Some(newline_key))
                                     .hint_text(
-                                        egui::RichText::new("Message Jaymi…")
+                                        egui::RichText::new("Ask Jaymi anything…")
                                             .color(self.theme.text_secondary),
                                     )
                                     .text_color(self.theme.text_primary)
@@ -1496,14 +1656,14 @@ impl JaymiApp {
 
                     ui.add_space(space::XS);
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = space::SM;
-                        let attach = icon_pill_button(ui, &self.theme, Icon::Plus, 28.0, None, self.theme.text_secondary)
+                        ui.spacing_mut().item_spacing.x = 10.0; // spec gap:10px
+                        let attach = icon_pill_button(ui, &self.theme, Icon::Plus, 30.0, None, self.theme.text_secondary)
                             .on_hover_text("Attach files (soon)");
                         if attach.clicked() {
                             attach_clicked = true;
                         }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.spacing_mut().item_spacing.x = space::SM;
+                            ui.spacing_mut().item_spacing.x = 10.0; // spec gap:10px
                             if generation_active {
                                 let stop = paint_stop_button(ui, &self.theme)
                                     .on_hover_text("Stop generating (Esc)");
@@ -1511,7 +1671,7 @@ impl JaymiApp {
                                     stop_clicked = true;
                                 }
                             } else {
-                                let send = icon_pill_button(ui, &self.theme, Icon::Send, 32.0, Some(self.theme.accent), self.theme.on_accent())
+                                let send = icon_pill_button(ui, &self.theme, Icon::Send, 34.0, Some(self.theme.accent), self.theme.on_accent())
                                     .on_hover_text("Send (Enter)");
                                 if send.clicked() {
                                     send_clicked = true;
@@ -1527,10 +1687,10 @@ impl JaymiApp {
                 } else {
                     // First row: [+] Message Jaymi… …… [⌘P] [↑]
                     ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = space::SM;
+                        ui.spacing_mut().item_spacing.x = 10.0; // spec gap:10px
                         ui.set_min_height(32.0);
 
-                        let attach = icon_pill_button(ui, &self.theme, Icon::Plus, 28.0, None, self.theme.text_secondary)
+                        let attach = icon_pill_button(ui, &self.theme, Icon::Plus, 30.0, None, self.theme.text_secondary)
                             .on_hover_text("Attach files (soon)");
                         if attach.clicked() {
                             attach_clicked = true;
@@ -1543,7 +1703,7 @@ impl JaymiApp {
                                 .desired_rows(1)
                                 .return_key(Some(newline_key))
                                 .hint_text(
-                                    egui::RichText::new("Message Jaymi…")
+                                    egui::RichText::new("Ask Jaymi anything…")
                                         .color(self.theme.text_secondary),
                                 )
                                 .text_color(self.theme.text_primary)
@@ -1552,7 +1712,7 @@ impl JaymiApp {
                         edit_response = Some(response);
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            ui.spacing_mut().item_spacing.x = space::SM;
+                            ui.spacing_mut().item_spacing.x = 10.0; // spec gap:10px
                             if generation_active {
                                 let stop = paint_stop_button(ui, &self.theme)
                                     .on_hover_text("Stop generating (Esc)");
@@ -1560,7 +1720,7 @@ impl JaymiApp {
                                     stop_clicked = true;
                                 }
                             } else {
-                                let send = icon_pill_button(ui, &self.theme, Icon::Send, 32.0, Some(self.theme.accent), self.theme.on_accent())
+                                let send = icon_pill_button(ui, &self.theme, Icon::Send, 34.0, Some(self.theme.accent), self.theme.on_accent())
                                     .on_hover_text("Send (Enter)");
                                 if send.clicked() {
                                     send_clicked = true;
@@ -1882,25 +2042,32 @@ impl JaymiApp {
             .max_width(MAX_NAV_WIDTH)
             .show_separator_line(false)
             .frame(
+                // Spec: `padding: 8px 12px 16px 16px` — asymmetric, no border.
                 egui::Frame::new()
                     .fill(self.theme.background)
                     .inner_margin(egui::Margin {
-                        left: space::MD as i8,
-                        right: space::MD as i8,
-                        top: space::MD as i8,
-                        bottom: space::SM as i8,
+                        left: 16,
+                        right: 12,
+                        top: 8,
+                        bottom: 16,
                     })
                     .stroke(egui::Stroke::NONE),
             );
 
+        let default_model_label = self
+            .reasoning_settings
+            .models
+            .iter()
+            .find(|model| {
+                self.reasoning_settings
+                    .default_model_key
+                    .as_deref()
+                    .is_some_and(|key| key == model.selection_key())
+            })
+            .or_else(|| self.reasoning_settings.models.first())
+            .map(|model| model.display_name.clone());
+
         let response = panel.show(ctx, |ui| {
-            // Hairline on the rail's trailing edge.
-            let rect = ui.max_rect();
-            ui.painter().vline(
-                rect.right(),
-                rect.y_range(),
-                egui::Stroke::new(stroke::HAIRLINE, self.theme.border),
-            );
             let nav_ctx = NavRailContext {
                 theme: &self.theme,
                 project_label: project_label.as_deref(),
@@ -1910,6 +2077,8 @@ impl JaymiApp {
                 has_project,
                 coding_open,
                 show_diagnostics: self.show_diagnostics,
+                reasoning_status: self.reasoning_settings.status,
+                reasoning_model_label: default_model_label.as_deref(),
             };
             render_nav_rail(ui, &nav_ctx, &mut events);
         });
