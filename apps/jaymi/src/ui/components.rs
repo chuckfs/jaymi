@@ -24,8 +24,13 @@ pub enum ButtonStyle {
 /// Organic button spec: solid/hairline/ghost, with a hover wash and a
 /// pressed step one ramp deeper than the base fill.
 pub fn pill_button(ui: &mut Ui, theme: &Theme, label: &str, style: ButtonStyle) -> Response {
-    let font = egui::FontId::new(type_size::UI, egui::FontFamily::Name("figtree-semibold".into()));
-    let galley = ui.painter().layout_no_wrap(label.to_string(), font.clone(), Color32::PLACEHOLDER);
+    let font = egui::FontId::new(
+        type_size::UI,
+        egui::FontFamily::Name("figtree-semibold".into()),
+    );
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), font.clone(), Color32::PLACEHOLDER);
     let pad_x = space::MD;
     let height = 34.0;
     let size = egui::vec2(galley.size().x + pad_x * 2.0, height);
@@ -104,7 +109,12 @@ pub fn render_workspace_header(
         let (rect, _) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), Sense::hover());
         ui.painter().rect_filled(
             rect,
-            egui::CornerRadius { nw: 16, ne: 13, sw: 15, se: 17 },
+            egui::CornerRadius {
+                nw: 16,
+                ne: 13,
+                sw: 15,
+                se: 17,
+            },
             icon_bg,
         );
         icons::paint(ui.painter(), icon, rect.center(), 7.5, icon_color);
@@ -117,7 +127,11 @@ pub fn render_workspace_header(
         if let Some(subtitle) = subtitle {
             if !subtitle.is_empty() {
                 ui.add_space(space::XS);
-                ui.label(egui::RichText::new(subtitle).size(type_size::META).color(theme.text_secondary));
+                ui.label(
+                    egui::RichText::new(subtitle)
+                        .size(type_size::META)
+                        .color(theme.text_secondary),
+                );
             }
         }
     });
@@ -134,11 +148,17 @@ pub fn mini_pill_button(
     enabled: bool,
 ) -> Response {
     let font = egui::FontId::proportional(type_size::META);
-    let galley = ui.painter().layout_no_wrap(label.to_string(), font.clone(), Color32::PLACEHOLDER);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), font.clone(), Color32::PLACEHOLDER);
     let pad_x = space::SM;
     let height = 24.0;
     let size = egui::vec2(galley.size().x + pad_x * 2.0, height);
-    let sense = if enabled { Sense::click() } else { Sense::hover() };
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
     let (rect, response) = ui.allocate_exact_size(size, sense);
     let response = if enabled {
         response.on_hover_cursor(egui::CursorIcon::PointingHand)
@@ -157,7 +177,11 @@ pub fn mini_pill_button(
                 } else {
                     base
                 };
-                let text = if enabled { theme.on_accent() } else { theme.text_faint };
+                let text = if enabled {
+                    theme.on_accent()
+                } else {
+                    theme.text_faint
+                };
                 (Some(fill), text, None)
             }
             ButtonStyle::Secondary => {
@@ -166,7 +190,11 @@ pub fn mini_pill_button(
                 } else {
                     None
                 };
-                let text = if enabled { theme.text_primary } else { theme.text_faint };
+                let text = if enabled {
+                    theme.text_primary
+                } else {
+                    theme.text_faint
+                };
                 (fill, text, Some(theme.border))
             }
             ButtonStyle::Ghost => {
@@ -175,7 +203,11 @@ pub fn mini_pill_button(
                 } else {
                     None
                 };
-                let text = if enabled { theme.accent_deep } else { theme.text_faint };
+                let text = if enabled {
+                    theme.accent_deep
+                } else {
+                    theme.text_faint
+                };
                 (fill, text, None)
             }
         };
@@ -218,18 +250,28 @@ pub fn icon_pill_button(
 
     if ui.is_rect_visible(rect) {
         let hover_fill = if response.hovered() {
-            Some(fill.map(|c| mix(c, theme.text_primary, 0.08)).unwrap_or(theme.selection()))
+            Some(
+                fill.map(|c| mix(c, theme.text_primary, 0.08))
+                    .unwrap_or(theme.selection()),
+            )
         } else {
             fill
         };
         if let Some(fill) = hover_fill {
-            ui.painter().circle_filled(rect.center(), diameter * 0.5, fill);
+            ui.painter()
+                .circle_filled(rect.center(), diameter * 0.5, fill);
         }
         // Spec: icon glyphs sit well inside their pill (e.g. a 15px icon in
         // a 32px badge, a 14px icon in a 34px send button) — roughly a
         // 0.23 icon-radius-to-diameter ratio, not a glyph that nearly fills
         // the circle.
-        icons::paint(ui.painter(), icon, rect.center(), diameter * 0.23, icon_color);
+        icons::paint(
+            ui.painter(),
+            icon,
+            rect.center(),
+            diameter * 0.23,
+            icon_color,
+        );
     }
 
     response
@@ -252,7 +294,9 @@ pub enum TagStyle {
 /// A small pill label, non-interactive (chips, kickers, status badges).
 pub fn tag(ui: &mut Ui, theme: &Theme, label: &str, style: TagStyle) -> Response {
     let font = egui::FontId::new(type_size::META, egui::FontFamily::Proportional);
-    let galley = ui.painter().layout_no_wrap(label.to_string(), font.clone(), Color32::PLACEHOLDER);
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.to_string(), font.clone(), Color32::PLACEHOLDER);
     let size = egui::vec2(galley.size().x + space::SM * 2.0, 22.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::hover());
 
@@ -275,7 +319,13 @@ pub fn tag(ui: &mut Ui, theme: &Theme, label: &str, style: TagStyle) -> Response
                 egui::StrokeKind::Inside,
             );
         }
-        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, label, font, text_color);
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            label,
+            font,
+            text_color,
+        );
     }
 
     response
@@ -316,8 +366,11 @@ pub fn segmented(ui: &mut Ui, theme: &Theme, options: &[&str], selected: usize) 
                         type_size::UI,
                         egui::FontFamily::Name("figtree-semibold".into()),
                     );
-                    let galley =
-                        ui.painter().layout_no_wrap((*option).to_string(), font.clone(), Color32::PLACEHOLDER);
+                    let galley = ui.painter().layout_no_wrap(
+                        (*option).to_string(),
+                        font.clone(),
+                        Color32::PLACEHOLDER,
+                    );
                     let size = egui::vec2(galley.size().x + space::MD * 1.2, 28.0);
                     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
                     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
@@ -331,8 +384,18 @@ pub fn segmented(ui: &mut Ui, theme: &Theme, options: &[&str], selected: usize) 
                         } else if response.hovered() {
                             ui.painter().rect_filled(rect, corner, theme.selection());
                         }
-                        let text_color = if is_selected { theme.text_primary } else { theme.text_secondary };
-                        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, *option, font, text_color);
+                        let text_color = if is_selected {
+                            theme.text_primary
+                        } else {
+                            theme.text_secondary
+                        };
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            *option,
+                            font,
+                            text_color,
+                        );
                     }
                 }
             });
@@ -346,7 +409,10 @@ pub fn suggestion_chip(ui: &mut Ui, theme: &Theme, label: &str) -> Response {
         .fill(theme.surface)
         .corner_radius(egui::CornerRadius::same(radius::PILL as u8))
         .shadow(theme.shadow_sm())
-        .inner_margin(egui::Margin::symmetric(space::MD as i8, (space::SM + 2.0) as i8))
+        .inner_margin(egui::Margin::symmetric(
+            space::MD as i8,
+            (space::SM + 2.0) as i8,
+        ))
         .show(ui, |ui| {
             // `horizontal_wrapped` sizes children against the row's remaining
             // width; a wrapping label measures against that shrunken width
@@ -354,9 +420,14 @@ pub fn suggestion_chip(ui: &mut Ui, theme: &Theme, label: &str) -> Response {
             // row's edge can fold into a one-character-per-line column
             // before the layout ever moves it to the next row. Force a
             // single line so the chip always measures its true width.
-            ui.add(egui::Label::new(
-                egui::RichText::new(label).size(type_size::UI).color(theme.text_primary),
-            ).wrap_mode(egui::TextWrapMode::Extend));
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(label)
+                        .size(type_size::UI)
+                        .color(theme.text_primary),
+                )
+                .wrap_mode(egui::TextWrapMode::Extend),
+            );
         })
         .response
         .interact(Sense::click())
@@ -374,6 +445,7 @@ pub fn pulse_alpha(ui: &egui::Ui, period_secs: f32) -> f32 {
 /// Blend two colors by `t` (0 = `a`, 1 = `b`) in sRGB space — good enough for
 /// button hover/press steps at this UI scale.
 fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
-    let lerp = |x: u8, y: u8| -> u8 { (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8 };
+    let lerp =
+        |x: u8, y: u8| -> u8 { (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8 };
     Color32::from_rgb(lerp(a.r(), b.r()), lerp(a.g(), b.g()), lerp(a.b(), b.b()))
 }

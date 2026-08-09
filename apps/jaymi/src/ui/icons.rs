@@ -79,12 +79,20 @@ fn coding(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
     line(
         painter,
         stroke,
-        vec![pt(center, s, 16.0, 18.0), pt(center, s, 22.0, 12.0), pt(center, s, 16.0, 6.0)],
+        vec![
+            pt(center, s, 16.0, 18.0),
+            pt(center, s, 22.0, 12.0),
+            pt(center, s, 16.0, 6.0),
+        ],
     );
     line(
         painter,
         stroke,
-        vec![pt(center, s, 8.0, 6.0), pt(center, s, 2.0, 12.0), pt(center, s, 8.0, 18.0)],
+        vec![
+            pt(center, s, 8.0, 6.0),
+            pt(center, s, 2.0, 12.0),
+            pt(center, s, 8.0, 18.0),
+        ],
     );
 }
 
@@ -92,17 +100,31 @@ fn research(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
     let s = r / 12.0;
     let stroke = icon_stroke(r, color);
     painter.circle_stroke(center, 10.0 * s, stroke);
-    line(painter, stroke, vec![pt(center, s, 2.0, 12.0), pt(center, s, 22.0, 12.0)]);
+    line(
+        painter,
+        stroke,
+        vec![pt(center, s, 2.0, 12.0), pt(center, s, 22.0, 12.0)],
+    );
     // The lens: two symmetric arcs from (12,2) to (12,22), bulging to x=2 / x=22.
     line(
         painter,
         stroke,
-        quad_bezier(pt(center, s, 12.0, 2.0), pt(center, s, 2.0, 12.0), pt(center, s, 12.0, 22.0), 14),
+        quad_bezier(
+            pt(center, s, 12.0, 2.0),
+            pt(center, s, 2.0, 12.0),
+            pt(center, s, 12.0, 22.0),
+            14,
+        ),
     );
     line(
         painter,
         stroke,
-        quad_bezier(pt(center, s, 12.0, 2.0), pt(center, s, 22.0, 12.0), pt(center, s, 12.0, 22.0), 14),
+        quad_bezier(
+            pt(center, s, 12.0, 2.0),
+            pt(center, s, 22.0, 12.0),
+            pt(center, s, 12.0, 22.0),
+            14,
+        ),
     );
 }
 
@@ -131,8 +153,18 @@ fn knowledge(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
 }
 
 fn creation(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
-    sparkle(painter, center + egui::vec2(-1.5, -1.5) * (r / 12.0), r * 0.85, color);
-    sparkle(painter, center + egui::vec2(6.0, 6.5) * (r / 12.0), r * 0.34, color);
+    sparkle(
+        painter,
+        center + egui::vec2(-1.5, -1.5) * (r / 12.0),
+        r * 0.85,
+        color,
+    );
+    sparkle(
+        painter,
+        center + egui::vec2(6.0, 6.5) * (r / 12.0),
+        r * 0.34,
+        color,
+    );
 }
 
 /// A four-point sparkle/star, filled, fanned from its own center (the shape
@@ -160,12 +192,24 @@ fn sparkle(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
 fn settings(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
     let s = r / 12.0;
     let stroke = icon_stroke(r, color);
-    let rows: [(f32, f32, f32, f32); 3] = [(21.0, 14.0, 10.0, 3.0), (21.0, 12.0, 8.0, 3.0), (21.0, 16.0, 12.0, 3.0)];
+    let rows: [(f32, f32, f32, f32); 3] = [
+        (21.0, 14.0, 10.0, 3.0),
+        (21.0, 12.0, 8.0, 3.0),
+        (21.0, 16.0, 12.0, 3.0),
+    ];
     let ys = [6.0, 12.0, 18.0];
     for (row_idx, (x1, gap_start, gap_end, x2)) in rows.into_iter().enumerate() {
         let y = ys[row_idx];
-        line(painter, stroke, vec![pt(center, s, x1, y), pt(center, s, gap_start, y)]);
-        line(painter, stroke, vec![pt(center, s, gap_end, y), pt(center, s, x2, y)]);
+        line(
+            painter,
+            stroke,
+            vec![pt(center, s, x1, y), pt(center, s, gap_start, y)],
+        );
+        line(
+            painter,
+            stroke,
+            vec![pt(center, s, gap_end, y), pt(center, s, x2, y)],
+        );
     }
     let knobs = [(12.0, 6.0), (10.0, 12.0), (14.0, 18.0)];
     for (x, y) in knobs {
@@ -177,32 +221,60 @@ fn search(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
     let s = r / 12.0;
     let stroke = icon_stroke(r, color);
     painter.circle_stroke(pt(center, s, 11.0, 11.0), 7.0 * s, stroke);
-    line(painter, stroke, vec![pt(center, s, 21.0, 21.0), pt(center, s, 16.7, 16.7)]);
+    line(
+        painter,
+        stroke,
+        vec![pt(center, s, 21.0, 21.0), pt(center, s, 16.7, 16.7)],
+    );
 }
 
 fn send(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
     let s = r / 12.0;
     let stroke = icon_stroke(r, color);
-    line(painter, stroke, vec![pt(center, s, 12.0, 19.0), pt(center, s, 12.0, 5.0)]);
     line(
         painter,
         stroke,
-        vec![pt(center, s, 5.0, 12.0), pt(center, s, 12.0, 5.0), pt(center, s, 19.0, 12.0)],
+        vec![pt(center, s, 12.0, 19.0), pt(center, s, 12.0, 5.0)],
+    );
+    line(
+        painter,
+        stroke,
+        vec![
+            pt(center, s, 5.0, 12.0),
+            pt(center, s, 12.0, 5.0),
+            pt(center, s, 19.0, 12.0),
+        ],
     );
 }
 
 fn plus(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
     let s = r / 12.0;
     let stroke = icon_stroke(r, color);
-    line(painter, stroke, vec![pt(center, s, 12.0, 5.0), pt(center, s, 12.0, 19.0)]);
-    line(painter, stroke, vec![pt(center, s, 5.0, 12.0), pt(center, s, 19.0, 12.0)]);
+    line(
+        painter,
+        stroke,
+        vec![pt(center, s, 12.0, 5.0), pt(center, s, 12.0, 19.0)],
+    );
+    line(
+        painter,
+        stroke,
+        vec![pt(center, s, 5.0, 12.0), pt(center, s, 19.0, 12.0)],
+    );
 }
 
 fn close(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
     let s = r / 12.0;
     let stroke = icon_stroke(r, color);
-    line(painter, stroke, vec![pt(center, s, 18.0, 6.0), pt(center, s, 6.0, 18.0)]);
-    line(painter, stroke, vec![pt(center, s, 6.0, 6.0), pt(center, s, 18.0, 18.0)]);
+    line(
+        painter,
+        stroke,
+        vec![pt(center, s, 18.0, 6.0), pt(center, s, 6.0, 18.0)],
+    );
+    line(
+        painter,
+        stroke,
+        vec![pt(center, s, 6.0, 6.0), pt(center, s, 18.0, 18.0)],
+    );
 }
 
 fn check(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
@@ -211,7 +283,11 @@ fn check(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
     line(
         painter,
         stroke,
-        vec![pt(center, s, 20.0, 6.0), pt(center, s, 9.0, 17.0), pt(center, s, 4.0, 12.0)],
+        vec![
+            pt(center, s, 20.0, 6.0),
+            pt(center, s, 9.0, 17.0),
+            pt(center, s, 4.0, 12.0),
+        ],
     );
 }
 
@@ -221,7 +297,11 @@ fn chevron_down(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
     line(
         painter,
         stroke,
-        vec![pt(center, s, 6.0, 9.0), pt(center, s, 12.0, 15.0), pt(center, s, 18.0, 9.0)],
+        vec![
+            pt(center, s, 6.0, 9.0),
+            pt(center, s, 12.0, 15.0),
+            pt(center, s, 18.0, 9.0),
+        ],
     );
 }
 
@@ -231,7 +311,11 @@ fn chevron_right(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) 
     line(
         painter,
         stroke,
-        vec![pt(center, s, 9.0, 6.0), pt(center, s, 15.0, 12.0), pt(center, s, 9.0, 18.0)],
+        vec![
+            pt(center, s, 9.0, 6.0),
+            pt(center, s, 15.0, 12.0),
+            pt(center, s, 9.0, 18.0),
+        ],
     );
 }
 
@@ -253,7 +337,12 @@ fn folder(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
     let s = r / 12.0;
     let stroke = icon_stroke(r, color);
     let body = egui::Rect::from_min_max(pt(center, s, 2.0, 6.0), pt(center, s, 22.0, 20.0));
-    painter.rect_stroke(body, egui::CornerRadius::same((2.0 * s) as u8), stroke, egui::StrokeKind::Outside);
+    painter.rect_stroke(
+        body,
+        egui::CornerRadius::same((2.0 * s) as u8),
+        stroke,
+        egui::StrokeKind::Outside,
+    );
     line(
         painter,
         stroke,
@@ -284,7 +373,11 @@ fn file(painter: &egui::Painter, center: Pos2, r: f32, color: Color32) {
     line(
         painter,
         stroke,
-        vec![pt(center, s, 14.0, 2.0), pt(center, s, 14.0, 7.0), pt(center, s, 18.0, 7.0)],
+        vec![
+            pt(center, s, 14.0, 2.0),
+            pt(center, s, 14.0, 7.0),
+            pt(center, s, 18.0, 7.0),
+        ],
     );
 }
 

@@ -416,12 +416,12 @@ fn display_list(items: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jaymi_capabilities::Capability;
+    use jaymi_core::IntentId;
     use jaymi_planner::{
         EstimatedReversibility, EstimatedRisk, ExecutionPlan, ExecutionPlanParams, ExecutionStep,
         PlanPermissionRequirement, ReviewRequirement,
     };
-    use jaymi_capabilities::Capability;
-    use jaymi_core::IntentId;
 
     #[test]
     fn pending_card_model_exposes_conversational_contract() {

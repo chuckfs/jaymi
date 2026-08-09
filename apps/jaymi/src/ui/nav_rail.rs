@@ -66,7 +66,11 @@ pub struct NavRailContext<'a> {
 }
 
 /// Render the rail body (caller owns the SidePanel chrome).
-pub fn render_nav_rail(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut Vec<NavRailEvent>) {
+pub fn render_nav_rail(
+    ui: &mut egui::Ui,
+    ctx: &NavRailContext<'_>,
+    events: &mut Vec<NavRailEvent>,
+) {
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 2.0; // Spec: container `gap: 2px`.
 
@@ -80,7 +84,12 @@ pub fn render_nav_rail(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut
         }
 
         // Spec: `padding: 16px 12px 6px 12px`.
-        section_label(ui, ctx.theme, "Conversations", if ctx.coding_open { 16.0 } else { 8.0 });
+        section_label(
+            ui,
+            ctx.theme,
+            "Conversations",
+            if ctx.coding_open { 16.0 } else { 8.0 },
+        );
 
         // Reserve room for the Diagnostics footer + status card below so an
         // unbounded `auto_shrink([false, false])` scroll area doesn't claim
@@ -96,7 +105,11 @@ pub fn render_nav_rail(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut
                 if !ctx.has_project {
                     hint_row(ui, ctx.theme, "Open a project to see its chats.");
                 } else if ctx.conversations.is_empty() {
-                    hint_row(ui, ctx.theme, "No conversations yet — send a message to start one.");
+                    hint_row(
+                        ui,
+                        ctx.theme,
+                        "No conversations yet — send a message to start one.",
+                    );
                 } else {
                     for meta in ctx.conversations.iter().take(24) {
                         let id = meta.id.to_string();
@@ -148,7 +161,11 @@ fn section_label(ui: &mut egui::Ui, theme: &Theme, text: &str, padding_top: f32)
 /// The project header card. Spec: `gap:10px; background:var(--card);
 /// border-radius:16px; padding:10px 12px; box-shadow:var(--sh-sm)`. The
 /// badge is an organic blob: `border-radius: 45% 55% 50% 50%` on a 30px box.
-fn render_project_card(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut Vec<NavRailEvent>) {
+fn render_project_card(
+    ui: &mut egui::Ui,
+    ctx: &NavRailContext<'_>,
+    events: &mut Vec<NavRailEvent>,
+) {
     let theme = ctx.theme;
     let response = egui::Frame::new()
         .fill(theme.surface)
@@ -163,7 +180,12 @@ fn render_project_card(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut
                     ui.allocate_exact_size(egui::vec2(30.0, 30.0), egui::Sense::hover());
                 ui.painter().rect_filled(
                     badge_rect,
-                    egui::CornerRadius { nw: 13, ne: 17, sw: 15, se: 15 },
+                    egui::CornerRadius {
+                        nw: 13,
+                        ne: 17,
+                        sw: 15,
+                        se: 15,
+                    },
                     theme.accent,
                 );
                 ui.painter().text(
@@ -207,18 +229,31 @@ fn render_project_card(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut
 
 /// Spec: `height:34px; gap:8px; padding:0 12px; border-radius:999px;
 /// font-size:13px`. Selected fill `var(--card)`, hover `var(--panel)`.
-fn conversation_row(ui: &mut egui::Ui, theme: &Theme, label: &str, selected: bool) -> egui::Response {
-    let (rect, mut response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), egui::Sense::click());
+fn conversation_row(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    label: &str,
+    selected: bool,
+) -> egui::Response {
+    let (rect, mut response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), ROW_H),
+        egui::Sense::click(),
+    );
     response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
 
     let hovered = response.hovered();
     if selected {
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(radius::PILL as u8), theme.surface);
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(radius::PILL as u8),
+            theme.surface,
+        );
     } else if hovered {
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(radius::PILL as u8), theme.panel);
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(radius::PILL as u8),
+            theme.panel,
+        );
     }
 
     let text_color = if selected || hovered {
@@ -240,14 +275,23 @@ fn conversation_row(ui: &mut egui::Ui, theme: &Theme, label: &str, selected: boo
 
 /// Spec: same row geometry, plus a 13x13 plus-icon at stroke-width 2.75.
 fn new_conversation_row(ui: &mut egui::Ui, theme: &Theme) -> egui::Response {
-    let (rect, mut response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), ROW_H), egui::Sense::click());
+    let (rect, mut response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), ROW_H),
+        egui::Sense::click(),
+    );
     response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     if response.hovered() {
-        ui.painter()
-            .rect_filled(rect, egui::CornerRadius::same(radius::PILL as u8), theme.panel);
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(radius::PILL as u8),
+            theme.panel,
+        );
     }
-    let color = if response.hovered() { theme.text_primary } else { theme.text_secondary };
+    let color = if response.hovered() {
+        theme.text_primary
+    } else {
+        theme.text_secondary
+    };
     let icon_center = egui::pos2(rect.left() + 12.0 + 6.5, rect.center().y);
     icons::paint(ui.painter(), Icon::Plus, icon_center, 6.5, color);
     ui.painter().text(
@@ -292,8 +336,11 @@ fn render_status_card(ui: &mut egui::Ui, ctx: &NavRailContext<'_>) {
                 let (dot_rect, _) =
                     ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
                 let pulse = pulse_alpha(ui, 3.0);
-                ui.painter()
-                    .circle_filled(dot_rect.center(), 4.0, theme.accent2.gamma_multiply(pulse));
+                ui.painter().circle_filled(
+                    dot_rect.center(),
+                    4.0,
+                    theme.accent2.gamma_multiply(pulse),
+                );
                 ui.ctx().request_repaint();
                 ui.vertical(|ui| {
                     let (label, connected) = match ctx.reasoning_status {
@@ -310,9 +357,11 @@ fn render_status_card(ui: &mut egui::Ui, ctx: &NavRailContext<'_>) {
                             .color(theme.text_primary),
                     );
                     ui.label(
-                        egui::RichText::new(ctx.reasoning_model_label.unwrap_or("No model selected"))
-                            .size(11.5)
-                            .color(theme.text_secondary),
+                        egui::RichText::new(
+                            ctx.reasoning_model_label.unwrap_or("No model selected"),
+                        )
+                        .size(11.5)
+                        .color(theme.text_secondary),
                     );
                 });
             });
@@ -326,7 +375,14 @@ fn truncate_middle(text: &str, max_chars: usize) -> String {
     }
     let keep = max_chars.saturating_sub(1) / 2;
     let start: String = text.chars().take(keep).collect();
-    let end: String = text.chars().rev().take(keep).collect::<String>().chars().rev().collect();
+    let end: String = text
+        .chars()
+        .rev()
+        .take(keep)
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
     format!("{start}…{end}")
 }
 

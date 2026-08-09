@@ -26,20 +26,20 @@ use crate::conversation_ux::{
     action_accessibility_label, caret_blink_on, display_content, loading_opacity,
     progress_accessibility_label, show_typing_indicator, turn_actions,
 };
-use crate::diagnostics::{DiagnosticsSnapshot, OperationalStatus};
 use crate::creation_workspace::render_creation_workspace;
+use crate::diagnostics::{DiagnosticsSnapshot, OperationalStatus};
 use crate::experience::ExperienceSession;
 use crate::knowledge_workspace::{
     render_knowledge_workspace, KnowledgeWorkspaceContext, KnowledgeWorkspaceEvent,
     KnowledgeWorkspaceState,
 };
-use crate::research_workspace::render_research_workspace;
 use crate::monaco_host::{
     language_for_path, resolve_monaco_assets, MonacoDocument, MonacoHost, MonacoIpcMessage,
 };
+use crate::research_workspace::render_research_workspace;
 use crate::settings_workspace::{
-    render_settings_workspace, ReasoningSettingsSnapshot, SettingsCategory, SettingsWorkspaceContext,
-    SettingsWorkspaceEvent, SettingsWorkspaceState,
+    render_settings_workspace, ReasoningSettingsSnapshot, SettingsCategory,
+    SettingsWorkspaceContext, SettingsWorkspaceEvent, SettingsWorkspaceState,
 };
 use crate::theme::{inset, radius, space, type_size, Theme};
 use crate::ui::components::{icon_pill_button, pulse_alpha, suggestion_chip};
@@ -56,9 +56,9 @@ use jaymi_capabilities::{
     MIN_CONVERSATION_WIDTH, MIN_WORKSPACE_PANEL_WIDTH,
 };
 use jaymi_config::{Config, Theme as ThemePreference};
-use std::sync::{Arc, Mutex};
 use jaymi_memory::{ConversationMeta, CreateConversationRequest, MessageRole};
 use jaymi_planner::ReviewIntent;
+use std::sync::{Arc, Mutex};
 
 /// Launch the conversation-first desktop window.
 pub fn run_diagnostics(
@@ -93,12 +93,7 @@ pub fn run_diagnostics(
                 .container()
                 .resolve::<Arc<Mutex<Config>>>()
                 .ok()
-                .and_then(|config| {
-                    config
-                        .lock()
-                        .ok()
-                        .map(|guard| guard.settings().theme)
-                })
+                .and_then(|config| config.lock().ok().map(|guard| guard.settings().theme))
                 .unwrap_or(ThemePreference::System);
             let system_dark = cc
                 .egui_ctx
@@ -170,7 +165,11 @@ pub fn run_diagnostics(
                         // Open the real jaymi repo + a real file so Monaco and
                         // the Explorer render actual content for screenshot
                         // comparison, instead of an empty "No open files" shell.
-                        if jaymi_app.app.open_project_from_path("/Users/charlie/jaymi").is_ok() {
+                        if jaymi_app
+                            .app
+                            .open_project_from_path("/Users/charlie/jaymi")
+                            .is_ok()
+                        {
                             let _ = jaymi_app.app.start_coding_project();
                             let _ = jaymi_app
                                 .app
@@ -183,6 +182,78 @@ pub fn run_diagnostics(
                             )
                             .unwrap(),
                         );
+                    }
+                    "coding_empty" => {
+                        // Reproduces: opening an empty folder in Coding
+                        // (no files to open, Explorer shows its empty state).
+                        if jaymi_app
+                            .app
+                            .open_project_from_path("/tmp/empty_test_project")
+                            .is_ok()
+                        {
+                            let _ = jaymi_app.app.start_coding_project();
+                        }
+                        let _ = jaymi_app.app.expand_ui_workspace(
+                            jaymi_capabilities::workspace_expansion_for(
+                                jaymi_capabilities::Capability::Code,
+                                "debug screen",
+                            )
+                            .unwrap(),
+                        );
+                    }
+                    "coding_reopen_same" => {
+                        // Isolates: does calling start_coding_project() a
+                        // SECOND time (same project, no switch) alone break
+                        // the card styling, or does it require an actual
+                        // project change?
+                        if jaymi_app
+                            .app
+                            .open_project_from_path("/tmp/empty_test_project")
+                            .is_ok()
+                        {
+                            let _ = jaymi_app.app.start_coding_project();
+                        }
+                        let _ = jaymi_app.app.expand_ui_workspace(
+                            jaymi_capabilities::workspace_expansion_for(
+                                jaymi_capabilities::Capability::Code,
+                                "debug screen",
+                            )
+                            .unwrap(),
+                        );
+                        if let Ok(session) = jaymi_app.app.experience() {
+                            jaymi_app.experience = session;
+                        }
+                        let _ = jaymi_app.app.start_coding_project();
+                    }
+                    "coding_switch" => {
+                        // Reproduces: opening one project in Coding, then
+                        // switching to a second project within the same
+                        // session (matches the user's real repro — "tracker"
+                        // then "pong-v1" — rather than a single fresh open).
+                        if jaymi_app
+                            .app
+                            .open_project_from_path("/tmp/empty_test_project")
+                            .is_ok()
+                        {
+                            let _ = jaymi_app.app.start_coding_project();
+                        }
+                        let _ = jaymi_app.app.expand_ui_workspace(
+                            jaymi_capabilities::workspace_expansion_for(
+                                jaymi_capabilities::Capability::Code,
+                                "debug screen",
+                            )
+                            .unwrap(),
+                        );
+                        if let Ok(session) = jaymi_app.app.experience() {
+                            jaymi_app.experience = session;
+                        }
+                        if jaymi_app
+                            .app
+                            .open_project_from_path("/tmp/empty_test_project2")
+                            .is_ok()
+                        {
+                            let _ = jaymi_app.app.start_coding_project();
+                        }
                     }
                     "research" => {
                         let _ = jaymi_app.app.expand_ui_workspace(
@@ -226,13 +297,17 @@ pub fn run_diagnostics(
                             steps: vec![
                                 ExecutionStep {
                                     order: 1,
-                                    description: "Change Modify's gate to allow inline per-step suggestions".into(),
+                                    description:
+                                        "Change Modify's gate to allow inline per-step suggestions"
+                                            .into(),
                                     tool_id: Some("edit_file".into()),
                                     resource: Some("ui/review_card.rs".into()),
                                 },
                                 ExecutionStep {
                                     order: 2,
-                                    description: "Wire inline suggestions through the conversation loop".into(),
+                                    description:
+                                        "Wire inline suggestions through the conversation loop"
+                                            .into(),
                                     tool_id: Some("edit_file".into()),
                                     resource: Some("ui/mod.rs".into()),
                                 },
@@ -494,6 +569,70 @@ fn ease_out_cubic(t: f32) -> f32 {
     1.0 - inv * inv * inv
 }
 
+/// Re-cut a card's rounded corners after full-bleed (zero-padding) content
+/// has painted square backgrounds over them — egui's clip rects are
+/// axis-aligned only, so there's no built-in equivalent of CSS
+/// `overflow:hidden` on a rounded container. For each corner: paint the
+/// `mask_color` (the surrounding background) over the small square the
+/// corner occupies, then paint a matching quarter-disc of `card_color` back
+/// on top, restoring the curve.
+fn paint_rounded_corner_masks(
+    painter: &egui::Painter,
+    card_rect: egui::Rect,
+    radius: f32,
+    mask_color: egui::Color32,
+    card_color: egui::Color32,
+) {
+    if radius <= 0.0 {
+        return;
+    }
+    let corners: [(egui::Pos2, egui::Pos2, f32, f32); 4] = [
+        // (square corner point, arc center, start angle, end angle) — angles
+        // in standard screen convention: 0=+x(right), 90=+y(down), measured
+        // clockwise, since egui's Y axis points down.
+        (
+            card_rect.left_top(),
+            egui::pos2(card_rect.left() + radius, card_rect.top() + radius),
+            180.0_f32.to_radians(),
+            270.0_f32.to_radians(),
+        ),
+        (
+            card_rect.right_top(),
+            egui::pos2(card_rect.right() - radius, card_rect.top() + radius),
+            270.0_f32.to_radians(),
+            360.0_f32.to_radians(),
+        ),
+        (
+            card_rect.left_bottom(),
+            egui::pos2(card_rect.left() + radius, card_rect.bottom() - radius),
+            90.0_f32.to_radians(),
+            180.0_f32.to_radians(),
+        ),
+        (
+            card_rect.right_bottom(),
+            egui::pos2(card_rect.right() - radius, card_rect.bottom() - radius),
+            0.0_f32.to_radians(),
+            90.0_f32.to_radians(),
+        ),
+    ];
+    for (corner_point, center, start, end) in corners {
+        let square = egui::Rect::from_two_pos(corner_point, center);
+        painter.rect_filled(square, 0.0, mask_color);
+        const STEPS: usize = 12;
+        let mut points = Vec::with_capacity(STEPS + 2);
+        points.push(center);
+        for i in 0..=STEPS {
+            let t = start + (end - start) * (i as f32 / STEPS as f32);
+            points.push(center + radius * egui::vec2(t.cos(), t.sin()));
+        }
+        painter.add(egui::Shape::convex_polygon(
+            points,
+            card_color,
+            egui::Stroke::NONE,
+        ));
+    }
+}
+
 fn status_color(theme: &Theme, status: OperationalStatus) -> egui::Color32 {
     match status {
         OperationalStatus::Operational => theme.success,
@@ -565,9 +704,7 @@ impl eframe::App for JaymiApp {
         }
 
         // Escape cancels an in-flight generation (Conversation First).
-        if self.awaiting_reply
-            && ctx.input(|input| input.key_pressed(egui::Key::Escape))
-        {
+        if self.awaiting_reply && ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
             let _ = self.app.cancel_generation();
         }
 
@@ -663,27 +800,73 @@ impl eframe::App for JaymiApp {
             let mut panel = egui::SidePanel::right("jaymi_workspace")
                 .min_width(min_w)
                 .max_width(max_w)
-                .resizable(true);
-            if animating {
-                let elapsed = self
-                    .workspace_anim_start
-                    .expect("animating implies start")
-                    .elapsed()
-                    .as_secs_f32();
-                let t = ease_out_cubic(elapsed / WORKSPACE_EXPAND_ANIM_SECS);
-                let width = self.workspace_anim_from
-                    + (self.workspace_anim_target - self.workspace_anim_from) * t;
-                panel = panel.exact_width(width.clamp(min_w, max_w));
-                ctx.request_repaint();
-            } else {
-                panel = panel.default_width(default_w);
-            }
+                .resizable(false)
+                .show_separator_line(false)
+                // Every workspace (Coding, Research, Knowledge, Creation,
+                // and Settings all share this panel) renders as a floating
+                // rounded card in the same panel color as the workspace-
+                // switcher bubble, inset from the window edges. The SidePanel's
+                // own frame just fills its full rect with the app background
+                // and reserves the inset as `inner_margin` — using
+                // `outer_margin` instead left that inset strip entirely
+                // unpainted, showing the raw (black) GL clear color rather
+                // than the app background. The actual panel-colored card is
+                // a second, nested `Frame` drawn inside (see below), which is
+                // what carries the corner radius and shadow.
+                .frame(
+                    egui::Frame::new()
+                        .fill(self.theme.background)
+                        .stroke(egui::Stroke::NONE)
+                        .inner_margin(egui::Margin {
+                            left: 8,
+                            right: 16,
+                            top: 8,
+                            bottom: 16,
+                        }),
+                );
+            panel = panel.exact_width(500.0);
 
+            // Coding manages its own full-bleed header/toolbar/tabs rows
+            // (each with their own exact padding) and needs the bare card
+            // edge to butt up against; every other workspace (and Settings)
+            // has no such internal structure, so the card itself needs to
+            // supply the breathing room around its content.
+            let card_padding = if is_coding && !self.settings_open { 0 } else { 20 };
             let panel_response = panel.show(ctx, |ui| {
+                ui.set_min_size(ui.available_size());
+                let card_rect = ui.available_rect_before_wrap();
+                let corner_r = radius::LG;
+                let corner = egui::CornerRadius::same(corner_r as u8);
+                ui.painter()
+                    .add(self.theme.shadow_sm().as_shape(card_rect, corner));
+                ui.painter().rect_filled(card_rect, corner, self.theme.panel);
+                let content_rect = card_rect.shrink(card_padding as f32);
+                let mut card_ui = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(content_rect)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                );
+                card_ui.set_min_size(card_ui.available_size());
                 if self.settings_open {
-                    self.render_settings_surface(ui);
+                    self.render_settings_surface(&mut card_ui);
                 } else {
-                    monaco_surface = self.render_workspace(ui);
+                    monaco_surface = self.render_workspace(&mut card_ui);
+                }
+                // Coding's header/toolbar/tabs rows are full-bleed (zero
+                // `card_padding`) square-cornered `TopBottomPanel`s that
+                // paint right up to the card's edges, squaring off the
+                // card's own rounded corners wherever they overlap (CSS
+                // would call this `overflow: hidden`; egui's clip rects are
+                // axis-aligned only, so there's no direct equivalent). Only
+                // needed when content actually touches the corner zone.
+                if card_padding == 0 {
+                    paint_rounded_corner_masks(
+                        ui.painter(),
+                        card_rect,
+                        corner_r,
+                        self.theme.background,
+                        self.theme.panel,
+                    );
                 }
             });
 
@@ -980,10 +1163,8 @@ impl JaymiApp {
                 match self.app.resolve_capability(&capability_id) {
                     Ok(Some(descriptor)) => {
                         self.error = None;
-                        self.status = Some(format!(
-                            "{} — {}",
-                            descriptor.name, descriptor.description
-                        ));
+                        self.status =
+                            Some(format!("{} — {}", descriptor.name, descriptor.description));
                     }
                     Ok(None) => {
                         self.status = Some(format!("Capability: {capability_id}"));
@@ -1155,12 +1336,7 @@ impl JaymiApp {
                                     last_day = Some(day);
                                 }
                                 let body = display_content(turn, caret_on);
-                                self.render_chat_bubble(
-                                    ui,
-                                    turn.role,
-                                    &body,
-                                    turn.is_streaming(),
-                                );
+                                self.render_chat_bubble(ui, turn.role, &body, turn.is_streaming());
                                 if let Some(review) = &turn.review {
                                     ui.add_space(space::SM);
                                     let plan_key = review.plan_id.as_str().to_string();
@@ -1245,9 +1421,9 @@ impl JaymiApp {
                                                 ));
                                             if response.clicked() {
                                                 regenerate_index = Some(index);
-                    }
-                }
-            });
+                                            }
+                                        }
+                                    });
                                 }
                                 ui.add_space(space::LG);
                             }
@@ -1514,7 +1690,12 @@ impl JaymiApp {
                     };
                     ui.painter().rect_filled(
                         rect,
-                        egui::CornerRadius { nw: 13, ne: 11, sw: 12, se: 14 },
+                        egui::CornerRadius {
+                            nw: 13,
+                            ne: 11,
+                            sw: 12,
+                            se: 14,
+                        },
                         self.theme.accent2_soft,
                     );
                     icons::paint(ui.painter(), Icon::Creation, rect.center(), 6.0, icon_color);
@@ -1583,7 +1764,9 @@ impl JaymiApp {
             .stroke(egui::Stroke::NONE)
             .show(ui, |ui| {
                 let font_id = egui::FontId::proportional(type_size::BODY);
-                let line_h = ui.fonts(|f| f.row_height(&font_id)).max(type_size::BODY + 4.0);
+                let line_h = ui
+                    .fonts(|f| f.row_height(&font_id))
+                    .max(type_size::BODY + 4.0);
                 let available = ui.available_width();
                 let inline_edit_w =
                     (available - LEADING_PLUS_W - space::SM - TRAILING_CONTROLS_W).max(96.0);
@@ -1612,10 +1795,8 @@ impl JaymiApp {
 
                 let edit_id = egui::Id::new("jaymi_composer_input");
                 // Shift+Enter inserts a newline; plain Enter sends.
-                let newline_key = egui::KeyboardShortcut::new(
-                    egui::Modifiers::SHIFT,
-                    egui::Key::Enter,
-                );
+                let newline_key =
+                    egui::KeyboardShortcut::new(egui::Modifiers::SHIFT, egui::Key::Enter);
                 let mut edit_response = None;
 
                 if stacked {
@@ -1629,7 +1810,7 @@ impl JaymiApp {
                         .auto_shrink([false, true])
                         .stick_to_bottom(true)
                         .show(ui, |ui| {
-                    let response = ui.add(
+                            let response = ui.add(
                                 egui::TextEdit::multiline(&mut self.prompt)
                                     .id(edit_id)
                                     .desired_width(ui.available_width())
@@ -1640,16 +1821,23 @@ impl JaymiApp {
                                             .color(self.theme.text_secondary),
                                     )
                                     .text_color(self.theme.text_primary)
-                            .frame(false),
-                    );
+                                    .frame(false),
+                            );
                             edit_response = Some(response);
                         });
 
                     ui.add_space(space::XS);
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 10.0; // spec gap:10px
-                        let attach = icon_pill_button(ui, &self.theme, Icon::Plus, 30.0, None, self.theme.text_secondary)
-                            .on_hover_text("Attach files (soon)");
+                        let attach = icon_pill_button(
+                            ui,
+                            &self.theme,
+                            Icon::Plus,
+                            30.0,
+                            None,
+                            self.theme.text_secondary,
+                        )
+                        .on_hover_text("Attach files (soon)");
                         if attach.clicked() {
                             attach_clicked = true;
                         }
@@ -1662,8 +1850,15 @@ impl JaymiApp {
                                     stop_clicked = true;
                                 }
                             } else {
-                                let send = icon_pill_button(ui, &self.theme, Icon::Send, 34.0, Some(self.theme.accent), self.theme.on_accent())
-                                    .on_hover_text("Send (Enter)");
+                                let send = icon_pill_button(
+                                    ui,
+                                    &self.theme,
+                                    Icon::Send,
+                                    34.0,
+                                    Some(self.theme.accent),
+                                    self.theme.on_accent(),
+                                )
+                                .on_hover_text("Send (Enter)");
                                 if send.clicked() {
                                     send_clicked = true;
                                 }
@@ -1676,8 +1871,15 @@ impl JaymiApp {
                         ui.spacing_mut().item_spacing.x = 10.0; // spec gap:10px
                         ui.set_min_height(32.0);
 
-                        let attach = icon_pill_button(ui, &self.theme, Icon::Plus, 30.0, None, self.theme.text_secondary)
-                            .on_hover_text("Attach files (soon)");
+                        let attach = icon_pill_button(
+                            ui,
+                            &self.theme,
+                            Icon::Plus,
+                            30.0,
+                            None,
+                            self.theme.text_secondary,
+                        )
+                        .on_hover_text("Attach files (soon)");
                         if attach.clicked() {
                             attach_clicked = true;
                         }
@@ -1706,8 +1908,15 @@ impl JaymiApp {
                                     stop_clicked = true;
                                 }
                             } else {
-                                let send = icon_pill_button(ui, &self.theme, Icon::Send, 34.0, Some(self.theme.accent), self.theme.on_accent())
-                                    .on_hover_text("Send (Enter)");
+                                let send = icon_pill_button(
+                                    ui,
+                                    &self.theme,
+                                    Icon::Send,
+                                    34.0,
+                                    Some(self.theme.accent),
+                                    self.theme.on_accent(),
+                                )
+                                .on_hover_text("Send (Enter)");
                                 if send.clicked() {
                                     send_clicked = true;
                                 }
@@ -1754,24 +1963,26 @@ impl JaymiApp {
         // content first and gets placed by the *outer* left-to-right cursor,
         // which left it stranded right after the traffic lights instead of
         // hugging the right edge next to the search pill.
-        egui::containers::Sides::new().height(ui.available_height()).show(
-            ui,
-            |ui| {
-                ui.add_space(TRAFFIC_LIGHT_INSET);
-            },
-            |ui| {
-                // `Sides`' right slot packs right-to-left: the first call
-                // here lands at the far right edge, each following call
-                // sits further left.
-                self.render_palette_pill(ui);
-                if self.experience.workspace_expanded() || self.settings_open {
-                    ui.add_space(space::SM);
-                    self.render_close_panel_button(ui);
-                }
-                ui.add_space(space::MD);
-                self.render_workspace_switcher(ui);
-            },
-        );
+        egui::containers::Sides::new()
+            .height(ui.available_height())
+            .show(
+                ui,
+                |ui| {
+                    ui.add_space(TRAFFIC_LIGHT_INSET);
+                },
+                |ui| {
+                    // `Sides`' right slot packs right-to-left: the first call
+                    // here lands at the far right edge, each following call
+                    // sits further left.
+                    self.render_palette_pill(ui);
+                    if self.experience.workspace_expanded() || self.settings_open {
+                        ui.add_space(space::SM);
+                        self.render_close_panel_button(ui);
+                    }
+                    ui.add_space(space::MD);
+                    self.render_workspace_switcher(ui);
+                },
+            );
     }
 
     /// The five-icon workspace switcher (Coding / Research / Knowledge /
@@ -1786,62 +1997,85 @@ impl JaymiApp {
             (Icon::Settings, "Settings", None),
         ];
 
-        egui::Frame::new()
-            .fill(self.theme.panel)
-            .corner_radius(egui::CornerRadius::same(radius::PILL as u8))
-            .inner_margin(egui::Margin::same(3))
-            .show(ui, |ui| {
-                // `ui.horizontal` inherits right-to-left from the ambient
-                // layout (this is called from `render_top_bar`'s
-                // right-to-left wrapper) — force left-to-right explicitly so
-                // the icons render Coding→Settings, not reversed.
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    ui.spacing_mut().item_spacing.x = 2.0;
-                    for (icon, label, kind) in entries {
-                        let is_active = match kind {
-                            Some(kind) => !self.settings_open && active_kind == Some(kind),
-                            None => self.settings_open,
-                        };
-                        let fill = is_active.then_some(self.theme.surface);
-                        let icon_color = if is_active {
-                            self.theme.accent_deep
-                        } else {
-                            self.theme.text_secondary
-                        };
-                        let response = icon_pill_button(ui, &self.theme, icon, 28.0, fill, icon_color)
-                            .on_hover_text(label);
-                        if response.clicked() {
-                            match kind {
-                                Some(WorkspaceKind::Coding) => {
-                                    self.settings_open = false;
-                                    if self.app.active_project_id().is_some() {
-                                        self.start_coding_project();
-                                    } else {
-                                        self.open_project_folder();
+        // Explicit size, not the ambient right-to-left container's full
+        // remaining width — a bare `Frame::show` claims whatever space its
+        // parent layout offers, which inside `render_top_bar`'s
+        // right-to-left row is nearly the whole bar. That stretched the
+        // pill background across the bar while the icons stayed bunched at
+        // its left edge.
+        const ICON_D: f32 = 28.0;
+        const GAP: f32 = 2.0;
+        const PAD: f32 = 3.0;
+        let count = entries.len() as f32;
+        let switcher_size = egui::vec2(
+            count * ICON_D + (count - 1.0) * GAP + 2.0 * PAD,
+            ICON_D + 2.0 * PAD,
+        );
+        ui.allocate_ui_with_layout(
+            switcher_size,
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                egui::Frame::new()
+                    .fill(self.theme.panel)
+                    .corner_radius(egui::CornerRadius::same(radius::PILL as u8))
+                    .inner_margin(egui::Margin::same(PAD as i8))
+                    .show(ui, |ui| {
+                        // `ui.horizontal` inherits right-to-left from the ambient
+                        // layout (this is called from `render_top_bar`'s
+                        // right-to-left wrapper) — force left-to-right explicitly so
+                        // the icons render Coding→Settings, not reversed.
+                        ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                            ui.spacing_mut().item_spacing.x = GAP;
+                            for (icon, label, kind) in entries {
+                                let is_active = match kind {
+                                    Some(kind) => !self.settings_open && active_kind == Some(kind),
+                                    None => self.settings_open,
+                                };
+                                let fill = is_active.then_some(self.theme.surface);
+                                let icon_color = if is_active {
+                                    self.theme.accent_deep
+                                } else {
+                                    self.theme.text_secondary
+                                };
+                                let response =
+                                    icon_pill_button(ui, &self.theme, icon, 28.0, fill, icon_color)
+                                        .on_hover_text(label);
+                                if response.clicked() {
+                                    match kind {
+                                        Some(WorkspaceKind::Coding) => {
+                                            self.settings_open = false;
+                                            if self.app.active_project_id().is_some() {
+                                                self.start_coding_project();
+                                            } else {
+                                                self.open_project_folder();
+                                            }
+                                        }
+                                        Some(WorkspaceKind::Research) => self
+                                            .open_capability_workspace(
+                                                Capability::Search,
+                                                "Opened Research from the top bar",
+                                            ),
+                                        Some(WorkspaceKind::Knowledge) => {
+                                            self.open_capability_workspace(
+                                                Capability::Discover,
+                                                "Opened Knowledge from the top bar",
+                                            );
+                                            self.refresh_knowledge();
+                                        }
+                                        Some(WorkspaceKind::Creation) => self
+                                            .open_capability_workspace(
+                                                Capability::GenerateImages,
+                                                "Opened Creation from the top bar",
+                                            ),
+                                        Some(WorkspaceKind::Conversation) => {}
+                                        None => self.open_settings_workspace(),
                                     }
                                 }
-                                Some(WorkspaceKind::Research) => self.open_capability_workspace(
-                                    Capability::Search,
-                                    "Opened Research from the top bar",
-                                ),
-                                Some(WorkspaceKind::Knowledge) => {
-                                    self.open_capability_workspace(
-                                        Capability::Discover,
-                                        "Opened Knowledge from the top bar",
-                                    );
-                                    self.refresh_knowledge();
-                                }
-                                Some(WorkspaceKind::Creation) => self.open_capability_workspace(
-                                    Capability::GenerateImages,
-                                    "Opened Creation from the top bar",
-                                ),
-                                Some(WorkspaceKind::Conversation) => {}
-                                None => self.open_settings_workspace(),
                             }
-                        }
-                    }
-                });
-            });
+                        });
+                    });
+            },
+        );
     }
 
     /// Expand a capability workspace directly from a manual UI action (not a
@@ -1866,8 +2100,15 @@ impl JaymiApp {
     /// Closes whichever right-side panel is currently open (a capability
     /// workspace or Settings) back to the plain conversation view.
     fn render_close_panel_button(&mut self, ui: &mut egui::Ui) {
-        let response = icon_pill_button(ui, &self.theme, Icon::Close, 28.0, None, self.theme.text_secondary)
-            .on_hover_text("Return to conversation");
+        let response = icon_pill_button(
+            ui,
+            &self.theme,
+            Icon::Close,
+            28.0,
+            None,
+            self.theme.text_secondary,
+        )
+        .on_hover_text("Return to conversation");
         if response.clicked() {
             if self.settings_open {
                 self.settings_open = false;
@@ -1881,20 +2122,39 @@ impl JaymiApp {
     fn render_palette_pill(&mut self, ui: &mut egui::Ui) {
         let font = egui::FontId::proportional(type_size::META + 0.5);
         let label = "⌘P";
-        let galley = ui.painter().layout_no_wrap(label.to_string(), font.clone(), egui::Color32::PLACEHOLDER);
+        let galley = ui.painter().layout_no_wrap(
+            label.to_string(),
+            font.clone(),
+            egui::Color32::PLACEHOLDER,
+        );
         let width = 14.0 + space::SM + galley.size().x + space::MD;
-        let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 32.0), egui::Sense::click());
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(width, 32.0), egui::Sense::click());
         let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
         let hovered = response.hovered();
-        ui.painter().rect_filled(rect, egui::CornerRadius::same(radius::PILL as u8), self.theme.panel);
+        ui.painter().rect_filled(
+            rect,
+            egui::CornerRadius::same(radius::PILL as u8),
+            self.theme.panel,
+        );
         let icon_center = egui::pos2(rect.left() + space::MD, rect.center().y);
-        icons::paint(ui.painter(), Icon::Search, icon_center, 6.5, self.theme.text_secondary);
+        icons::paint(
+            ui.painter(),
+            Icon::Search,
+            icon_center,
+            6.5,
+            self.theme.text_secondary,
+        );
         ui.painter().text(
             egui::pos2(icon_center.x + 14.0, rect.center().y),
             egui::Align2::LEFT_CENTER,
             label,
             font,
-            if hovered { self.theme.text_primary } else { self.theme.text_secondary },
+            if hovered {
+                self.theme.text_primary
+            } else {
+                self.theme.text_secondary
+            },
         );
         if response.clicked() {
             self.command_palette.open();
@@ -2368,13 +2628,7 @@ impl JaymiApp {
                 } => self.app.set_coding_tab_selection_in_pane(
                     &pane,
                     &path,
-                    EditorSelection::new(
-                        start_line,
-                        start_column,
-                        end_line,
-                        end_column,
-                        text,
-                    ),
+                    EditorSelection::new(start_line, start_column, end_line, end_column, text),
                 ),
                 CodingShellEvent::SetFolds {
                     pane,
@@ -2399,8 +2653,8 @@ impl JaymiApp {
                 CodingShellEvent::OpenQuickOpen => {
                     self.command_palette.open();
                     self.refresh_command_palette();
-                            Ok(())
-                        }
+                    Ok(())
+                }
                 CodingShellEvent::CloseWorkspace => {
                     self.close_workspace();
                     Ok(())
@@ -2734,8 +2988,7 @@ impl JaymiApp {
             // Apply pending terminal focus before paint so TextEdit can request_focus.
             if let Some(session_id) = self.pending_terminal_focus.take() {
                 let focus_id = egui::Id::new(("terminal_request_focus", session_id));
-                ui.ctx()
-                    .data_mut(|data| data.insert_temp(focus_id, true));
+                ui.ctx().data_mut(|data| data.insert_temp(focus_id, true));
             }
             // Reset each frame; TerminalWantsKeyboard / focus events set it again.
             self.egui_wants_keyboard = false;
@@ -3040,8 +3293,7 @@ impl JaymiApp {
         // the foreground so Quick Open / Command Palette are not covered by code.
         // Also hide while the terminal command field needs keys (WKWebView would
         // otherwise keep first-responder and swallow typing).
-        let block_for_keyboard =
-            self.command_palette.is_open() || self.egui_wants_keyboard;
+        let block_for_keyboard = self.command_palette.is_open() || self.egui_wants_keyboard;
         let document = surface
             .filter(|_| !block_for_keyboard)
             .map(|surface| self.monaco_document_from_state(surface));
@@ -3601,10 +3853,7 @@ impl JaymiApp {
                                 ui.label(format!("{} ms", row.duration_ms));
                                 let fraction =
                                     (row.duration_ms as f32 / max_ms as f32).clamp(0.0, 1.0);
-                                ui.add(
-                                    egui::ProgressBar::new(fraction)
-                                        .desired_width(140.0),
-                                );
+                                ui.add(egui::ProgressBar::new(fraction).desired_width(140.0));
                                 ui.end_row();
                             }
                         });
