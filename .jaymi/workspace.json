@@ -5,7 +5,7 @@
       "path": "apps/jaymi/src/ui/review_card.rs",
       "preview": false,
       "view": {
-        "scroll_top": 1.0,
+        "scroll_top": 0.0,
         "cursor": {
           "line": 0,
           "column": 0
@@ -38,7 +38,7 @@
           "path": "apps/jaymi/src/ui/review_card.rs",
           "preview": false,
           "view": {
-            "scroll_top": 1.0,
+            "scroll_top": 0.0,
             "cursor": {
               "line": 0,
               "column": 0
@@ -68,7 +68,7 @@
   "explorer_width": 280.0,
   "explorer_visible": true,
   "bottom_panel_height": 180.0,
-  "workspace_panel_width": 719.96875,
+  "workspace_panel_width": 488.0,
   "bottom_tab": "hidden",
   "last_bottom_tab": "terminal"
 }

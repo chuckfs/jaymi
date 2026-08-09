@@ -70,16 +70,28 @@ pub fn render_nav_rail(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing.y = 2.0; // Spec: container `gap: 2px`.
 
-        // Spec: `padding: 8px 12px 6px 12px`.
-        section_label(ui, ctx.theme, "Project", 8.0);
-        render_project_card(ui, ctx, events);
+        // Project card is Coding-specific chrome (repo name, test status) —
+        // stays hidden everywhere else so the rail reads as pure
+        // conversation history the rest of the time.
+        if ctx.coding_open {
+            // Spec: `padding: 8px 12px 6px 12px`.
+            section_label(ui, ctx.theme, "Project", 8.0);
+            render_project_card(ui, ctx, events);
+        }
 
         // Spec: `padding: 16px 12px 6px 12px`.
-        section_label(ui, ctx.theme, "Conversations", 16.0);
+        section_label(ui, ctx.theme, "Conversations", if ctx.coding_open { 16.0 } else { 8.0 });
 
+        // Reserve room for the Diagnostics footer + status card below so an
+        // unbounded `auto_shrink([false, false])` scroll area doesn't claim
+        // the whole remaining height and push them past the panel's visible
+        // bottom edge.
+        let footer_reserve = 120.0;
+        let list_height = (ui.available_height() - footer_reserve).max(80.0);
         egui::ScrollArea::vertical()
             .id_salt("jaymi_nav_conversations")
             .auto_shrink([false, false])
+            .max_height(list_height)
             .show(ui, |ui| {
                 if !ctx.has_project {
                     hint_row(ui, ctx.theme, "Open a project to see its chats.");
@@ -104,15 +116,12 @@ pub fn render_nav_rail(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut
                 }
             });
 
-        // Bottom-up: first call lands at the true bottom, so the status
-        // card (called first) sits under the Diagnostics footer (called
-        // second). `Align::Min` keeps `ui.horizontal` inside each from
-        // inheriting right-to-left (that only triggers on `Align::Max`).
-        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
-            render_status_card(ui, ctx);
-            ui.add_space(space::SM);
-            render_footer(ui, ctx, events);
-        });
+        // Now that the scroll area above is height-capped (leaving room for
+        // this section), plain top-down placement lands the footer above
+        // the status card without either overflowing the panel's bottom.
+        render_footer(ui, ctx, events);
+        ui.add_space(space::SM);
+        render_status_card(ui, ctx);
     });
 }
 

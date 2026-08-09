@@ -1034,23 +1034,26 @@ pub fn render_coding_shell(
             });
         });
 
-    // --- Quick Action Bar (Planner intents; not a VS Code toolbar) ----------
-    egui::TopBottomPanel::top("coding_quick_actions")
-        .exact_height(QUICK_ACTION_BAR_HEIGHT)
-        .show_separator_line(true)
-        .frame(region_frame(
-            theme,
-            egui::Margin::symmetric(QUICK_ACTION_PAD_X as i8, 0),
-        ))
-        .show_inside(ui, |ui| {
-            for event in coding_quick_actions::render_quick_action_bar(ui, theme, open_error) {
-                match event {
-                    QuickActionBarEvent::Action(action) => {
-                        events.push(CodingShellEvent::QuickAction(action));
+    // --- Quick Action Bar (multi-pane only; single-pane merges it into the
+    // tab strip row below, matching the spec's combined tabs+actions row) --
+    if !single_pane {
+        egui::TopBottomPanel::top("coding_quick_actions")
+            .exact_height(QUICK_ACTION_BAR_HEIGHT)
+            .show_separator_line(true)
+            .frame(region_frame(
+                theme,
+                egui::Margin::symmetric(QUICK_ACTION_PAD_X as i8, 0),
+            ))
+            .show_inside(ui, |ui| {
+                for event in coding_quick_actions::render_quick_action_bar(ui, theme, open_error) {
+                    match event {
+                        QuickActionBarEvent::Action(action) => {
+                            events.push(CodingShellEvent::QuickAction(action));
+                        }
                     }
                 }
-            }
-        });
+            });
+    }
 
     // --- Breadcrumb (under toolbar; derived from CodingState only) ---------
     if let Some(coding) = state {
@@ -1075,19 +1078,53 @@ pub fn render_coding_shell(
             });
     }
 
-    // --- Editor tabs (full width, above Monaco | Explorer) -----------------
-    // Single-pane: hoist tabs here so Monaco is the uninterrupted centerpiece.
-    // Multi-pane splits keep per-pane tab strips inside the editor column.
+    // --- Editor tabs + Quick Actions (full width, above Monaco | Explorer) -
+    // Spec: tabs and quick-action pills share one row (tabs left, actions
+    // right). Single-pane: hoist tabs here so Monaco is the uninterrupted
+    // centerpiece. Multi-pane splits keep per-pane tab strips inside the
+    // editor column (and their own quick-action row, above).
     if single_pane {
         egui::TopBottomPanel::top("coding_editor_tabs")
-            .exact_height(EDITOR_TAB_STRIP_HEIGHT)
+            .exact_height(QUICK_ACTION_BAR_HEIGHT)
             .show_separator_line(true)
             .frame(region_frame(
                 theme,
                 egui::Margin::symmetric(space::SM as i8, 0),
             ))
             .show_inside(ui, |ui| {
-                render_workspace_tab_strip(ui, theme, state, events);
+                ui.horizontal(|ui| {
+                    ui.set_min_height(QUICK_ACTION_BAR_HEIGHT);
+                    ui.set_max_height(QUICK_ACTION_BAR_HEIGHT);
+                    // Reserve the right side for the (fixed) 3 primary quick-
+                    // action pills + overflow control; tabs get the rest.
+                    let actions_reserve: f32 = coding_quick_actions::QuickAction::ALL
+                        [..coding_quick_actions::PRIMARY_LIMIT]
+                        .iter()
+                        .map(|a| a.estimated_width())
+                        .sum::<f32>()
+                        + coding_quick_actions::QUICK_ACTION_GAP * 2.0
+                        + coding_quick_actions::MORE_BUTTON_WIDTH
+                        + space::MD;
+                    let tabs_w = (ui.available_width() - actions_reserve).max(96.0);
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(tabs_w, QUICK_ACTION_BAR_HEIGHT),
+                        egui::Layout::left_to_right(egui::Align::Center),
+                        |ui| {
+                            render_workspace_tab_strip(ui, theme, state, events);
+                        },
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        for event in
+                            coding_quick_actions::render_quick_action_bar(ui, theme, open_error)
+                        {
+                            match event {
+                                QuickActionBarEvent::Action(action) => {
+                                    events.push(CodingShellEvent::QuickAction(action));
+                                }
+                            }
+                        }
+                    });
+                });
             });
     }
 

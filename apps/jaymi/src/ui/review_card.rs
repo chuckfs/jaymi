@@ -19,12 +19,17 @@ use jaymi_planner::{ReviewCardModel, ReviewCardState, ReviewIntent};
 /// `modify_note` is the draft free-text guidance for Modify; the UI owns the
 /// buffer so it survives frames. Modify is enabled once the note is non-empty.
 /// `preview_expanded` toggles full vs truncated Preview Before Action bodies.
+/// `open_in_coding` is set to `true` when the user clicks the (Coding-plans
+/// only) "Open in Coding" button — a pure workspace-navigation shortcut, not
+/// a plan decision, so it never becomes a [`ReviewIntent`]. Callers should
+/// reset it to `false` before each call.
 pub fn render_review_card(
     ui: &mut egui::Ui,
     theme: &Theme,
     model: &ReviewCardModel,
     modify_note: &mut String,
     preview_expanded: &mut bool,
+    open_in_coding: &mut bool,
 ) -> Option<ReviewIntent> {
     let mut chosen: Option<ReviewIntent> = None;
     let pending = model.state.is_pending();
@@ -238,6 +243,22 @@ pub fn render_review_card(
                             });
                         }
 
+                        // Spec: Coding plans surface a direct "Open in Coding"
+                        // shortcut alongside Approve/Modify/Cancel — pure
+                        // navigation, so it's read by the caller separately
+                        // rather than folded into a ReviewIntent.
+                        if is_coding_plan(model) {
+                            if ui
+                                .add_enabled_ui(pending, |ui| {
+                                    pill_button(ui, theme, "Open in Coding", ButtonStyle::Secondary)
+                                })
+                                .inner
+                                .clicked()
+                            {
+                                *open_in_coding = true;
+                            }
+                        }
+
                         if ui
                             .add_enabled_ui(pending, |ui| {
                                 pill_button(ui, theme, "Cancel", ButtonStyle::Ghost)
@@ -342,6 +363,22 @@ fn letter_spaced(text: &str, _em: f32) -> String {
         .map(|c| c.to_string())
         .collect::<Vec<_>>()
         .join("\u{2009}")
+}
+
+/// Heuristic: does this plan touch source-code-like files? Used only to
+/// decide whether to surface the "Open in Coding" shortcut — never affects
+/// plan execution.
+fn is_coding_plan(model: &ReviewCardModel) -> bool {
+    const CODE_EXTENSIONS: &[&str] = &[
+        "rs", "ts", "tsx", "js", "jsx", "py", "go", "rb", "java", "c", "h", "cpp", "hpp", "cs",
+        "swift", "kt", "toml", "json", "yaml", "yml",
+    ];
+    model.affected_resources.iter().any(|resource| {
+        resource
+            .rsplit('.')
+            .next()
+            .is_some_and(|ext| CODE_EXTENSIONS.contains(&ext.to_ascii_lowercase().as_str()))
+    })
 }
 
 fn modify_hint(model: &ReviewCardModel) -> String {

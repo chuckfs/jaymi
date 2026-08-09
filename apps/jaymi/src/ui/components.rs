@@ -225,7 +225,11 @@ pub fn icon_pill_button(
         if let Some(fill) = hover_fill {
             ui.painter().circle_filled(rect.center(), diameter * 0.5, fill);
         }
-        icons::paint(ui.painter(), icon, rect.center(), diameter * 0.34, icon_color);
+        // Spec: icon glyphs sit well inside their pill (e.g. a 15px icon in
+        // a 32px badge, a 14px icon in a 34px send button) — roughly a
+        // 0.23 icon-radius-to-diameter ratio, not a glyph that nearly fills
+        // the circle.
+        icons::paint(ui.painter(), icon, rect.center(), diameter * 0.23, icon_color);
     }
 
     response

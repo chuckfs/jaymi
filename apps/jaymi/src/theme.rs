@@ -281,35 +281,39 @@ impl Theme {
     }
 
     /// Small elevation step — hairline-adjacent chrome (rows, small chips).
+    ///
+    /// Spec: `--sh-sm: 0 1px 2px color-mix(#2e2b25 14%)` (light) /
+    /// `0 1px 2px rgba(0,0,0,.4)` (dark) — light shadows are ink-tinted,
+    /// dark shadows are neutral black at higher opacity.
     pub fn shadow_sm(&self) -> egui::Shadow {
-        let alpha = if self.mode.is_dark() { 102 } else { 36 };
-        egui::Shadow {
-            offset: [0, 1],
-            blur: 4,
-            spread: 0,
-            color: Color32::from_rgba_unmultiplied(0, 0, 0, alpha),
+        if self.mode.is_dark() {
+            egui::Shadow { offset: [0, 1], blur: 2, spread: 0, color: Color32::from_rgba_unmultiplied(0, 0, 0, 102) }
+        } else {
+            egui::Shadow { offset: [0, 1], blur: 2, spread: 0, color: Color32::from_rgba_unmultiplied(0x2e, 0x2b, 0x25, 36) }
         }
     }
 
     /// Mid elevation step — resting cards, the composer.
+    ///
+    /// Spec: `--sh-md: 0 3px 10px color-mix(#2e2b25 16%)` (light) /
+    /// `0 3px 12px rgba(0,0,0,.45)` (dark).
     pub fn shadow_md(&self) -> egui::Shadow {
-        let alpha = if self.mode.is_dark() { 115 } else { 41 };
-        egui::Shadow {
-            offset: [0, 3],
-            blur: 10,
-            spread: 0,
-            color: Color32::from_rgba_unmultiplied(0, 0, 0, alpha),
+        if self.mode.is_dark() {
+            egui::Shadow { offset: [0, 3], blur: 12, spread: 0, color: Color32::from_rgba_unmultiplied(0, 0, 0, 115) }
+        } else {
+            egui::Shadow { offset: [0, 3], blur: 10, spread: 0, color: Color32::from_rgba_unmultiplied(0x2e, 0x2b, 0x25, 41) }
         }
     }
 
     /// Large elevation step — the command palette, floating overlays.
+    ///
+    /// Spec: `--sh-lg: 0 12px 32px color-mix(#2e2b25 22%)` (light) /
+    /// `0 14px 36px rgba(0,0,0,.55)` (dark).
     pub fn shadow_lg(&self) -> egui::Shadow {
-        let alpha = if self.mode.is_dark() { 140 } else { 56 };
-        egui::Shadow {
-            offset: [0, 12],
-            blur: 32,
-            spread: 0,
-            color: Color32::from_rgba_unmultiplied(0, 0, 0, alpha),
+        if self.mode.is_dark() {
+            egui::Shadow { offset: [0, 14], blur: 36, spread: 0, color: Color32::from_rgba_unmultiplied(0, 0, 0, 140) }
+        } else {
+            egui::Shadow { offset: [0, 12], blur: 32, spread: 0, color: Color32::from_rgba_unmultiplied(0x2e, 0x2b, 0x25, 56) }
         }
     }
 

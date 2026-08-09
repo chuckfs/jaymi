@@ -20,12 +20,14 @@ pub fn render_creation_workspace(ui: &mut egui::Ui, theme: &Theme, state: Option
     let asset_count = state.map(|s| s.generated_assets.len()).unwrap_or(0);
     let subtitle = (asset_count > 0)
         .then(|| format!("{asset_count} asset{}", if asset_count == 1 { "" } else { "s" }));
+    // Spec: every workspace icon badge uses sage tint/deep except Coding
+    // (accent/terracotta) and Settings (neutral card2/muted).
     render_workspace_header(
         ui,
         theme,
         Icon::Creation,
-        theme.accent_tint,
-        theme.accent_deep,
+        theme.accent2_tint,
+        theme.accent2_deep,
         "Creation",
         subtitle.as_deref(),
     );

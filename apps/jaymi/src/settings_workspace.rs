@@ -8,18 +8,19 @@
 use eframe::egui::{self, Align, Layout, RichText};
 
 use crate::theme::{inset, radius, space, type_size, Theme};
-use crate::ui::components::{pill_button, segmented, tag, ButtonStyle, TagStyle};
+use crate::ui::components::{pill_button, render_workspace_header, segmented, tag, ButtonStyle, TagStyle};
+use crate::ui::icons::Icon;
 use jaymi_config::Theme as ThemePreference;
 
 /// Categories in the Settings left rail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum SettingsCategory {
     /// App-wide defaults.
-    #[default]
     General,
     /// Theme and chrome.
     Appearance,
     /// Reasoning providers and default model.
+    #[default]
     Reasoning,
     /// Privacy and offline preferences.
     Privacy,
@@ -223,9 +224,16 @@ pub fn render_settings_workspace(
 ) {
     let theme = ctx.theme;
     ui.horizontal(|ui| {
-        ui.label(
-            RichText::new("Settings")
-                .font(crate::theme::display_font(type_size::TITLE)),
+        // Spec: Settings' icon badge is neutral (card2/muted), unlike the
+        // accent (Coding) or sage (Research/Knowledge/Creation) workspaces.
+        render_workspace_header(
+            ui,
+            theme,
+            Icon::Settings,
+            theme.surface_alt,
+            theme.text_secondary,
+            "Settings",
+            None,
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             if pill_button(ui, theme, "Done", ButtonStyle::Secondary).clicked() {

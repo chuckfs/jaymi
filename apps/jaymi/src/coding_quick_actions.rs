@@ -22,9 +22,15 @@ pub const QUICK_ACTION_PAD_X: f32 = space::MD;
 /// Approximate width reserved for the trailing "More" overflow control.
 pub const MORE_BUTTON_WIDTH: f32 = 52.0;
 
-/// Approximate horizontal chrome reserved beside the action strip
-/// (close tile + gaps + optional error label).
-pub const QUICK_ACTION_CHROME_RESERVE: f32 = 48.0;
+/// Spec: exactly 3 primary pills (Explain / Refactor / Run) — everything
+/// past this always folds into the overflow menu, regardless of available
+/// width, so Edit / Search / the catch-all More stay reachable without
+/// crowding the primary row.
+pub const PRIMARY_LIMIT: usize = 3;
+
+/// Small breathing-room margin beside the action strip (trailing edge /
+/// optional error label gap).
+pub const QUICK_ACTION_CHROME_RESERVE: f32 = 8.0;
 
 /// One Coding Action button in the Coding Workspace bar.
 ///
@@ -50,10 +56,10 @@ impl QuickAction {
     /// Canonical left-to-right order in the bar.
     pub const ALL: [QuickAction; 6] = [
         QuickAction::Explain,
-        QuickAction::Edit,
         QuickAction::Refactor,
-        QuickAction::Search,
         QuickAction::Run,
+        QuickAction::Edit,
+        QuickAction::Search,
         QuickAction::More,
     ];
 
@@ -153,6 +159,10 @@ pub fn layout_quick_actions_with(
         };
     }
 
+    let split = actions.len().min(PRIMARY_LIMIT);
+    let primary_candidates = &actions[..split];
+    let always_overflow = &actions[split..];
+
     let gaps = |count: usize| -> f32 {
         if count <= 1 {
             0.0
@@ -161,13 +171,13 @@ pub fn layout_quick_actions_with(
         }
     };
 
-    let full_width: f32 =
-        actions.iter().map(|a| a.estimated_width()).sum::<f32>() + gaps(actions.len());
+    let full_width: f32 = primary_candidates.iter().map(|a| a.estimated_width()).sum::<f32>()
+        + gaps(primary_candidates.len());
 
     if full_width <= available_width {
         return QuickActionLayout {
-            visible: actions.to_vec(),
-            overflow: Vec::new(),
+            visible: primary_candidates.to_vec(),
+            overflow: always_overflow.to_vec(),
         };
     }
 
@@ -175,9 +185,9 @@ pub fn layout_quick_actions_with(
     let mut visible = Vec::new();
     let mut used = 0.0;
 
-    for (index, action) in actions.iter().enumerate() {
+    for (index, action) in primary_candidates.iter().enumerate() {
         let next = action.estimated_width() + if visible.is_empty() { 0.0 } else { QUICK_ACTION_GAP };
-        let remaining = actions.len() - index;
+        let remaining = primary_candidates.len() - index;
         if remaining == 1 && visible.is_empty() {
             break;
         }
@@ -189,11 +199,12 @@ pub fn layout_quick_actions_with(
         }
     }
 
-    if visible.len() == actions.len() {
+    if visible.len() == primary_candidates.len() && always_overflow.is_empty() {
         visible.pop();
     }
 
-    let overflow = actions[visible.len()..].to_vec();
+    let mut overflow = primary_candidates[visible.len()..].to_vec();
+    overflow.extend_from_slice(always_overflow);
     QuickActionLayout { visible, overflow }
 }
 
@@ -342,14 +353,20 @@ mod tests {
         let labels: Vec<&str> = QuickAction::ALL.iter().map(|a| a.label()).collect();
         assert_eq!(
             labels,
-            vec!["Explain", "Edit", "Refactor", "Search", "Run", "More"]
+            vec!["Explain", "Refactor", "Run", "Edit", "Search", "More"]
         );
 
+        // Spec: exactly 3 primary pills, even with generous width — Edit,
+        // Search, and the catch-all More stay reachable via overflow.
         let roomy = layout_quick_actions(2000.0);
-        assert_eq!(roomy.visible, QuickAction::ALL.to_vec());
-        assert!(roomy.overflow.is_empty());
-        assert_eq!(roomy.visible[0], QuickAction::Explain);
-        assert_eq!(roomy.visible[5], QuickAction::More);
+        assert_eq!(
+            roomy.visible,
+            vec![QuickAction::Explain, QuickAction::Refactor, QuickAction::Run]
+        );
+        assert_eq!(
+            roomy.overflow,
+            vec![QuickAction::Edit, QuickAction::Search, QuickAction::More]
+        );
     }
 
     #[test]
