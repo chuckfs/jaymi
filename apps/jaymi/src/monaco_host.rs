@@ -16,6 +16,38 @@ use wry::http::{header, Response, StatusCode};
 use wry::raw_window_handle::HasWindowHandle;
 use wry::{Rect, WebView, WebViewBuilder};
 
+/// Matches the workspace card's own corner radius (`radius::LG`) so Monaco
+/// reads as its own rounded panel within the card, not a hard-edged native
+/// rectangle. Kept as a plain constant (rather than threading the app's
+/// `Theme` through this platform-only helper) since it isn't a color and
+/// isn't expected to vary by light/dark mode.
+#[cfg(target_os = "macos")]
+const MONACO_CORNER_RADIUS: f64 = 24.0;
+
+/// Rounds the WKWebView's own corners via its CALayer — egui-side painting
+/// can't reach here since the WebView is a native NSView compositing outside
+/// egui's GL surface, not a shape egui draws.
+#[cfg(target_os = "macos")]
+#[allow(deprecated)] // `cocoa::base::id`/`nil` are what `WebViewExtMacOS` returns.
+fn round_webview_corners(webview: &WebView, radius: f64) {
+    use cocoa::base::{id, nil, YES};
+    use objc::{msg_send, sel, sel_impl};
+    use wry::WebViewExtMacOS;
+
+    unsafe {
+        let view: id = webview.webview();
+        if view == nil {
+            return;
+        }
+        let _: () = msg_send![view, setWantsLayer: YES];
+        let layer: id = msg_send![view, layer];
+        if layer != nil {
+            let _: () = msg_send![layer, setCornerRadius: radius];
+            let _: () = msg_send![layer, setMasksToBounds: YES];
+        }
+    }
+}
+
 /// Document projected into Monaco for the active editor tab.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonacoDocument {
@@ -174,6 +206,9 @@ impl MonacoHost {
             .with_url("jaymi://localhost/index.html")
             .build()
             .map_err(|error| format!("failed to create monaco webview: {error}"))?;
+
+        #[cfg(target_os = "macos")]
+        round_webview_corners(&webview, MONACO_CORNER_RADIUS);
 
         Ok(Self {
             webview,

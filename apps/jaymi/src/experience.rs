@@ -130,6 +130,8 @@ pub struct ExperienceSession {
     last_review_intent: Option<ReviewIntent>,
     /// Mirrored Planner conversation runtime state (Experience never invents transitions).
     conversation_state: ConversationState,
+    /// Last Planner-generated pair-programming suggestions (Sprint C1.8).
+    pair_programming: Option<jaymi_planner::PairProgrammingSurface>,
 }
 
 impl ExperienceSession {
@@ -212,6 +214,27 @@ impl ExperienceSession {
     /// Mirror a Planner-owned conversation state (Experience never invents transitions).
     pub fn mirror_conversation_state(&mut self, state: ConversationState) {
         self.conversation_state = state;
+    }
+
+    /// Last Planner-authored pair-programming suggestions (Quick Actions source).
+    pub fn pair_programming(&self) -> Option<&jaymi_planner::PairProgrammingSurface> {
+        self.pair_programming.as_ref()
+    }
+
+    /// Suggested next actions for the Coding Quick Action menu (Planner-owned).
+    pub fn suggested_actions(&self) -> &[jaymi_planner::SuggestedAction] {
+        self.pair_programming
+            .as_ref()
+            .map(|surface| surface.suggested_actions.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Mirror Planner pair-programming suggestions (Experience never invents them).
+    pub fn mirror_pair_programming(
+        &mut self,
+        surface: Option<jaymi_planner::PairProgrammingSurface>,
+    ) {
+        self.pair_programming = surface;
     }
 
     /// Display title for the conversation surface.
@@ -317,6 +340,11 @@ impl ExperienceSession {
             if state.workspace_kind() != next_kind {
                 self.capability_state = CapabilityState::empty_for(next_kind);
             }
+        }
+        if next_kind == jaymi_capabilities::WorkspaceKind::Coding && self.pair_programming.is_none()
+        {
+            // Planner-authored baseline until the next PlannerResponse updates it.
+            self.pair_programming = Some(jaymi_planner::baseline_surface());
         }
         Ok(())
     }
@@ -467,6 +495,9 @@ impl ExperienceSession {
     /// into the conversation naturally (structured field + readable text).
     pub fn apply_planner_response(&mut self, response: &PlannerResponse) {
         self.mirror_conversation_state(response.conversation_state);
+        if let Some(surface) = response.pair_programming.clone() {
+            self.pair_programming = Some(surface);
+        }
         if response.awaiting_review {
             if let Some(plan) = &response.execution_plan {
                 let explanation = response

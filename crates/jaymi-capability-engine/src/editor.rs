@@ -133,7 +133,7 @@ pub struct EditorSettings {
 impl Default for EditorSettings {
     fn default() -> Self {
         Self {
-            minimap: true,
+            minimap: false,
             word_wrap: false,
             font_size: 13,
         }

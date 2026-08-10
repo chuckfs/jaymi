@@ -92,10 +92,9 @@ pub fn pill_button(ui: &mut Ui, theme: &Theme, label: &str, style: ButtonStyle) 
 }
 
 /// Shared workspace header — icon blob + Caprasimo title + optional muted
-/// subtitle. Every capability workspace (Coding, Research, Knowledge,
-/// Creation) opens with this same row; closing stays with the app's single
-/// top-bar close button (see `render_close_panel_button`), so this never
-/// paints its own close control.
+/// subtitle, with the close control living in the card's own top-right
+/// corner (not the app's global top bar) when `show_close` is set. Returns
+/// `true` the frame the close button is clicked.
 pub fn render_workspace_header(
     ui: &mut Ui,
     theme: &Theme,
@@ -104,7 +103,9 @@ pub fn render_workspace_header(
     icon_color: Color32,
     title: &str,
     subtitle: Option<&str>,
-) {
+    show_close: bool,
+) -> bool {
+    let mut closed = false;
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), Sense::hover());
         ui.painter().rect_filled(
@@ -134,7 +135,18 @@ pub fn render_workspace_header(
                 );
             }
         }
+        if show_close {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let response =
+                    icon_pill_button(ui, theme, Icon::Close, 28.0, None, theme.text_secondary)
+                        .on_hover_text("Return to conversation");
+                if response.clicked() {
+                    closed = true;
+                }
+            });
+        }
     });
+    closed
 }
 
 /// A compact pill button for dense chrome (dock/panel toolbars) where

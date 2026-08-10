@@ -15,7 +15,10 @@ use std::time::SystemTime;
 use eframe::egui;
 
 use crate::boot::{Application, BeginGeneration, PumpGeneration};
-use crate::coding_quick_actions::{dispatch_quick_action, QuickActionEffect};
+use crate::coding_quick_actions::{
+    dispatch_quick_action, dispatch_suggested_action, render_actions_menu_button,
+    QuickActionBarEvent, QuickActionEffect,
+};
 use crate::coding_workspace::{render_coding_shell, CodingShellEvent, MonacoEditorSurface};
 use crate::command_dispatch::{dispatch_command, CommandDispatchEffect};
 use crate::command_palette::{
@@ -45,15 +48,13 @@ use crate::theme::{inset, radius, space, type_size, Theme};
 use crate::ui::components::{icon_pill_button, pulse_alpha, suggestion_chip};
 use crate::ui::explorer::ExplorerEvent;
 use crate::ui::icons::Icon;
-use crate::ui::nav_rail::{
-    render_nav_rail, NavRailContext, NavRailEvent, DEFAULT_NAV_WIDTH, MAX_NAV_WIDTH, MIN_NAV_WIDTH,
-};
+use crate::ui::nav_rail::{render_nav_rail, NavRailContext, NavRailEvent, MIN_NAV_WIDTH};
 use crate::ui::review_card::render_review_card;
 use jaymi_capabilities::{
     workspace_expansion_for, Capability, CodingBottomTab, EditorSelection, EditorSettings,
-    FoldedRegion, SplitDirection, WorkspaceKind, DEFAULT_CONVERSATION_FRACTION,
-    DEFAULT_WORKSPACE_PANEL_WIDTH, MAX_CONVERSATION_FRACTION, MAX_WORKSPACE_PANEL_WIDTH,
-    MIN_CONVERSATION_WIDTH, MIN_WORKSPACE_PANEL_WIDTH,
+    FoldedRegion, SplitDirection, WorkspaceKind, DEFAULT_WORKSPACE_PANEL_WIDTH,
+    MAX_CONVERSATION_FRACTION, MAX_WORKSPACE_PANEL_WIDTH, MIN_CONVERSATION_WIDTH,
+    MIN_WORKSPACE_PANEL_WIDTH,
 };
 use jaymi_config::{Config, Theme as ThemePreference};
 use jaymi_memory::{ConversationMeta, CreateConversationRequest, MessageRole};
@@ -143,10 +144,6 @@ pub fn run_diagnostics(
                 nav_open: true,
                 settings_open: false,
                 nav_was_open: true,
-                nav_anim_start: None,
-                nav_anim_from: 0.0,
-                nav_anim_target: DEFAULT_NAV_WIDTH,
-                nav_width: DEFAULT_NAV_WIDTH,
                 settings: SettingsWorkspaceState {
                     category: SettingsCategory::Reasoning,
                 },
@@ -533,14 +530,6 @@ struct JaymiApp {
     settings_open: bool,
     /// Previous-frame nav open flag (drives open/close animation).
     nav_was_open: bool,
-    /// Wall-clock start of the nav rail animation, when running.
-    nav_anim_start: Option<std::time::Instant>,
-    /// Width the nav animation starts from.
-    nav_anim_from: f32,
-    /// Width the nav animation eases toward.
-    nav_anim_target: f32,
-    /// Remembered open width for the left nav rail.
-    nav_width: f32,
     /// Settings Workspace UI selection (preferences only).
     settings: SettingsWorkspaceState,
     /// Cached Reasoning settings snapshot from Application.
@@ -562,6 +551,77 @@ const WORKSPACE_EXPAND_ANIM_SECS: f32 = 0.32;
 /// from the window's left edge; this clears it with the same ~16px breathing
 /// room the design spec uses between its own chrome groups.
 const TRAFFIC_LIGHT_INSET: f32 = 65.0;
+
+/// Nudges the native close/miniaturize/zoom buttons down and right from
+/// macOS's default position — `with_fullsize_content_view` gives us a
+/// borderless canvas but leaves the traffic lights hugging the window's
+/// literal top-left corner, tighter than this app's own chrome spacing.
+/// There's no `winit`/`eframe` API for this; it's a direct AppKit nudge.
+///
+/// Re-applied every frame (window resize / fullscreen-toggle can reset
+/// AppKit's own placement), but always offset from each button's *first
+/// observed* frame — cached process-wide — rather than its current frame,
+/// so repeated calls don't compound the offset across frames.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+#[allow(deprecated)] // `cocoa`'s NSPoint/NSRect, not objc2-foundation's.
+fn reposition_traffic_lights(frame: &eframe::Frame, left_pad: f64, top_pad: f64) {
+    use cocoa::appkit::{NSWindow, NSWindowButton};
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::{NSPoint, NSRect};
+    use objc::{msg_send, sel, sel_impl};
+    use std::sync::OnceLock;
+    use wry::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+
+    static BASE_FRAMES: OnceLock<[NSRect; 3]> = OnceLock::new();
+
+    let Ok(handle) = frame.window_handle() else {
+        return;
+    };
+    let RawWindowHandle::AppKit(handle) = handle.as_raw() else {
+        return;
+    };
+
+    unsafe {
+        let ns_view = handle.ns_view.as_ptr() as id;
+        if ns_view == nil {
+            return;
+        }
+        let ns_window: id = msg_send![ns_view, window];
+        if ns_window == nil {
+            return;
+        }
+        let buttons = [
+            NSWindowButton::NSWindowCloseButton,
+            NSWindowButton::NSWindowMiniaturizeButton,
+            NSWindowButton::NSWindowZoomButton,
+        ];
+        let controls: Vec<id> = buttons
+            .iter()
+            .map(|button| ns_window.standardWindowButton_(*button))
+            .collect();
+        if controls.iter().any(|control| *control == nil) {
+            return;
+        }
+
+        let base = *BASE_FRAMES.get_or_init(|| {
+            let zero_size = cocoa::foundation::NSSize::new(0.0, 0.0);
+            let mut frames = [NSRect::new(NSPoint::new(0.0, 0.0), zero_size); 3];
+            for (i, control) in controls.iter().enumerate() {
+                frames[i] = msg_send![*control, frame];
+            }
+            frames
+        });
+
+        for (control, base_frame) in controls.iter().zip(base.iter()) {
+            let new_origin = NSPoint::new(
+                base_frame.origin.x + left_pad,
+                base_frame.origin.y - top_pad,
+            );
+            let _: () = msg_send![*control, setFrameOrigin: new_origin];
+        }
+    }
+}
 
 /// Ease-out cubic — quick start, gentle settle (used for the expand animation).
 fn ease_out_cubic(t: f32) -> f32 {
@@ -688,6 +748,9 @@ fn civil_from_days(days: i64) -> (i32, u32, u32) {
 
 impl eframe::App for JaymiApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        #[cfg(target_os = "macos")]
+        reposition_traffic_lights(frame, 10.0, 6.0);
+
         self.sync_theme(ctx);
         self.pump_active_generation(ctx);
         let _ = self.app.pump_context_maintenance();
@@ -759,29 +822,25 @@ impl eframe::App for JaymiApp {
                 .map(|coding| coding.workspace_panel_width)
                 .unwrap_or(DEFAULT_WORKSPACE_PANEL_WIDTH);
 
-            let (default_w, min_w, max_w) = if is_coding {
-                // Conversation defaults to ~30% of the window, never below
-                // MIN_CONVERSATION_WIDTH, and never above MAX_CONVERSATION_FRACTION.
-                // Reserve left-nav width when the rail is open/animating.
-                let window_w = ctx.screen_rect().width();
-                let nav_reserve = self.current_nav_width();
-                let max_w = (window_w - MIN_CONVERSATION_WIDTH - nav_reserve)
-                    .clamp(0.0, MAX_WORKSPACE_PANEL_WIDTH);
-                let min_from_conversation_cap =
-                    (window_w * (1.0 - MAX_CONVERSATION_FRACTION)).max(0.0);
-                let min_w = min_from_conversation_cap
-                    .max(MIN_WORKSPACE_PANEL_WIDTH.min(max_w))
-                    .min(max_w);
-                let preferred = if remembered_coding_width > 0.0 {
-                    remembered_coding_width
-                } else {
-                    window_w * (1.0 - DEFAULT_CONVERSATION_FRACTION)
-                };
-                let default_w = preferred.clamp(min_w, max_w.max(min_w));
-                (default_w, min_w, max_w.max(min_w))
-            } else {
-                (420.0, 320.0, 560.0)
-            };
+            // Nav rail is fixed at its minimum width (not resizable, not a
+            // fraction of the window) — see `render_nav_side_panel`. Target
+            // split when a workspace opens: workspace 45% of the window,
+            // conversation gets whatever's left after nav's fixed width.
+            const WORKSPACE_FRACTION: f32 = 0.45;
+            let window_w = ctx.screen_rect().width();
+            let max_w = (window_w - MIN_CONVERSATION_WIDTH - MIN_NAV_WIDTH)
+                .clamp(0.0, MAX_WORKSPACE_PANEL_WIDTH);
+            let min_from_conversation_cap =
+                (window_w * (1.0 - MAX_CONVERSATION_FRACTION) - MIN_NAV_WIDTH).max(0.0);
+            let min_w = min_from_conversation_cap
+                .max(MIN_WORKSPACE_PANEL_WIDTH.min(max_w))
+                .min(max_w);
+            // The panel isn't user-resizable (`resizable(false)` below), so
+            // every workspace — Coding included — always targets a fresh 45%
+            // of the window on open rather than a remembered pixel width.
+            let preferred = window_w * WORKSPACE_FRACTION;
+            let default_w = preferred.clamp(min_w, max_w.max(min_w));
+            let (default_w, min_w, max_w) = (default_w, min_w, max_w.max(min_w));
 
             // Smooth expansion: the first frame a workspace opens, animate from a
             // compact width up to the remembered/default width.
@@ -824,7 +883,20 @@ impl eframe::App for JaymiApp {
                             bottom: 16,
                         }),
                 );
-            panel = panel.exact_width(500.0);
+            let current_w = if animating {
+                let elapsed = self
+                    .workspace_anim_start
+                    .map(|start| start.elapsed().as_secs_f32())
+                    .unwrap_or(WORKSPACE_EXPAND_ANIM_SECS);
+                let t = ease_out_cubic(elapsed / WORKSPACE_EXPAND_ANIM_SECS);
+                self.workspace_anim_from + (self.workspace_anim_target - self.workspace_anim_from) * t
+            } else {
+                default_w
+            };
+            panel = panel.exact_width(current_w);
+            if animating {
+                ctx.request_repaint();
+            }
 
             // Coding manages its own full-bleed header/toolbar/tabs rows
             // (each with their own exact padding) and needs the bare card
@@ -867,6 +939,64 @@ impl eframe::App for JaymiApp {
                         self.theme.background,
                         self.theme.panel,
                     );
+
+                    // Close (×) and Coding Actions ("···") are pinned to the
+                    // card's own top-right corner — equidistant from the top
+                    // and right edges — painted here, *after* the corner
+                    // mask above, so they aren't the ones getting masked
+                    // away (this corner sits right in the masked zone).
+                    const CORNER_PAD: f32 = space::SM;
+                    const CORNER_BTN_D: f32 = 28.0;
+                    let close_rect = egui::Rect::from_min_size(
+                        egui::pos2(
+                            card_rect.right() - CORNER_PAD - CORNER_BTN_D,
+                            card_rect.top() + CORNER_PAD,
+                        ),
+                        egui::vec2(CORNER_BTN_D, CORNER_BTN_D),
+                    );
+                    let close_response = ui
+                        .put(close_rect, |ui: &mut egui::Ui| {
+                            crate::ui::components::icon_pill_button(
+                                ui,
+                                &self.theme,
+                                Icon::Close,
+                                CORNER_BTN_D,
+                                None,
+                                self.theme.text_secondary,
+                            )
+                        })
+                        .on_hover_text("Return to conversation");
+
+                    let menu_rect = egui::Rect::from_min_size(
+                        egui::pos2(close_rect.left() - CORNER_BTN_D, close_rect.top()),
+                        egui::vec2(CORNER_BTN_D, CORNER_BTN_D),
+                    );
+                    let mut menu_events: Vec<QuickActionBarEvent> = Vec::new();
+                    let pair_actions = self.experience.suggested_actions().to_vec();
+                    ui.put(menu_rect, |ui: &mut egui::Ui| {
+                        let (response, evts) =
+                            render_actions_menu_button(ui, &self.theme, &pair_actions);
+                        menu_events = evts;
+                        response
+                    });
+
+                    let mut corner_events = Vec::new();
+                    if close_response.clicked() {
+                        corner_events.push(CodingShellEvent::CloseWorkspace);
+                    }
+                    for event in menu_events {
+                        match event {
+                            QuickActionBarEvent::Action(action) => {
+                                corner_events.push(CodingShellEvent::QuickAction(action));
+                            }
+                            QuickActionBarEvent::Suggested(action) => {
+                                corner_events.push(CodingShellEvent::SuggestedAction(action));
+                            }
+                        }
+                    }
+                    if !corner_events.is_empty() {
+                        self.handle_coding_events(corner_events);
+                    }
                 }
             });
 
@@ -1975,10 +2105,6 @@ impl JaymiApp {
                     // here lands at the far right edge, each following call
                     // sits further left.
                     self.render_palette_pill(ui);
-                    if self.experience.workspace_expanded() || self.settings_open {
-                        ui.add_space(space::SM);
-                        self.render_close_panel_button(ui);
-                    }
                     ui.add_space(space::MD);
                     self.render_workspace_switcher(ui);
                 },
@@ -2003,9 +2129,9 @@ impl JaymiApp {
         // right-to-left row is nearly the whole bar. That stretched the
         // pill background across the bar while the icons stayed bunched at
         // its left edge.
-        const ICON_D: f32 = 28.0;
-        const GAP: f32 = 2.0;
-        const PAD: f32 = 3.0;
+        const ICON_D: f32 = 36.0;
+        const GAP: f32 = 4.0;
+        const PAD: f32 = 5.0;
         let count = entries.len() as f32;
         let switcher_size = egui::vec2(
             count * ICON_D + (count - 1.0) * GAP + 2.0 * PAD,
@@ -2038,7 +2164,7 @@ impl JaymiApp {
                                     self.theme.text_secondary
                                 };
                                 let response =
-                                    icon_pill_button(ui, &self.theme, icon, 28.0, fill, icon_color)
+                                    icon_pill_button(ui, &self.theme, icon, ICON_D, fill, icon_color)
                                         .on_hover_text(label);
                                 if response.clicked() {
                                     match kind {
@@ -2097,27 +2223,6 @@ impl JaymiApp {
         }
     }
 
-    /// Closes whichever right-side panel is currently open (a capability
-    /// workspace or Settings) back to the plain conversation view.
-    fn render_close_panel_button(&mut self, ui: &mut egui::Ui) {
-        let response = icon_pill_button(
-            ui,
-            &self.theme,
-            Icon::Close,
-            28.0,
-            None,
-            self.theme.text_secondary,
-        )
-        .on_hover_text("Return to conversation");
-        if response.clicked() {
-            if self.settings_open {
-                self.settings_open = false;
-            } else {
-                self.close_workspace();
-            }
-        }
-    }
-
     /// The `⌘P` search pill — opens the Command Palette.
     fn render_palette_pill(&mut self, ui: &mut egui::Ui) {
         let font = egui::FontId::proportional(type_size::META + 0.5);
@@ -2162,45 +2267,12 @@ impl JaymiApp {
         }
     }
 
-    /// Animated left rail (History / Images / Code).
+    /// Left rail (History / Images / Code) — always visible, fixed at its
+    /// minimum width and not user-resizable (no drag handle, no per-session
+    /// width memory), leaving as much room as possible for the conversation
+    /// and any expanded workspace.
     fn render_nav_side_panel(&mut self, ctx: &egui::Context) {
-        let just_opened = self.nav_open && !self.nav_was_open;
-        let just_closed = !self.nav_open && self.nav_was_open;
-        if just_opened {
-            self.nav_anim_start = Some(std::time::Instant::now());
-            self.nav_anim_from = 0.0;
-            self.nav_anim_target = self.nav_width.clamp(MIN_NAV_WIDTH, MAX_NAV_WIDTH);
-        } else if just_closed {
-            self.nav_anim_start = Some(std::time::Instant::now());
-            self.nav_anim_from = self.current_nav_width().max(MIN_NAV_WIDTH * 0.25);
-            self.nav_anim_target = 0.0;
-        }
-        self.nav_was_open = self.nav_open;
-
-        let animating = self
-            .nav_anim_start
-            .is_some_and(|start| start.elapsed().as_secs_f32() < WORKSPACE_EXPAND_ANIM_SECS);
-        if !self.nav_open && !animating {
-            self.nav_anim_start = None;
-            return;
-        }
-
-        let width = if animating {
-            let elapsed = self
-                .nav_anim_start
-                .expect("animating implies start")
-                .elapsed()
-                .as_secs_f32();
-            let t = ease_out_cubic(elapsed / WORKSPACE_EXPAND_ANIM_SECS);
-            ctx.request_repaint();
-            self.nav_anim_from + (self.nav_anim_target - self.nav_anim_from) * t
-        } else {
-            self.nav_width.clamp(MIN_NAV_WIDTH, MAX_NAV_WIDTH)
-        };
-
-        if width < 1.0 {
-            return;
-        }
+        let width = MIN_NAV_WIDTH;
 
         let conversations = self.project_conversations();
         let recent_projects: Vec<(String, String)> = self
@@ -2242,9 +2314,7 @@ impl JaymiApp {
         let mut events = Vec::new();
         let panel = egui::SidePanel::left("jaymi_nav")
             .exact_width(width)
-            .resizable(self.nav_open && !animating)
-            .min_width(MIN_NAV_WIDTH)
-            .max_width(MAX_NAV_WIDTH)
+            .resizable(false)
             .show_separator_line(false)
             .frame(
                 // Spec: `padding: 8px 12px 16px 16px` — asymmetric, no border.
@@ -2254,7 +2324,7 @@ impl JaymiApp {
                         left: 16,
                         right: 12,
                         top: 8,
-                        bottom: 16,
+                        bottom: 29,
                     })
                     .stroke(egui::Stroke::NONE),
             );
@@ -2287,33 +2357,9 @@ impl JaymiApp {
             };
             render_nav_rail(ui, &nav_ctx, &mut events);
         });
-
-        if self.nav_open && !animating {
-            let rendered = response.response.rect.width();
-            if (rendered - self.nav_width).abs() > 1.0 {
-                self.nav_width = rendered.clamp(MIN_NAV_WIDTH, MAX_NAV_WIDTH);
-            }
-        }
+        let _ = response;
 
         self.handle_nav_events(events);
-    }
-
-    fn current_nav_width(&self) -> f32 {
-        let animating = self
-            .nav_anim_start
-            .is_some_and(|start| start.elapsed().as_secs_f32() < WORKSPACE_EXPAND_ANIM_SECS);
-        if animating {
-            let elapsed = self
-                .nav_anim_start
-                .map(|start| start.elapsed().as_secs_f32())
-                .unwrap_or(0.0);
-            let t = ease_out_cubic(elapsed / WORKSPACE_EXPAND_ANIM_SECS);
-            self.nav_anim_from + (self.nav_anim_target - self.nav_anim_from) * t
-        } else if self.nav_open {
-            self.nav_width.clamp(MIN_NAV_WIDTH, MAX_NAV_WIDTH)
-        } else {
-            0.0
-        }
     }
 
     fn project_conversations(&self) -> Vec<ConversationMeta> {
@@ -2446,6 +2492,9 @@ impl JaymiApp {
                 }
                 KnowledgeWorkspaceEvent::RevealInFinder(path) => {
                     let _ = self.app.reveal_in_file_manager(&path);
+                }
+                KnowledgeWorkspaceEvent::Close => {
+                    self.close_workspace();
                 }
             }
         }
@@ -2896,6 +2945,56 @@ impl JaymiApp {
                             QuickActionEffect::SubmitCodingAction(coding_action) => {
                                 self.app.begin_coding_action(coding_action)
                             }
+                            QuickActionEffect::SubmitConversation(text) => {
+                                self.app.begin_generation(text)
+                            }
+                        };
+                        match result {
+                            Ok(BeginGeneration::Started) => {
+                                self.error = None;
+                                self.status = None;
+                                if let Ok(session) = self.app.experience() {
+                                    self.experience = session;
+                                }
+                                Ok(())
+                            }
+                            Ok(BeginGeneration::Completed(response)) => {
+                                self.awaiting_reply = false;
+                                self.loading_started_at = None;
+                                self.error = None;
+                                self.status = None;
+                                if let Ok(session) = self.app.experience() {
+                                    self.experience = session;
+                                } else {
+                                    self.experience
+                                        .mirror_conversation_state(response.conversation_state);
+                                }
+                                Ok(())
+                            }
+                            Err(error) => {
+                                self.awaiting_reply = false;
+                                self.loading_started_at = None;
+                                Err(error)
+                            }
+                        }
+                    }
+                }
+                CodingShellEvent::SuggestedAction(action) => {
+                    if self.awaiting_reply || self.app.generation_active() {
+                        Ok(())
+                    } else {
+                        self.awaiting_reply = true;
+                        self.loading_started_at = Some(std::time::Instant::now());
+                        let result = match dispatch_suggested_action(&action) {
+                            QuickActionEffect::SubmitExplain => {
+                                self.app.begin_explain_coding_action()
+                            }
+                            QuickActionEffect::SubmitCodingAction(coding_action) => {
+                                self.app.begin_coding_action(coding_action)
+                            }
+                            QuickActionEffect::SubmitConversation(text) => {
+                                self.app.begin_generation(text)
+                            }
                         };
                         match result {
                             Ok(BeginGeneration::Started) => {
@@ -3077,12 +3176,16 @@ impl JaymiApp {
                 .capability_state()
                 .and_then(|state| state.research())
                 .cloned();
+            let mut closed = false;
             egui::ScrollArea::vertical()
                 .id_salt("research_workspace_scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    render_research_workspace(ui, &self.theme, research.as_ref());
+                    closed = render_research_workspace(ui, &self.theme, research.as_ref());
                 });
+            if closed {
+                self.close_workspace();
+            }
             return None;
         }
 
@@ -3092,12 +3195,16 @@ impl JaymiApp {
                 .capability_state()
                 .and_then(|state| state.creation())
                 .cloned();
+            let mut closed = false;
             egui::ScrollArea::vertical()
                 .id_salt("creation_workspace_scroll")
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    render_creation_workspace(ui, &self.theme, creation.as_ref());
+                    closed = render_creation_workspace(ui, &self.theme, creation.as_ref());
                 });
+            if closed {
+                self.close_workspace();
+            }
             return None;
         }
 
@@ -3290,10 +3397,13 @@ impl JaymiApp {
         let screen_height = ctx.screen_rect().height();
         let zoom = ctx.pixels_per_point();
         // Native WKWebView paints above egui — hide it while modal overlays own
-        // the foreground so Quick Open / Command Palette are not covered by code.
-        // Also hide while the terminal command field needs keys (WKWebView would
-        // otherwise keep first-responder and swallow typing).
-        let block_for_keyboard = self.command_palette.is_open() || self.egui_wants_keyboard;
+        // the foreground so Quick Open / Command Palette / the Coding Actions
+        // "···" menu are not covered by code. Also hide while the terminal
+        // command field needs keys (WKWebView would otherwise keep
+        // first-responder and swallow typing).
+        let block_for_keyboard = self.command_palette.is_open()
+            || self.egui_wants_keyboard
+            || crate::coding_quick_actions::quick_actions_menu_is_open(ctx);
         let document = surface
             .filter(|_| !block_for_keyboard)
             .map(|surface| self.monaco_document_from_state(surface));
@@ -3472,7 +3582,9 @@ impl JaymiApp {
                 .iter()
                 .map(|region| (region.start_line, region.end_line))
                 .collect(),
-            minimap: settings.minimap,
+            // Hardcoded off regardless of persisted `EditorSettings` — the
+            // minimap has been removed from the editor entirely.
+            minimap: false,
             word_wrap: settings.word_wrap,
             font_size: settings.font_size,
         }
@@ -3489,7 +3601,7 @@ impl JaymiApp {
         let _ = self.app.persist_coding_editor_workspace();
         if let Some(host) = &self.monaco {
             let _ = host.set_editor_options(
-                Some(settings.minimap),
+                Some(false),
                 Some(settings.word_wrap),
                 Some(settings.font_size),
             );

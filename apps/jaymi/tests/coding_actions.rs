@@ -64,10 +64,13 @@ fn open_coding_actions_is_honest_deterministic_reply() {
         .handle_with_workspace(UserRequest::coding_action(CodingAction::OpenCodingActions))
         .expect("menu");
     assert!(
-        response.content.contains("Explain") && response.content.contains("Run"),
+        (response.content.contains("Explain Architecture")
+            || response.content.contains("Explain"))
+            && (response.content.contains("Run Build") || response.content.contains("Run")),
         "menu missing actions: {}",
         response.content
     );
+    assert!(response.pair_programming.is_some());
     assert!(!response.reasoning_used);
     assert!(!response.awaiting_review);
 }

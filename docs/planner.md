@@ -192,6 +192,18 @@ Approve / Modify / Cancel — still the same Execution Plan architecture (no
 coding or editor bypass). Spec:
 [docs/coding-execution-plans.md](coding-execution-plans.md).
 
+**Multi-file Intelligence** (Sprint C1.7) reasons across the project for rename
+symbol / move module / extract class / split file. Affected files come from
+Workspace Intelligence; changes become reviewed GenerationOps / Execution
+Plans — no direct LLM editing. Spec:
+[docs/multi-file-intelligence.md](multi-file-intelligence.md).
+
+**Pair Programming Experience** (Sprint C1.8) makes Conversation First feel like
+an engineering partner: Understanding → Review → Planning → Generation →
+Modification → Execution. Suggested next actions are Planner-generated; Quick
+Actions mirror that list. Spec:
+[docs/pair-programming.md](pair-programming.md).
+
 Reasoning is delegated.
 
 Execution is delegated.

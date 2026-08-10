@@ -8,5 +8,5 @@ mod icons;
 mod render;
 
 pub use events::ExplorerEvent;
-pub use icons::{paint_disclosure, paint_file, paint_folder};
+pub use icons::paint_disclosure;
 pub use render::render_explorer;

@@ -1949,6 +1949,11 @@ impl Application {
             .lock()
             .map_err(|_| JaymiError::new("experience session lock poisoned"))?;
         experience.expand_workspace(expansion)?;
+        if experience.active_workspace_kind() == Some(jaymi_capabilities::WorkspaceKind::Coding) {
+            if let Ok(planner) = self.container.resolve::<Planner>() {
+                experience.mirror_pair_programming(Some(planner.pair_programming_suggestions()));
+            }
+        }
         drop(experience);
         self.prepare_context_session()?;
         Ok(())

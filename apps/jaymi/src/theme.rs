@@ -397,8 +397,20 @@ impl Theme {
                 "editor.lineHighlightBackground": line,
                 "editor.lineHighlightBorder": "#00000000",
                 "editorWhitespace.foreground": border,
-                "editorIndentGuide.background": border,
-                "editorIndentGuide.activeBackground": muted,
+                // Spec calls for a clean, borderless editor — Monaco's
+                // default active-indent-guide uses a fully opaque foreground
+                // color, which reads as a harsh vertical line through nested
+                // code. Keep both guides translucent, just one step apart.
+                "editorIndentGuide.background": hex_opaque(
+                    Color32::from_rgba_unmultiplied(
+                        self.border.r(),
+                        self.border.g(),
+                        self.border.b(),
+                        (f32::from(self.border.a()) * 0.6) as u8,
+                    ),
+                    self.background,
+                ),
+                "editorIndentGuide.activeBackground": border,
                 "editorWidget.background": surface,
                 "editorWidget.border": border,
                 "editorSuggestWidget.background": surface,

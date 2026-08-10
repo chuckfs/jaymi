@@ -2253,6 +2253,7 @@ dependencies = [
 name = "jaymi"
 version = "0.1.0"
 dependencies = [
+ "cocoa",
  "eframe",
  "jaymi-capabilities",
  "jaymi-commands",
@@ -2277,6 +2278,7 @@ dependencies = [
  "jaymi-search",
  "jaymi-tools",
  "jaymi-understanding",
+ "objc",
  "objc2-app-kit 0.3.2",
  "rfd",
  "serde",

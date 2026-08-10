@@ -8,7 +8,7 @@ use std::path::{Component, Path};
 use eframe::egui;
 use jaymi_capabilities::CodingState;
 
-use crate::theme::{space, stroke, type_size, Theme};
+use crate::theme::{type_size, Theme};
 
 /// Height of the breadcrumb strip under the Coding toolbar.
 pub const BREADCRUMB_BAR_HEIGHT: f32 = 24.0;
@@ -214,7 +214,9 @@ pub fn apply_breadcrumb_reveal(state: &mut CodingState, path: &str, is_dir: bool
     }
 }
 
-/// Paint the breadcrumb bar and return any click actions for the shell to apply.
+/// Paint the breadcrumb inline (e.g. beside the workspace header — no
+/// background of its own, no divider; it reads as part of that row) and
+/// return any click actions for the shell to apply.
 pub fn render_coding_breadcrumb(
     ui: &mut egui::Ui,
     theme: &Theme,
@@ -231,80 +233,69 @@ pub fn render_coding_breadcrumb(
     let max_chars = ((avail / 6.5).floor() as usize).clamp(16, 240);
     let crumbs = truncate_breadcrumbs(&full, max_chars);
 
-    ui.painter().hline(
-        ui.max_rect().x_range(),
-        ui.cursor().top(),
-        egui::Stroke::new(stroke::HAIRLINE, theme.border),
-    );
+    ui.allocate_ui_with_layout(
+        egui::vec2(ui.available_width(), BREADCRUMB_BAR_HEIGHT),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_height(BREADCRUMB_BAR_HEIGHT);
+            ui.set_max_height(BREADCRUMB_BAR_HEIGHT);
 
-    egui::Frame::new()
-        .fill(theme.surface_alt)
-        .inner_margin(egui::Margin::symmetric(space::SM as i8, 0))
-        .show(ui, |ui| {
-            ui.allocate_ui_with_layout(
-                egui::vec2(ui.available_width(), BREADCRUMB_BAR_HEIGHT),
-                egui::Layout::left_to_right(egui::Align::Center),
-                |ui| {
-                    ui.set_min_height(BREADCRUMB_BAR_HEIGHT);
-                    ui.set_max_height(BREADCRUMB_BAR_HEIGHT);
+            for (index, segment) in crumbs.iter().enumerate() {
+                if index > 0 {
+                    ui.add(
+                        egui::Label::new(
+                            egui::RichText::new("›")
+                                .size(type_size::META)
+                                .color(theme.text_secondary),
+                        )
+                        .sense(egui::Sense::hover()),
+                    );
+                    ui.add_space(2.0);
+                }
 
-                    for (index, segment) in crumbs.iter().enumerate() {
-                        if index > 0 {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new("›")
-                                        .size(type_size::META)
-                                        .color(theme.text_secondary),
-                                )
-                                .sense(egui::Sense::hover()),
-                            );
-                            ui.add_space(2.0);
-                        }
-
-                        let is_current = segment.kind == BreadcrumbKind::File;
-                        let color = if is_current {
-                            theme.text_primary
-                        } else {
-                            theme.text_secondary
-                        };
-                        let text = egui::RichText::new(segment.label.clone())
-                            .size(type_size::META)
-                            .color(color);
-                        let interactive = breadcrumb_action(segment).is_some();
-                        if interactive {
-                            let mut response = ui.add(
-                                egui::Label::new(text)
-                                    .sense(egui::Sense::click())
-                                    .selectable(false),
-                            );
-                            response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-                            if let Some(path) = segment.path.as_deref() {
-                                response = response.on_hover_text(path);
-                            }
-                            if response.hovered() {
-                                ui.painter().hline(
-                                    response.rect.x_range(),
-                                    response.rect.bottom() - 1.0,
-                                    egui::Stroke::new(1.0, theme.text_secondary),
-                                );
-                            }
-                            if response.clicked() {
-                                if let Some(action) = breadcrumb_action(segment) {
-                                    actions.push(action);
-                                }
-                            }
-                        } else {
-                            ui.add(
-                                egui::Label::new(text)
-                                    .sense(egui::Sense::hover())
-                                    .selectable(false),
-                            );
-                        }
-                        ui.add_space(2.0);
+                let is_current = segment.kind == BreadcrumbKind::File;
+                let color = if is_current {
+                    theme.text_primary
+                } else {
+                    theme.text_secondary
+                };
+                let text = egui::RichText::new(segment.label.clone())
+                    .size(type_size::META)
+                    .color(color);
+                let interactive = breadcrumb_action(segment).is_some();
+                if interactive {
+                    let mut response = ui.add(
+                        egui::Label::new(text)
+                            .sense(egui::Sense::click())
+                            .selectable(false),
+                    );
+                    response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    if let Some(path) = segment.path.as_deref() {
+                        response = response.on_hover_text(path);
                     }
-                },
-            );
-        });
+                    if response.hovered() {
+                        ui.painter().hline(
+                            response.rect.x_range(),
+                            response.rect.bottom() - 1.0,
+                            egui::Stroke::new(1.0, theme.text_secondary),
+                        );
+                    }
+                    if response.clicked() {
+                        if let Some(action) = breadcrumb_action(segment) {
+                            actions.push(action);
+                        }
+                    }
+                } else {
+                    ui.add(
+                        egui::Label::new(text)
+                            .sense(egui::Sense::hover())
+                            .selectable(false),
+                    );
+                }
+                ui.add_space(2.0);
+            }
+        },
+    );
 
     actions
 }

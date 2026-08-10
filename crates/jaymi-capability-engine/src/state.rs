@@ -623,11 +623,11 @@ pub struct SearchPanelState {
 }
 
 /// Default Project Explorer column width (points).
-pub const DEFAULT_EXPLORER_WIDTH: f32 = 280.0;
+pub const DEFAULT_EXPLORER_WIDTH: f32 = 220.0;
 /// Minimum Project Explorer column width.
-pub const MIN_EXPLORER_WIDTH: f32 = 220.0;
+pub const MIN_EXPLORER_WIDTH: f32 = 120.0;
 /// Maximum Project Explorer column width.
-pub const MAX_EXPLORER_WIDTH: f32 = 420.0;
+pub const MAX_EXPLORER_WIDTH: f32 = 340.0;
 /// Default bottom auxiliary panel height when expanded (points).
 pub const DEFAULT_BOTTOM_PANEL_HEIGHT: f32 = 180.0;
 /// Minimum bottom auxiliary panel height when expanded.
@@ -645,9 +645,12 @@ pub const MAX_WORKSPACE_PANEL_WIDTH: f32 = 1400.0;
 /// Minimum conversation (central) column width — Coding cannot steal past this.
 pub const MIN_CONVERSATION_WIDTH: f32 = 380.0;
 /// Default conversation fraction of the window (workspace takes the rest).
-pub const DEFAULT_CONVERSATION_FRACTION: f32 = 0.32;
-/// Maximum conversation fraction of the window.
-pub const MAX_CONVERSATION_FRACTION: f32 = 0.48;
+/// Target split when a workspace opens: nav 20% / conversation 30% / workspace 50%.
+pub const DEFAULT_CONVERSATION_FRACTION: f32 = 0.30;
+/// Maximum conversation fraction of the window. Kept above the 50% workspace
+/// default (rather than tight against it) so the default doesn't sit exactly
+/// on the clamp boundary.
+pub const MAX_CONVERSATION_FRACTION: f32 = 0.55;
 
 /// Temporary state for the Coding workspace.
 #[derive(Debug, Clone, PartialEq)]
@@ -1721,38 +1724,38 @@ mod tests {
     #[test]
     fn explorer_collapse() {
         let mut state = CodingState::default();
-        state.set_explorer_width(350.0);
+        state.set_explorer_width(300.0);
         assert!(state.explorer_visible);
 
         state.collapse_explorer();
         assert!(!state.explorer_visible);
         assert_eq!(
-            state.explorer_width, 350.0,
+            state.explorer_width, 300.0,
             "collapse must remember the last width"
         );
 
         state.expand_explorer();
         assert!(state.explorer_visible);
-        assert_eq!(state.explorer_width, 350.0);
+        assert_eq!(state.explorer_width, 300.0);
 
         state.toggle_explorer();
         assert!(!state.explorer_visible);
-        assert_eq!(state.explorer_width, 350.0);
+        assert_eq!(state.explorer_width, 300.0);
         state.toggle_explorer();
         assert!(state.explorer_visible);
-        assert_eq!(state.explorer_width, 350.0);
+        assert_eq!(state.explorer_width, 300.0);
 
         state.collapse_explorer();
         let collapsed_snap = state.editor_workspace_snapshot();
         assert_eq!(collapsed_snap.explorer_visible, Some(false));
-        assert_eq!(collapsed_snap.explorer_width, Some(350.0));
+        assert_eq!(collapsed_snap.explorer_width, Some(300.0));
 
         let mut restored = CodingState::default();
         restored.apply_editor_workspace_meta(&collapsed_snap);
         assert!(!restored.explorer_visible);
-        assert_eq!(restored.explorer_width, 350.0);
+        assert_eq!(restored.explorer_width, 300.0);
         restored.expand_explorer();
-        assert_eq!(restored.explorer_width, 350.0);
+        assert_eq!(restored.explorer_width, 300.0);
     }
 
     #[test]

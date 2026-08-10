@@ -461,6 +461,11 @@ fn parse_continue_project(lower: &str, original: &str) -> Option<String> {
 }
 
 fn parse_search_request(lower: &str, original: &str) -> Option<SearchRequest> {
+    // Pair Programming (C1.8) — "Find Dead Code" is Understanding orientation,
+    // not a SearchKnowledge tool turn.
+    if crate::pair_programming::looks_like_dead_code_request(lower) {
+        return None;
+    }
     if let Some(_rest) = lower
         .strip_prefix("search ")
         .or_else(|| lower.strip_prefix("find "))

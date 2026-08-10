@@ -47,6 +47,12 @@ jaymi-understanding = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSColor", "NSColorSpace"] }
+# Already pulled in transitively by wry's macOS WKWebView backend; declared
+# directly here so we can round the Monaco WebView's own corners (its native
+# NSView/CALayer sits outside egui's paint pipeline, so egui-side corner
+# masking can't reach it).
+cocoa = "0.26"
+objc = "0.2"
 
 [dev-dependencies]
 jaymi-capabilities = { workspace = true }

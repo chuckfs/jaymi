@@ -1,41 +1,54 @@
-//! Coding Workspace Quick Action Bar — typed Coding Action chrome (Sprint C0.1).
+//! Coding Workspace Quick Action Bar — Planner-generated suggestions (C1.8).
 //!
-//! Rendering emits [`QuickAction`] clicks only. Mapping those clicks to
-//! [`jaymi_core::CodingAction`] lives in [`dispatch_quick_action`] — never
-//! inside paint. The app shell submits the action as a normal conversation
-//! turn; the Planner owns routing. No direct editor / tool / provider calls.
+//! The bar renders [`jaymi_planner::SuggestedAction`] values from Planner state.
+//! UI never invents the action list. Clicks submit Conversation First turns
+//! (typed [`CodingAction`] when present, otherwise free-text). No direct
+//! editor / tool / provider calls.
 
 use eframe::egui;
 use jaymi_core::CodingAction;
+use jaymi_planner::{baseline_actions, SuggestedAction};
 
-use crate::theme::{radius, space, type_size, Theme};
+use crate::theme::{type_size, Theme};
 
-/// Height of the Quick Action Bar strip.
+/// Height reserved for legacy layout constants (actions live in the header menu).
 pub const QUICK_ACTION_BAR_HEIGHT: f32 = 40.0;
 
-/// Gap between adjacent action buttons (macOS-toolbar density).
-pub const QUICK_ACTION_GAP: f32 = 4.0;
+/// Result of activating a suggested action — Conversation First only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuickActionEffect {
+    /// Submit a typed Coding Action through the Planner.
+    SubmitCodingAction(CodingAction),
+    /// Explain — Application picks selection vs file from CodingState / WI.
+    SubmitExplain,
+    /// Submit free-text conversation turn (Planner-authored phrasing).
+    SubmitConversation(String),
+}
 
-/// Horizontal padding inside the bar.
-pub const QUICK_ACTION_PAD_X: f32 = space::MD;
+/// Map a Planner suggestion to a Conversation First effect (pure).
+pub fn dispatch_suggested_action(action: &SuggestedAction) -> QuickActionEffect {
+    if action.id == "explain_architecture"
+        || action
+            .coding_action
+            .is_some_and(|a| matches!(a, CodingAction::ExplainFile | CodingAction::ExplainSelection))
+    {
+        // Architecture is free-text understanding; Explain* still use typed path.
+        if action.coding_action.is_some() {
+            return QuickActionEffect::SubmitExplain;
+        }
+    }
+    if let Some(coding) = action.coding_action {
+        match coding {
+            CodingAction::ExplainSelection | CodingAction::ExplainFile => {
+                return QuickActionEffect::SubmitExplain;
+            }
+            other => return QuickActionEffect::SubmitCodingAction(other),
+        }
+    }
+    QuickActionEffect::SubmitConversation(action.conversation_text.clone())
+}
 
-/// Approximate width reserved for the trailing "More" overflow control.
-pub const MORE_BUTTON_WIDTH: f32 = 52.0;
-
-/// Spec: exactly 3 primary pills (Explain / Refactor / Run) — everything
-/// past this always folds into the overflow menu, regardless of available
-/// width, so Edit / Search / the catch-all More stay reachable without
-/// crowding the primary row.
-pub const PRIMARY_LIMIT: usize = 3;
-
-/// Small breathing-room margin beside the action strip (trailing edge /
-/// optional error label gap).
-pub const QUICK_ACTION_CHROME_RESERVE: f32 = 8.0;
-
-/// One Coding Action button in the Coding Workspace bar.
-///
-/// Explain resolves to [`CodingAction::ExplainSelection`] or
-/// [`CodingAction::ExplainFile`] in Application from Workspace Intelligence.
+/// Legacy QuickAction enum kept for tests / transitional callers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum QuickAction {
     /// Explain selection or active file.
@@ -53,7 +66,7 @@ pub enum QuickAction {
 }
 
 impl QuickAction {
-    /// Canonical left-to-right order in the bar.
+    /// Canonical left-to-right order (fallback labels only).
     pub const ALL: [QuickAction; 6] = [
         QuickAction::Explain,
         QuickAction::Refactor,
@@ -86,27 +99,9 @@ impl QuickAction {
             QuickAction::More => "Show Coding Actions menu",
         }
     }
-
-    /// Estimated painted width for layout / overflow (label + pill padding).
-    pub fn estimated_width(self) -> f32 {
-        let chars = self.label().chars().count() as f32;
-        chars * 7.0 + 36.0
-    }
 }
 
-/// Result of dispatching a quick action — typed Coding Action only.
-///
-/// Produced by [`dispatch_quick_action`]; Application resolves Explain and
-/// submits a conversation turn. Never a dock focus or composer seed.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QuickActionEffect {
-    /// Submit this Coding Action through the Planner (Conversation First).
-    SubmitCodingAction(CodingAction),
-    /// Explain — Application picks selection vs file from CodingState / WI.
-    SubmitExplain,
-}
-
-/// Map a bar button to a typed Coding Action (pure; no UI side effects).
+/// Map a legacy bar button to a typed Coding Action (pure; no UI side effects).
 pub fn dispatch_quick_action(action: QuickAction) -> QuickActionEffect {
     match action {
         QuickAction::Explain => QuickActionEffect::SubmitExplain,
@@ -120,205 +115,86 @@ pub fn dispatch_quick_action(action: QuickAction) -> QuickActionEffect {
     }
 }
 
-/// Which actions fit in the primary strip vs the "More" overflow menu.
-///
-/// When the overflow control would only contain [`QuickAction::More`], the bar
-/// shows More as a primary button that still submits [`CodingAction::OpenCodingActions`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct QuickActionLayout {
-    /// Actions shown as primary text buttons (left → right).
-    pub visible: Vec<QuickAction>,
-    /// Actions collapsed behind overflow (same relative order).
-    pub overflow: Vec<QuickAction>,
-}
-
-impl QuickActionLayout {
-    /// True when at least one action is behind the overflow control.
-    pub fn has_overflow(&self) -> bool {
-        !self.overflow.is_empty()
+/// Actions shown in the menu — Planner list, else Planner baseline (never UI-invented).
+pub fn actions_for_menu(planner_actions: &[SuggestedAction]) -> Vec<SuggestedAction> {
+    if planner_actions.is_empty() {
+        baseline_actions()
+    } else {
+        planner_actions.to_vec()
     }
-}
-
-/// Compute primary vs overflow actions for an available pixel width.
-///
-/// Truncates from the **right** so Explain / Edit / Refactor stay visible
-/// longest. Reserves space for an overflow control whenever needed.
-pub fn layout_quick_actions(available_width: f32) -> QuickActionLayout {
-    layout_quick_actions_with(available_width, &QuickAction::ALL)
-}
-
-/// Testable layout over an explicit action list.
-pub fn layout_quick_actions_with(
-    available_width: f32,
-    actions: &[QuickAction],
-) -> QuickActionLayout {
-    if actions.is_empty() {
-        return QuickActionLayout {
-            visible: Vec::new(),
-            overflow: Vec::new(),
-        };
-    }
-
-    let split = actions.len().min(PRIMARY_LIMIT);
-    let primary_candidates = &actions[..split];
-    let always_overflow = &actions[split..];
-
-    let gaps = |count: usize| -> f32 {
-        if count <= 1 {
-            0.0
-        } else {
-            QUICK_ACTION_GAP * (count as f32 - 1.0)
-        }
-    };
-
-    let full_width: f32 = primary_candidates.iter().map(|a| a.estimated_width()).sum::<f32>()
-        + gaps(primary_candidates.len());
-
-    if full_width <= available_width {
-        return QuickActionLayout {
-            visible: primary_candidates.to_vec(),
-            overflow: always_overflow.to_vec(),
-        };
-    }
-
-    let budget = (available_width - MORE_BUTTON_WIDTH - QUICK_ACTION_GAP).max(0.0);
-    let mut visible = Vec::new();
-    let mut used = 0.0;
-
-    for (index, action) in primary_candidates.iter().enumerate() {
-        let next = action.estimated_width() + if visible.is_empty() { 0.0 } else { QUICK_ACTION_GAP };
-        let remaining = primary_candidates.len() - index;
-        if remaining == 1 && visible.is_empty() {
-            break;
-        }
-        if used + next <= budget {
-            used += next;
-            visible.push(*action);
-        } else {
-            break;
-        }
-    }
-
-    if visible.len() == primary_candidates.len() && always_overflow.is_empty() {
-        visible.pop();
-    }
-
-    let mut overflow = primary_candidates[visible.len()..].to_vec();
-    overflow.extend_from_slice(always_overflow);
-    QuickActionLayout { visible, overflow }
 }
 
 /// Events the Quick Action Bar can emit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuickActionBarEvent {
-    /// User activated a Coding Action button.
+    /// User activated a Planner-suggested action.
+    Suggested(SuggestedAction),
+    /// Legacy hardcoded button (tests / transitional).
     Action(QuickAction),
 }
 
-/// Paint the Quick Action Bar. Returns click events — no Planner side effects.
-pub fn render_quick_action_bar(
-    ui: &mut egui::Ui,
-    theme: &Theme,
-    open_error: Option<&str>,
-) -> Vec<QuickActionBarEvent> {
-    let mut events = Vec::new();
-
-    ui.allocate_ui_with_layout(
-        egui::vec2(ui.available_width(), QUICK_ACTION_BAR_HEIGHT),
-        egui::Layout::left_to_right(egui::Align::Center),
-        |ui| {
-            ui.set_min_height(QUICK_ACTION_BAR_HEIGHT);
-            ui.set_max_height(QUICK_ACTION_BAR_HEIGHT);
-
-            let error_reserve = if open_error.is_some() { 120.0 } else { 0.0 };
-            let action_budget = (ui.available_width() - error_reserve - QUICK_ACTION_CHROME_RESERVE)
-                .max(0.0);
-            let layout = layout_quick_actions(action_budget);
-
-            for (index, action) in layout.visible.iter().enumerate() {
-                if index > 0 {
-                    ui.add_space(QUICK_ACTION_GAP);
-                }
-                if quick_action_button(ui, theme, action.label())
-                    .on_hover_text(action.hint())
-                    .clicked()
-                {
-                    events.push(QuickActionBarEvent::Action(*action));
-                }
-            }
-
-            if layout.has_overflow() {
-                ui.add_space(QUICK_ACTION_GAP);
-                let more_label = egui::RichText::new("More")
-                    .size(type_size::UI)
-                    .color(theme.text_primary);
-                egui::menu::menu_button(ui, more_label, |ui| {
-                    for action in &layout.overflow {
-                        let clicked = ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new(action.label())
-                                        .size(type_size::UI)
-                                        .color(theme.text_primary),
-                                )
-                                .frame(false)
-                                .min_size(egui::vec2(112.0, 24.0)),
-                            )
-                            .on_hover_text(action.hint())
-                            .clicked();
-                        if clicked {
-                            events.push(QuickActionBarEvent::Action(*action));
-                            ui.close_menu();
-                        }
-                    }
-                });
-            }
-
-            if let Some(error) = open_error {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(error)
-                                .size(type_size::META)
-                                .color(theme.error),
-                        )
-                        .truncate(),
-                    );
-                });
-            }
-        },
-    );
-
-    events
+/// Ctx-level memory key for "is the Coding Actions '···' menu currently open".
+fn quick_actions_menu_open_id() -> egui::Id {
+    egui::Id::new("jaymi_coding_quick_actions_menu_open")
 }
 
-/// A sage-tinted pill chip — these are Jaymi-offered actions (quick actions
-/// submit a conversation turn), so they read as proposals, not plain UI.
-fn quick_action_button(ui: &mut egui::Ui, theme: &Theme, label: &str) -> egui::Response {
-    let font = egui::FontId::proportional(type_size::UI);
-    let galley = ui.painter().layout_no_wrap(label.to_string(), font.clone(), egui::Color32::PLACEHOLDER);
-    let size = egui::vec2(galley.size().x + space::SM * 2.0, 26.0);
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
-    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
-    let hovered = response.hovered();
-    ui.painter().rect_filled(
-        rect,
-        egui::CornerRadius::same(radius::PILL as u8),
-        if hovered { theme.accent2_soft } else { theme.accent2_tint },
-    );
-    ui.painter().text(
-        rect.center(),
-        egui::Align2::CENTER_CENTER,
-        label,
-        font,
-        theme.accent2_deep,
-    );
-    response
+/// Read back whether the Coding Actions menu is open this frame.
+pub fn quick_actions_menu_is_open(ctx: &egui::Context) -> bool {
+    ctx.data(|data| data.get_temp(quick_actions_menu_open_id()).unwrap_or(false))
+}
+
+/// Paint the "···" Coding Actions trigger from Planner-generated suggestions.
+pub fn render_actions_menu_button(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    planner_actions: &[SuggestedAction],
+) -> (egui::Response, Vec<QuickActionBarEvent>) {
+    let mut events = Vec::new();
+    let actions = actions_for_menu(planner_actions);
+
+    let ellipsis_button = egui::Button::new(
+        egui::RichText::new("···")
+            .size(type_size::UI)
+            .color(theme.text_secondary),
+    )
+    .frame(false);
+    let menu_response = egui::menu::menu_custom_button(ui, ellipsis_button, |ui| {
+        for action in &actions {
+            let hint = if action.mutates {
+                format!("{} (Review required before writes)", action.conversation_text)
+            } else {
+                action.conversation_text.clone()
+            };
+            let clicked = ui
+                .add(
+                    egui::Button::new(
+                        egui::RichText::new(&action.label)
+                            .size(type_size::UI)
+                            .color(theme.text_primary),
+                    )
+                    .frame(false)
+                    .min_size(egui::vec2(148.0, 24.0)),
+                )
+                .on_hover_text(hint)
+                .clicked();
+            if clicked {
+                events.push(QuickActionBarEvent::Suggested(action.clone()));
+                ui.close_menu();
+            }
+        }
+    });
+    let menu_open = menu_response.inner.is_some();
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(quick_actions_menu_open_id(), menu_open);
+    });
+
+    (menu_response.response, events)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jaymi_planner::PairPhase;
 
     #[test]
     fn quick_action_dispatch_is_typed_coding_action() {
@@ -349,38 +225,52 @@ mod tests {
     }
 
     #[test]
-    fn toolbar_layout() {
-        let labels: Vec<&str> = QuickAction::ALL.iter().map(|a| a.label()).collect();
+    fn menu_falls_back_to_planner_baseline() {
+        let actions = actions_for_menu(&[]);
+        let labels: Vec<&str> = actions.iter().map(|a| a.label.as_str()).collect();
         assert_eq!(
             labels,
-            vec!["Explain", "Refactor", "Run", "Edit", "Search", "More"]
-        );
-
-        // Spec: exactly 3 primary pills, even with generous width — Edit,
-        // Search, and the catch-all More stay reachable via overflow.
-        let roomy = layout_quick_actions(2000.0);
-        assert_eq!(
-            roomy.visible,
-            vec![QuickAction::Explain, QuickAction::Refactor, QuickAction::Run]
-        );
-        assert_eq!(
-            roomy.overflow,
-            vec![QuickAction::Edit, QuickAction::Search, QuickAction::More]
+            vec![
+                "Explain Architecture",
+                "Review Changes",
+                "Generate Tests",
+                "Refactor",
+                "Run Build",
+                "Find Dead Code",
+            ]
         );
     }
 
     #[test]
-    fn overflow_behavior() {
-        let narrow = layout_quick_actions(220.0);
-        assert!(narrow.has_overflow());
-        assert!(!narrow.visible.is_empty());
-        let mut combined = narrow.visible.clone();
-        combined.extend(narrow.overflow.iter().copied());
-        assert_eq!(combined, QuickAction::ALL.to_vec());
-        assert!(narrow.visible.contains(&QuickAction::Explain));
+    fn suggested_refactor_uses_coding_action() {
+        let action = SuggestedAction::with_coding_action(
+            "refactor",
+            "Refactor",
+            PairPhase::Modification,
+            "Propose a refactoring.",
+            CodingAction::RefactorSelection,
+            true,
+        );
+        assert_eq!(
+            dispatch_suggested_action(&action),
+            QuickActionEffect::SubmitCodingAction(CodingAction::RefactorSelection)
+        );
+    }
 
-        let tiny = layout_quick_actions(40.0);
-        assert!(tiny.visible.is_empty());
-        assert_eq!(tiny.overflow, QuickAction::ALL.to_vec());
+    #[test]
+    fn suggested_architecture_is_conversation() {
+        let action = SuggestedAction::conversational(
+            "explain_architecture",
+            "Explain Architecture",
+            PairPhase::Understanding,
+            "Explain the architecture of this project.",
+            false,
+        );
+        assert_eq!(
+            dispatch_suggested_action(&action),
+            QuickActionEffect::SubmitConversation(
+                "Explain the architecture of this project.".into()
+            )
+        );
     }
 }

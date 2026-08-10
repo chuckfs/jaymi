@@ -238,7 +238,7 @@ Capabilities also change the user experience.
 
 Conversation stays permanent. Workspaces expand beside it.
 
-**Current:** conversation shell + Coding Workspace shell (five dock pages — Terminal / Problems / Search / Git / Diagnostics — plus an Output placeholder not listed in `pages()`) + `CodingState` + workspace expansion model + capability state / inspector + **WorkspaceSnapshot** (B2.1 / B2.2 / B2.13.2) + **EditorSnapshot** (B2.3 / B2.13.3 editor intelligence) + **ProjectSnapshot** (B2.4 project intelligence) + **GitSnapshot** (B2.5 — **Current**) + **RuntimeSnapshot** (B2.6 — **Current**) + **Context Candidate Graph** (B2.7 / B2.13.1 — **Current**) + **Context Selection** (B2.8) + **Workspace Memory** (B2.9) + **Environmental Resolution** (B2.10) + **Workspace Diagnostics** (B2.11) + **Constitutional Audit** (B2.12) + **docs sync** (B2.13.4) + **Coding Actions** (C0.1) + **Coding Understanding** (C1.1) + **Project Understanding** (C1.2) + **Coding Review** (C1.3) + **Coding Plan / Generation Planning** (C1.4) + **Code Generation** (C1.5) + **Coding Execution Plans** (C1.6).
+**Current:** conversation shell + Coding Workspace shell (five dock pages — Terminal / Problems / Search / Git / Diagnostics — plus an Output placeholder not listed in `pages()`) + `CodingState` + workspace expansion model + capability state / inspector + **WorkspaceSnapshot** (B2.1 / B2.2 / B2.13.2) + **EditorSnapshot** (B2.3 / B2.13.3 editor intelligence) + **ProjectSnapshot** (B2.4 project intelligence) + **GitSnapshot** (B2.5 — **Current**) + **RuntimeSnapshot** (B2.6 — **Current**) + **Context Candidate Graph** (B2.7 / B2.13.1 — **Current**) + **Context Selection** (B2.8) + **Workspace Memory** (B2.9) + **Environmental Resolution** (B2.10) + **Workspace Diagnostics** (B2.11) + **Constitutional Audit** (B2.12) + **docs sync** (B2.13.4) + **Coding Actions** (C0.1) + **Code Talk** (C0.2) + **Coding Understanding** (C1.1) + **Project Understanding** (C1.2) + **Coding Review** (C1.3) + **Coding Plan / Generation Planning** (C1.4) + **Code Generation** (C1.5) + **Coding Execution Plans** (C1.6) + **Multi-file Intelligence** (C1.7) + **Pair Programming Experience** (C1.8).
 
 **Target UX:**
 
@@ -368,6 +368,13 @@ Workspace Intelligence supplies context; Run uses reviewed Execution Plans.
 Honest replies when search/run cannot proceed. See
 [docs/coding-actions.md](docs/coding-actions.md).
 
+**C0.2:** Code Talk — teach Jaymi how to talk about code (engineering-partner
+voice). File explanations lead with the filename, then Purpose ·
+Responsibilities · Interesting observations · Recommendations · Next actions
+(`[Review]` chips). Bans hedged narrator phrases (“appears to be…”). Soft
+scaffolds and Reasoning instructions share the same rules. See
+[docs/code-talk.md](docs/code-talk.md).
+
 **C1.1:** Coding Understanding — Understand Before Acting. Explain actions and
 free-text understanding questions return structured Purpose / Responsibilities /
 Key Symbols / Relationships / Potential Issues / Suggested Next Actions built
@@ -404,6 +411,18 @@ workflows (Execution Plan · Files affected · Diff Preview · Risk ·
 Approve / Modify / Cancel). Every mutation still uses the existing Execution
 Plan architecture; no coding or editor bypass. Constitutional audit in
 [docs/coding-execution-plans.md](docs/coding-execution-plans.md).
+
+**C1.7:** Multi-file Intelligence — reason across the project for rename
+symbol / move module / extract class / split file. Planner determines affected
+files from Workspace Intelligence; Execution Plans summarize changes; no
+direct LLM editing; Review required. Constitutional audit in
+[docs/multi-file-intelligence.md](docs/multi-file-intelligence.md).
+
+**C1.8:** Pair Programming Experience — Conversation First partner flow across
+Understanding · Review · Planning · Generation · Modification · Execution.
+Suggested next actions are Planner-generated; Quick Actions mirror Planner
+state (not hardcoded UI). Constitutional audit in
+[docs/pair-programming.md](docs/pair-programming.md).
 
 ⸻
 

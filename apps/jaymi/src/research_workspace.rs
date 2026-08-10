@@ -12,13 +12,18 @@ use crate::ui::components::{card_frame, render_workspace_header, tag, TagStyle};
 use crate::ui::icons::Icon;
 use jaymi_capabilities::ResearchState;
 
-/// Render the Research workspace surface.
-pub fn render_research_workspace(ui: &mut egui::Ui, theme: &Theme, state: Option<&ResearchState>) {
+/// Render the Research workspace surface. Returns `true` when the header's
+/// close button was clicked (caller returns to the conversation).
+pub fn render_research_workspace(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    state: Option<&ResearchState>,
+) -> bool {
     let source_count = state.map(|s| s.sources.len()).unwrap_or(0);
     let subtitle = (source_count > 0).then(|| {
         format!("{source_count} source{}", if source_count == 1 { "" } else { "s" })
     });
-    render_workspace_header(
+    let closed = render_workspace_header(
         ui,
         theme,
         Icon::Research,
@@ -26,6 +31,7 @@ pub fn render_research_workspace(ui: &mut egui::Ui, theme: &Theme, state: Option
         theme.accent2_deep,
         "Research",
         subtitle.as_deref(),
+        true,
     );
     ui.add_space(space::MD);
 
@@ -34,7 +40,7 @@ pub fn render_research_workspace(ui: &mut egui::Ui, theme: &Theme, state: Option
 
     if sources.is_empty() && notes.is_empty() {
         empty_state(ui, theme);
-        return;
+        return closed;
     }
 
     ui.horizontal_top(|ui| {
@@ -68,6 +74,7 @@ pub fn render_research_workspace(ui: &mut egui::Ui, theme: &Theme, state: Option
             }
         });
     });
+    closed
 }
 
 fn empty_state(ui: &mut egui::Ui, theme: &Theme) {

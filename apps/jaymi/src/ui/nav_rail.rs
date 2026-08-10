@@ -9,8 +9,8 @@
 use eframe::egui;
 
 use crate::settings_workspace::ReasoningConnectionStatus;
-use crate::theme::{radius, space, stroke, type_size, Theme};
-use crate::ui::components::{pulse_alpha, ButtonStyle};
+use crate::theme::{radius, type_size, Theme};
+use crate::ui::components::pulse_alpha;
 use crate::ui::icons::{self, Icon};
 use jaymi_memory::ConversationMeta;
 
@@ -19,7 +19,7 @@ pub const DEFAULT_NAV_WIDTH: f32 = 232.0;
 /// Soft floor when the rail is user-resized.
 pub const MIN_NAV_WIDTH: f32 = 200.0;
 /// Soft ceiling when the rail is user-resized.
-pub const MAX_NAV_WIDTH: f32 = 320.0;
+pub const MAX_NAV_WIDTH: f32 = 480.0;
 
 /// Spec: conversation / new-conversation rows are `height: 34px`.
 const ROW_H: f32 = 34.0;
@@ -91,12 +91,11 @@ pub fn render_nav_rail(
             if ctx.coding_open { 16.0 } else { 8.0 },
         );
 
-        // Reserve room for the Diagnostics footer + status card below so an
-        // unbounded `auto_shrink([false, false])` scroll area doesn't claim
-        // the whole remaining height and push them past the panel's visible
-        // bottom edge.
-        let footer_reserve = 120.0;
-        let list_height = (ui.available_height() - footer_reserve).max(80.0);
+        // Reserve room for the status card below so an unbounded
+        // `auto_shrink([false, false])` scroll area doesn't claim the whole
+        // remaining height and push it past the panel's visible bottom edge.
+        let status_card_reserve = 64.0;
+        let list_height = (ui.available_height() - status_card_reserve).max(80.0);
         egui::ScrollArea::vertical()
             .id_salt("jaymi_nav_conversations")
             .auto_shrink([false, false])
@@ -129,12 +128,13 @@ pub fn render_nav_rail(
                 }
             });
 
-        // Now that the scroll area above is height-capped (leaving room for
-        // this section), plain top-down placement lands the footer above
-        // the status card without either overflowing the panel's bottom.
-        render_footer(ui, ctx, events);
-        ui.add_space(space::SM);
-        render_status_card(ui, ctx);
+        // Bottom-up (not a plain top-down call) so the card anchors to the
+        // rail's true bottom edge regardless of how well `status_card_reserve`
+        // above matches its actual rendered height — any slack in that
+        // estimate shows up as extra gap above the card, not below it.
+        ui.with_layout(egui::Layout::bottom_up(egui::Align::Min), |ui| {
+            render_status_card(ui, ctx);
+        });
     });
 }
 
@@ -386,26 +386,3 @@ fn truncate_middle(text: &str, max_chars: usize) -> String {
     format!("{start}…{end}")
 }
 
-/// Not part of the prototype (which has no developer-tooling affordance) —
-/// kept per "do not remove existing functionality", placed above the status
-/// card so it doesn't compete with the spec'd element below it.
-fn render_footer(ui: &mut egui::Ui, ctx: &NavRailContext<'_>, events: &mut Vec<NavRailEvent>) {
-    ui.add_space(space::XS);
-    let diagnostics_label = if ctx.show_diagnostics {
-        "Hide Diagnostics"
-    } else {
-        "Developer Diagnostics"
-    };
-    if crate::ui::components::pill_button(ui, ctx.theme, diagnostics_label, ButtonStyle::Ghost)
-        .clicked()
-    {
-        events.push(NavRailEvent::ToggleDiagnostics);
-    }
-    ui.add_space(space::SM);
-    ui.painter().hline(
-        ui.max_rect().x_range(),
-        ui.cursor().top(),
-        egui::Stroke::new(stroke::HAIRLINE, ctx.theme.border),
-    );
-    ui.add_space(space::SM);
-}

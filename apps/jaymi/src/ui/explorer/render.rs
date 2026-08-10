@@ -7,18 +7,17 @@ use eframe::egui;
 use jaymi_capabilities::{ExplorerNode, ExplorerPending, ExplorerState, ExplorerStatus};
 
 use super::events::ExplorerEvent;
-use super::icons::{paint_disclosure, paint_file, paint_folder};
+use super::icons::paint_disclosure;
 use crate::theme::{radius, space, type_size, Theme};
 
 /// Row height for a consistent IDE tree rhythm (3 × 8px).
 const ROW_HEIGHT: f32 = 24.0;
 /// Indent per directory depth (2 × 8px).
 const INDENT_PER_LEVEL: f32 = 16.0;
-/// Fixed column for the disclosure chevron.
+/// Fixed column for the disclosure arrowhead (folders only — files carry no
+/// marker at all, just their indented name).
 const CHEVRON_COL: f32 = 16.0;
-/// Fixed column for the file/folder icon.
-const ICON_COL: f32 = 16.0;
-/// Gap between icon column and file name.
+/// Gap between the arrowhead column and the file name.
 const ICON_NAME_GAP: f32 = space::SM;
 /// Trailing space reserved for the dirty marker.
 const DIRTY_COL: f32 = 16.0;
@@ -341,7 +340,9 @@ fn render_node_row(
         let indent = depth as f32 * INDENT_PER_LEVEL;
         let mut x = rect.left() + space::XS + indent;
 
-        // Disclosure column (directories only; spacer for files keeps icons aligned).
+        // Disclosure column — an arrowhead for directories only (right when
+        // closed, down when open); files carry no marker at all, just the
+        // same leading indent so names still line up in a clean column.
         if node.is_dir {
             paint_disclosure(
                 ui.painter(),
@@ -350,16 +351,7 @@ fn render_node_row(
                 theme.text_secondary,
             );
         }
-        x += CHEVRON_COL;
-
-        // File / folder icon column — painted shapes (no Unicode tofu).
-        let icon_center = egui::pos2(x + ICON_COL * 0.5, rect.center().y);
-        if node.is_dir {
-            paint_folder(ui.painter(), icon_center, expanded, theme);
-        } else {
-            paint_file(ui.painter(), icon_center, theme, node);
-        }
-        x += ICON_COL + ICON_NAME_GAP;
+        x += CHEVRON_COL + ICON_NAME_GAP;
 
         // Name — truncate so it never escapes the row / panel.
         let dirty_reserve = if is_dirty { DIRTY_COL } else { 0.0 };

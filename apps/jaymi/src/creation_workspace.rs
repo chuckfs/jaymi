@@ -15,14 +15,19 @@ use crate::ui::components::TagStyle;
 use crate::ui::icons::{self, Icon};
 use jaymi_capabilities::CreationState;
 
-/// Render the Creation workspace surface.
-pub fn render_creation_workspace(ui: &mut egui::Ui, theme: &Theme, state: Option<&CreationState>) {
+/// Render the Creation workspace surface. Returns `true` when the header's
+/// close button was clicked (caller returns to the conversation).
+pub fn render_creation_workspace(
+    ui: &mut egui::Ui,
+    theme: &Theme,
+    state: Option<&CreationState>,
+) -> bool {
     let asset_count = state.map(|s| s.generated_assets.len()).unwrap_or(0);
     let subtitle = (asset_count > 0)
         .then(|| format!("{asset_count} asset{}", if asset_count == 1 { "" } else { "s" }));
     // Spec: every workspace icon badge uses sage tint/deep except Coding
     // (accent/terracotta) and Settings (neutral card2/muted).
-    render_workspace_header(
+    let closed = render_workspace_header(
         ui,
         theme,
         Icon::Creation,
@@ -30,6 +35,7 @@ pub fn render_creation_workspace(ui: &mut egui::Ui, theme: &Theme, state: Option
         theme.accent2_deep,
         "Creation",
         subtitle.as_deref(),
+        true,
     );
     ui.add_space(space::MD);
 
@@ -38,7 +44,7 @@ pub fn render_creation_workspace(ui: &mut egui::Ui, theme: &Theme, state: Option
 
     if assets.is_empty() && steps.is_empty() {
         empty_state(ui, theme);
-        return;
+        return closed;
     }
 
     if !assets.is_empty() {
@@ -69,6 +75,7 @@ pub fn render_creation_workspace(ui: &mut egui::Ui, theme: &Theme, state: Option
             );
         }
     }
+    closed
 }
 
 fn empty_state(ui: &mut egui::Ui, theme: &Theme) {

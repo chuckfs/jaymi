@@ -201,6 +201,7 @@ fn looks_like_generation_plan(lower: &str) -> bool {
         || lower.contains("architecture does")
         || lower.contains("responsible for")
         || crate::code_generation::steals_from_coding_plan_detect(lower)
+        || crate::multi_file::steals_from_coding_plan_detect(lower)
     {
         return false;
     }

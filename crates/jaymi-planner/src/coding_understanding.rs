@@ -71,19 +71,25 @@ impl ProjectUnderstandingAngle {
 ///
 /// For [`UnderstandingFocus::Project`], markdown headings map to Project
 /// Understanding sections (Overview · Architecture · Important Modules · …).
+/// Structured Coding Understanding scaffold (Sprint C1.1 + Code Talk C0.2).
+///
+/// Conversation presentation uses Code Talk voice — see [`crate::code_talk`]
+/// and [`Self::to_markdown_for`].
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub struct CodingUnderstanding {
-    /// Overview / purpose of the focus.
+    /// Overview / purpose of the focus (direct prose).
     pub purpose: Vec<String>,
-    /// Architecture signals / responsibilities.
+    /// Architecture signals / responsibilities (capability bullets).
     pub responsibilities: Vec<String>,
-    /// Important modules, packages, symbols.
+    /// Important modules, packages, symbols (fed into Interesting observations).
     pub key_symbols: Vec<String>,
     /// Relationships (layout, git, conversation, open files, deps).
     pub relationships: Vec<String>,
     /// Activity risks, dirty state, missing intelligence, failures.
     pub potential_issues: Vec<String>,
-    /// Honest next steps — understanding only (no silent edits / plans / tools).
+    /// Actionable engineering recommendations (Extract X · Introduce Y).
+    pub recommendations: Vec<String>,
+    /// Short next-action chip labels (`Review`, `Refactor`, …) — rendered as `[Label]`.
     pub suggested_next_actions: Vec<String>,
 }
 
@@ -95,6 +101,7 @@ impl CodingUnderstanding {
             && self.key_symbols.is_empty()
             && self.relationships.is_empty()
             && self.potential_issues.is_empty()
+            && self.recommendations.is_empty()
             && self.suggested_next_actions.is_empty()
     }
 
@@ -103,8 +110,17 @@ impl CodingUnderstanding {
         self.to_markdown_for(UnderstandingFocus::File)
     }
 
-    /// Markdown with focus-aware title / headings.
+    /// Markdown with focus-aware title / Code Talk headings.
     pub fn to_markdown_for(&self, focus: UnderstandingFocus) -> String {
+        self.to_markdown_with_subject(focus, None)
+    }
+
+    /// Markdown with an explicit subject title (usually the file name).
+    pub fn to_markdown_with_subject(
+        &self,
+        focus: UnderstandingFocus,
+        subject: Option<&str>,
+    ) -> String {
         let mut out = String::new();
         if focus == UnderstandingFocus::Project {
             out.push_str("## Project Understanding\n");
@@ -113,20 +129,31 @@ impl CodingUnderstanding {
             push_section(&mut out, "Important Modules", &self.key_symbols);
             push_section(&mut out, "Relationships", &self.relationships);
             push_section(&mut out, "Activity & Risks", &self.potential_issues);
-            push_section(&mut out, "Suggested Next Actions", &self.suggested_next_actions);
-        } else {
-            out.push_str("## Coding Understanding\n");
-            push_section(&mut out, "Purpose", &self.purpose);
-            push_section(&mut out, "Responsibilities", &self.responsibilities);
-            push_section(&mut out, "Key Symbols", &self.key_symbols);
-            push_section(&mut out, "Relationships", &self.relationships);
-            push_section(&mut out, "Potential Issues", &self.potential_issues);
-            push_section(&mut out, "Suggested Next Actions", &self.suggested_next_actions);
+            if !self.recommendations.is_empty() {
+                push_section(&mut out, "Recommendations", &self.recommendations);
+            }
+            push_next_actions(&mut out, &self.suggested_next_actions);
+            return out;
         }
+
+        // File / selection / diagnostic — Code Talk partner shape (C0.2).
+        let title = subject
+            .map(str::to_string)
+            .unwrap_or_else(|| default_subject_for(focus));
+        out.push_str(&title);
+        out.push('\n');
+
+        push_prose_section(&mut out, "Purpose", &self.purpose);
+        push_section(&mut out, "Responsibilities", &self.responsibilities);
+
+        let observations = interesting_observations(self);
+        push_section(&mut out, "Interesting observations", &observations);
+        push_section(&mut out, "Recommendations", &self.recommendations);
+        push_next_actions(&mut out, &self.suggested_next_actions);
         out
     }
 
-    /// Prompt instruction body for Reasoning (WI scaffold + fill rules).
+    /// Prompt instruction body for Reasoning (WI scaffold + Code Talk fill rules).
     pub fn prompt_instruction(&self, focus: UnderstandingFocus) -> String {
         self.prompt_instruction_with_angle(focus, None, None)
     }
@@ -139,6 +166,7 @@ impl CodingUnderstanding {
         feature_hint: Option<&str>,
     ) -> String {
         let mut lines = Vec::new();
+        lines.push(crate::code_talk::voice_rules_block());
         if focus == UnderstandingFocus::Project {
             let angle_label = angle.map(|a| a.as_str()).unwrap_or("overview");
             lines.push(format!(
@@ -153,7 +181,7 @@ impl CodingUnderstanding {
                     .into(),
             );
             lines.push(
-                "Fill these markdown headings exactly: Overview · Architecture · Important Modules · Relationships · Activity & Risks · Suggested Next Actions."
+                "Fill these markdown headings exactly: Overview · Architecture · Important Modules · Relationships · Activity & Risks · Recommendations · Next actions."
                     .into(),
             );
             if let Some(feature) = feature_hint.filter(|s| !s.trim().is_empty()) {
@@ -163,19 +191,23 @@ impl CodingUnderstanding {
             }
         } else {
             lines.push(format!(
-                "Respond with Coding Understanding for focus=`{}`.",
+                "Respond about focus=`{}` using Code Talk structure.",
                 focus.as_str()
             ));
+            lines.push(
+                "Title the reply with the file or symbol name alone (e.g. `script.js`), then these headings exactly: Purpose · Responsibilities · Interesting observations · Recommendations · Next actions."
+                    .into(),
+            );
             lines.push(
                 "Use only Workspace Intelligence already in this prompt (file, selection, editor, project, runtime, diagnostics, git, memory, environmental resolution)."
                     .into(),
             );
             lines.push(
-                "Do not call tools, scan the filesystem, invent file contents, or propose applied edits."
+                "Purpose = one or two direct sentences. Responsibilities = subsystem bullets. Interesting observations = coupling / size / globals / risks. Recommendations = Extract / Introduce / Move. Next actions = only [Chip] lines."
                     .into(),
             );
             lines.push(
-                "Fill these sections as markdown headings exactly: Purpose · Responsibilities · Key Symbols · Relationships · Potential Issues · Suggested Next Actions."
+                "Do not call tools, scan the filesystem, invent unread file bodies, or propose applied edits."
                     .into(),
             );
         }
@@ -185,17 +217,68 @@ impl CodingUnderstanding {
     }
 }
 
+fn default_subject_for(focus: UnderstandingFocus) -> String {
+    match focus {
+        UnderstandingFocus::Selection => "Selection".into(),
+        UnderstandingFocus::File => "Current file".into(),
+        UnderstandingFocus::Diagnostic => "Diagnostics".into(),
+        UnderstandingFocus::Project => "Project".into(),
+    }
+}
+
+fn interesting_observations(u: &CodingUnderstanding) -> Vec<String> {
+    let mut out = Vec::new();
+    out.extend(u.key_symbols.iter().cloned());
+    out.extend(u.relationships.iter().cloned());
+    out.extend(u.potential_issues.iter().cloned());
+    out
+}
+
 fn push_section(out: &mut String, title: &str, items: &[String]) {
-    out.push_str("\n### ");
+    out.push('\n');
     out.push_str(title);
     out.push('\n');
     if items.is_empty() {
-        out.push_str("- _(not observed in Workspace Intelligence yet)_\n");
+        out.push_str("• _(not observed in Workspace Intelligence yet)_\n");
         return;
     }
     for item in items {
-        out.push_str("- ");
+        out.push_str("• ");
         out.push_str(item);
+        out.push('\n');
+    }
+}
+
+fn push_prose_section(out: &mut String, title: &str, items: &[String]) {
+    out.push('\n');
+    out.push_str(title);
+    out.push('\n');
+    if items.is_empty() {
+        out.push_str("_(not observed in Workspace Intelligence yet)_\n");
+        return;
+    }
+    // Purpose reads as prose paragraphs, not a bullet inventory.
+    for (i, item) in items.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(item);
+        out.push('\n');
+    }
+}
+
+fn push_next_actions(out: &mut String, actions: &[String]) {
+    out.push('\n');
+    out.push_str("Next actions\n");
+    if actions.is_empty() {
+        out.push_str("[Review]\n");
+        return;
+    }
+    for action in actions {
+        let chip = crate::code_talk::next_action_chip(
+            &crate::code_talk::chip_label_from_suggestion(action),
+        );
+        out.push_str(&chip);
         out.push('\n');
     }
 }
@@ -379,7 +462,10 @@ fn looks_like_project_question(lower: &str) -> bool {
 }
 
 fn looks_like_architecture_question(lower: &str) -> bool {
-    lower.contains("what architecture")
+    let trimmed = lower.trim_end_matches(|c: char| c == '.' || c == '!');
+    trimmed == "explain architecture"
+        || trimmed.starts_with("explain architecture")
+        || lower.contains("what architecture")
         || lower.contains("which architecture")
         || lower.contains("architecture does this use")
         || lower.contains("architecture of this")
@@ -495,73 +581,147 @@ pub fn scaffold_from_bundle_with_angle(
 
     match focus {
         UnderstandingFocus::Selection => {
-            if let Some(path) = selection.path.as_ref().or(file.path.as_ref()) {
-                understanding
-                    .purpose
-                    .push(format!("Understand the current selection in `{path}`."));
+            let path = selection.path.as_ref().or(file.path.as_ref());
+            let name = crate::code_talk::subject_title(path.map(String::as_str));
+            if let Some(func) = &editor.enclosing_function {
+                understanding.purpose.push(format!(
+                    "Selection inside `{name}` — focuses on `{}`.",
+                    func.name
+                ));
+            } else if let Some(symbol) = &editor.symbol {
+                understanding.purpose.push(format!(
+                    "Selection inside `{name}` — focuses on `{}`.",
+                    symbol.name
+                ));
             } else {
-                understanding.purpose.push(
-                    "Understand the current selection (no path observed in Workspace Intelligence yet)."
-                        .into(),
-                );
+                understanding.purpose.push(format!(
+                    "Selection inside `{name}` — local behavior under review."
+                ));
             }
             if let Some(text) = selection.text.as_ref().filter(|t| !t.trim().is_empty()) {
-                let preview: String = text.chars().take(160).collect();
+                let preview: String = text.chars().take(120).collect();
                 understanding
                     .responsibilities
-                    .push(format!("Selection preview: {preview}"));
+                    .push(format!("Selected fragment: {preview}"));
             }
             if let Some(func) = &editor.enclosing_function {
                 understanding
-                    .key_symbols
-                    .push(format!("enclosing_function: {}", func.name));
-            }
-            if let Some(symbol) = &editor.symbol {
-                understanding
-                    .key_symbols
-                    .push(format!("symbol: {}", symbol.name));
+                    .responsibilities
+                    .push(format!("Enclosing function `{}`", func.name));
             }
             if let Some(ty) = &editor.enclosing_type {
                 understanding
-                    .key_symbols
-                    .push(format!("enclosing_type: {}", ty.name));
-            }
-        }
-        UnderstandingFocus::File => {
-            if let Some(path) = &file.path {
-                understanding
-                    .purpose
-                    .push(format!("Understand what `{path}` is responsible for."));
-                if let Some(lang) = &file.language {
-                    understanding
-                        .responsibilities
-                        .push(format!("Observed language: {lang}"));
-                }
-                if file.dirty {
-                    understanding
-                        .potential_issues
-                        .push("Active file has unsaved edits.".into());
-                }
-            } else {
-                understanding.purpose.push(
-                    "Understand the active file (none observed in Workspace Intelligence yet)."
-                        .into(),
-                );
-            }
-            if let Some(func) = &editor.enclosing_function {
-                understanding
-                    .key_symbols
-                    .push(format!("enclosing_function: {}", func.name));
+                    .responsibilities
+                    .push(format!("Enclosing type `{}`", ty.name));
             }
             if let Some(symbol) = &editor.symbol {
                 understanding
                     .key_symbols
-                    .push(format!("symbol: {}", symbol.name));
+                    .push(format!("Cursor symbol `{}`", symbol.name));
             }
-            for summary in bundle.file_summaries().entries.iter().take(3) {
+        }
+        UnderstandingFocus::File => {
+            let path = file.path.as_deref();
+            let name = crate::code_talk::subject_title(path);
+            let summary = bundle
+                .file_summaries()
+                .entries
+                .iter()
+                .find(|entry| file.path.as_ref().is_some_and(|p| p == &entry.path))
+                .or_else(|| bundle.file_summaries().entries.first());
+
+            if let Some(entry) = summary.filter(|e| !e.summary.trim().is_empty()) {
+                understanding.purpose.push(entry.summary.trim().to_string());
+            } else if let Some(lang) = file.language.as_ref() {
+                understanding.purpose.push(format!(
+                    "`{name}` is the active {lang} source in the Coding Workspace."
+                ));
+            } else if path.is_some() {
+                understanding.purpose.push(format!(
+                    "`{name}` is the active source file in the Coding Workspace."
+                ));
+            } else {
+                understanding.purpose.push(
+                    "No active file in Workspace Intelligence yet — open a buffer to orient."
+                        .into(),
+                );
+            }
+
+            if let Some(lang) = file.language.as_ref() {
                 understanding
                     .responsibilities
-                    .push(format!("summary `{}`: {}", summary.path, summary.summary));
+                    .push(format!("{lang} module surface"));
+            }
+            if let Some(entry) = summary {
+                if let Some(lines) = entry.line_count {
+                    understanding
+                        .responsibilities
+                        .push(format!("~{lines} lines observed"));
+                }
+            }
+            if let Some(func) = &editor.enclosing_function {
+                understanding
+                    .responsibilities
+                    .push(format!("Current focus: function `{}`", func.name));
+            }
+            if let Some(ty) = &editor.enclosing_type {
+                understanding
+                    .responsibilities
+                    .push(format!("Current focus: type `{}`", ty.name));
+            }
+            for entry in bundle.file_summaries().entries.iter().take(3) {
+                if file.path.as_ref().is_some_and(|p| p == &entry.path) {
+                    continue;
+                }
+                if !entry.summary.trim().is_empty() {
+                    understanding.responsibilities.push(format!(
+                        "Related `{}`: {}",
+                        crate::code_talk::subject_title(Some(&entry.path)),
+                        entry.summary.trim()
+                    ));
+                }
+            }
+
+            if file.dirty {
+                understanding
+                    .potential_issues
+                    .push("Unsaved edits in the active buffer.".into());
+            }
+            if let Some(entry) = summary {
+                if let Some(lines) = entry.line_count {
+                    if lines >= 300 {
+                        understanding.potential_issues.push(format!(
+                            "File is becoming large (~{lines} lines)."
+                        ));
+                        understanding.recommendations.push(
+                            "Split cohesive areas into smaller modules.".into(),
+                        );
+                    } else if lines >= 150 {
+                        understanding.potential_issues.push(format!(
+                            "File size is growing (~{lines} lines)."
+                        ));
+                    }
+                }
+            }
+            if let Some(ty) = &editor.enclosing_type {
+                understanding.recommendations.push(format!(
+                    "Extract `{}` into its own module if it owns a distinct responsibility.",
+                    ty.name
+                ));
+            }
+            if let Some(func) = &editor.enclosing_function {
+                understanding.recommendations.push(format!(
+                    "Keep `{}` focused — pull helpers out when the body grows.",
+                    func.name
+                ));
+            }
+            if understanding.recommendations.is_empty() {
+                understanding.recommendations.push(
+                    "Review responsibilities before editing.".into(),
+                );
+                understanding.recommendations.push(
+                    "Prefer small extractions over broad rewrites.".into(),
+                );
             }
         }
         UnderstandingFocus::Project => {
@@ -580,11 +740,16 @@ pub fn scaffold_from_bundle_with_angle(
             );
         }
         UnderstandingFocus::Diagnostic => {
-            understanding
-                .purpose
-                .push("Understand why the current compiler / diagnostic issue is happening.".into());
+            understanding.purpose.push(
+                "Diagnostics under review — isolate the failing surface before changing code."
+                    .into(),
+            );
             for entry in diagnostics.diagnostics.iter().take(8) {
-                let path = entry.path.as_deref().unwrap_or("(workspace)");
+                let path = entry
+                    .path
+                    .as_deref()
+                    .map(|p| crate::code_talk::subject_title(Some(p)))
+                    .unwrap_or_else(|| "(workspace)".into());
                 understanding.potential_issues.push(format!(
                     "[{}] {}: {}",
                     entry.severity, path, entry.message
@@ -596,24 +761,33 @@ pub fn scaffold_from_bundle_with_angle(
                 );
             }
             if let Some(path) = &file.path {
-                understanding
-                    .relationships
-                    .push(format!("active_file: {path}"));
+                understanding.relationships.push(format!(
+                    "Active file: `{}`",
+                    crate::code_talk::subject_title(Some(path))
+                ));
             }
+            understanding.recommendations.push(
+                "Reproduce with the failing command before proposing a fix.".into(),
+            );
+            understanding.recommendations.push(
+                "Keep the first change minimal — fix the reported surface only.".into(),
+            );
         }
     }
 
     // Shared relationships / issues from WI (non-project foci; project fills its own).
     if focus != UnderstandingFocus::Project {
         for entry in open.files.iter().take(8) {
+            let name = crate::code_talk::subject_title(Some(&entry.path));
             understanding
                 .relationships
-                .push(format!("open_file: {}", entry.path));
+                .push(format!("Also open: `{name}`"));
         }
         for reference in editor.references.iter().take(6) {
+            let name = crate::code_talk::subject_title(Some(&reference.path));
             understanding.relationships.push(format!(
-                "reference: {}:{}:{}",
-                reference.path, reference.range.start_line, reference.range.start_column
+                "Reference in `{name}` at {}:{}",
+                reference.range.start_line, reference.range.start_column
             ));
         }
         if let Some(hover) = &editor.hover {
@@ -621,44 +795,44 @@ pub fn scaffold_from_bundle_with_angle(
                 let preview: String = hover.contents.chars().take(160).collect();
                 understanding
                     .key_symbols
-                    .push(format!("hover: {preview}"));
+                    .push(format!("Hover: {preview}"));
             }
         }
         if let Some(branch) = &git.branch {
             understanding
                 .relationships
-                .push(format!("git_branch: {branch}"));
+                .push(format!("On branch `{branch}`"));
         }
         let dirty = git.modified_count + git.staged_count + git.untracked_count + git.conflict_count;
         if dirty > 0 {
             understanding.potential_issues.push(format!(
-                "Working tree has {dirty} dirty path(s) (modified/staged/untracked/conflict)."
+                "Working tree has {dirty} dirty path(s)."
             ));
         }
         if let Some(command) = &runtime.last_command {
             understanding
                 .relationships
-                .push(format!("last_terminal_command: {command}"));
+                .push(format!("Last terminal command: `{command}`"));
         }
         for running in runtime.running.iter().take(3) {
             understanding
                 .relationships
-                .push(format!("terminal_running: {running}"));
+                .push(format!("Terminal running: {running}"));
         }
         for failure in runtime.recent_failures.iter().take(3) {
             understanding
                 .potential_issues
-                .push(format!("runtime_failure: {failure}"));
+                .push(format!("Runtime failure: {failure}"));
         }
         if let Some(objective) = &memory.coding_objective {
             understanding
                 .responsibilities
-                .push(format!("coding_objective: {objective}"));
+                .push(format!("Session objective: {objective}"));
         }
         for failure in memory.recent_failures.iter().take(3) {
             understanding
                 .potential_issues
-                .push(format!("recent_failure: {failure}"));
+                .push(format!("Recent failure: {failure}"));
         }
     }
 
@@ -935,19 +1109,19 @@ fn fill_project_understanding(
     if matches!(angle, ProjectUnderstandingAngle::FeaturePlacement) {
         if let Some(feature) = feature_hint.filter(|s| !s.is_empty()) {
             for dir in project.top_level_dirs.iter().take(6) {
-                understanding.suggested_next_actions.push(format!(
-                    "Candidate home for `{feature}`: top-level `{dir}/` (observed layout only — confirm before editing)."
+                understanding.recommendations.push(format!(
+                    "Candidate home for `{feature}`: top-level `{dir}/` (confirm before editing)."
                 ));
             }
             for member in project.dependency_summary.workspace_members.iter().take(4) {
-                understanding.suggested_next_actions.push(format!(
+                understanding.recommendations.push(format!(
                     "Candidate home for `{feature}`: workspace member `{member}` (confirm ownership first)."
                 ));
             }
             if project.top_level_dirs.is_empty()
                 && project.dependency_summary.workspace_members.is_empty()
             {
-                understanding.suggested_next_actions.push(format!(
+                understanding.recommendations.push(format!(
                     "Not enough layout intelligence yet to place `{feature}` — ask which subsystem owns it."
                 ));
             }
@@ -962,44 +1136,44 @@ fn default_next_actions(
 ) -> Vec<String> {
     match focus {
         UnderstandingFocus::Selection => vec![
-            "Ask a follow-up about a specific line or symbol.".into(),
-            "Use Edit only after you confirm the intended change.".into(),
+            "Review".into(),
+            "Refactor".into(),
+            "Generate Tests".into(),
         ],
         UnderstandingFocus::File => vec![
-            "Ask which responsibility to change before editing.".into(),
-            "Open a related file if Relationships suggest a missing dependency.".into(),
+            "Review".into(),
+            "Refactor".into(),
+            "Generate Tests".into(),
+            "Explain Architecture".into(),
         ],
         UnderstandingFocus::Project => match angle.unwrap_or(ProjectUnderstandingAngle::Overview) {
             ProjectUnderstandingAngle::Overview => vec![
-                "Ask about architecture, important modules, or where a feature should live.".into(),
-                "Stay in understanding mode — no tools, plans, or edits yet.".into(),
+                "Explain Architecture".into(),
+                "Review".into(),
+                "Generate Tests".into(),
             ],
             ProjectUnderstandingAngle::Architecture => vec![
-                "Ask which layer owns a concrete concern before proposing changes.".into(),
-                "Do not produce an Execution Plan from architecture orientation alone.".into(),
+                "Review".into(),
+                "Refactor".into(),
+                "Find Dead Code".into(),
             ],
             ProjectUnderstandingAngle::FeaturePlacement => {
-                let mut actions = vec![
-                    "Confirm the candidate module with the user before any edits.".into(),
-                    "Understanding only — no file creation or planning yet.".into(),
-                ];
+                let mut actions = vec!["Review".into(), "Generate Tests".into()];
                 if feature_hint.is_none() {
-                    actions.insert(
-                        0,
-                        "Name the feature (e.g. “auth refresh”) so placement can use layout hints."
-                            .into(),
-                    );
+                    actions.insert(0, "Explain Architecture".into());
                 }
                 actions
             }
             ProjectUnderstandingAngle::ImportantModules => vec![
-                "Ask for a walkthrough of one module before editing it.".into(),
-                "Use Search later only after the module boundary is agreed.".into(),
+                "Explain Architecture".into(),
+                "Review".into(),
+                "Refactor".into(),
             ],
         },
         UnderstandingFocus::Diagnostic => vec![
-            "Confirm the failing command or file before proposing a fix.".into(),
-            "Do not apply edits until the root cause is agreed.".into(),
+            "Review".into(),
+            "Run Build".into(),
+            "Explain Architecture".into(),
         ],
     }
 }
@@ -1016,6 +1190,31 @@ pub fn finalize_assessment(
         bundle,
     );
     assessment
+}
+
+/// Conversation markdown for an understanding scaffold (Code Talk title + sections).
+pub fn render_markdown(
+    scaffold: &CodingUnderstanding,
+    focus: UnderstandingFocus,
+    bundle: &ContextBundle,
+) -> String {
+    let subject = match focus {
+        UnderstandingFocus::Project => None,
+        UnderstandingFocus::Selection => {
+            let path = bundle
+                .current_selection()
+                .path
+                .as_deref()
+                .or(bundle.current_file().path.as_deref());
+            Some(crate::code_talk::subject_title(path))
+        }
+        UnderstandingFocus::File | UnderstandingFocus::Diagnostic => {
+            Some(crate::code_talk::subject_title(
+                bundle.current_file().path.as_deref(),
+            ))
+        }
+    };
+    scaffold.to_markdown_with_subject(focus, subject.as_deref())
 }
 
 /// Extension key on [`jaymi_context::LlmContext`] for the prompt section.
@@ -1161,7 +1360,7 @@ mod tests {
 
         let file = scaffold_from_bundle(UnderstandingFocus::File, &bundle);
         assert!(file.purpose.iter().any(|p| p.contains("main.rs")));
-        assert!(file.potential_issues.iter().any(|p| p.contains("unsaved")));
+        assert!(file.potential_issues.iter().any(|p| p.to_ascii_lowercase().contains("unsaved")));
         assert!(!file.suggested_next_actions.is_empty());
 
         let selection = scaffold_from_bundle(UnderstandingFocus::Selection, &bundle);
@@ -1176,9 +1375,16 @@ mod tests {
             .iter()
             .any(|p| p.contains("cannot find value")));
 
-        let markdown = file.to_markdown_for(UnderstandingFocus::File);
-        assert!(markdown.contains("### Purpose"));
-        assert!(markdown.contains("### Suggested Next Actions"));
+        let markdown = file.to_markdown_with_subject(UnderstandingFocus::File, Some("main.rs"));
+        assert!(markdown.starts_with("main.rs"));
+        assert!(markdown.contains("\nPurpose\n"));
+        assert!(markdown.contains("\nResponsibilities\n"));
+        assert!(markdown.contains("\nInteresting observations\n"));
+        assert!(markdown.contains("\nRecommendations\n"));
+        assert!(markdown.contains("\nNext actions\n"));
+        assert!(markdown.contains("[Review]"));
+        assert!(!markdown.contains("## Coding Understanding"));
+        assert!(!crate::code_talk::contains_hedging(&markdown));
     }
 
     #[test]
@@ -1263,9 +1469,10 @@ mod tests {
         assert!(overview.potential_issues.iter().any(|p| p.contains("dirty")));
         let md = overview.to_markdown_for(UnderstandingFocus::Project);
         assert!(md.contains("## Project Understanding"));
-        assert!(md.contains("### Overview"));
-        assert!(md.contains("### Architecture"));
-        assert!(md.contains("### Important Modules"));
+        assert!(md.contains("\nOverview\n"));
+        assert!(md.contains("\nArchitecture\n"));
+        assert!(md.contains("\nImportant Modules\n"));
+        assert!(md.contains("\nNext actions\n"));
 
         let placement = scaffold_from_bundle_with_angle(
             UnderstandingFocus::Project,
@@ -1274,7 +1481,7 @@ mod tests {
             &bundle,
         );
         assert!(placement
-            .suggested_next_actions
+            .recommendations
             .iter()
             .any(|a| a.contains("auth refresh") && a.contains("Candidate home")));
     }

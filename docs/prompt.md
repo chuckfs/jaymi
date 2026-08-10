@@ -49,7 +49,7 @@ Default emission order (`PromptSectionId::ORDER`):
 10. Runtime Intelligence
 11. Workspace Memory
 12. Environmental Resolution (Planner deixis bindings)
-13. Coding Understanding (Planner WI scaffold + fill rules — Sprint C1.1 / C1.2 Project Understanding)
+13. Coding Understanding (Planner WI scaffold + Code Talk voice — Sprint C1.1 / C1.2 / C0.2)
 14. Coding Review (Planner WI scaffold — Sprint C1.3)
 15. Coding Plan (Planner WI scaffold — Sprint C1.4 Generation Planning)
 16. Search Results
@@ -84,7 +84,7 @@ Retention priority (higher kept longer under budget pressure): System → User R
 | `active_capabilities` | Capabilities | |
 | *(engine)* | System Instructions | Template / override — not from bundle |
 | *(providers.environmental)* | Environmental Resolution | Planner bindings (B2.10) |
-| *(extensions.coding_understanding)* | Coding Understanding | Planner scaffold (C1.1 / C1.2) |
+| *(extensions.coding_understanding)* | Coding Understanding | Planner scaffold + Code Talk (C0.2 / C1.1 / C1.2) |
 | *(extensions.coding_review)* | Coding Review | Planner scaffold (C1.3) |
 | *(extensions.coding_plan)* | Coding Plan | Planner scaffold (C1.4) |
 | *(providers meta)* | Planner Metadata | From `LlmContext.providers` |

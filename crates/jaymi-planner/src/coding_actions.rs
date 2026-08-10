@@ -2,21 +2,48 @@
 //!
 //! Deterministic / honest replies for toolbar Coding Actions when tools are not
 //! yet appropriate. Conversational Explain / Edit / Refactor still use Reasoning.
+//! Sprint **C1.8** — More / OpenCodingActions lists Planner-generated pair actions.
 
 use jaymi_core::CodingAction;
 
+use crate::pair_programming::{baseline_surface, PairProgrammingSurface};
 use crate::PlannerResponse;
 use jaymi_reasoning::StreamingLifecycle;
 
 /// Deterministic Coding Actions menu (More → OpenCodingActions).
-pub fn open_coding_actions_content() -> &'static str {
-    "Here are Coding Actions available from the toolbar:\n\n\
-     • **Explain** — explain the current selection, or the active file when nothing is selected\n\
-     • **Edit** — start an editing conversation; I'll ask what change you want\n\
-     • **Refactor** — propose a refactoring without editing files yet\n\
-     • **Search** — semantic workspace search (uses the selection as the query when present)\n\
-     • **Run** — propose a project run command as a reviewed execution request\n\n\
-     Use a toolbar button, or tell me which action you want next."
+///
+/// Prefer [`open_coding_actions_from_surface`] so the menu mirrors Planner state.
+pub fn open_coding_actions_content() -> String {
+    open_coding_actions_from_surface(&baseline_surface())
+}
+
+/// Render the More menu from a Planner-authored pair-programming surface (C1.8).
+pub fn open_coding_actions_from_surface(surface: &PairProgrammingSurface) -> String {
+    let mut out = String::from(
+        "Here are suggested next actions from the Planner (Conversation First):\n\n",
+    );
+    if let Some(phase) = surface.phase {
+        out.push_str(&format!("**Phase:** {}\n\n", phase.label()));
+    }
+    if surface.suggested_actions.is_empty() {
+        out.push_str("• _(none yet — ask me anything in chat)_\n");
+    } else {
+        for action in &surface.suggested_actions {
+            let gate = if action.mutates {
+                " _(mutations require Review)_"
+            } else {
+                ""
+            };
+            out.push_str(&format!(
+                "• **{}** — {}{}\n",
+                action.label, action.conversation_text, gate
+            ));
+        }
+    }
+    out.push_str(
+        "\nUse a Quick Action, or tell me which move you want next. Conversation First remains primary.",
+    );
+    out
 }
 
 /// Honest reply when Search has no query yet.
@@ -53,12 +80,34 @@ pub fn selection_needed_content(action: CodingAction) -> String {
     }
 }
 
+/// Soft dead-code orientation (C1.8) — observational, no tools / edits.
+pub fn find_dead_code_content() -> &'static str {
+    "## Find Dead Code\n\n\
+     I can help hunt unused code as an **Understanding** pass — no edits and no tools yet.\n\n\
+     ### What I need\n\
+     - An open project / file so Workspace Intelligence can orient\n\
+     - Optional: a module or symbol you suspect is unused\n\n\
+     ### Suggested Next Actions\n\
+     - **Explain Architecture** — map modules before pruning\n\
+     - **Review Changes** — check whether recent edits orphaned callers\n\
+     - **Search** — look for a symbol name across the workspace\n\n\
+     Tell me a symbol or path to inspect, or ask me to explain the architecture first."
+}
+
 /// When a Coding Action can be answered without Reasoning / tools.
 pub fn deterministic_coding_action_response(
     action: CodingAction,
 ) -> Option<PlannerResponse> {
+    deterministic_coding_action_response_with_surface(action, &baseline_surface())
+}
+
+/// Like [`deterministic_coding_action_response`], with a Planner-authored surface.
+pub fn deterministic_coding_action_response_with_surface(
+    action: CodingAction,
+    surface: &PairProgrammingSurface,
+) -> Option<PlannerResponse> {
     let content = match action {
-        CodingAction::OpenCodingActions => open_coding_actions_content().to_string(),
+        CodingAction::OpenCodingActions => open_coding_actions_from_surface(surface),
         CodingAction::SearchWorkspace => search_needs_query_content().to_string(),
         CodingAction::RunProject => run_needs_command_content().to_string(),
         _ => return None,
@@ -67,6 +116,7 @@ pub fn deterministic_coding_action_response(
         content,
         reasoning_used: false,
         stream_lifecycle: Some(StreamingLifecycle::Idle),
+        pair_programming: Some(surface.clone()),
         ..PlannerResponse::default()
     })
 }
@@ -77,6 +127,7 @@ pub fn soft_coding_action_response(content: impl Into<String>) -> PlannerRespons
         content: content.into(),
         reasoning_used: false,
         stream_lifecycle: Some(StreamingLifecycle::Idle),
+        pair_programming: Some(baseline_surface()),
         ..PlannerResponse::default()
     }
 }
@@ -89,9 +140,12 @@ mod tests {
     fn menu_is_deterministic() {
         let response =
             deterministic_coding_action_response(CodingAction::OpenCodingActions).unwrap();
-        assert!(response.content.contains("Explain"));
-        assert!(response.content.contains("Run"));
+        assert!(
+            response.content.contains("Explain Architecture") || response.content.contains("Explain")
+        );
+        assert!(response.content.contains("Run Build") || response.content.contains("Run"));
         assert!(!response.reasoning_used);
+        assert!(response.pair_programming.is_some());
     }
 
     #[test]

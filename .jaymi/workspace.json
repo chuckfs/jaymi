@@ -66,9 +66,9 @@
   },
   "focused_pane": "pane-1",
   "explorer_width": 280.0,
-  "explorer_visible": true,
+  "explorer_visible": false,
   "bottom_panel_height": 180.0,
-  "workspace_panel_width": 488.0,
+  "workspace_panel_width": 652.5,
   "bottom_tab": "hidden",
   "last_bottom_tab": "terminal"
 }

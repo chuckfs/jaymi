@@ -61,11 +61,12 @@ Unsupported or incomplete states never fail silently:
 
 - Search with no query → ask for a query
 - Run with no project/command → ask for a command
-- More → always lists available Coding Actions
+- More → always lists Planner-generated suggested next actions (C1.8)
 
 ## Related
 
 - [coding-understanding.md](coding-understanding.md) — structured Explain (C1.1)
+- [pair-programming.md](pair-programming.md) — C1.8 Planner-generated Quick Actions
 - [experience.md](experience.md) — Quick Action Bar UX
 - [planner.md](planner.md) — Intent → Execution Plan
 - [workspace-intelligence.md](workspace-intelligence.md) — selection / file context

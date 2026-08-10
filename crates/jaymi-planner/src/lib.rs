@@ -30,6 +30,7 @@ pub mod code_generation;
 pub mod coding_plan;
 pub mod coding_review;
 pub mod coding_understanding;
+pub mod code_talk;
 pub mod complexity;
 pub mod conversation_history;
 pub mod conversation_state;
@@ -39,6 +40,8 @@ pub mod dispatch;
 pub mod environmental;
 pub mod execution_plan;
 pub mod model_selection;
+pub mod multi_file;
+pub mod pair_programming;
 pub mod paused_execution;
 pub mod plan_revision;
 pub mod reasoning;
@@ -60,13 +63,18 @@ pub use conversational::{
     conversational_terminal_from_event, conversational_terminal_from_response,
     lifecycle_from_reasoning_response, planner_response_from_terminal,
 };
-pub use coding_plan::{CodingPlan, CodingPlanAssessment, CodingPlanKind};
 pub use code_generation::{
     CodeGeneration, GenerationOp, GenerationOpKind, GenerationToolCall,
 };
+pub use coding_plan::{CodingPlan, CodingPlanAssessment, CodingPlanKind};
 pub use coding_review::{CodingReview, ReviewAssessment, ReviewFocus};
 pub use coding_understanding::{
     CodingUnderstanding, ProjectUnderstandingAngle, UnderstandingAssessment, UnderstandingFocus,
+};
+pub use code_talk::{chip_label_from_suggestion, next_action_chip, subject_title};
+pub use multi_file::{AffectedFile, MultiFileKind, MultiFilePlan};
+pub use pair_programming::{
+    baseline_actions, baseline_surface, PairPhase, PairProgrammingSurface, SuggestedAction,
 };
 pub use environmental::{
     resolve_environment, EnvironmentalResolution, ResolutionConfidence, ResolvedKind,
@@ -269,6 +277,10 @@ pub struct PlannerResponse {
     pub coding_plan: Option<coding_plan::CodingPlan>,
     /// Code Generation batch (Sprint C1.5) when ops were proposed for review.
     pub code_generation: Option<code_generation::CodeGeneration>,
+    /// Multi-file Intelligence plan (Sprint C1.7) when affected files were resolved.
+    pub multi_file: Option<multi_file::MultiFilePlan>,
+    /// Pair Programming surface (Sprint C1.8) — Planner-generated next actions.
+    pub pair_programming: Option<pair_programming::PairProgrammingSurface>,
 }
 
 impl PlannerResponse {
@@ -665,10 +677,69 @@ impl Planner {
     /// Finalize a response with ContextBundle + current conversation state.
     fn finalize_response(
         &self,
-        response: PlannerResponse,
+        mut response: PlannerResponse,
         bundle: ContextBundle,
     ) -> PlannerResponse {
+        if response.pair_programming.is_none() {
+            response.pair_programming = Some(self.synthesize_pair_programming(&response, Some(&bundle)));
+        }
         self.with_conversation_state(finalize(response, bundle))
+    }
+
+    /// Planner-generated Quick Actions / next steps (Sprint C1.8).
+    ///
+    /// Experience / UI render these; they never invent the list. Baseline actions
+    /// are still Planner-authored when no specialized scaffold is active.
+    pub fn pair_programming_suggestions(&self) -> pair_programming::PairProgrammingSurface {
+        let empty = PlannerResponse::default();
+        self.synthesize_pair_programming(&empty, None)
+    }
+
+    fn pair_memory(&self) -> pair_programming::PairMemory {
+        pair_programming::PairMemory {
+            had_understanding: self
+                .last_understanding
+                .lock()
+                .ok()
+                .and_then(|g| g.as_ref().map(|_| ()))
+                .is_some(),
+            had_review: self
+                .last_review
+                .lock()
+                .ok()
+                .and_then(|g| g.as_ref().map(|_| ()))
+                .is_some(),
+            had_coding_plan: self
+                .last_coding_plan
+                .lock()
+                .ok()
+                .and_then(|g| g.as_ref().map(|_| ()))
+                .is_some(),
+        }
+    }
+
+    fn synthesize_pair_programming(
+        &self,
+        response: &PlannerResponse,
+        bundle: Option<&ContextBundle>,
+    ) -> pair_programming::PairProgrammingSurface {
+        let execution_completed = response
+            .execution_summary
+            .as_ref()
+            .map(|summary| matches!(summary.status, ExecutionStatus::Completed))
+            .unwrap_or(false);
+        pair_programming::synthesize(&pair_programming::PairSynthesisInput {
+            memory: self.pair_memory(),
+            bundle,
+            understanding: response.coding_understanding.is_some(),
+            review: response.coding_review.is_some(),
+            planning: response.coding_plan.is_some(),
+            generation: response.code_generation.is_some(),
+            multi_file: response.multi_file.is_some(),
+            awaiting_review: response.awaiting_review,
+            execution_summary: response.execution_summary.is_some(),
+            execution_completed,
+        })
     }
 
     /// Registered tool routes (Intent → tool) for diagnostics and tests.
@@ -1275,15 +1346,36 @@ impl Planner {
             // conversational UX passes prior turns via
             // handle_conversational_with_observer / start_conversation_stream.
             if let Some(action) = request.coding_action {
+                let surface = self.synthesize_pair_programming(
+                    &PlannerResponse::default(),
+                    Some(&context),
+                );
                 if let Some(response) =
-                    coding_actions::deterministic_coding_action_response(action)
+                    coding_actions::deterministic_coding_action_response_with_surface(
+                        action, &surface,
+                    )
                 {
                     self.transition_conversation(ConversationState::Completed);
                     return Ok(self.finalize_response(response, context));
                 }
             }
+            if pair_programming::looks_like_dead_code_request(
+                &request.content.trim().to_ascii_lowercase(),
+            ) {
+                self.transition_conversation(ConversationState::Completed);
+                let response = PlannerResponse {
+                    content: coding_actions::find_dead_code_content().to_string(),
+                    reasoning_used: false,
+                    stream_lifecycle: Some(StreamingLifecycle::Idle),
+                    ..PlannerResponse::default()
+                };
+                return Ok(self.finalize_response(response, context));
+            }
             if code_generation::detect_generation_request(&request) {
                 return self.complete_code_generation_from_request(&request, context);
+            }
+            if let Some(kind) = multi_file::detect_multi_file_request(&request) {
+                return self.complete_multi_file_from_request(kind, &request, context);
             }
             let review = coding_review::detect_review_request(&request).map(|assessment| {
                 coding_review::finalize_assessment(assessment, &context)
@@ -1347,7 +1439,11 @@ impl Planner {
                 if !self.reasoning.is_implemented() {
                     self.transition_conversation(ConversationState::Completed);
                     let response = PlannerResponse {
-                        content: assessment.scaffold.to_markdown_for(assessment.focus),
+                        content: coding_understanding::render_markdown(
+                            &assessment.scaffold,
+                            assessment.focus,
+                            &context,
+                        ),
                         reasoning_used: false,
                         stream_lifecycle: Some(StreamingLifecycle::Idle),
                         coding_understanding: Some(assessment.scaffold),
@@ -1468,16 +1564,37 @@ impl Planner {
         }
         if let Some(action) = request.coding_action {
             if matches!(assembled.intent, Intent::Unknown) {
+                let surface = self.synthesize_pair_programming(
+                    &PlannerResponse::default(),
+                    Some(&assembled.context),
+                );
                 if let Some(response) =
-                    coding_actions::deterministic_coding_action_response(action)
+                    coding_actions::deterministic_coding_action_response_with_surface(
+                        action, &surface,
+                    )
                 {
                     self.transition_conversation(ConversationState::Completed);
                     return Ok(self.finalize_response(response, assembled.context));
                 }
             }
         }
+        if pair_programming::looks_like_dead_code_request(
+            &request.content.trim().to_ascii_lowercase(),
+        ) {
+            self.transition_conversation(ConversationState::Completed);
+            let response = PlannerResponse {
+                content: coding_actions::find_dead_code_content().to_string(),
+                reasoning_used: false,
+                stream_lifecycle: Some(StreamingLifecycle::Idle),
+                ..PlannerResponse::default()
+            };
+            return Ok(self.finalize_response(response, assembled.context));
+        }
         if code_generation::detect_generation_request(&request) {
             return self.complete_code_generation_from_request(&request, assembled.context);
+        }
+        if let Some(kind) = multi_file::detect_multi_file_request(&request) {
+            return self.complete_multi_file_from_request(kind, &request, assembled.context);
         }
         // Coding Review — WI scaffold without tools / edits / plans.
         if let Some(assessment) = assembled.review.clone() {
@@ -1547,7 +1664,11 @@ impl Planner {
             if !self.reasoning.is_implemented() {
                 self.transition_conversation(ConversationState::Completed);
                 let mut response = PlannerResponse {
-                    content: assessment.scaffold.to_markdown_for(assessment.focus),
+                    content: coding_understanding::render_markdown(
+                        &assessment.scaffold,
+                        assessment.focus,
+                        &assembled.context,
+                    ),
                     reasoning_used: false,
                     stream_lifecycle: Some(StreamingLifecycle::Idle),
                     coding_understanding: Some(assessment.scaffold),
@@ -1976,7 +2097,11 @@ impl Planner {
             }
             if let Some(assessment) = understanding {
                 let response = PlannerResponse {
-                    content: assessment.scaffold.to_markdown_for(assessment.focus),
+                    content: coding_understanding::render_markdown(
+                        &assessment.scaffold,
+                        assessment.focus,
+                        &context,
+                    ),
                     reasoning_used: false,
                     stream_lifecycle: Some(StreamingLifecycle::Idle),
                     coding_understanding: Some(assessment.scaffold),
@@ -2755,6 +2880,45 @@ then say \"Generate the code.\""
         let generation =
             code_generation::generation_from_coding_plan(&plan, goal, root.as_deref());
         let response = self.begin_code_generation(generation)?;
+        Ok(self.finalize_response(response, context))
+    }
+
+    /// Multi-file Intelligence → GenerationOps → reviewed Execution Plan (C1.7).
+    fn complete_multi_file_from_request(
+        &self,
+        kind: multi_file::MultiFileKind,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let goal = request.content.trim().to_string();
+        let plan = multi_file::plan_from_bundle(kind, &goal, &context);
+        if plan.affected_files.is_empty() {
+            self.transition_conversation(ConversationState::Completed);
+            let response = PlannerResponse {
+                content: plan.to_markdown(),
+                reasoning_used: false,
+                stream_lifecycle: Some(StreamingLifecycle::Idle),
+                multi_file: Some(plan),
+                ..PlannerResponse::default()
+            };
+            return Ok(self.finalize_response(response, context));
+        }
+        let generation = multi_file::code_generation_from_plan(&plan);
+        if generation.is_empty() {
+            self.transition_conversation(ConversationState::Completed);
+            let response = PlannerResponse {
+                content: plan.to_markdown(),
+                reasoning_used: false,
+                stream_lifecycle: Some(StreamingLifecycle::Idle),
+                multi_file: Some(plan),
+                ..PlannerResponse::default()
+            };
+            return Ok(self.finalize_response(response, context));
+        }
+        let mut response = self.begin_code_generation(generation)?;
+        let prefix = plan.to_markdown();
+        response.multi_file = Some(plan);
+        response.content = format!("{prefix}\n\n{}", response.content);
         Ok(self.finalize_response(response, context))
     }
 
@@ -4651,12 +4815,19 @@ mod tests {
             "{:?}",
             understanding.purpose
         );
-        assert!(response.content.contains("### Purpose"));
-        assert!(response.content.contains("### Responsibilities"));
-        assert!(response.content.contains("### Key Symbols"));
-        assert!(response.content.contains("### Relationships"));
-        assert!(response.content.contains("### Potential Issues"));
-        assert!(response.content.contains("### Suggested Next Actions"));
+        assert!(
+            response.content.contains("main.rs") || response.content.contains("Current file"),
+            "{}",
+            response.content
+        );
+        assert!(response.content.contains("\nPurpose\n"));
+        assert!(response.content.contains("\nResponsibilities\n"));
+        assert!(response.content.contains("\nInteresting observations\n"));
+        assert!(response.content.contains("\nRecommendations\n"));
+        assert!(response.content.contains("\nNext actions\n"));
+        assert!(response.content.contains("[Review]"));
+        assert!(!response.content.contains("## Coding Understanding"));
+        assert!(!response.content.contains("appears to be"));
 
         let notes = &response
             .context_bundle
@@ -4681,10 +4852,10 @@ mod tests {
         assert!(response.tool_id.is_none());
         assert!(response.execution_plan.is_none());
         assert!(response.content.contains("## Project Understanding"));
-        assert!(response.content.contains("### Overview"));
-        assert!(response.content.contains("### Architecture"));
-        assert!(response.content.contains("### Important Modules"));
-        assert!(response.content.contains("### Suggested Next Actions"));
+        assert!(response.content.contains("\nOverview\n"));
+        assert!(response.content.contains("\nArchitecture\n"));
+        assert!(response.content.contains("\nImportant Modules\n"));
+        assert!(response.content.contains("\nNext actions\n"));
     }
 
     #[test]
@@ -4963,6 +5134,250 @@ mod tests {
         assert!(!response.awaiting_review);
         assert!(response.execution_plan.is_none());
         assert!(response.content.contains("Coding Plan"));
+    }
+
+    #[test]
+    fn rename_symbol_multi_file_requires_review() {
+        let planner = planner_with_write();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/lib.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            open_files: jaymi_context::OpenFilesSection {
+                files: vec![jaymi_context::OpenFileEntry {
+                    path: "/proj/src/main.rs".into(),
+                    dirty: false,
+                    active: false,
+                }],
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/src/lib.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "counter".into(),
+                    kind: Some("variable".into()),
+                    ..Default::default()
+                }),
+                references: vec![
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/lib.rs".into(),
+                        ..Default::default()
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/main.rs".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into(), "project".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+
+        let response = planner
+            .handle(UserRequest::new("Rename symbol"))
+            .unwrap();
+
+        assert!(response.multi_file.is_some());
+        let multi = response.multi_file.as_ref().unwrap();
+        assert_eq!(multi.kind, Some(MultiFileKind::RenameSymbol));
+        assert!(
+            multi.affected_files.len() >= 2,
+            "expected WI-derived affected files, got {:?}",
+            multi.affected_files
+        );
+        assert!(response.awaiting_review);
+        assert!(response.execution_plan.is_some());
+        assert!(response.content.contains("## Multi-file Intelligence"));
+        assert!(response.content.contains("Affected Files"));
+        assert!(response.content.contains("Execution Plan"));
+        assert!(response.code_generation.is_some());
+    }
+
+    #[test]
+    fn extract_class_and_split_file_are_reviewed_multi_file_plans() {
+        let planner = planner_with_write();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/big.rs".into()),
+                dirty: true,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/src/big.rs".into()),
+                    dirty: true,
+                    language: Some("rust".into()),
+                },
+                enclosing_type: Some(jaymi_context::EditorSymbol {
+                    name: "Widget".into(),
+                    kind: Some("struct".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into(), "project".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+
+        for prompt in ["Extract class", "Split file"] {
+            let response = planner.handle(UserRequest::new(prompt)).unwrap();
+            assert!(
+                response.multi_file.is_some(),
+                "expected multi_file for {prompt}"
+            );
+            assert!(response.awaiting_review, "{prompt} should require review");
+            assert!(response.execution_plan.is_some());
+            assert!(response.content.contains("## Multi-file Intelligence"));
+        }
+    }
+
+    #[test]
+    fn move_module_multi_file_requires_review() {
+        let planner = planner_with_write_and_manage();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/util.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            open_files: jaymi_context::OpenFilesSection {
+                files: vec![jaymi_context::OpenFileEntry {
+                    path: "/proj/src/main.rs".into(),
+                    dirty: false,
+                    active: false,
+                }],
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/src/util.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                open_editors: jaymi_context::OpenFilesSection {
+                    files: vec![
+                        jaymi_context::OpenFileEntry {
+                            path: "/proj/src/util.rs".into(),
+                            dirty: false,
+                            active: true,
+                        },
+                        jaymi_context::OpenFileEntry {
+                            path: "/proj/src/main.rs".into(),
+                            dirty: false,
+                            active: false,
+                        },
+                    ],
+                },
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into(), "project".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+
+        let response = planner.handle(UserRequest::new("Move module")).unwrap();
+        assert!(response.multi_file.is_some());
+        let multi = response.multi_file.as_ref().unwrap();
+        assert_eq!(multi.kind, Some(MultiFileKind::MoveModule));
+        assert!(
+            multi
+                .affected_files
+                .iter()
+                .any(|f| f.role == "source" || f.role == "destination"),
+            "expected source/destination from WI, got {:?}",
+            multi.affected_files
+        );
+        assert!(response.awaiting_review);
+        assert!(response.execution_plan.is_some());
+        assert!(response.content.contains("## Multi-file Intelligence"));
+    }
+
+    #[test]
+    fn pair_programming_attaches_planner_generated_suggestions() {
+        let planner = planner_with_write();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+
+        let response = planner
+            .handle(UserRequest::new("Explain the architecture of this project."))
+            .unwrap();
+        assert!(response.pair_programming.is_some());
+        let surface = response.pair_programming.as_ref().unwrap();
+        assert!(
+            !surface.suggested_actions.is_empty(),
+            "expected Planner-generated suggestions"
+        );
+        assert!(
+            surface
+                .suggested_actions
+                .iter()
+                .any(|a| a.label == "Review Changes" || a.id == "review_changes"),
+            "understanding should suggest Review Changes, got {:?}",
+            surface
+                .suggested_actions
+                .iter()
+                .map(|a| a.label.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn pair_programming_examples_route_without_tools() {
+        let planner = planner_with_write();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/lib.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            approved_context_providers: vec!["editor".into(), "project".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+
+        let review = planner.handle(UserRequest::new("Review Changes.")).unwrap();
+        assert!(review.coding_review.is_some() || review.content.contains("Review"));
+        assert!(!review.awaiting_review, "review must not execute tools");
+
+        let tests = planner.handle(UserRequest::new("Generate Tests.")).unwrap();
+        assert!(tests.coding_plan.is_some());
+        assert!(!tests.awaiting_review, "planning must not execute tools");
+
+        let dead = planner.handle(UserRequest::new("Find Dead Code.")).unwrap();
+        assert!(dead.content.contains("Find Dead Code"));
+        assert!(!dead.awaiting_review);
+        assert!(dead.pair_programming.is_some());
+    }
+
+    #[test]
+    fn pair_programming_baseline_suggestions_are_planner_owned() {
+        let planner = planner_with_write();
+        let surface = planner.pair_programming_suggestions();
+        let labels: Vec<&str> = surface
+            .suggested_actions
+            .iter()
+            .map(|a| a.label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                "Explain Architecture",
+                "Review Changes",
+                "Generate Tests",
+                "Refactor",
+                "Run Build",
+                "Find Dead Code",
+            ]
+        );
     }
 
     #[test]

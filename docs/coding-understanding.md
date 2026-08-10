@@ -52,18 +52,35 @@ scaffold_from_bundle (WI only)
 
 ## Structured response
 
-Every understanding turn surfaces:
+Every file / selection understanding turn uses **Code Talk** shape
+([code-talk.md](code-talk.md)):
 
-1. **Purpose**
-2. **Responsibilities**
-3. **Key Symbols**
-4. **Relationships**
-5. **Potential Issues**
-6. **Suggested Next Actions**
+```text
+script.js
+
+Purpose
+…
+
+Responsibilities
+• …
+
+Interesting observations
+• …
+
+Recommendations
+• …
+
+Next actions
+[Review]
+[Refactor]
+```
+
+Project focus keeps Overview · Architecture · Important Modules · Relationships ·
+Activity & Risks · Next actions.
 
 `PlannerResponse.coding_understanding` carries the WI scaffold. Conversation
-`content` is either the scaffold markdown (soft path) or the model elaboration
-instructed to keep the same headings.
+`content` is either Code Talk markdown (soft path) or the model elaboration
+instructed with the same voice rules.
 
 ## Ownership
 
@@ -94,8 +111,10 @@ headings and constitutional audit.
 
 ## Related
 
+- [code-talk.md](code-talk.md) — C0.2 partner voice for code explanations
 - [project-understanding.md](project-understanding.md) — whole-project orientation (C1.2)
 - [coding-actions.md](coding-actions.md) — Explain Quick Action → typed intents
+- [pair-programming.md](pair-programming.md) — next-action chips / partner flow
 - [environmental-resolution.md](environmental-resolution.md) — deixis binding
 - [workspace-intelligence.md](workspace-intelligence.md) — WI sources
 - [planner.md](planner.md) — orchestration
@@ -146,5 +165,6 @@ UserRequest / CodingAction::Explain*
 ### Residuals
 
 * Model elaboration quality depends on the wired Reasoning provider; without one, the WI scaffold markdown is the honest response.
-* Understanding does not yet auto-gate Edit/Refactor proposals (future Pair Programming sprints may require understanding before mutation plans).
+* Understanding recommends Review / Plan via Pair Programming suggestions (C1.8);
+  it still does not auto-execute mutation plans — Review Before Action remains mandatory.
 * Free-text heuristics are deterministic first-match; ambiguous questions may fall through to ordinary conversation.

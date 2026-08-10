@@ -20,6 +20,7 @@ pub mod editor_workspace;
 pub mod execution_diagnostics;
 pub mod experience;
 pub mod knowledge_workspace;
+#[allow(unsafe_code)] // AppKit CALayer bridge to round Monaco's native WKWebView corners.
 pub mod monaco_host;
 mod problems;
 pub mod performance_diagnostics;
@@ -44,7 +45,7 @@ pub use coding_breadcrumb::{
     truncate_breadcrumbs, BreadcrumbAction, BreadcrumbKind, BreadcrumbSegment,
 };
 pub use coding_quick_actions::{
-    dispatch_quick_action, layout_quick_actions, QuickAction, QuickActionEffect, QuickActionLayout,
+    dispatch_quick_action, dispatch_suggested_action, QuickAction, QuickActionEffect,
 };
 pub use coding_workspace::{
     build_coding_diagnostics_view, coding_panel_lines, coding_shell_summary,

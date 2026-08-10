@@ -223,30 +223,33 @@ pub fn render_settings_workspace(
     events: &mut Vec<SettingsWorkspaceEvent>,
 ) {
     let theme = ctx.theme;
-    ui.horizontal(|ui| {
-        // Spec: Settings' icon badge is neutral (card2/muted), unlike the
-        // accent (Coding) or sage (Research/Knowledge/Creation) workspaces.
-        render_workspace_header(
-            ui,
-            theme,
-            Icon::Settings,
-            theme.surface_alt,
-            theme.text_secondary,
-            "Settings",
-            None,
-        );
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if pill_button(ui, theme, "Done", ButtonStyle::Secondary).clicked() {
-                events.push(SettingsWorkspaceEvent::Close);
-            }
-        });
-    });
+    // Spec: Settings' icon badge is neutral (card2/muted), unlike the
+    // accent (Coding) or sage (Research/Knowledge/Creation) workspaces. The
+    // header's own close button replaces the old standalone "Done" pill —
+    // one close affordance instead of two.
+    let closed = render_workspace_header(
+        ui,
+        theme,
+        Icon::Settings,
+        theme.surface_alt,
+        theme.text_secondary,
+        "Settings",
+        None,
+        true,
+    );
+    if closed {
+        events.push(SettingsWorkspaceEvent::Close);
+    }
     ui.add_space(space::MD);
 
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = space::MD;
         ui.vertical(|ui| {
-            ui.set_width(160.0);
+            // Slimmer rail — the selection pill only needs to clear the
+            // longest label ("Appearance"/"Diagnostics") with a little
+            // breathing room, not a fixed 160px; the space saved goes to
+            // the content column via its `set_min_width(available_width)`.
+            ui.set_width(128.0);
             for category in SettingsCategory::all() {
                 let selected = ctx.state.category == *category;
                 if category_row(ui, theme, category.label(), selected).clicked() {
@@ -271,7 +274,7 @@ pub fn render_settings_workspace(
 
 fn category_row(ui: &mut egui::Ui, theme: &Theme, label: &str, selected: bool) -> egui::Response {
     let (rect, mut response) =
-        ui.allocate_exact_size(egui::vec2(ui.available_width(), 32.0), egui::Sense::click());
+        ui.allocate_exact_size(egui::vec2(ui.available_width(), 30.0), egui::Sense::click());
     response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
     let hovered = response.hovered();
     if selected {
@@ -282,7 +285,7 @@ fn category_row(ui: &mut egui::Ui, theme: &Theme, label: &str, selected: bool) -
             .rect_filled(rect, egui::CornerRadius::same(radius::PILL as u8), theme.selection());
     }
     ui.painter().text(
-        egui::pos2(rect.left() + space::MD, rect.center().y),
+        egui::pos2(rect.left() + space::SM, rect.center().y),
         egui::Align2::LEFT_CENTER,
         label,
         egui::FontId::proportional(type_size::UI),

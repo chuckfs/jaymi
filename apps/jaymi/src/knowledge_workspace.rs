@@ -35,6 +35,8 @@ pub enum KnowledgeWorkspaceEvent {
     SelectHit(String),
     /// Reveal a path in Finder.
     RevealInFinder(String),
+    /// The header's close button was clicked — return to the conversation.
+    Close,
 }
 
 /// Inputs required to paint the Knowledge workspace.
@@ -66,7 +68,7 @@ pub fn render_knowledge_workspace(
             if h == 1 { "" } else { "es" }
         )),
     };
-    render_workspace_header(
+    let closed = render_workspace_header(
         ui,
         theme,
         Icon::Knowledge,
@@ -74,7 +76,11 @@ pub fn render_knowledge_workspace(
         theme.accent2_deep,
         "Knowledge",
         subtitle.as_deref(),
+        true,
     );
+    if closed {
+        events.push(KnowledgeWorkspaceEvent::Close);
+    }
     ui.add_space(space::MD);
 
     render_search_bar(ui, ctx, events);

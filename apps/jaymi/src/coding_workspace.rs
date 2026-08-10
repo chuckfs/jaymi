@@ -20,10 +20,8 @@ use jaymi_capabilities::{
     MAX_EXPLORER_WIDTH, MIN_BOTTOM_PANEL_HEIGHT, MIN_EXPLORER_WIDTH,
 };
 
-use crate::coding_breadcrumb::{self, BreadcrumbAction, BREADCRUMB_BAR_HEIGHT};
-use crate::coding_quick_actions::{
-    self, QuickAction, QuickActionBarEvent, QUICK_ACTION_BAR_HEIGHT, QUICK_ACTION_PAD_X,
-};
+use crate::coding_breadcrumb::{self, BreadcrumbAction};
+use crate::coding_quick_actions::QUICK_ACTION_BAR_HEIGHT;
 use crate::diagnostics::DiagnosticsSnapshot;
 use crate::experience::ExperienceSession;
 use crate::monaco_host::{language_for_path, MonacoDocument, MonacoViewport};
@@ -662,8 +660,10 @@ pub enum CodingShellEvent {
         /// Expand the path itself when it is a directory.
         is_dir: bool,
     },
-    /// Quick Action Bar button — shell maps via [`crate::coding_quick_actions::dispatch_quick_action`].
-    QuickAction(QuickAction),
+    /// Planner-suggested Quick Action — shell submits as Conversation First.
+    QuickAction(crate::coding_quick_actions::QuickAction),
+    /// Planner-generated suggested next action (Sprint C1.8).
+    SuggestedAction(jaymi_planner::SuggestedAction),
 }
 
 /// Pure text summary of the Coding shell for tests and headless checks.
@@ -987,7 +987,9 @@ pub fn render_coding_shell(
     *monaco_out = None;
     let _ = expansion;
 
-    let explorer_visible = state.map(|coding| coding.explorer_visible).unwrap_or(true);
+    // Always present — the collapse affordance (and the state it toggled)
+    // has been removed so the Explorer can't be hidden.
+    let explorer_visible = true;
     let explorer_width = state
         .map(|coding| coding.explorer_width)
         .unwrap_or(DEFAULT_EXPLORER_WIDTH);
@@ -996,6 +998,12 @@ pub fn render_coding_shell(
         .unwrap_or(true);
 
     // --- Workspace header (icon + title + subtitle) -------------------------
+    // The close (×) and Coding Actions ("···") triggers are NOT painted here —
+    // they're pinned to the card's top-right corner by the caller (see
+    // `render_top_bar`'s workspace panel in `ui::mod`), *after* the corner-
+    // radius mask repaints the card's corners. Painting them here would put
+    // them underneath that mask, since this header sits well inside the
+    // corner-radius zone.
     egui::TopBottomPanel::top("coding_workspace_header")
         .exact_height(WORKSPACE_HEADER_HEIGHT)
         .show_separator_line(false)
@@ -1022,7 +1030,7 @@ pub fn render_coding_shell(
                         name.to_string()
                     })
                 });
-                crate::ui::components::render_workspace_header(
+                let _ = crate::ui::components::render_workspace_header(
                     ui,
                     theme,
                     Icon::Coding,
@@ -1030,100 +1038,68 @@ pub fn render_coding_shell(
                     theme.accent_deep,
                     "Coding",
                     subtitle.as_deref(),
+                    false,
                 );
+                // Breadcrumb sits inline with the header now (no separate
+                // row, no background of its own) instead of a distinct strip
+                // below the toolbar.
+                if let Some(coding) = state {
+                    ui.add_space(space::MD);
+                    let actions = coding_breadcrumb::render_coding_breadcrumb(ui, theme, coding);
+                    for action in actions {
+                        match action {
+                            BreadcrumbAction::FocusEditor => {
+                                events.push(CodingShellEvent::FocusPane(
+                                    coding.editors.focused_pane.0.clone(),
+                                ));
+                            }
+                            BreadcrumbAction::RevealInExplorer { path, is_dir } => {
+                                events.push(CodingShellEvent::RevealInExplorer { path, is_dir });
+                            }
+                        }
+                    }
+                }
+                if let Some(error) = open_error {
+                    if !error.is_empty() {
+                        ui.add_space(space::SM);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(error)
+                                    .size(type_size::META)
+                                    .color(theme.error),
+                            )
+                            .truncate(),
+                        );
+                    }
+                }
             });
         });
 
-    // --- Quick Action Bar (multi-pane only; single-pane merges it into the
-    // tab strip row below, matching the spec's combined tabs+actions row) --
-    if !single_pane {
-        egui::TopBottomPanel::top("coding_quick_actions")
-            .exact_height(QUICK_ACTION_BAR_HEIGHT)
-            .show_separator_line(true)
-            .frame(region_frame(
-                theme,
-                egui::Margin::symmetric(QUICK_ACTION_PAD_X as i8, 0),
-            ))
-            .show_inside(ui, |ui| {
-                for event in coding_quick_actions::render_quick_action_bar(ui, theme, open_error) {
-                    match event {
-                        QuickActionBarEvent::Action(action) => {
-                            events.push(CodingShellEvent::QuickAction(action));
-                        }
-                    }
-                }
-            });
-    }
-
-    // --- Breadcrumb (under toolbar; derived from CodingState only) ---------
-    if let Some(coding) = state {
-        egui::TopBottomPanel::top("coding_breadcrumb")
-            .exact_height(BREADCRUMB_BAR_HEIGHT)
-            .show_separator_line(false)
-            .frame(egui::Frame::new().fill(theme.surface_alt))
-            .show_inside(ui, |ui| {
-                let actions = coding_breadcrumb::render_coding_breadcrumb(ui, theme, coding);
-                for action in actions {
-                    match action {
-                        BreadcrumbAction::FocusEditor => {
-                            events.push(CodingShellEvent::FocusPane(
-                                coding.editors.focused_pane.0.clone(),
-                            ));
-                        }
-                        BreadcrumbAction::RevealInExplorer { path, is_dir } => {
-                            events.push(CodingShellEvent::RevealInExplorer { path, is_dir });
-                        }
-                    }
-                }
-            });
-    }
-
-    // --- Editor tabs + Quick Actions (full width, above Monaco | Explorer) -
-    // Spec: tabs and quick-action pills share one row (tabs left, actions
-    // right). Single-pane: hoist tabs here so Monaco is the uninterrupted
+    // --- Editor tabs (full width, above Monaco | Explorer) -----------------
+    // Single-pane: hoist tabs here so Monaco is the uninterrupted
     // centerpiece. Multi-pane splits keep per-pane tab strips inside the
-    // editor column (and their own quick-action row, above).
+    // editor column instead. Coding Actions now live in the header, next to
+    // the close button, so this row is tabs only.
     if single_pane {
         egui::TopBottomPanel::top("coding_editor_tabs")
             .exact_height(QUICK_ACTION_BAR_HEIGHT)
-            .show_separator_line(true)
+            .show_separator_line(false)
             .frame(region_frame(
                 theme,
-                egui::Margin::symmetric(space::SM as i8, 0),
+                // Left matches the Monaco pane's own left inset below so the
+                // active tab and the code column line up.
+                egui::Margin {
+                    left: space::MD as i8,
+                    right: space::SM as i8,
+                    top: 0,
+                    bottom: 0,
+                },
             ))
             .show_inside(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.set_min_height(QUICK_ACTION_BAR_HEIGHT);
                     ui.set_max_height(QUICK_ACTION_BAR_HEIGHT);
-                    // Reserve the right side for the (fixed) 3 primary quick-
-                    // action pills + overflow control; tabs get the rest.
-                    let actions_reserve: f32 = coding_quick_actions::QuickAction::ALL
-                        [..coding_quick_actions::PRIMARY_LIMIT]
-                        .iter()
-                        .map(|a| a.estimated_width())
-                        .sum::<f32>()
-                        + coding_quick_actions::QUICK_ACTION_GAP * 2.0
-                        + coding_quick_actions::MORE_BUTTON_WIDTH
-                        + space::MD;
-                    let tabs_w = (ui.available_width() - actions_reserve).max(96.0);
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(tabs_w, QUICK_ACTION_BAR_HEIGHT),
-                        egui::Layout::left_to_right(egui::Align::Center),
-                        |ui| {
-                            render_workspace_tab_strip(ui, theme, state, events);
-                        },
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        for event in
-                            coding_quick_actions::render_quick_action_bar(ui, theme, open_error)
-                        {
-                            match event {
-                                QuickActionBarEvent::Action(action) => {
-                                    events.push(CodingShellEvent::QuickAction(action));
-                                }
-                            }
-                        }
-                    });
+                    render_workspace_tab_strip(ui, theme, state, events);
                 });
             });
     }
@@ -1149,7 +1125,7 @@ pub fn render_coding_shell(
                 (tab_bar_h + MIN_BOTTOM_PANEL_HEIGHT)..=(tab_bar_h + MAX_BOTTOM_PANEL_HEIGHT),
             )
             .resizable(true)
-            .show_separator_line(true)
+            .show_separator_line(false)
             .frame(region_frame(theme, egui::Margin::ZERO))
             .show_inside(ui, |ui| {
                 egui::Frame::new()
@@ -1208,44 +1184,26 @@ pub fn render_coding_shell(
     }
 
     // --- Right Explorer (beside Monaco only) -------------------------------
+    // Fixed 25/75 split with Monaco (not resizable, not persisted) — a
+    // proportion of the card's current width rather than a remembered pixel
+    // value, so it stays 25% however wide the workspace panel itself is.
     if explorer_visible {
         let panel_id = egui::Id::new(EXPLORER_PANEL_ID);
-        sync_explorer_panel_width(ui.ctx(), panel_id, explorer_width);
+        let explorer_target = (ui.available_width() * 0.25).clamp(MIN_EXPLORER_WIDTH, MAX_EXPLORER_WIDTH);
+        let _ = explorer_width;
 
-        let explorer_response = egui::SidePanel::right(panel_id)
-            .default_width(explorer_width)
-            .width_range(MIN_EXPLORER_WIDTH..=MAX_EXPLORER_WIDTH)
-            .resizable(true)
-            .show_separator_line(true)
+        egui::SidePanel::right(panel_id)
+            .exact_width(explorer_target)
+            .resizable(false)
+            .show_separator_line(false)
             .frame(region_frame(theme, inset(space::SM, space::SM)))
             .show_inside(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        egui::RichText::new("Explorer")
-                            .strong()
-                            .size(type_size::UI)
-                            .color(theme.text_primary),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let collapse = ui
-                            .add(
-                                egui::Button::new(
-                                    egui::RichText::new("›")
-                                        .size(type_size::UI)
-                                        .color(theme.text_secondary),
-                                )
-                                .frame(false)
-                                .min_size(egui::vec2(18.0, 18.0)),
-                            )
-                            .on_hover_text("Collapse Explorer");
-                        if collapse.clicked() {
-                            events.push(CodingShellEvent::SetExplorerVisible {
-                                visible: false,
-                                commit: true,
-                            });
-                        }
-                    });
-                });
+                ui.label(
+                    egui::RichText::new("Explorer")
+                        .strong()
+                        .size(type_size::UI)
+                        .color(theme.text_primary),
+                );
                 ui.add_space(space::SM);
                 egui::ScrollArea::vertical()
                     .id_salt("coding_explorer_scroll")
@@ -1265,29 +1223,22 @@ pub fn render_coding_shell(
                         }
                     });
             });
-
-        let panel_rect = explorer_response.response.rect;
-        let rendered_w = panel_rect.width();
-
-        // Double-click the egui resize divider to reset to the default width.
-        if explorer_divider_double_clicked(ui, panel_rect) {
-            events.push(CodingShellEvent::SetExplorerWidth {
-                width: DEFAULT_EXPLORER_WIDTH,
-                commit: true,
-            });
-            clear_explorer_panel_state(ui.ctx(), panel_id);
-        } else if (rendered_w - explorer_width).abs() > 1.0 {
-            let commit = !ui.ctx().input(|input| input.pointer.primary_down());
-            events.push(CodingShellEvent::SetExplorerWidth {
-                width: rendered_w.clamp(MIN_EXPLORER_WIDTH, MAX_EXPLORER_WIDTH),
-                commit,
-            });
-        }
     }
 
     // --- Center: Monaco / editor body (full-bleed centerpiece) -------------
+    // Left inset is the card's true left edge (Explorer already has its own
+    // leading margin on the right side via `inset(SM, SM)`); bottom matches
+    // it so the editor sits with equal breathing room on both edges.
     egui::CentralPanel::default()
-        .frame(region_frame(theme, egui::Margin::ZERO))
+        .frame(region_frame(
+            theme,
+            egui::Margin {
+                left: space::MD as i8,
+                right: 0,
+                top: 0,
+                bottom: space::MD as i8,
+            },
+        ))
         .show_inside(ui, |ui| {
             let available_height = ui.available_height();
             if let Some(state) = state {
@@ -1352,7 +1303,11 @@ fn render_workspace_tab_strip(
                 .id_salt("coding_workspace_tab_strip")
                 .auto_shrink([false, true])
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
+                    // `ui.horizontal` defaults to top-aligned (`Align::Min`),
+                    // which put tabs a few px higher than the vertically
+                    // *centered* quick-action pills sharing this row —
+                    // match that centering explicitly.
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                         ui.spacing_mut().item_spacing.x = space::XS;
                         ui.set_min_height(EDITOR_TAB_STRIP_HEIGHT);
                         if sessions.is_empty() {
@@ -1587,48 +1542,6 @@ fn dock_divider_double_clicked(ui: &egui::Ui, panel_rect: egui::Rect) -> bool {
     let resize_rect = egui::Rect::from_x_y_ranges(
         panel_rect.x_range(),
         (resize_y - grab)..=(resize_y + grab),
-    );
-    ui.input(|input| {
-        input
-            .pointer
-            .button_double_clicked(egui::PointerButton::Primary)
-            && input
-                .pointer
-                .interact_pos()
-                .is_some_and(|pos| resize_rect.contains(pos))
-    })
-}
-
-/// When CodingState width diverges from egui's persisted panel size (restore /
-/// double-click reset) and the user is not dragging, drop PanelState so
-/// `default_width` from CodingState wins on the next layout.
-fn sync_explorer_panel_width(ctx: &egui::Context, panel_id: egui::Id, width: f32) {
-    let resizing = ctx
-        .read_response(panel_id.with("__resize"))
-        .is_some_and(|response| response.dragged());
-    if resizing {
-        return;
-    }
-    if let Some(panel) = egui::containers::panel::PanelState::load(ctx, panel_id) {
-        if (panel.rect.width() - width).abs() > 1.0 {
-            clear_explorer_panel_state(ctx, panel_id);
-        }
-    }
-}
-
-fn clear_explorer_panel_state(ctx: &egui::Context, panel_id: egui::Id) {
-    ctx.data_mut(|data| {
-        data.remove::<egui::containers::panel::PanelState>(panel_id);
-    });
-}
-
-/// Double-click on the SidePanel resize divider (egui grab strip).
-fn explorer_divider_double_clicked(ui: &egui::Ui, panel_rect: egui::Rect) -> bool {
-    let grab = ui.style().interaction.resize_grab_radius_side;
-    let resize_x = panel_rect.left();
-    let resize_rect = egui::Rect::from_x_y_ranges(
-        (resize_x - grab)..=(resize_x + grab),
-        panel_rect.y_range(),
     );
     ui.input(|input| {
         input
@@ -2101,8 +2014,8 @@ fn render_pane(
         }
     }
 
-    let status_h = 22.0_f32;
-    let body_h = (height - strip_height - status_h - stroke::HAIRLINE).max(40.0);
+    // Spec: no status bar — the editor content fills the rest of the pane.
+    let body_h = (height - strip_height).max(40.0);
 
     match active_path {
         None => {
@@ -2118,72 +2031,15 @@ fn render_pane(
                     );
                 },
             );
-            render_editor_status_bar(ui, theme, status_h, |ui| {
-                ui.label(
-                    egui::RichText::new("Ready")
-                        .size(type_size::META)
-                        .color(theme.text_secondary),
-                );
-            });
         }
         Some(path) => {
             if let Some(session) = sessions.into_iter().find(|session| session.path == path) {
                 render_pane_body(
                     ui, &pane_str, is_focused, &session, state, events, monaco_out, body_h,
                 );
-                render_editor_status_bar(ui, theme, status_h, |ui| {
-                    let language = language_for_path(&session.path);
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{}  ·  Ln {}, Col {}  ·  {}",
-                            session.name,
-                            session.view.cursor.line + 1,
-                            session.view.cursor.column + 1,
-                            language
-                        ))
-                        .size(type_size::META)
-                        .color(theme.text_secondary),
-                    );
-                    if session.dirty {
-                        ui.label(
-                            egui::RichText::new("· modified")
-                                .size(type_size::META)
-                                .color(theme.warning),
-                        );
-                    }
-                    if session.preview {
-                        ui.label(
-                            egui::RichText::new("· preview")
-                                .size(type_size::META)
-                                .color(theme.text_secondary),
-                        );
-                    }
-                });
             }
         }
     }
-}
-
-fn render_editor_status_bar(
-    ui: &mut egui::Ui,
-    theme: &Theme,
-    height: f32,
-    add_contents: impl FnOnce(&mut egui::Ui),
-) {
-    ui.painter().hline(
-        ui.max_rect().x_range(),
-        ui.cursor().top(),
-        egui::Stroke::new(stroke::HAIRLINE, theme.border),
-    );
-    egui::Frame::new()
-        .fill(theme.surface_alt)
-        .inner_margin(inset(space::SM, 0.0))
-        .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.set_min_height(height);
-                add_contents(ui);
-            });
-        });
 }
 
 /// Render one editor tab: click to activate, middle-click / hover ✕ to close.
@@ -2210,8 +2066,18 @@ fn render_pane_tab(
             theme.text_primary,
         )
     });
-    // Reserve close-button width so the tab doesn't jump when ✕ appears on hover.
-    let tab_w = (pad_x + measure.size().x + space::XS + close_w + pad_x).max(72.0);
+    // Tight fit around the label by default; only reserve room for the ✕
+    // when *last frame* reported this tab hovered, so unhovered tabs wrap
+    // their text instead of always carrying the close button's gap. The
+    // one-frame lag (hover this frame -> button appears next frame) is
+    // imperceptible and avoids a two-pass layout.
+    let was_hovered_id = ui.id().with(("tab_was_hovered", pane_str, session.path.as_str()));
+    let was_hovered = ui
+        .ctx()
+        .data(|data| data.get_temp::<bool>(was_hovered_id))
+        .unwrap_or(false);
+    let close_reserve = if was_hovered { space::XS + close_w } else { 0.0 };
+    let tab_w = (pad_x + measure.size().x + close_reserve + pad_x).max(72.0);
     let tab_h = EDITOR_TAB_STRIP_HEIGHT - 2.0;
 
     let (rect, response) =
@@ -2224,7 +2090,9 @@ fn render_pane_tab(
     let close_id = ui.id().with(("tab_close", pane_str, session.path.as_str()));
     let close_response = ui.interact(close_rect, close_id, egui::Sense::click());
     let hovered = response.hovered() || close_response.hovered();
-    let show_close = hovered;
+    let show_close = hovered && was_hovered;
+    ui.ctx()
+        .data_mut(|data| data.insert_temp(was_hovered_id, hovered));
 
     let bg = if active {
         theme.surface
@@ -2357,7 +2225,10 @@ fn render_pane_body(
                     cursor_line,
                     cursor_column,
                     folded_regions,
-                    minimap: settings.minimap,
+                    // Hardcoded off — not just a default, since a project's
+                    // persisted `EditorSettings` (from before this changed)
+                    // can otherwise still restore it to `true`.
+                    minimap: false,
                     word_wrap: settings.word_wrap,
                     font_size: settings.font_size,
                 },

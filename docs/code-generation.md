@@ -75,6 +75,7 @@ PausedExecution + Review Card
 - [coding-actions.md](coding-actions.md) — toolbar intents (no direct writes)
 - [tools.md](tools.md) — `write_file` / `manage_path`
 - [coding-execution-plans.md](coding-execution-plans.md) — C1.6 Review Card surface
+- [multi-file-intelligence.md](multi-file-intelligence.md) — C1.7 cross-file plans
 
 ## Constitutional audit (C1.5)
 
