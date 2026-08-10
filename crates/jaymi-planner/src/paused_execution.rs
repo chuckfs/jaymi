@@ -45,6 +45,11 @@ pub struct PausedExecution {
     /// When non-empty, Approve executes every `(tool_id, ToolInput)` in order
     /// under the same reviewed plan. Empty ⇒ single [`Self::tool_input`] resume.
     pub generation_calls: Vec<(String, ToolInput)>,
+    /// Frozen path baselines for Coding Mutation Recovery (Sprint C3.7).
+    ///
+    /// Captured at pause time so Approve can refuse stale / drifted sources
+    /// before any write. Empty for non-generation pauses.
+    pub generation_baselines: Vec<crate::coding_mutation_recovery::GenerationBaseline>,
 }
 
 impl PausedExecution {
@@ -487,6 +492,7 @@ mod tests {
             permission_result: None,
             paused_at: Instant::now(),
             generation_calls: Vec::new(),
+            generation_baselines: Vec::new(),
         }
     }
 

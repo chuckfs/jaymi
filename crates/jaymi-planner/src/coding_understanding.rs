@@ -359,6 +359,13 @@ pub fn detect_understanding_request(request: &UserRequest) -> Option<Understandi
         return None;
     }
     let lower = content.to_ascii_lowercase();
+    // Deep Codebase Investigation (C2.4) / Codebase Q&A (C2.5) own multi-source
+    // and natural conversational codebase questions.
+    if crate::deep_investigation::detect_deep_investigation_request(request).is_some()
+        || crate::codebase_qa::detect_codebase_qa_request(request).is_some()
+    {
+        return None;
+    }
     // Coding Review owns "review …" phrasing (Sprint C1.3).
     if lower.contains("review") {
         return None;

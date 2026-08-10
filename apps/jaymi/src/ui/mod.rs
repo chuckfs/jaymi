@@ -761,8 +761,8 @@ impl eframe::App for JaymiApp {
         // otherwise overwrite it every frame.
         let is_debug_review = std::env::var("JAYMI_DEBUG_SCREEN").as_deref() == Ok("review");
         if !is_debug_review {
-            if let Ok(session) = self.app.experience() {
-                self.experience = session;
+        if let Ok(session) = self.app.experience() {
+            self.experience = session;
             }
         }
 
@@ -1039,11 +1039,11 @@ impl eframe::App for JaymiApp {
             )
             .show(ctx, |ui| {
                 // Floating composer — anchored bottom, inset from edges, no chrome bar.
-                egui::TopBottomPanel::bottom("chat_composer")
-                    .show_separator_line(false)
-                    .frame(
+        egui::TopBottomPanel::bottom("chat_composer")
+            .show_separator_line(false)
+            .frame(
                         // Spec: composer wrapper `padding:8px 28px 22px 28px`.
-                        egui::Frame::new()
+                egui::Frame::new()
                             .inner_margin(egui::Margin {
                                 left: 28,
                                 right: 28,
@@ -1054,15 +1054,15 @@ impl eframe::App for JaymiApp {
                             .stroke(egui::Stroke::NONE),
                     )
                     .show_inside(ui, |ui| {
-                        self.render_chat_composer(ui);
-                    });
+                self.render_chat_composer(ui);
+            });
 
                 self.render_conversation_surface(ui);
-                if self.show_diagnostics {
+            if self.show_diagnostics {
                     ui.add_space(space::MD);
-                    self.render_diagnostics(ui);
-                }
-            });
+                self.render_diagnostics(ui);
+            }
+        });
 
         if let Ok(registry) = self.app.command_registry() {
             let _ = registry;
@@ -1551,9 +1551,9 @@ impl JaymiApp {
                                                 ));
                                             if response.clicked() {
                                                 regenerate_index = Some(index);
-                                            }
-                                        }
-                                    });
+                    }
+                }
+            });
                                 }
                                 ui.add_space(space::LG);
                             }
@@ -1628,7 +1628,7 @@ impl JaymiApp {
                 icons::paint(ui.painter(), Icon::Creation, rect.center(), 13.0, self.theme.accent2_deep);
                 ui.add_space(space::MD + space::XS);
 
-                ui.label(
+            ui.label(
                     egui::RichText::new("Hi, I'm Jaymi")
                         .font(crate::theme::display_font(type_size::WELCOME))
                         .color(self.theme.text_primary),
@@ -1644,7 +1644,7 @@ impl JaymiApp {
                 let welcome_text_width = ((ui.available_width() * 0.7).clamp(260.0, 480.0))
                     .min(ui.available_width());
                 ui.set_max_width(welcome_text_width);
-                ui.label(
+            ui.label(
                     egui::RichText::new(
                         "Your whole computer, one conversation.\nAsk anything — I'm ready when you are.",
                     )
@@ -1785,7 +1785,7 @@ impl JaymiApp {
                 // Dock to the conversation column's right edge; text right-aligned.
                 // Spec: `border-radius: 22px 22px 6px 22px` — sharp bottom-right tail.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-                    egui::Frame::new()
+            egui::Frame::new()
                         .corner_radius(egui::CornerRadius {
                             nw: 22,
                             ne: 22,
@@ -1794,7 +1794,7 @@ impl JaymiApp {
                         })
                         .inner_margin(inset(pad_x, pad_y))
                         .fill(self.theme.accent_soft)
-                        .show(ui, |ui| {
+                .show(ui, |ui| {
                             ui.set_width(inner_w);
                             ui.with_layout(egui::Layout::top_down(egui::Align::Max), |ui| {
                                 ui.add(
@@ -1831,14 +1831,14 @@ impl JaymiApp {
                     icons::paint(ui.painter(), Icon::Creation, rect.center(), 6.0, icon_color);
                     ui.add_space(space::SM);
                     ui.vertical(|ui| {
-                        ui.set_max_width(max_bubble);
+                    ui.set_max_width(max_bubble);
                         ui.label(
                             egui::RichText::new(content)
                                 .size(type_size::BODY)
                                 .color(self.theme.text_primary),
                         );
-                    });
                 });
+        });
             }
         }
     }
@@ -1940,7 +1940,7 @@ impl JaymiApp {
                         .auto_shrink([false, true])
                         .stick_to_bottom(true)
                         .show(ui, |ui| {
-                            let response = ui.add(
+                    let response = ui.add(
                                 egui::TextEdit::multiline(&mut self.prompt)
                                     .id(edit_id)
                                     .desired_width(ui.available_width())
@@ -1951,8 +1951,8 @@ impl JaymiApp {
                                             .color(self.theme.text_secondary),
                                     )
                                     .text_color(self.theme.text_primary)
-                                    .frame(false),
-                            );
+                            .frame(false),
+                    );
                             edit_response = Some(response);
                         });
 
@@ -2702,8 +2702,8 @@ impl JaymiApp {
                 CodingShellEvent::OpenQuickOpen => {
                     self.command_palette.open();
                     self.refresh_command_palette();
-                    Ok(())
-                }
+                            Ok(())
+                        }
                 CodingShellEvent::CloseWorkspace => {
                     self.close_workspace();
                     Ok(())
@@ -2953,18 +2953,18 @@ impl JaymiApp {
                             Ok(BeginGeneration::Started) => {
                                 self.error = None;
                                 self.status = None;
-                                if let Ok(session) = self.app.experience() {
-                                    self.experience = session;
-                                }
+        if let Ok(session) = self.app.experience() {
+            self.experience = session;
+        }
                                 Ok(())
                             }
                             Ok(BeginGeneration::Completed(response)) => {
                                 self.awaiting_reply = false;
                                 self.loading_started_at = None;
-                                self.error = None;
+                self.error = None;
                                 self.status = None;
-                                if let Ok(session) = self.app.experience() {
-                                    self.experience = session;
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
                                 } else {
                                     self.experience
                                         .mirror_conversation_state(response.conversation_state);
@@ -2998,11 +2998,11 @@ impl JaymiApp {
                         };
                         match result {
                             Ok(BeginGeneration::Started) => {
-                                self.error = None;
+                self.error = None;
                                 self.status = None;
-                                if let Ok(session) = self.app.experience() {
-                                    self.experience = session;
-                                }
+                if let Ok(session) = self.app.experience() {
+                    self.experience = session;
+                }
                                 Ok(())
                             }
                             Ok(BeginGeneration::Completed(response)) => {

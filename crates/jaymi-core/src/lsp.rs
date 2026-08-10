@@ -94,6 +94,8 @@ pub enum LspOperation {
     Diagnostics,
     /// Go to definition.
     Definition,
+    /// Find implementations (e.g. trait impls).
+    Implementation,
     /// Rename the symbol under the cursor.
     Rename,
     /// Find all references.
@@ -112,6 +114,7 @@ impl LspOperation {
             Self::Completion => "completion",
             Self::Diagnostics => "diagnostics",
             Self::Definition => "definition",
+            Self::Implementation => "implementation",
             Self::Rename => "rename",
             Self::References => "references",
         }

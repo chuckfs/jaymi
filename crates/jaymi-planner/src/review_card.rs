@@ -6,8 +6,9 @@
 //!
 //! ```text
 //! Execution Plan
-//! Files affected
+//! Files affected   (+N / −M per file for coding diffs — C3.5)
 //! Diff Preview
+//! Rationale / Dependencies / Validation  (when present — C3.5)
 //! Risk
 //! Approve · Modify · Cancel
 //! ```
@@ -177,6 +178,21 @@ pub struct ReviewCardModel {
     pub summary: String,
     /// Resources the plan would touch.
     pub affected_resources: Vec<String>,
+    /// Coding Diff Review per-file +/− blocks (Sprint C3.5), when any.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coding_file_stats: Vec<crate::coding_diff_review::CodingFileDiffStat>,
+    /// Proposed-operation labels for coding review (C3.5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proposed_operations: Vec<String>,
+    /// Rationale lines for coding / mutation review (C3.5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rationale_items: Vec<String>,
+    /// Dependency lines for coding / mutation review (C3.5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dependency_items: Vec<String>,
+    /// Validation status lines for coding / mutation review (C3.5).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub validation_items: Vec<String>,
     /// Estimated risk.
     pub risk_level: EstimatedRisk,
     /// Permission labels (`filesystem:write`, …).
@@ -307,6 +323,11 @@ impl ReviewCardModel {
             after_approval,
             summary: plan.summary(),
             affected_resources,
+            coding_file_stats: Vec::new(),
+            proposed_operations: Vec::new(),
+            rationale_items: Vec::new(),
+            dependency_items: Vec::new(),
+            validation_items: Vec::new(),
             risk_level: plan.estimated_risk(),
             permissions,
             estimated_duration: EstimatedDuration::from_plan(
@@ -320,6 +341,46 @@ impl ReviewCardModel {
             revision: plan.revision(),
             parent_plan_id: plan.parent_plan_id().cloned(),
             revision_changes: plan.revision_changes().to_vec(),
+        }
+    }
+
+    /// Attach Coding Diff Review surface enrichment (Sprint C3.5).
+    ///
+    /// Presentation only — does not change ReviewIntent / approval semantics.
+    pub fn apply_coding_diff_surface(
+        &mut self,
+        surface: &crate::coding_diff_review::CodingDiffReviewSurface,
+    ) {
+        if surface.is_empty() {
+            return;
+        }
+        if !surface.files.is_empty() {
+            self.coding_file_stats = surface.files.clone();
+            self.affected_resources = surface
+                .files
+                .iter()
+                .map(|file| file.path.clone())
+                .collect();
+        }
+        if !surface.operations.is_empty() {
+            self.proposed_operations = surface.operations.clone();
+        }
+        if !surface.rationale.is_empty() {
+            self.rationale_items = surface.rationale.clone();
+        }
+        if !surface.dependencies.is_empty() {
+            self.dependency_items = surface.dependencies.clone();
+        }
+        if !surface.validation.is_empty() {
+            self.validation_items = surface.validation.clone();
+        }
+        if !surface.risk_notes.is_empty() {
+            // Fold coding risk notes into “why proposed” without inventing a
+            // parallel risk system — EstimatedRisk remains the card Risk section.
+            let notes = surface.risk_notes.join("; ");
+            if !self.why_proposed.contains(&notes) {
+                self.why_proposed = format!("{}\nCoding risk notes: {notes}", self.why_proposed);
+            }
         }
     }
 
@@ -370,11 +431,25 @@ impl ReviewCardModel {
 
         lines.push(String::new());
         lines.push("Files affected".into());
-        if self.affected_resources.is_empty() {
+        if !self.coding_file_stats.is_empty() {
+            for file in &self.coding_file_stats {
+                lines.push(file.display_path.clone());
+                lines.push(format!("+{}", file.added));
+                lines.push(format!("−{}", file.removed));
+            }
+        } else if self.affected_resources.is_empty() {
             lines.push("• (none listed)".into());
         } else {
             for resource in &self.affected_resources {
                 lines.push(format!("• {resource}"));
+            }
+        }
+
+        if !self.proposed_operations.is_empty() {
+            lines.push(String::new());
+            lines.push("Proposed operations".into());
+            for op in &self.proposed_operations {
+                lines.push(format!("• {op}"));
             }
         }
 
@@ -389,6 +464,30 @@ impl ReviewCardModel {
                 )
             };
             lines.push(display.render_text(expand_preview));
+        }
+
+        if !self.rationale_items.is_empty() {
+            lines.push(String::new());
+            lines.push("Rationale".into());
+            for item in &self.rationale_items {
+                lines.push(format!("• {item}"));
+            }
+        }
+
+        if !self.dependency_items.is_empty() {
+            lines.push(String::new());
+            lines.push("Dependencies".into());
+            for item in &self.dependency_items {
+                lines.push(format!("• {item}"));
+            }
+        }
+
+        if !self.validation_items.is_empty() {
+            lines.push(String::new());
+            lines.push("Validation".into());
+            for item in &self.validation_items {
+                lines.push(format!("• {item}"));
+            }
         }
 
         lines.push(String::new());
@@ -743,6 +842,53 @@ mod tests {
         assert!(text.contains("Keep today's files."));
         assert!(text.contains("Only delete the cache."));
         assert!(text.contains("Show me the files first."));
+    }
+
+    #[test]
+    fn coding_diff_review_files_affected_shows_plus_minus() {
+        use crate::coding_diff_review::{CodingDiffReviewSurface, CodingFileDiffStat};
+
+        let plan = sample_plan();
+        let mut card = ReviewCardModel::from_plan(&plan, None);
+        card.apply_coding_diff_surface(&CodingDiffReviewSurface {
+            files: vec![
+                CodingFileDiffStat {
+                    display_path: "planner.rs".into(),
+                    path: "/tmp/planner.rs".into(),
+                    operation: "modify_file".into(),
+                    added: 18,
+                    removed: 7,
+                },
+                CodingFileDiffStat {
+                    display_path: "context.rs".into(),
+                    path: "/tmp/context.rs".into(),
+                    operation: "modify_file".into(),
+                    added: 9,
+                    removed: 2,
+                },
+            ],
+            total_added: 27,
+            total_removed: 9,
+            operations: vec!["modify_file `planner.rs`".into()],
+            rationale: vec!["tighten ownership".into()],
+            risk_notes: vec!["plan_risk: medium".into()],
+            dependencies: vec!["jaymi-planner".into()],
+            validation: vec!["proposed_only — no filesystem writes until Approve".into()],
+        });
+        let text = card.render_text();
+        assert!(text.contains("planner.rs"));
+        assert!(text.contains("+18"));
+        assert!(text.contains("−7"));
+        assert!(text.contains("context.rs"));
+        assert!(text.contains("+9"));
+        assert!(text.contains("−2"));
+        assert!(text.contains("Proposed operations"));
+        assert!(text.contains("Rationale"));
+        assert!(text.contains("Dependencies"));
+        assert!(text.contains("Validation"));
+        assert!(text.contains("Approve"));
+        assert!(text.contains("Modify"));
+        assert!(text.contains("Cancel"));
     }
 
     #[test]

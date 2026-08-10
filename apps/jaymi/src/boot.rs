@@ -4861,6 +4861,301 @@ impl Application {
                 .memory()
                 .map(|context| context.memories.len())
                 .unwrap_or(0),
+            code_search_summary: response
+                .code_search
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            code_search_hits: response.code_search.as_ref().map(|report| report.total_hits),
+            code_search_shown: response
+                .code_search
+                .as_ref()
+                .map(|report| report.evidence.len()),
+            symbol_navigation_summary: response
+                .symbol_navigation
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            symbol_navigation_hits: response
+                .symbol_navigation
+                .as_ref()
+                .map(|report| report.total_hits),
+            symbol_navigation_shown: response
+                .symbol_navigation
+                .as_ref()
+                .map(|report| report.evidence.len()),
+            relationship_trace_summary: response
+                .relationship_trace
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            relationship_trace_steps: response
+                .relationship_trace
+                .as_ref()
+                .map(|report| report.steps.len()),
+            deep_investigation_summary: response
+                .deep_investigation
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            deep_investigation_steps: response
+                .deep_investigation
+                .as_ref()
+                .map(|report| report.steps.len()),
+            deep_investigation_searches: response
+                .deep_investigation
+                .as_ref()
+                .map(|report| report.searches.len()),
+            deep_investigation_files: response
+                .deep_investigation
+                .as_ref()
+                .map(|report| report.files_inspected.len()),
+            deep_investigation_symbols: response
+                .deep_investigation
+                .as_ref()
+                .map(|report| report.symbols_followed.len()),
+            deep_investigation_evidence: response
+                .deep_investigation
+                .as_ref()
+                .map(|report| report.evidence.len()),
+            deep_investigation_context: response.deep_investigation.as_ref().map(|report| {
+                if report.selected_context.is_empty() {
+                    "—".into()
+                } else {
+                    report.selected_context.join(",")
+                }
+            }),
+            deep_investigation_stop: response.deep_investigation.as_ref().map(|report| {
+                report
+                    .stop_reason
+                    .as_ref()
+                    .map(|s| s.as_str().to_string())
+                    .unwrap_or_else(|| "—".into())
+            }),
+            deep_investigation_elapsed_ms: response
+                .deep_investigation
+                .as_ref()
+                .map(|report| report.elapsed_ms),
+            deep_investigation_budget: response.deep_investigation.as_ref().map(|report| {
+                format!(
+                    "budget steps={}/{} files={}/{} symbols={}/{} depth={}/{} ms={}/{}",
+                    report.budget.steps_used,
+                    report.budget.max_steps,
+                    report.budget.files_used,
+                    report.budget.max_files,
+                    report.budget.symbols_used,
+                    report.budget.max_symbols,
+                    report.budget.depth_used,
+                    report.budget.max_depth,
+                    report.budget.elapsed_ms,
+                    report.budget.max_elapsed_ms
+                )
+            }),
+            codebase_qa_summary: response
+                .codebase_qa
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            codebase_qa_complexity: response
+                .codebase_qa
+                .as_ref()
+                .and_then(|report| report.complexity.map(|c| c.as_str().to_string())),
+            codebase_qa_route: response
+                .codebase_qa
+                .as_ref()
+                .and_then(|report| report.route.map(|r| r.as_str().to_string())),
+            codebase_qa_searches: response
+                .codebase_qa
+                .as_ref()
+                .map(|report| report.searches.len()),
+            codebase_qa_files: response
+                .codebase_qa
+                .as_ref()
+                .map(|report| report.files_inspected.len()),
+            codebase_qa_symbols: response
+                .codebase_qa
+                .as_ref()
+                .map(|report| report.symbols_followed.len()),
+            codebase_qa_evidence: response
+                .codebase_qa
+                .as_ref()
+                .map(|report| report.evidence.len()),
+            codebase_qa_conflicts: response
+                .codebase_qa
+                .as_ref()
+                .map(|report| report.conflicts.len()),
+            codebase_qa_gaps: response
+                .codebase_qa
+                .as_ref()
+                .map(|report| report.gaps.len()),
+            codebase_qa_investigation_needed: response
+                .codebase_qa
+                .as_ref()
+                .map(|report| report.investigation_needed),
+            coding_edit_summary: response
+                .coding_edit
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            coding_edit_kind: response
+                .coding_edit
+                .as_ref()
+                .and_then(|report| report.kind.map(|k| k.as_str().to_string())),
+            coding_edit_status: response
+                .coding_edit
+                .as_ref()
+                .map(|report| report.status.as_str().to_string()),
+            coding_edit_target: response
+                .coding_edit
+                .as_ref()
+                .and_then(|report| report.target_file.clone()),
+            coding_edit_symbols: response
+                .coding_edit
+                .as_ref()
+                .map(|report| report.target_symbols.len()),
+            coding_edit_ambiguities: response
+                .coding_edit
+                .as_ref()
+                .map(|report| report.ambiguities.len()),
+            coding_edit_investigation: response
+                .coding_edit
+                .as_ref()
+                .map(|report| report.investigation_notes.len()),
+            coding_edit_scope: response
+                .coding_edit
+                .as_ref()
+                .and_then(|report| report.expected_scope.map(|s| s.as_str().to_string())),
+            change_investigation_summary: response
+                .change_investigation
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            change_investigation_mode: response
+                .change_investigation
+                .as_ref()
+                .map(|report| report.mode.as_str().to_string()),
+            change_investigation_files: response
+                .change_investigation
+                .as_ref()
+                .map(|report| report.affected_files.len()),
+            change_investigation_symbols: response
+                .change_investigation
+                .as_ref()
+                .map(|report| report.affected_symbols.len()),
+            change_investigation_evidence: response
+                .change_investigation
+                .as_ref()
+                .map(|report| report.evidence.len()),
+            change_investigation_unknowns: response
+                .change_investigation
+                .as_ref()
+                .map(|report| report.unknowns.len()),
+            change_investigation_steps: response
+                .change_investigation
+                .as_ref()
+                .map(|report| report.steps.len()),
+            change_investigation_truncated: response
+                .change_investigation
+                .as_ref()
+                .map(|report| report.truncated),
+            change_investigation_stop: response
+                .change_investigation
+                .as_ref()
+                .and_then(|report| report.stop_reason.clone()),
+            change_investigation_elapsed_ms: response
+                .change_investigation
+                .as_ref()
+                .map(|report| report.elapsed_ms),
+            coding_plan_summary: response
+                .coding_plan
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            coding_plan_origin: response
+                .coding_plan
+                .as_ref()
+                .map(|report| report.origin.as_str().to_string()),
+            coding_plan_kind: response
+                .coding_plan
+                .as_ref()
+                .and_then(|report| report.kind.map(|k| k.as_str().to_string())),
+            coding_plan_steps: response
+                .coding_plan
+                .as_ref()
+                .map(|report| report.plan_steps.len()),
+            coding_plan_creates: response
+                .coding_plan
+                .as_ref()
+                .map(|report| report.files_to_create.len()),
+            coding_plan_modifies: response
+                .coding_plan
+                .as_ref()
+                .map(|report| report.files_to_modify.len()),
+            coding_plan_unresolved: response
+                .coding_plan
+                .as_ref()
+                .map(|report| report.unresolved_questions.len()),
+            coding_plan_conflicts: response
+                .coding_plan
+                .as_ref()
+                .map(|report| report.constitutional_conflicts.len()),
+            patch_generation_summary: response
+                .patch_generation
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            patch_generation_valid: response
+                .patch_generation
+                .as_ref()
+                .map(|report| report.valid_count()),
+            patch_generation_invalid: response
+                .patch_generation
+                .as_ref()
+                .map(|report| report.invalid_count()),
+            patch_generation_converted: response
+                .patch_generation
+                .as_ref()
+                .map(|report| report.converted_to_execution),
+            patch_generation_reasoning: response
+                .patch_generation
+                .as_ref()
+                .map(|report| report.reasoning_used),
+            coding_diff_review_summary: response
+                .coding_diff_review
+                .as_ref()
+                .map(|surface| surface.to_diagnostics_summary()),
+            coding_diff_review_files: response
+                .coding_diff_review
+                .as_ref()
+                .map(|surface| surface.files.len()),
+            coding_diff_review_added: response
+                .coding_diff_review
+                .as_ref()
+                .map(|surface| surface.total_added),
+            coding_diff_review_removed: response
+                .coding_diff_review
+                .as_ref()
+                .map(|surface| surface.total_removed),
+            execution_plan_lifecycle: response.execution_plan.as_ref().map(|plan| {
+                format!(
+                    "execution_plan_lifecycle plan={} status={} revision={} parent={} awaiting_review={} risk={}",
+                    plan.id().as_str(),
+                    plan.status().as_str(),
+                    plan.revision(),
+                    plan.parent_plan_id()
+                        .map(|id| id.as_str().to_string())
+                        .unwrap_or_else(|| "none".into()),
+                    response.awaiting_review,
+                    plan.estimated_risk().as_str(),
+                )
+            }),
+            coding_mutation_recovery_summary: response
+                .coding_mutation_recovery
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            coding_mutation_recovery_phase: response
+                .coding_mutation_recovery
+                .as_ref()
+                .and_then(|report| report.phase.map(|p| p.as_str().to_string())),
+            coding_mutation_recovery_kind: response
+                .coding_mutation_recovery
+                .as_ref()
+                .and_then(|report| report.kind.map(|k| k.as_str().to_string())),
+            coding_mutation_recovery_requires_new_plan: response
+                .coding_mutation_recovery
+                .as_ref()
+                .map(|report| report.requires_new_plan),
         };
         if let Ok(mut guard) = self.last_planner_activity.lock() {
             *guard = Some(activity);

@@ -91,6 +91,8 @@ Planner Intent / Capability ownership is unchanged. Coding Plan only annotates
 - [planner.md](planner.md) — orchestration; Execution Plans are separate (tool-gated)
 - [prompt.md](prompt.md) — Coding Plan prompt section
 - [code-generation.md](code-generation.md) — C1.5 apply plan → reviewed writes
+- [change-coding-plan.md](change-coding-plan.md) — C3.3 mutation plan from investigation
+- [patch-generation.md](patch-generation.md) — C3.4 targeted patches + review
 
 ## Constitutional audit (C1.4)
 

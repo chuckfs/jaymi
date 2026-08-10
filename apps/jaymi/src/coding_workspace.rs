@@ -208,6 +208,14 @@ pub fn build_coding_diagnostics_view(
                             activity.plan_id.as_deref().unwrap_or("—")
                         ));
                     }
+                    lines.extend(codebase_reading_activity_lines(activity));
+                    lines.extend(coding_edit_activity_lines(activity));
+                    lines.extend(change_investigation_activity_lines(activity));
+                    lines.extend(coding_plan_activity_lines(activity));
+                    lines.extend(patch_generation_activity_lines(activity));
+                    lines.extend(coding_diff_review_activity_lines(activity));
+                    lines.extend(execution_plan_lifecycle_activity_lines(activity));
+                    lines.extend(coding_mutation_recovery_activity_lines(activity));
                 }
                 None => lines.push("last: no planner requests yet".into()),
             }
@@ -493,6 +501,469 @@ pub struct LastPlannerActivity {
     pub policy_summary: Option<String>,
     /// Number of memory records attached to the response.
     pub memory_hits: usize,
+    /// Intelligent Code Search diagnostics summary (C2.1), when any.
+    pub code_search_summary: Option<String>,
+    /// Total code-search hits before conversation cap.
+    pub code_search_hits: Option<usize>,
+    /// Code-search evidence rows shown in conversation.
+    pub code_search_shown: Option<usize>,
+    /// Symbol Navigation diagnostics summary (C2.2), when any.
+    pub symbol_navigation_summary: Option<String>,
+    /// Total symbol-navigation hits before conversation cap.
+    pub symbol_navigation_hits: Option<usize>,
+    /// Symbol-navigation evidence rows shown in conversation.
+    pub symbol_navigation_shown: Option<usize>,
+    /// Relationship Trace diagnostics summary (C2.3), when any.
+    pub relationship_trace_summary: Option<String>,
+    /// Relationship Trace step count.
+    pub relationship_trace_steps: Option<usize>,
+    /// Deep Investigation diagnostics summary (C2.4), when any.
+    pub deep_investigation_summary: Option<String>,
+    /// Deep Investigation step count (lifecycle).
+    pub deep_investigation_steps: Option<usize>,
+    /// Deep Investigation search operation count.
+    pub deep_investigation_searches: Option<usize>,
+    /// Distinct files inspected.
+    pub deep_investigation_files: Option<usize>,
+    /// Symbols followed.
+    pub deep_investigation_symbols: Option<usize>,
+    /// Evidence rows gathered (before conversation concerns).
+    pub deep_investigation_evidence: Option<usize>,
+    /// ContextBundle sections observed after assemble / re-assemble.
+    pub deep_investigation_context: Option<String>,
+    /// Stop / result status (`complete`, `insufficient_evidence`, …).
+    pub deep_investigation_stop: Option<String>,
+    /// Investigation elapsed time (ms).
+    pub deep_investigation_elapsed_ms: Option<u64>,
+    /// Bounded budget snapshot line (steps/files/symbols/depth/time).
+    pub deep_investigation_budget: Option<String>,
+    /// Codebase Q&A diagnostics summary (C2.5), when any.
+    pub codebase_qa_summary: Option<String>,
+    /// Q&A complexity class (`simple` / `search` / `flow` / `investigate`).
+    pub codebase_qa_complexity: Option<String>,
+    /// Q&A route (`ambient` / `code_search` / `relationship` / `deep_investigation`).
+    pub codebase_qa_route: Option<String>,
+    /// Search operations performed.
+    pub codebase_qa_searches: Option<usize>,
+    /// Files inspected.
+    pub codebase_qa_files: Option<usize>,
+    /// Symbols followed.
+    pub codebase_qa_symbols: Option<usize>,
+    /// Evidence rows gathered.
+    pub codebase_qa_evidence: Option<usize>,
+    /// Conflict count surfaced.
+    pub codebase_qa_conflicts: Option<usize>,
+    /// Explicit gap count.
+    pub codebase_qa_gaps: Option<usize>,
+    /// Whether investigation was required for this question.
+    pub codebase_qa_investigation_needed: Option<bool>,
+    /// Coding Edit Intent diagnostics summary (C3.1), when any.
+    pub coding_edit_summary: Option<String>,
+    /// Detected mutation kind (`fix` / `change` / `refactor` / …).
+    pub coding_edit_kind: Option<String>,
+    /// Objective status (`understood` / `needs_clarification`).
+    pub coding_edit_status: Option<String>,
+    /// Resolved target file, when any.
+    pub coding_edit_target: Option<String>,
+    /// Bound symbol count.
+    pub coding_edit_symbols: Option<usize>,
+    /// Ambiguity count.
+    pub coding_edit_ambiguities: Option<usize>,
+    /// Investigation note count (ambient WI / environmental).
+    pub coding_edit_investigation: Option<usize>,
+    /// Expected edit scope label.
+    pub coding_edit_scope: Option<String>,
+    /// Change Investigation diagnostics summary (C3.2), when any.
+    pub change_investigation_summary: Option<String>,
+    /// Investigation mode (`full` / `light` / `skipped`).
+    pub change_investigation_mode: Option<String>,
+    /// Affected file count.
+    pub change_investigation_files: Option<usize>,
+    /// Affected symbol count.
+    pub change_investigation_symbols: Option<usize>,
+    /// Evidence row count.
+    pub change_investigation_evidence: Option<usize>,
+    /// Explicit unknown count.
+    pub change_investigation_unknowns: Option<usize>,
+    /// Investigation step count.
+    pub change_investigation_steps: Option<usize>,
+    /// Whether investigation was truncated under C2 budget.
+    pub change_investigation_truncated: Option<bool>,
+    /// Stop reason label, when any.
+    pub change_investigation_stop: Option<String>,
+    /// Investigation elapsed time (ms).
+    pub change_investigation_elapsed_ms: Option<u64>,
+    /// Coding Plan diagnostics summary (C1.4 / C3.3), when any.
+    pub coding_plan_summary: Option<String>,
+    /// Plan origin (`generation_planning` / `change_investigation`).
+    pub coding_plan_origin: Option<String>,
+    /// Plan kind label.
+    pub coding_plan_kind: Option<String>,
+    /// Ordered step count.
+    pub coding_plan_steps: Option<usize>,
+    /// Files-to-create count.
+    pub coding_plan_creates: Option<usize>,
+    /// Files-to-modify count.
+    pub coding_plan_modifies: Option<usize>,
+    /// Unresolved question count.
+    pub coding_plan_unresolved: Option<usize>,
+    /// Constitutional conflict count.
+    pub coding_plan_conflicts: Option<usize>,
+    /// Patch Generation diagnostics summary (C3.4), when any.
+    pub patch_generation_summary: Option<String>,
+    /// Valid patch count.
+    pub patch_generation_valid: Option<usize>,
+    /// Invalid / stale patch count.
+    pub patch_generation_invalid: Option<usize>,
+    /// Whether valid patches were converted into a review batch.
+    pub patch_generation_converted: Option<bool>,
+    /// Whether ReasoningEngine elaborated patch content.
+    pub patch_generation_reasoning: Option<bool>,
+    /// Coding Diff Review diagnostics summary (C3.5), when any.
+    pub coding_diff_review_summary: Option<String>,
+    /// Files represented in the coding diff review.
+    pub coding_diff_review_files: Option<usize>,
+    /// Total proposed additions.
+    pub coding_diff_review_added: Option<usize>,
+    /// Total proposed deletions.
+    pub coding_diff_review_removed: Option<usize>,
+    /// Execution-plan lifecycle line (status · revision · awaiting_review).
+    pub execution_plan_lifecycle: Option<String>,
+    /// Coding Mutation Recovery diagnostics summary (C3.7), when any.
+    pub coding_mutation_recovery_summary: Option<String>,
+    /// Recovery phase label.
+    pub coding_mutation_recovery_phase: Option<String>,
+    /// Recovery kind label.
+    pub coding_mutation_recovery_kind: Option<String>,
+    /// Whether recovery requires a new reviewed plan.
+    pub coding_mutation_recovery_requires_new_plan: Option<bool>,
+}
+
+/// Observational C2.1–C2.5 diagnostic lines for the Coding Diagnostics panel.
+///
+/// Renders Planner-produced operational data only. Never used as the conversation
+/// transcript and never influences Planner decisions or tool execution.
+pub fn codebase_reading_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.code_search_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "code_search hits={} shown={}",
+            activity
+                .code_search_hits
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .code_search_shown
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into())
+        ));
+    }
+    if let Some(summary) = &activity.symbol_navigation_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "symbol_nav hits={} shown={}",
+            activity
+                .symbol_navigation_hits
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .symbol_navigation_shown
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into())
+        ));
+    }
+    if let Some(summary) = &activity.relationship_trace_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "relationship_trace steps={}",
+            activity
+                .relationship_trace_steps
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into())
+        ));
+    }
+    if let Some(summary) = &activity.deep_investigation_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "deep_investigation steps={} searches={} files={} symbols={} evidence={} context={} stop={} ms={}",
+            activity
+                .deep_investigation_steps
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .deep_investigation_searches
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .deep_investigation_files
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .deep_investigation_symbols
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .deep_investigation_evidence
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .deep_investigation_context
+                .as_deref()
+                .unwrap_or("—"),
+            activity
+                .deep_investigation_stop
+                .as_deref()
+                .unwrap_or("—"),
+            activity
+                .deep_investigation_elapsed_ms
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+        ));
+        if let Some(budget) = &activity.deep_investigation_budget {
+            lines.push(budget.clone());
+        }
+    }
+    if let Some(summary) = &activity.codebase_qa_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "codebase_qa complexity={} route={} searches={} files={} symbols={} evidence={} conflicts={} gaps={} investigation_needed={}",
+            activity
+                .codebase_qa_complexity
+                .as_deref()
+                .unwrap_or("—"),
+            activity.codebase_qa_route.as_deref().unwrap_or("—"),
+            activity
+                .codebase_qa_searches
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .codebase_qa_files
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .codebase_qa_symbols
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .codebase_qa_evidence
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .codebase_qa_conflicts
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .codebase_qa_gaps
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .codebase_qa_investigation_needed
+                .map(|b| if b { "true" } else { "false" })
+                .unwrap_or("—"),
+        ));
+    }
+    lines
+}
+
+/// Observational C3.1 Coding Edit Intent lines for Coding Diagnostics.
+pub fn coding_edit_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.coding_edit_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "coding_edit kind={} status={} target={} symbols={} ambiguities={} investigation={} scope={}",
+            activity.coding_edit_kind.as_deref().unwrap_or("—"),
+            activity.coding_edit_status.as_deref().unwrap_or("—"),
+            activity.coding_edit_target.as_deref().unwrap_or("—"),
+            activity
+                .coding_edit_symbols
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .coding_edit_ambiguities
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .coding_edit_investigation
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity.coding_edit_scope.as_deref().unwrap_or("—"),
+        ));
+    }
+    lines
+}
+
+/// Observational C3.2 Change Investigation lines for Coding Diagnostics.
+pub fn change_investigation_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.change_investigation_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "change_investigation mode={} files={} symbols={} evidence={} unknowns={} steps={} truncated={} stop={} ms={}",
+            activity.change_investigation_mode.as_deref().unwrap_or("—"),
+            activity
+                .change_investigation_files
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .change_investigation_symbols
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .change_investigation_evidence
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .change_investigation_unknowns
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .change_investigation_steps
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .change_investigation_truncated
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .change_investigation_stop
+                .as_deref()
+                .unwrap_or("—"),
+            activity
+                .change_investigation_elapsed_ms
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+        ));
+    }
+    lines
+}
+
+/// Observational Coding Plan lines (C1.4 / C3.3) for Coding Diagnostics.
+pub fn coding_plan_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.coding_plan_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "coding_plan origin={} kind={} steps={} create={} modify={} unresolved={} conflicts={}",
+            activity.coding_plan_origin.as_deref().unwrap_or("—"),
+            activity.coding_plan_kind.as_deref().unwrap_or("—"),
+            activity
+                .coding_plan_steps
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .coding_plan_creates
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .coding_plan_modifies
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .coding_plan_unresolved
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .coding_plan_conflicts
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+        ));
+    }
+    lines
+}
+
+/// Observational C3.4 Patch Generation lines for Coding Diagnostics.
+pub fn patch_generation_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.patch_generation_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "patch_generation valid={} invalid={} converted={} reasoning={}",
+            activity
+                .patch_generation_valid
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .patch_generation_invalid
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .patch_generation_converted
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .patch_generation_reasoning
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| "—".into()),
+        ));
+    }
+    lines
+}
+
+/// Observational C3.5 Coding Diff Review lines for Coding Diagnostics.
+pub fn coding_diff_review_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.coding_diff_review_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "coding_diff_review files={} +{} −{}",
+            activity
+                .coding_diff_review_files
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .coding_diff_review_added
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .coding_diff_review_removed
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+        ));
+    }
+    lines
+}
+
+/// Observational Execution Plan lifecycle lines (C3.5 / Review Before Action).
+pub fn execution_plan_lifecycle_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(lifecycle) = &activity.execution_plan_lifecycle {
+        lines.push(lifecycle.clone());
+    } else if activity.plan_id.is_some() || activity.plan_status.is_some() {
+        lines.push(format!(
+            "execution_plan_lifecycle plan={} status={} awaiting_review={} risk={}",
+            activity.plan_id.as_deref().unwrap_or("—"),
+            activity.plan_status.as_deref().unwrap_or("—"),
+            activity.awaiting_review,
+            activity.risk.as_deref().unwrap_or("—"),
+        ));
+    }
+    lines
+}
+
+/// Observational C3.7 Coding Mutation Recovery lines for Coding Diagnostics.
+pub fn coding_mutation_recovery_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.coding_mutation_recovery_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "coding_mutation_recovery phase={} kind={} requires_new_plan={}",
+            activity
+                .coding_mutation_recovery_phase
+                .as_deref()
+                .unwrap_or("—"),
+            activity
+                .coding_mutation_recovery_kind
+                .as_deref()
+                .unwrap_or("—"),
+            activity
+                .coding_mutation_recovery_requires_new_plan
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| "—".into()),
+        ));
+    }
+    lines
 }
 
 /// Events emitted by interactive Coding shell panels.
@@ -3048,5 +3519,210 @@ mod tests {
         assert!(summary.contains("unused import"));
         assert!(summary.contains("tabs:"));
         assert!(!summary.contains("stub explorer"));
+    }
+
+    #[test]
+    fn codebase_reading_diagnostics_parity_c24_c25_and_c21_c23() {
+        let mut activity = LastPlannerActivity {
+            summary: "## Deep Investigation\n\n### Findings\n- evidence\n".into(),
+            duration_ms: 42,
+            code_search_summary: Some("code_search query=auth hits=3 truncated=false".into()),
+            code_search_hits: Some(3),
+            code_search_shown: Some(2),
+            symbol_navigation_summary: Some(
+                "symbol_navigation kind=references symbol=foo hits=4".into(),
+            ),
+            symbol_navigation_hits: Some(4),
+            symbol_navigation_shown: Some(4),
+            relationship_trace_summary: Some(
+                "relationship_trace kind=event_flow seed=\"Save\" steps=5".into(),
+            ),
+            relationship_trace_steps: Some(5),
+            deep_investigation_summary: Some(
+                "deep_investigation kind=performance subject=\"render\" steps=4 searches=1 files=2 symbols=1 context=2 hits=3 gaps=1 stop=complete ms=12".into(),
+            ),
+            deep_investigation_steps: Some(4),
+            deep_investigation_searches: Some(1),
+            deep_investigation_files: Some(2),
+            deep_investigation_symbols: Some(1),
+            deep_investigation_evidence: Some(3),
+            deep_investigation_context: Some("editor_intelligence,search_results".into()),
+            deep_investigation_stop: Some("complete".into()),
+            deep_investigation_elapsed_ms: Some(12),
+            deep_investigation_budget: Some(
+                "budget steps=4/12 files=2/10 symbols=1/8 depth=1/3 ms=12/3500".into(),
+            ),
+            codebase_qa_summary: Some(
+                "codebase_qa kind=how_handles complexity=investigate route=deep_investigation subject=\"permissions\" evidence=2 conflicts=0 gaps=1 investigation_needed=true searches=1 files=2 symbols=1".into(),
+            ),
+            codebase_qa_complexity: Some("investigate".into()),
+            codebase_qa_route: Some("deep_investigation".into()),
+            codebase_qa_searches: Some(1),
+            codebase_qa_files: Some(2),
+            codebase_qa_symbols: Some(1),
+            codebase_qa_evidence: Some(2),
+            codebase_qa_conflicts: Some(0),
+            codebase_qa_gaps: Some(1),
+            codebase_qa_investigation_needed: Some(true),
+            ..LastPlannerActivity::default()
+        };
+
+        let lines = codebase_reading_activity_lines(&activity);
+        let joined = lines.join("\n");
+
+        // C2.1–C2.3 remain intact.
+        assert!(joined.contains("code_search query=auth"));
+        assert!(joined.contains("code_search hits=3 shown=2"));
+        assert!(joined.contains("symbol_navigation kind=references"));
+        assert!(joined.contains("symbol_nav hits=4 shown=4"));
+        assert!(joined.contains("relationship_trace kind=event_flow"));
+        assert!(joined.contains("relationship_trace steps=5"));
+
+        // C2.4 / C2.5 parity.
+        assert!(joined.contains("deep_investigation kind=performance"));
+        assert!(joined.contains(
+            "deep_investigation steps=4 searches=1 files=2 symbols=1 evidence=3 context=editor_intelligence,search_results stop=complete ms=12"
+        ));
+        assert!(joined.contains("budget steps=4/12 files=2/10"));
+        assert!(joined.contains("codebase_qa kind=how_handles"));
+        assert!(joined.contains(
+            "codebase_qa complexity=investigate route=deep_investigation searches=1 files=2 symbols=1 evidence=2 conflicts=0 gaps=1 investigation_needed=true"
+        ));
+
+        // Conversation transcript stays separate: activity.summary is not injected
+        // into codebase_reading_activity_lines (diagnostics-only helper).
+        assert!(!joined.contains("## Deep Investigation"));
+        assert!(!joined.contains("### Findings"));
+
+        // Clearing C2.4/C2.5 leaves C2.1–C2.3.
+        activity.deep_investigation_summary = None;
+        activity.deep_investigation_budget = None;
+        activity.codebase_qa_summary = None;
+        let without = codebase_reading_activity_lines(&activity).join("\n");
+        assert!(without.contains("code_search hits=3 shown=2"));
+        assert!(!without.contains("deep_investigation steps="));
+        assert!(!without.contains("codebase_qa complexity="));
+    }
+
+    #[test]
+    fn codebase_reading_diagnostics_empty_without_c2_reports() {
+        let activity = LastPlannerActivity {
+            summary: "hello from conversation".into(),
+            duration_ms: 1,
+            ..LastPlannerActivity::default()
+        };
+        assert!(codebase_reading_activity_lines(&activity).is_empty());
+    }
+
+    #[test]
+    fn change_investigation_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            change_investigation_summary: Some(
+                "change_investigation mode=full kind=add files=3 symbols=1 evidence=2 searches=1 unknowns=0 steps=4 truncated=false stop=complete ms=9".into(),
+            ),
+            change_investigation_mode: Some("full".into()),
+            change_investigation_files: Some(3),
+            change_investigation_symbols: Some(1),
+            change_investigation_evidence: Some(2),
+            change_investigation_unknowns: Some(0),
+            change_investigation_steps: Some(4),
+            change_investigation_truncated: Some(false),
+            change_investigation_stop: Some("complete".into()),
+            change_investigation_elapsed_ms: Some(9),
+            ..LastPlannerActivity::default()
+        };
+        let joined = change_investigation_activity_lines(&activity).join("\n");
+        assert!(joined.contains("change_investigation mode=full"));
+        assert!(joined.contains(
+            "change_investigation mode=full files=3 symbols=1 evidence=2 unknowns=0 steps=4 truncated=false stop=complete ms=9"
+        ));
+        assert!(change_investigation_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn coding_plan_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            coding_plan_summary: Some(
+                "coding_plan origin=change_investigation kind=mutation steps=6 create=1 modify=2 remove=0 symbols=1 tests=1 docs=1 unresolved=0 conflicts=0 risk=1".into(),
+            ),
+            coding_plan_origin: Some("change_investigation".into()),
+            coding_plan_kind: Some("mutation".into()),
+            coding_plan_steps: Some(6),
+            coding_plan_creates: Some(1),
+            coding_plan_modifies: Some(2),
+            coding_plan_unresolved: Some(0),
+            coding_plan_conflicts: Some(0),
+            ..LastPlannerActivity::default()
+        };
+        let joined = coding_plan_activity_lines(&activity).join("\n");
+        assert!(joined.contains("coding_plan origin=change_investigation"));
+        assert!(joined.contains(
+            "coding_plan origin=change_investigation kind=mutation steps=6 create=1 modify=2 unresolved=0 conflicts=0"
+        ));
+        assert!(coding_plan_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn patch_generation_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            patch_generation_summary: Some(
+                "patch_generation goal_chars=12 patches=2 valid=1 invalid=1 failures=1 reasoning=false converted=false".into(),
+            ),
+            patch_generation_valid: Some(1),
+            patch_generation_invalid: Some(1),
+            patch_generation_converted: Some(false),
+            patch_generation_reasoning: Some(false),
+            ..LastPlannerActivity::default()
+        };
+        let joined = patch_generation_activity_lines(&activity).join("\n");
+        assert!(joined.contains("patch_generation goal_chars=12"));
+        assert!(joined.contains(
+            "patch_generation valid=1 invalid=1 converted=false reasoning=false"
+        ));
+        assert!(patch_generation_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn coding_diff_review_and_lifecycle_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            coding_diff_review_summary: Some(
+                "coding_diff_review files=2 +27 −9 ops=2 rationale=1 deps=0 validation=1".into(),
+            ),
+            coding_diff_review_files: Some(2),
+            coding_diff_review_added: Some(27),
+            coding_diff_review_removed: Some(9),
+            execution_plan_lifecycle: Some(
+                "execution_plan_lifecycle plan=abc status=awaiting_review revision=1 parent=none awaiting_review=true risk=medium".into(),
+            ),
+            plan_id: Some("abc".into()),
+            plan_status: Some("awaiting_review".into()),
+            awaiting_review: true,
+            ..LastPlannerActivity::default()
+        };
+        let diff = coding_diff_review_activity_lines(&activity).join("\n");
+        assert!(diff.contains("coding_diff_review files=2"));
+        assert!(diff.contains("coding_diff_review files=2 +27 −9"));
+        assert!(coding_diff_review_activity_lines(&LastPlannerActivity::default()).is_empty());
+
+        let life = execution_plan_lifecycle_activity_lines(&activity).join("\n");
+        assert!(life.contains("execution_plan_lifecycle plan=abc"));
+        assert!(life.contains("awaiting_review=true"));
+    }
+
+    #[test]
+    fn coding_mutation_recovery_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            coding_mutation_recovery_summary: Some(
+                "coding_mutation_recovery phase=failed kind=stale_source blockers=1 succeeded=0 failed=1 skipped=0 requires_new_plan=true".into(),
+            ),
+            coding_mutation_recovery_phase: Some("failed".into()),
+            coding_mutation_recovery_kind: Some("stale_source".into()),
+            coding_mutation_recovery_requires_new_plan: Some(true),
+            ..LastPlannerActivity::default()
+        };
+        let joined = coding_mutation_recovery_activity_lines(&activity).join("\n");
+        assert!(joined.contains("coding_mutation_recovery phase=failed"));
+        assert!(joined.contains("requires_new_plan=true"));
+        assert!(coding_mutation_recovery_activity_lines(&LastPlannerActivity::default()).is_empty());
     }
 }

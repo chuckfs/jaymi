@@ -466,6 +466,25 @@ fn parse_search_request(lower: &str, original: &str) -> Option<SearchRequest> {
     if crate::pair_programming::looks_like_dead_code_request(lower) {
         return None;
     }
+    // Symbol Navigation (C2.2) / Relationship Tracing (C2.3) / Deep Investigation (C2.4)
+    // / Codebase Q&A (C2.5).
+    if crate::symbol_navigation::detect_symbol_navigation_request(&UserRequest::new(original))
+        .is_some()
+        || crate::relationship_tracing::detect_relationship_trace_request(&UserRequest::new(
+            original,
+        ))
+        .is_some()
+        || crate::deep_investigation::detect_deep_investigation_request(&UserRequest::new(original))
+            .is_some()
+        || crate::codebase_qa::detect_codebase_qa_request(&UserRequest::new(original)).is_some()
+    {
+        return None;
+    }
+    // Intelligent Code Search (C2.1) — Planner-owned NL → SearchKnowledge.
+    // Deixis ("call this function") stays Unknown for the WI soft path.
+    if let Some(request) = crate::code_search::parse_intelligent_search(lower, original) {
+        return Some(request);
+    }
     if let Some(_rest) = lower
         .strip_prefix("search ")
         .or_else(|| lower.strip_prefix("find "))
@@ -898,6 +917,62 @@ mod tests {
                 request: SearchRequest::free_text("x"),
             }),
             Some(Capability::Search)
+        );
+    }
+
+    #[test]
+    fn intelligent_code_search_routes_to_search_knowledge() {
+        let engine = DecisionEngine;
+        let auth = engine.determine_intent(&UserRequest::new(
+            "Where is authentication handled?",
+        ));
+        match auth {
+            Intent::SearchKnowledge { request } => {
+                assert!(
+                    request
+                        .free_text
+                        .as_ref()
+                        .unwrap()
+                        .to_ascii_lowercase()
+                        .contains("authentication")
+                );
+                assert_eq!(request.limit, Some(crate::code_search::SEARCH_HIT_LIMIT));
+                assert!(request.metadata.files_only);
+            }
+            other => panic!("expected SearchKnowledge, got {other:?}"),
+        }
+        assert_eq!(
+            engine.required_capability(&Intent::SearchKnowledge {
+                request: SearchRequest::free_text("authentication"),
+            }),
+            Some(Capability::Search)
+        );
+
+        let symbol = engine.determine_intent(&UserRequest::new(
+            "Where is ContextBundle created?",
+        ));
+        match symbol {
+            Intent::SearchKnowledge { request } => {
+                assert!(request.free_text.as_ref().unwrap().contains("ContextBundle"));
+            }
+            other => panic!("expected SearchKnowledge, got {other:?}"),
+        }
+
+        // Deixis stays Unknown so WI soft path can run after assemble.
+        assert_eq!(
+            engine.determine_intent(&UserRequest::new(
+                "Show me all the places that call this function.",
+            )),
+            Intent::Unknown
+        );
+    }
+
+    #[test]
+    fn find_dead_code_is_not_search_knowledge() {
+        let engine = DecisionEngine;
+        assert_eq!(
+            engine.determine_intent(&UserRequest::new("Find dead code.")),
+            Intent::Unknown
         );
     }
 

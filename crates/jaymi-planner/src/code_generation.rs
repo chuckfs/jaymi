@@ -28,6 +28,8 @@ pub enum GenerationOpKind {
     ModifyFile,
     /// Delete a path (manage_path delete).
     DeleteFile,
+    /// Rename / move a path (manage_path rename) — C3.4 proposals.
+    RenameMove,
 }
 
 impl GenerationOpKind {
@@ -37,6 +39,7 @@ impl GenerationOpKind {
             Self::CreateFile => "create_file",
             Self::ModifyFile => "modify_file",
             Self::DeleteFile => "delete_file",
+            Self::RenameMove => "rename_move",
         }
     }
 
@@ -46,6 +49,7 @@ impl GenerationOpKind {
             Self::CreateFile => "Create file",
             Self::ModifyFile => "Modify file",
             Self::DeleteFile => "Delete file",
+            Self::RenameMove => "Rename / move",
         }
     }
 }
@@ -53,10 +57,13 @@ impl GenerationOpKind {
 /// One Planner-owned generation operation (never executed by providers/LLMs).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GenerationOp {
-    /// Create / modify / delete.
+    /// Create / modify / delete / rename.
     pub kind: GenerationOpKind,
     /// Absolute or workspace-relative path the Planner resolved.
     pub path: PathBuf,
+    /// Destination path for rename/move (manage_path rename content).
+    #[serde(default)]
+    pub destination: Option<PathBuf>,
     /// File body for create/modify (Planner-authored; not a live LLM edit).
     pub content: Option<String>,
     /// Why this op is in the batch (from Coding Plan / goal).
@@ -73,6 +80,7 @@ impl GenerationOp {
         Self {
             kind: GenerationOpKind::CreateFile,
             path: path.into(),
+            destination: None,
             content: Some(content.into()),
             rationale: rationale.into(),
         }
@@ -87,6 +95,7 @@ impl GenerationOp {
         Self {
             kind: GenerationOpKind::ModifyFile,
             path: path.into(),
+            destination: None,
             content: Some(content.into()),
             rationale: rationale.into(),
         }
@@ -97,6 +106,22 @@ impl GenerationOp {
         Self {
             kind: GenerationOpKind::DeleteFile,
             path: path.into(),
+            destination: None,
+            content: None,
+            rationale: rationale.into(),
+        }
+    }
+
+    /// Build a rename/move op.
+    pub fn rename_move(
+        path: impl Into<PathBuf>,
+        destination: impl Into<PathBuf>,
+        rationale: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind: GenerationOpKind::RenameMove,
+            path: path.into(),
+            destination: Some(destination.into()),
             content: None,
             rationale: rationale.into(),
         }
@@ -104,12 +129,21 @@ impl GenerationOp {
 
     /// Step description for an Execution Plan.
     pub fn step_description(&self) -> String {
-        format!(
-            "{} `{}` — {}",
-            self.kind.label(),
-            self.path.display(),
-            self.rationale
-        )
+        match (&self.kind, &self.destination) {
+            (GenerationOpKind::RenameMove, Some(dest)) => format!(
+                "{} `{}` → `{}` — {}",
+                self.kind.label(),
+                self.path.display(),
+                dest.display(),
+                self.rationale
+            ),
+            _ => format!(
+                "{} `{}` — {}",
+                self.kind.label(),
+                self.path.display(),
+                self.rationale
+            ),
+        }
     }
 }
 
@@ -208,6 +242,10 @@ fn looks_like_apply_generation(lower: &str) -> bool {
             | "generate code"
             | "generate it"
             | "generate this"
+            | "generate patches"
+            | "generate the patches"
+            | "propose patches"
+            | "generate patch"
             | "implement the plan"
             | "implement the coding plan"
             | "apply the plan"
@@ -216,6 +254,7 @@ fn looks_like_apply_generation(lower: &str) -> bool {
             | "run the coding plan"
     ) || trimmed.starts_with("generate the code ")
         || trimmed.starts_with("generate code for")
+        || trimmed.starts_with("generate patches ")
         || trimmed.starts_with("implement the coding plan")
         || trimmed.starts_with("apply the coding plan")
 }
@@ -349,10 +388,28 @@ fn tool_call_for_op(
             permission_action: jaymi_permissions::PermissionAction::Delete,
             action_label: op.step_description(),
         }),
+        GenerationOpKind::RenameMove => {
+            let dest = op
+                .destination
+                .as_ref()
+                .ok_or_else(|| "rename_move requires destination".to_string())?;
+            Ok(GenerationToolCall {
+                tool_id: MANAGE_PATH_TOOL_ID.to_string(),
+                input: ToolInput::manage_path(
+                    "rename",
+                    op.path.clone(),
+                    Some(dest.display().to_string()),
+                ),
+                path: op.path.clone(),
+                permission_action: jaymi_permissions::PermissionAction::Write,
+                action_label: op.step_description(),
+            })
+        }
     }
 }
 
-fn extract_path_candidate(text: &str) -> Option<String> {
+/// Extract a path-looking token from plan prose (C1.5 / C3.4).
+pub(crate) fn extract_path_candidate(text: &str) -> Option<String> {
     // Prefer `backtick` paths.
     if let Some(start) = text.find('`') {
         let rest = &text[start + 1..];
@@ -403,7 +460,7 @@ fn normalize_rel(s: &str) -> String {
     }
 }
 
-fn resolve_under_root(root: &Path, rel: &str) -> PathBuf {
+pub(crate) fn resolve_under_root(root: &Path, rel: &str) -> PathBuf {
     let candidate = PathBuf::from(rel);
     if candidate.is_absolute() {
         candidate

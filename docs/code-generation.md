@@ -71,6 +71,8 @@ PausedExecution + Review Card
 ## Related
 
 - [coding-plan.md](coding-plan.md) — C1.4 planning only
+- [change-coding-plan.md](change-coding-plan.md) — C3.3 mutation Coding Plan
+- [patch-generation.md](patch-generation.md) — C3.4 targeted patches for mutation plans
 - [planner.md](planner.md) — Execution Plans / Review Cards
 - [coding-actions.md](coding-actions.md) — toolbar intents (no direct writes)
 - [tools.md](tools.md) — `write_file` / `manage_path`

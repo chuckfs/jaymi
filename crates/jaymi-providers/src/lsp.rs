@@ -189,6 +189,11 @@ impl LspProvider {
                 let (line, character) = require_position(request)?;
                 self.definition(&root, &path, line, character)
             }
+            LspOperation::Implementation => {
+                let path = require_path(request)?;
+                let (line, character) = require_position(request)?;
+                self.implementation(&root, &path, line, character)
+            }
             LspOperation::Rename => {
                 let path = require_path(request)?;
                 let (line, character) = require_position(request)?;
@@ -528,6 +533,44 @@ impl LspProvider {
             Ok(LspOperationResult {
                 operation: Some(LspOperation::Definition),
                 message: format!("{} definition(s)", definitions.len()),
+                definitions,
+                ..LspOperationResult::default()
+            })
+        })
+    }
+
+    fn implementation(
+        &self,
+        root: &Path,
+        path: &Path,
+        line: u32,
+        character: u32,
+    ) -> JaymiResult<LspOperationResult> {
+        self.with_session_mut(root, |session| {
+            let definitions = match &mut session.backend {
+                SessionBackend::Mock(mock) => {
+                    let text = session
+                        .documents
+                        .get(path)
+                        .map(|doc| doc.text.as_str())
+                        .unwrap_or("");
+                    // Mock has no separate impl graph — reuse definition sites as stand-in.
+                    mock.definition(path, text, line, character)
+                }
+                SessionBackend::Process(process) => {
+                    let result = process.request(
+                        "textDocument/implementation",
+                        json!({
+                            "textDocument": { "uri": path_to_uri(path) },
+                            "position": { "line": line, "character": character },
+                        }),
+                    )?;
+                    parse_locations(result)
+                }
+            };
+            Ok(LspOperationResult {
+                operation: Some(LspOperation::Implementation),
+                message: format!("{} implementation(s)", definitions.len()),
                 definitions,
                 ..LspOperationResult::default()
             })

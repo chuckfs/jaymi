@@ -238,7 +238,7 @@ Capabilities also change the user experience.
 
 Conversation stays permanent. Workspaces expand beside it.
 
-**Current:** conversation shell + Coding Workspace shell (five dock pages — Terminal / Problems / Search / Git / Diagnostics — plus an Output placeholder not listed in `pages()`) + `CodingState` + workspace expansion model + capability state / inspector + **WorkspaceSnapshot** (B2.1 / B2.2 / B2.13.2) + **EditorSnapshot** (B2.3 / B2.13.3 editor intelligence) + **ProjectSnapshot** (B2.4 project intelligence) + **GitSnapshot** (B2.5 — **Current**) + **RuntimeSnapshot** (B2.6 — **Current**) + **Context Candidate Graph** (B2.7 / B2.13.1 — **Current**) + **Context Selection** (B2.8) + **Workspace Memory** (B2.9) + **Environmental Resolution** (B2.10) + **Workspace Diagnostics** (B2.11) + **Constitutional Audit** (B2.12) + **docs sync** (B2.13.4) + **Coding Actions** (C0.1) + **Code Talk** (C0.2) + **Coding Understanding** (C1.1) + **Project Understanding** (C1.2) + **Coding Review** (C1.3) + **Coding Plan / Generation Planning** (C1.4) + **Code Generation** (C1.5) + **Coding Execution Plans** (C1.6) + **Multi-file Intelligence** (C1.7) + **Pair Programming Experience** (C1.8).
+**Current:** conversation shell + Coding Workspace shell (five dock pages — Terminal / Problems / Search / Git / Diagnostics — plus an Output placeholder not listed in `pages()`) + `CodingState` + workspace expansion model + capability state / inspector + **WorkspaceSnapshot** (B2.1 / B2.2 / B2.13.2) + **EditorSnapshot** (B2.3 / B2.13.3 editor intelligence) + **ProjectSnapshot** (B2.4 project intelligence) + **GitSnapshot** (B2.5 — **Current**) + **RuntimeSnapshot** (B2.6 — **Current**) + **Context Candidate Graph** (B2.7 / B2.13.1 — **Current**) + **Context Selection** (B2.8) + **Workspace Memory** (B2.9) + **Environmental Resolution** (B2.10) + **Workspace Diagnostics** (B2.11) + **Constitutional Audit** (B2.12) + **docs sync** (B2.13.4) + **Coding Actions** (C0.1) + **Code Talk** (C0.2) + **Coding Understanding** (C1.1) + **Project Understanding** (C1.2) + **Coding Review** (C1.3) + **Coding Plan / Generation Planning** (C1.4) + **Code Generation** (C1.5) + **Coding Execution Plans** (C1.6) + **Multi-file Intelligence** (C1.7) + **Pair Programming Experience** (C1.8) + **Intelligent Code Search** (C2.1) + **Symbol Navigation** (C2.2) + **Code Relationship Tracing** (C2.3) + **Deep Codebase Investigation** (C2.4) + **Codebase Q&A** (C2.5) + **Codebase Evidence Handoff** (C2.7.2) + **Coding Edit Intent** (C3.1) + **Change Investigation** (C3.2) + **Coding Plan from Investigation** (C3.3) + **Patch Generation** (C3.4) + **Coding Diff Review** (C3.5) + **Apply Approved Coding Changes** (C3.6) + **Coding Mutation Recovery** (C3.7).
 
 **Target UX:**
 
@@ -423,6 +423,87 @@ Understanding · Review · Planning · Generation · Modification · Execution.
 Suggested next actions are Planner-generated; Quick Actions mirror Planner
 state (not hardcoded UI). Constitutional audit in
 [docs/pair-programming.md](docs/pair-programming.md).
+
+**C2.1:** Intelligent Code Search — Planner-owned NL project search via existing
+Search Knowledge / citations / Context pipeline (lexical + WI references).
+Read-only; Conversation First; capped evidence; diagnostics for what was
+searched. Constitutional audit in [docs/code-search.md](docs/code-search.md).
+
+**C2.2:** Symbol Navigation — Planner-owned definition / references /
+implementations / callers / enclosing / dependents via Workspace Intelligence
+and read-only `language_server` (no rename, no Reasoning→LSP). Constitutional
+audit in [docs/symbol-navigation.md](docs/symbol-navigation.md).
+
+**C2.3:** Code Relationship Tracing — bounded multi-hop investigation
+(identify → define → callers → related → optional Search/LSP) with hard limits
+and an investigation-chain diagnostic. Constitutional audit in
+[docs/relationship-tracing.md](docs/relationship-tracing.md).
+
+**C2.4:** Deep Codebase Investigation — general read-only multi-source
+investigation (Planner plans evidence → Search / symbols / project → reads →
+relationships → Context Policy → ContextEngine → Reasoning). Bounded,
+observable; diagnostics not dumped into chat. Constitutional audit in
+[docs/deep-investigation.md](docs/deep-investigation.md).
+
+**C2.5:** Codebase Q&A — natural conversational questions routed by complexity
+across Search / symbols / relationship / investigation; grounded claims;
+conflicts surfaced; no special workspace. Constitutional audit in
+[docs/codebase-qa.md](docs/codebase-qa.md).
+
+**C2.7.1:** Codebase Reading Diagnostics Parity — `deep_investigation` and
+`codebase_qa` operational data surface on existing `LastPlannerActivity` /
+Coding Diagnostics (same ownership model as C2.1–C2.3). No second diagnostics
+system; conversation transcript unchanged.
+
+**C2.7.2:** Unified Codebase Evidence → Reasoning Handoff — C2.1–C2.5 share one
+evidence representation and Planner-owned
+`retrieval → evidence → ContextPolicy / ContextEngine → PromptBuilder → Reasoning`
+path when Reasoning is available and the ask is non-trivial; deterministic
+markdown otherwise. No second assembler / prompt builder; C2 never calls
+ReasoningProvider. Constitutional audit in
+[docs/codebase-evidence-handoff.md](docs/codebase-evidence-handoff.md).
+
+**C2 closed.** Codebase reading is permanently closed (C2.7.3 hardening audit).
+
+**C3.1:** Coding Edit Intent — classify mutation vs read requests; structure a
+Planner-owned `CodingEditObjective` (targets, scope, ambiguities, clarification).
+No file writes, no mutation tools, no executable Execution Plan. Soft path after
+C2 / C1.5 / C1.7. Constitutional audit in
+[docs/coding-edit.md](docs/coding-edit.md).
+
+**C3.2:** Change Investigation — after Understood edit intent, reuse C2 search /
+symbol / relationship / deep helpers (Planner-mediated, read-only) to map
+affected files, symbols, deps, tests, config, side effects, and unknowns.
+Light mode on clarification. No patches / Execution Plan. Spec:
+[docs/change-investigation.md](docs/change-investigation.md).
+
+**C3.3:** Coding Plan from Change Investigation — Planner-owned `CodingPlan`
+(objective, rationale, create/modify/remove, symbols, deps, tests, docs,
+ordering, risk, unresolved questions, constitutional conflicts). No file
+contents, tools, or executable mutation plan. Spec:
+[docs/change-coding-plan.md](docs/change-coding-plan.md).
+
+**C3.4:** Patch Generation — targeted create/modify/delete/rename proposals from
+an approved mutation Coding Plan; validate vs current file state; convert valid
+patches into the existing reviewed ExecutionPlan path. No automatic apply. Spec:
+[docs/patch-generation.md](docs/patch-generation.md).
+
+**C3.5:** Coding Diff Review — multi-file +/− Diff Preview on the **same**
+ExecutionPlan / ReviewCard / ReviewIntent path (files, ops, rationale, risk,
+dependencies, validation). Approve / Modify / Cancel unchanged; no pre-approval
+writes; no coding-only approval bypass. Spec:
+[docs/coding-diff-review.md](docs/coding-diff-review.md).
+
+**C3.6:** Apply Approved Coding Changes — after Approve, Planner executes the
+frozen generation batch via existing `write_file` / `manage_path` → providers,
+preserving order, stopping on failure with partial `ExecutionSummary`, and
+recording history. No coding bypass / retry loops. Spec:
+[docs/coding-apply.md](docs/coding-apply.md).
+
+**C3.7:** Coding Mutation Recovery — baseline preflight before writes, refuse
+stale/invalid sources, actionable recovery on fail/partial/cancel, no silent
+retry or destructive auto-rollback; further mutation needs a new reviewed plan.
+Spec: [docs/coding-mutation-recovery.md](docs/coding-mutation-recovery.md).
 
 ⸻
 

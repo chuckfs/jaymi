@@ -49,7 +49,8 @@ pub use coding_quick_actions::{
 };
 pub use coding_workspace::{
     build_coding_diagnostics_view, coding_panel_lines, coding_shell_summary,
-    CodingDiagnosticsSection, CodingDiagnosticsView, CodingShellEvent, LastPlannerActivity,
+    codebase_reading_activity_lines, CodingDiagnosticsSection, CodingDiagnosticsView,
+    CodingShellEvent, LastPlannerActivity,
 };
 pub use execution_diagnostics::{
     build_execution_inspection, ExecutionInspection, EXECUTION_INSPECTION_SECTION_TITLES,

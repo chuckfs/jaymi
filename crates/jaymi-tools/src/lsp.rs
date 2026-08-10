@@ -87,6 +87,7 @@ impl Tool for LanguageServerTool {
             LspOperation::Hover
             | LspOperation::Completion
             | LspOperation::Definition
+            | LspOperation::Implementation
             | LspOperation::References => {
                 if request
                     .path

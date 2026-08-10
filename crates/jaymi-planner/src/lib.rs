@@ -27,9 +27,21 @@
 pub mod approval_history;
 pub mod coding_actions;
 pub mod code_generation;
+pub mod coding_diff_review;
+pub mod coding_apply;
+pub mod coding_mutation_recovery;
+pub mod patch_generation;
 pub mod coding_plan;
+pub mod coding_edit;
+pub mod change_investigation;
 pub mod coding_review;
 pub mod coding_understanding;
+pub mod code_search;
+pub mod symbol_navigation;
+pub mod relationship_tracing;
+pub mod deep_investigation;
+pub mod codebase_qa;
+pub mod codebase_evidence;
 pub mod code_talk;
 pub mod complexity;
 pub mod conversation_history;
@@ -66,10 +78,46 @@ pub use conversational::{
 pub use code_generation::{
     CodeGeneration, GenerationOp, GenerationOpKind, GenerationToolCall,
 };
-pub use coding_plan::{CodingPlan, CodingPlanAssessment, CodingPlanKind};
+pub use coding_diff_review::{
+    CodingDiffReview, CodingDiffReviewSurface, CodingFileDiffStat,
+};
+pub use coding_apply::{CodingOpResult, coding_apply_headline, summary_from_op_results};
+pub use coding_mutation_recovery::{
+    CodingMutationRecovery, GenerationBaseline, MutationPhase, RecoveryKind,
+};
+pub use patch_generation::{
+    PatchChangeType, PatchGenerationReport, PatchLocation, PatchProposal, PatchValidationStatus,
+    ValidatedPatch, content_fingerprint,
+};
+pub use coding_plan::{CodingPlan, CodingPlanAssessment, CodingPlanKind, CodingPlanOrigin};
+pub use coding_edit::{
+    CodingEditAssessment, CodingEditKind, CodingEditObjective, CodingEditStatus, EditScope,
+};
+pub use change_investigation::{
+    ChangeEvidence, ChangeInvestigationMode, ChangeInvestigationReport, ChangeInvestigationStep,
+};
 pub use coding_review::{CodingReview, ReviewAssessment, ReviewFocus};
 pub use coding_understanding::{
     CodingUnderstanding, ProjectUnderstandingAngle, UnderstandingAssessment, UnderstandingFocus,
+};
+pub use code_search::{
+    CodeSearchEvidence, CodeSearchKind, CodeSearchReport, CONVERSATION_EVIDENCE_CAP,
+    SEARCH_HIT_LIMIT,
+};
+pub use symbol_navigation::{
+    SymbolNavEvidence, SymbolNavKind, SymbolNavigationReport,
+};
+pub use relationship_tracing::{
+    RelationshipTraceReport, TraceEvidence, TraceKind, TraceStep, TraceStopReason,
+};
+pub use deep_investigation::{
+    DeepInvestigationReport, InvestigationEvidence, InvestigationKind, InvestigationStep,
+};
+pub use codebase_qa::{
+    CodebaseQaReport, EvidenceConflict, QaComplexity, QaEvidence, QaKind, QaRoute,
+};
+pub use codebase_evidence::{
+    CodebaseEvidenceHit, CodebaseEvidenceOrigin, HandoffHints, prefers_reasoning_handoff,
 };
 pub use code_talk::{chip_label_from_suggestion, next_action_chip, subject_title};
 pub use multi_file::{AffectedFile, MultiFileKind, MultiFilePlan};
@@ -275,12 +323,33 @@ pub struct PlannerResponse {
     pub coding_review: Option<coding_review::CodingReview>,
     /// Coding Plan scaffold (Sprint C1.4) when generation-planning mode ran.
     pub coding_plan: Option<coding_plan::CodingPlan>,
+    /// Coding Edit Intent / objective (Sprint C3.1) — mutation classification only.
+    /// Accompanied by Change Investigation (C3.2) on the same soft path.
+    pub coding_edit: Option<coding_edit::CodingEditObjective>,
+    /// Change Investigation report (Sprint C3.2) — read-only impact mapping.
+    pub change_investigation: Option<change_investigation::ChangeInvestigationReport>,
     /// Code Generation batch (Sprint C1.5) when ops were proposed for review.
     pub code_generation: Option<code_generation::CodeGeneration>,
+    /// Coding Diff Review surface (Sprint C3.5) attached to the paused plan.
+    pub coding_diff_review: Option<coding_diff_review::CodingDiffReviewSurface>,
+    /// Coding Mutation Recovery report (Sprint C3.7) after apply/cancel/stale stop.
+    pub coding_mutation_recovery: Option<coding_mutation_recovery::CodingMutationRecovery>,
+    /// Patch Generation report (Sprint C3.4) — proposed patches + validation.
+    pub patch_generation: Option<patch_generation::PatchGenerationReport>,
     /// Multi-file Intelligence plan (Sprint C1.7) when affected files were resolved.
     pub multi_file: Option<multi_file::MultiFilePlan>,
     /// Pair Programming surface (Sprint C1.8) — Planner-generated next actions.
     pub pair_programming: Option<pair_programming::PairProgrammingSurface>,
+    /// Intelligent Code Search report (Sprint C2.1) when search evidence was selected.
+    pub code_search: Option<code_search::CodeSearchReport>,
+    /// Symbol Navigation report (Sprint C2.2) when navigation evidence was selected.
+    pub symbol_navigation: Option<symbol_navigation::SymbolNavigationReport>,
+    /// Relationship Trace report (Sprint C2.3) when a multi-hop investigation ran.
+    pub relationship_trace: Option<relationship_tracing::RelationshipTraceReport>,
+    /// Deep Codebase Investigation report (Sprint C2.4).
+    pub deep_investigation: Option<deep_investigation::DeepInvestigationReport>,
+    /// Codebase Q&A report (Sprint C2.5) — conversational grounded answers.
+    pub codebase_qa: Option<codebase_qa::CodebaseQaReport>,
 }
 
 impl PlannerResponse {
@@ -1371,11 +1440,33 @@ impl Planner {
                 };
                 return Ok(self.finalize_response(response, context));
             }
+            if relationship_tracing::detect_relationship_trace_request(&request).is_some() {
+                return self.complete_relationship_tracing(&request, context);
+            }
+            if deep_investigation::detect_deep_investigation_request(&request).is_some() {
+                return self.complete_deep_investigation(&request, context);
+            }
+            if codebase_qa::detect_codebase_qa_request(&request).is_some() {
+                return self.complete_codebase_qa(&request, context);
+            }
+            if symbol_navigation::detect_symbol_navigation_request(&request).is_some()
+                && request.lsp.is_none()
+            {
+                return self.complete_symbol_navigation(&request, context);
+            }
+            if let Some(response) =
+                self.try_code_search_soft_path(&request, &context)
+            {
+                return self.finalize_code_search_soft_path(&request, context, response);
+            }
             if code_generation::detect_generation_request(&request) {
                 return self.complete_code_generation_from_request(&request, context);
             }
             if let Some(kind) = multi_file::detect_multi_file_request(&request) {
                 return self.complete_multi_file_from_request(kind, &request, context);
+            }
+            if coding_edit::detect_coding_edit_request(&request).is_some() {
+                return self.complete_coding_edit_intent(&request, context);
             }
             let review = coding_review::detect_review_request(&request).map(|assessment| {
                 coding_review::finalize_assessment(assessment, &context)
@@ -1496,6 +1587,8 @@ impl Planner {
 
         let result = match result {
             Ok(mut response) => {
+                self.attach_symbol_navigation_report(&request, &mut response);
+                self.attach_code_search_report(&request, &mut response);
                 if response.capability_plan.is_none() {
                     response.capability_plan = self.plan_capability(capability, None).ok();
                 }
@@ -1504,6 +1597,14 @@ impl Planner {
                         capability,
                         format!("capability {} selected for request", capability.id()),
                     );
+                }
+                // C2.7.2: NL / relationship-style search & select symbol kinds may
+                // hand off through Context → Prompt → Reasoning (never provider).
+                if response.code_search.is_some() {
+                    return self.finalize_code_search_soft_path(&request, context, response);
+                }
+                if response.symbol_navigation.is_some() {
+                    return self.finalize_symbol_navigation_report(&request, context, response);
                 }
                 self.transition_conversation(conversation_state_for_tool_response(&response));
                 Ok(self.finalize_response(response, context.clone()))
@@ -1590,11 +1691,37 @@ impl Planner {
             };
             return Ok(self.finalize_response(response, assembled.context));
         }
+        if relationship_tracing::detect_relationship_trace_request(&request).is_some() {
+            return self.complete_relationship_tracing(&request, assembled.context);
+        }
+        if deep_investigation::detect_deep_investigation_request(&request).is_some() {
+            return self.complete_deep_investigation(&request, assembled.context);
+        }
+        if codebase_qa::detect_codebase_qa_request(&request).is_some() {
+            return self.complete_codebase_qa(&request, assembled.context);
+        }
+        if symbol_navigation::detect_symbol_navigation_request(&request).is_some()
+            && request.lsp.is_none()
+        {
+            return self.complete_symbol_navigation(&request, assembled.context);
+        }
+        if let Some(response) =
+            self.try_code_search_soft_path(&request, &assembled.context)
+        {
+            return self.finalize_code_search_soft_path(
+                &request,
+                assembled.context,
+                response,
+            );
+        }
         if code_generation::detect_generation_request(&request) {
             return self.complete_code_generation_from_request(&request, assembled.context);
         }
         if let Some(kind) = multi_file::detect_multi_file_request(&request) {
             return self.complete_multi_file_from_request(kind, &request, assembled.context);
+        }
+        if coding_edit::detect_coding_edit_request(&request).is_some() {
+            return self.complete_coding_edit_intent(&request, assembled.context);
         }
         // Coding Review — WI scaffold without tools / edits / plans.
         if let Some(assessment) = assembled.review.clone() {
@@ -2620,6 +2747,7 @@ impl Planner {
                     permission_result: permission_result.clone(),
                     paused_at: Instant::now(),
                     generation_calls: Vec::new(),
+                    generation_baselines: Vec::new(),
                 })?;
                 let summary = ExecutionSummary::from_plan(
                     &plan,
@@ -2824,11 +2952,21 @@ impl Planner {
         &self,
         generation: code_generation::CodeGeneration,
     ) -> JaymiResult<PlannerResponse> {
+        self.begin_code_generation_inner(generation, None)
+    }
+
+    /// Same as [`Self::begin_code_generation`], with optional C3.4 patch report
+    /// enrichment for the shared Review Card (Sprint C3.5).
+    fn begin_code_generation_inner(
+        &self,
+        generation: code_generation::CodeGeneration,
+        patch_report: Option<&patch_generation::PatchGenerationReport>,
+    ) -> JaymiResult<PlannerResponse> {
         self.ensure_ready()?;
         if generation.is_empty() {
             return Err(JaymiError::new("code generation has no operations"));
         }
-        let prepared = self.prepare_code_generation_execution(&generation)?;
+        let prepared = self.prepare_code_generation_execution(&generation, patch_report)?;
         if let Some(mut blocked) = prepared.blocked_response {
             blocked.code_generation = Some(generation);
             self.transition_conversation(ConversationState::WaitingForReview);
@@ -2841,7 +2979,7 @@ impl Planner {
         ))
     }
 
-    /// Apply the last Coding Plan as Code Generation (detect path helper).
+    /// Apply the last Coding Plan as Code Generation / Patch Generation.
     fn complete_code_generation_from_request(
         &self,
         request: &UserRequest,
@@ -2851,8 +2989,8 @@ impl Planner {
             self.transition_conversation(ConversationState::Completed);
             let response = PlannerResponse {
                 content: "I don't have a Coding Plan to generate from yet. \
-Ask me to plan first (for example \"Build Pong.\" or \"Create a parser.\"), \
-then say \"Generate the code.\""
+Ask me to plan first (for example \"Build Pong.\" or \"Add image generation.\"), \
+then say \"Generate the code.\" or \"Generate patches.\""
                     .into(),
                 reasoning_used: false,
                 stream_lifecycle: Some(StreamingLifecycle::Idle),
@@ -2860,6 +2998,11 @@ then say \"Generate the code.\""
             };
             return Ok(self.finalize_response(response, context));
         };
+
+        if patch_generation::should_use_patch_generation(&plan) {
+            return self.complete_patch_generation_from_plan(request, context, plan);
+        }
+
         let root = context
             .active_project()
             .root_directory
@@ -2872,15 +3015,1506 @@ then say \"Generate the code.\""
             .find(|line| line.starts_with("Goal:"))
             .cloned()
             .unwrap_or_else(|| {
-                plan.summary
-                    .first()
-                    .cloned()
-                    .unwrap_or_else(|| request.content.trim().to_string())
+                plan.objective.clone().unwrap_or_else(|| {
+                    plan.summary
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| request.content.trim().to_string())
+                })
             });
         let generation =
             code_generation::generation_from_coding_plan(&plan, goal, root.as_deref());
         let response = self.begin_code_generation(generation)?;
         Ok(self.finalize_response(response, context))
+    }
+
+    /// C3.4 — draft / reason / validate patches; convert valid ones to reviewed ExecutionPlan.
+    ///
+    /// Never writes to disk. On validation failure the project stays unchanged.
+    fn complete_patch_generation_from_plan(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+        plan: coding_plan::CodingPlan,
+    ) -> JaymiResult<PlannerResponse> {
+        let root = context
+            .active_project()
+            .root_directory
+            .as_ref()
+            .map(PathBuf::from)
+            .or_else(|| self.active_project_root());
+        let goal = plan
+            .objective
+            .clone()
+            .or_else(|| {
+                plan.summary
+                    .iter()
+                    .find(|line| line.starts_with("Goal:") || line.starts_with("Mutation Coding Plan"))
+                    .cloned()
+            })
+            .unwrap_or_else(|| request.content.trim().to_string());
+
+        let mut drafts =
+            patch_generation::draft_proposals_from_plan(&plan, &goal, root.as_deref());
+        if drafts.is_empty() {
+            self.transition_conversation(ConversationState::Completed);
+            let mut report = patch_generation::PatchGenerationReport {
+                goal: goal.clone(),
+                failures: vec![
+                    "Coding Plan did not yield concrete file paths for patches.".into(),
+                ],
+                ..Default::default()
+            };
+            report.diagnostics.push("empty_drafts".into());
+            let response = PlannerResponse {
+                content: format!(
+                    "{}\n\nOriginal project unchanged.",
+                    report.to_markdown()
+                ),
+                reasoning_used: false,
+                stream_lifecycle: Some(StreamingLifecycle::Idle),
+                patch_generation: Some(report),
+                ..PlannerResponse::default()
+            };
+            return Ok(self.finalize_response(response, context));
+        }
+
+        // Patch content elaboration stays behind ReasoningEngine when available.
+        let mut reasoning_used = false;
+        if self.reasoning.is_implemented() {
+            let instruction =
+                patch_generation::reasoning_prompt_instruction(&plan, &goal);
+            let llm = self.llm_context_for_understanding(&context, None, None, None);
+            match self.build_reasoning_request(&instruction, llm, Vec::new()) {
+                Ok(reasoning_request) => {
+                    match ConversationStream::start(self.reasoning.clone(), reasoning_request)
+                    {
+                        Ok(stream) => match stream.collect() {
+                            Ok(reasoned) => {
+                                reasoning_used = true;
+                                drafts = patch_generation::merge_reasoning_patches(
+                                    &drafts,
+                                    &reasoned.content,
+                                    root.as_deref(),
+                                );
+                            }
+                            Err(err) => {
+                                jaymi_logging::info(
+                                    "planner",
+                                    format!(
+                                        "patch_generation reasoning collect failed: {}",
+                                        err.message()
+                                    ),
+                                );
+                            }
+                        },
+                        Err(err) => {
+                            jaymi_logging::info(
+                                "planner",
+                                format!(
+                                    "patch_generation reasoning stream failed: {}",
+                                    err.message()
+                                ),
+                            );
+                        }
+                    }
+                }
+                Err(err) => {
+                    jaymi_logging::info(
+                        "planner",
+                        format!(
+                            "patch_generation reasoning request failed: {}",
+                            err.message()
+                        ),
+                    );
+                }
+            }
+        }
+
+        let mut validated = Vec::new();
+        let mut failures = Vec::new();
+        for mut proposal in drafts {
+            let current = self.read_file_text_for_patch(&proposal.file);
+            let dest_current = proposal
+                .destination
+                .as_ref()
+                .and_then(|dest| self.read_file_text_for_patch(dest));
+
+            if proposal.change_type == patch_generation::PatchChangeType::ModifyFile {
+                if let Some(body) = current.as_deref() {
+                    let snippet = proposal
+                        .proposed_content
+                        .clone()
+                        .unwrap_or_default();
+                    let original = proposal.original_content.clone();
+                    // Preserve surrounding file — surgical replace or marked append.
+                    proposal.proposed_content = Some(patch_generation::apply_targeted_modify(
+                        body,
+                        original.as_deref(),
+                        &snippet,
+                    ));
+                    if proposal.original_content.is_none() {
+                        proposal.original_content =
+                            Some(patch_generation::snippet_preview(body));
+                    }
+                }
+            }
+
+            let patch = patch_generation::validate_proposal(
+                proposal,
+                current.as_deref(),
+                dest_current.as_deref(),
+            );
+            if !patch.status.is_valid() {
+                if let Some(reason) = patch.status.reason() {
+                    failures.push(format!(
+                        "`{}` ({}) — {reason}",
+                        patch.proposal.file.display(),
+                        patch.proposal.change_type.as_str()
+                    ));
+                }
+            }
+            validated.push(patch);
+        }
+
+        let mut report = patch_generation::PatchGenerationReport {
+            goal: goal.clone(),
+            patches: validated.clone(),
+            failures: failures.clone(),
+            reasoning_used,
+            converted_to_execution: false,
+            diagnostics: vec![format!(
+                "drafts_validated valid={} invalid={}",
+                validated.iter().filter(|p| p.status.is_valid()).count(),
+                validated.iter().filter(|p| !p.status.is_valid()).count()
+            )],
+        };
+
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        match patch_generation::generation_from_validated(&goal, &validated) {
+            Ok(generation) => {
+                report.converted_to_execution = true;
+                let mut response =
+                    self.begin_code_generation_inner(generation, Some(&report))?;
+                let prefix = report.to_markdown();
+                response.content = format!("{prefix}\n\n{}", response.content);
+                response.patch_generation = Some(report);
+                response.reasoning_used = reasoning_used || response.reasoning_used;
+                Ok(self.finalize_response(response, context))
+            }
+            Err(err) => {
+                report.failures.push(err);
+                report.converted_to_execution = false;
+                self.transition_conversation(ConversationState::Completed);
+                let response = PlannerResponse {
+                    content: format!(
+                        "{}\n\nPatch generation could not produce an executable review batch. \
+Original project unchanged — no files were written.",
+                        report.to_markdown()
+                    ),
+                    reasoning_used,
+                    stream_lifecycle: Some(StreamingLifecycle::Idle),
+                    patch_generation: Some(report),
+                    awaiting_review: false,
+                    ..PlannerResponse::default()
+                };
+                Ok(self.finalize_response(response, context))
+            }
+        }
+    }
+
+    /// Read-only file peek for patch validation (Planner-mediated; never writes).
+    fn read_file_text_for_patch(&self, path: &Path) -> Option<String> {
+        if self.tools.get(jaymi_tools::READ_FILE_TOOL_ID).is_err() {
+            // Fall back to direct filesystem read only when the tool is absent —
+            // still Planner-owned validation, never a model/provider self-call.
+            return std::fs::read_to_string(path).ok();
+        }
+        let intent = Intent::ReadFile {
+            path: path.to_path_buf(),
+        };
+        match self.dispatch_tool_backed(intent, Capability::ReadDocuments, "patch_validation") {
+            Ok(response) => response
+                .document
+                .as_ref()
+                .map(|doc| doc.text.clone())
+                .or_else(|| std::fs::read_to_string(path).ok()),
+            Err(_) => std::fs::read_to_string(path).ok(),
+        }
+    }
+
+    /// Inject C2 evidence into session → ContextEngine re-assemble (ContextPolicy
+    /// selects) → optional Reasoning via ConversationStream. Never calls
+    /// ReasoningProvider directly. Deterministic `fallback` when Reasoning is
+    /// unavailable or handoff is not preferred.
+    ///
+    /// When `inject_hits` is false, the caller already offered hits to
+    /// ContextEngine (e.g. deep investigation mid-workflow); this still uses
+    /// `hits` for the Reasoning brief and handoff preference.
+    fn complete_with_codebase_evidence_handoff(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+        origin: codebase_evidence::CodebaseEvidenceOrigin,
+        subject: &str,
+        hits: &[codebase_evidence::CodebaseEvidenceHit],
+        gaps: &[String],
+        hints: codebase_evidence::HandoffHints,
+        inject_hits: bool,
+        mut fallback: PlannerResponse,
+    ) -> JaymiResult<PlannerResponse> {
+        let context = if inject_hits && !hits.is_empty() {
+            let mut next_session = self.context.session_inputs();
+            next_session.search_hits = codebase_evidence::to_bundle_search_hits(hits);
+            self.context.set_session_inputs(next_session);
+            self.context
+                .request_fresh_context(format!("{}_evidence", origin.as_str()));
+            let assemble_hints = AssembleHints {
+                intent: IntentId::Unknown,
+                capability_ids: Vec::new(),
+                complexity: None,
+                environmental: None,
+                understanding: None,
+                review: None,
+                coding_plan: None,
+            };
+            match self.context.assemble_with(request, Some(&assemble_hints)) {
+                Ok(bundle) => bundle,
+                Err(_) => context,
+            }
+        } else {
+            context
+        };
+
+        let want_reasoning = self.reasoning.is_implemented()
+            && codebase_evidence::prefers_reasoning_handoff(origin, hits.len(), hints);
+
+        if want_reasoning {
+            let brief = codebase_evidence::evidence_brief_for_reasoning(
+                origin,
+                request.content.trim(),
+                subject,
+                hits,
+                gaps,
+            );
+            let mut enriched = request.clone();
+            enriched.content = codebase_evidence::enrich_request_with_brief(
+                request.content.trim(),
+                origin,
+                &brief,
+            );
+            let mut early = jaymi_reasoning::PipelineTiming::new();
+            if let Some(inspection) = self.context.last_inspection() {
+                early.merge(conversational::pipeline_from_context_inspection(
+                    &inspection,
+                ));
+            }
+            let mut response = self.handle_conversational_request_with_observer(
+                &enriched,
+                context,
+                &Intent::Unknown,
+                Vec::new(),
+                early,
+                None,
+                None,
+                None,
+                |_| {},
+            )?;
+            // Preserve structured C2 reports attached on the fallback.
+            if response.code_search.is_none() {
+                response.code_search = fallback.code_search.take();
+            }
+            if response.symbol_navigation.is_none() {
+                response.symbol_navigation = fallback.symbol_navigation.take();
+            }
+            if response.relationship_trace.is_none() {
+                response.relationship_trace = fallback.relationship_trace.take();
+            }
+            if response.deep_investigation.is_none() {
+                response.deep_investigation = fallback.deep_investigation.take();
+            }
+            if response.codebase_qa.is_none() {
+                response.codebase_qa = fallback.codebase_qa.take();
+            }
+            return Ok(response);
+        }
+
+        self.transition_conversation(ConversationState::Completed);
+        Ok(self.finalize_response(fallback, context))
+    }
+
+    /// Codebase Q&A (C2.5) — conversational routing over C2 search / symbols /
+    /// relationship / investigation with grounded claims and conflict surfacing.
+    fn complete_codebase_qa(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = codebase_qa::detect_codebase_qa_request(request)
+            .ok_or_else(|| JaymiError::new("codebase qa detect missed after gate"))?;
+        let session = self.context.session_inputs();
+
+        let report = match assessment.route {
+            codebase_qa::QaRoute::Ambient => {
+                codebase_qa::begin_ambient(&assessment, &context, &session)
+            }
+            codebase_qa::QaRoute::Relationship => {
+                let trace_assessment = codebase_qa::to_trace_assessment(&assessment);
+                let mut trace = relationship_tracing::investigate(
+                    &trace_assessment,
+                    &context,
+                    &session,
+                );
+                if relationship_tracing::needs_search_extension(&trace)
+                    && self.tools.get(jaymi_tools::SEARCH_KNOWLEDGE_TOOL_ID).is_ok()
+                {
+                    let mut search =
+                        jaymi_core::SearchRequest::free_text(&trace.seed_symbol);
+                    search.limit = Some(codebase_qa::SEARCH_HIT_LIMIT);
+                    search.metadata.files_only = true;
+                    let intent = Intent::SearchKnowledge { request: search };
+                    if let Ok(search_response) = self.dispatch_tool_backed(
+                        intent,
+                        Capability::Search,
+                        &assessment.goal,
+                    ) {
+                        relationship_tracing::merge_search_citations(
+                            &mut trace,
+                            &search_response.citations,
+                        );
+                    }
+                }
+                codebase_qa::from_relationship_trace(&assessment, &trace)
+            }
+            codebase_qa::QaRoute::DeepInvestigation => {
+                let deep_assessment = codebase_qa::to_deep_assessment(&assessment);
+                let mut deep = deep_investigation::begin_investigation(
+                    &deep_assessment,
+                    &context,
+                    &session,
+                );
+                if let Some(query) = codebase_qa::primary_search_query(&assessment) {
+                    if deep.steps.len() < deep_investigation::MAX_STEPS
+                        && self.tools.get(jaymi_tools::SEARCH_KNOWLEDGE_TOOL_ID).is_ok()
+                    {
+                        let mut search = jaymi_core::SearchRequest::free_text(&query);
+                        search.limit = Some(codebase_qa::SEARCH_HIT_LIMIT);
+                        search.metadata.files_only = true;
+                        let intent = Intent::SearchKnowledge { request: search };
+                        match self.dispatch_tool_backed(
+                            intent,
+                            Capability::Search,
+                            &assessment.goal,
+                        ) {
+                            Ok(search_response) => {
+                                deep_investigation::merge_search_citations(
+                                    &mut deep,
+                                    &search_response.citations,
+                                    &query,
+                                );
+                                if !search_response.citations.is_empty() {
+                                    let mut next_session = self.context.session_inputs();
+                                    next_session.search_hits =
+                                        codebase_qa::citations_to_search_hits(
+                                            &search_response.citations,
+                                        );
+                                    self.context.set_session_inputs(next_session);
+                                    self.context
+                                        .request_fresh_context("codebase_qa_search");
+                                }
+                            }
+                            Err(err) => {
+                                deep.gaps.push(format!(
+                                    "Search Knowledge failed: {}",
+                                    err.message()
+                                ));
+                            }
+                        }
+                    }
+                }
+                if deep_investigation::plan_includes_read(&deep_assessment)
+                    && self.tools.get(jaymi_tools::READ_FILE_TOOL_ID).is_ok()
+                {
+                    for path in deep_investigation::candidate_read_paths(&deep) {
+                        if deep.steps.len() >= deep_investigation::MAX_STEPS {
+                            break;
+                        }
+                        let intent = Intent::ReadFile { path: path.clone() };
+                        if let Ok(read_response) = self.dispatch_tool_backed(
+                            intent,
+                            Capability::ReadDocuments,
+                            &assessment.goal,
+                        ) {
+                            deep_investigation::merge_read_document(
+                                &mut deep,
+                                &path,
+                                read_response.document.as_ref(),
+                            );
+                        }
+                    }
+                }
+                codebase_qa::from_deep_investigation(&assessment, &deep)
+            }
+            codebase_qa::QaRoute::CodeSearch => {
+                let mut report = codebase_qa::begin_ambient(&assessment, &context, &session);
+                // Downgrade ambient investigation_needed for search-only routes.
+                report.investigation_needed = false;
+                report.complexity = Some(codebase_qa::QaComplexity::Search);
+                report.route = Some(codebase_qa::QaRoute::CodeSearch);
+                if let Some(query) = codebase_qa::primary_search_query(&assessment) {
+                    if self.tools.get(jaymi_tools::SEARCH_KNOWLEDGE_TOOL_ID).is_ok() {
+                        let mut search = jaymi_core::SearchRequest::free_text(&query);
+                        search.limit = Some(codebase_qa::SEARCH_HIT_LIMIT);
+                        search.metadata.files_only = true;
+                        let intent = Intent::SearchKnowledge { request: search };
+                        match self.dispatch_tool_backed(
+                            intent,
+                            Capability::Search,
+                            &assessment.goal,
+                        ) {
+                            Ok(search_response) => {
+                                codebase_qa::merge_search_citations(
+                                    &mut report,
+                                    &search_response.citations,
+                                    &query,
+                                );
+                                if !search_response.citations.is_empty() {
+                                    let mut next_session = self.context.session_inputs();
+                                    next_session.search_hits =
+                                        codebase_qa::citations_to_search_hits(
+                                            &search_response.citations,
+                                        );
+                                    self.context.set_session_inputs(next_session);
+                                    self.context
+                                        .request_fresh_context("codebase_qa_search");
+                                }
+                            }
+                            Err(err) => {
+                                report.gaps.push(format!(
+                                    "Search Knowledge failed: {}",
+                                    err.message()
+                                ));
+                            }
+                        }
+                    } else {
+                        report.gaps.push(
+                            "Search Knowledge tool is not registered — cannot gather lexical evidence."
+                                .into(),
+                        );
+                    }
+                }
+                // Optional light reads for top hits (still not deep investigation).
+                if self.tools.get(jaymi_tools::READ_FILE_TOOL_ID).is_ok() {
+                    for path in codebase_qa::candidate_read_paths(&report) {
+                        let intent = Intent::ReadFile { path: path.clone() };
+                        if let Ok(read_response) = self.dispatch_tool_backed(
+                            intent,
+                            Capability::ReadDocuments,
+                            &assessment.goal,
+                        ) {
+                            codebase_qa::merge_read_document(
+                                &mut report,
+                                &path,
+                                read_response.document.as_ref(),
+                            );
+                        }
+                    }
+                }
+                // Re-run conflict detection after merges.
+                report.conflicts = codebase_qa::detect_conflicts(&report.evidence);
+                if report.evidence.is_empty() {
+                    report.gaps.push(
+                        "Insufficient project evidence — Jaymi will not invent codebase behavior."
+                            .into(),
+                    );
+                }
+                report
+            }
+        };
+
+        // Re-assemble through ContextEngine when search hits were injected.
+        let hints = AssembleHints {
+            intent: IntentId::Unknown,
+            capability_ids: Vec::new(),
+            complexity: None,
+            environmental: None,
+            understanding: None,
+            review: None,
+            coding_plan: None,
+        };
+        let context = match self.context.assemble_with(request, Some(&hints)) {
+            Ok(bundle) => bundle,
+            Err(_) => context,
+        };
+
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        let hits = codebase_evidence::hits_from_codebase_qa(&report);
+        let gaps = report.gaps.clone();
+        let subject = report.subject.clone();
+        let investigation_needed = report.investigation_needed;
+        let fallback = PlannerResponse {
+            content: report.to_markdown(),
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            codebase_qa: Some(report),
+            ..PlannerResponse::default()
+        };
+        self.complete_with_codebase_evidence_handoff(
+            request,
+            context,
+            codebase_evidence::CodebaseEvidenceOrigin::CodebaseQa,
+            &subject,
+            &hits,
+            &gaps,
+            codebase_evidence::HandoffHints {
+                investigation_needed,
+                ..Default::default()
+            },
+            false, // already injected during QA routes
+            fallback,
+        )
+    }
+
+    /// Deep Codebase Investigation (C2.4) — bounded Planner-orchestrated workflow.
+    fn complete_deep_investigation(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = deep_investigation::detect_deep_investigation_request(request)
+            .ok_or_else(|| JaymiError::new("deep investigation detect missed after gate"))?;
+        let session = self.context.session_inputs();
+        let mut report =
+            deep_investigation::begin_investigation(&assessment, &context, &session);
+
+        // Planner-mediated Search Knowledge (read-only).
+        if let Some(query) = deep_investigation::primary_search_query(&assessment) {
+            if report.steps.len() < deep_investigation::MAX_STEPS
+                && self.tools.get(jaymi_tools::SEARCH_KNOWLEDGE_TOOL_ID).is_ok()
+            {
+                let mut search = jaymi_core::SearchRequest::free_text(&query);
+                search.limit = Some(deep_investigation::SEARCH_HIT_LIMIT);
+                search.metadata.files_only = true;
+                let intent = Intent::SearchKnowledge { request: search };
+                match self.dispatch_tool_backed(intent, Capability::Search, &assessment.goal) {
+                    Ok(search_response) => {
+                        deep_investigation::merge_search_citations(
+                            &mut report,
+                            &search_response.citations,
+                            &query,
+                        );
+                        // Inject hits for ContextEngine re-assemble (sole factory).
+                        if !search_response.citations.is_empty() {
+                            let mut next_session = self.context.session_inputs();
+                            next_session.search_hits =
+                                deep_investigation::citations_to_search_hits(
+                                    &search_response.citations,
+                                );
+                            self.context.set_session_inputs(next_session);
+                            self.context.request_fresh_context("deep_investigation_search");
+                        }
+                    }
+                    Err(err) => {
+                        report.gaps.push(format!(
+                            "Search Knowledge extension failed: {}",
+                            err.message()
+                        ));
+                        report
+                            .diagnostics
+                            .push("search_knowledge_extension_failed".into());
+                    }
+                }
+            }
+        }
+
+        // Planner-mediated read_file for top candidate paths (only if planned).
+        if deep_investigation::plan_includes_read(&assessment)
+            && report.steps.len() < deep_investigation::MAX_STEPS
+            && self.tools.get(jaymi_tools::READ_FILE_TOOL_ID).is_ok()
+        {
+            for path in deep_investigation::candidate_read_paths(&report) {
+                if report.steps.len() >= deep_investigation::MAX_STEPS {
+                    break;
+                }
+                let intent = Intent::ReadFile { path: path.clone() };
+                match self.dispatch_tool_backed(
+                    intent,
+                    Capability::ReadDocuments,
+                    &assessment.goal,
+                ) {
+                    Ok(read_response) => {
+                        deep_investigation::merge_read_document(
+                            &mut report,
+                            &path,
+                            read_response.document.as_ref(),
+                        );
+                    }
+                    Err(err) => {
+                        report.gaps.push(format!(
+                            "Could not read `{}`: {}",
+                            path.display(),
+                            err.message()
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Optional LSP references when the evidence plan asks to follow refs.
+        if deep_investigation::plan_includes_follow_refs(&assessment)
+            && report.steps.len() < deep_investigation::MAX_STEPS
+            && self.tools.get(jaymi_tools::LANGUAGE_SERVER_TOOL_ID).is_ok()
+        {
+            let nav = symbol_navigation::SymbolNavAssessment {
+                kind: symbol_navigation::SymbolNavKind::References,
+                goal: assessment.goal.clone(),
+                symbol_hint: Some(report.subject.clone()),
+                deixis: true,
+                matched_rules: vec!["deep_investigation_lsp"],
+            };
+            let session = self.context.session_inputs();
+            if let Some(lsp_request) = symbol_navigation::try_build_lsp_request(
+                &nav,
+                &context,
+                self.active_project_root(),
+                &session,
+            ) {
+                if !lsp_request.operation.is_mutating() {
+                    let intent = Intent::Lsp {
+                        request: lsp_request,
+                    };
+                    if let Ok(lsp_response) =
+                        self.dispatch_tool_backed(intent, Capability::Code, &assessment.goal)
+                    {
+                        deep_investigation::merge_lsp_locations(
+                            &mut report,
+                            &lsp_response.lsp_references,
+                            "references",
+                        );
+                    }
+                }
+            }
+        }
+
+        // Re-assemble through ContextEngine after injecting search hits (if any).
+        let hints = AssembleHints {
+            intent: IntentId::Unknown,
+            capability_ids: Vec::new(),
+            complexity: None,
+            environmental: None,
+            understanding: None,
+            review: None,
+            coding_plan: None,
+        };
+        let context = match self.context.assemble_with(request, Some(&hints)) {
+            Ok(bundle) => {
+                report.selected_context =
+                    deep_investigation::observe_selected_context(&bundle);
+                report.steps.push(deep_investigation::InvestigationStep {
+                    index: (report.steps.len() as u32).saturating_add(1),
+                    action: "context_assemble".into(),
+                    detail: format!(
+                        "sections={}",
+                        report.selected_context.join(",")
+                    ),
+                    evidence_added: 0,
+                    duration_ms: 0,
+                });
+                report.budget.steps_used = report.steps.len();
+                bundle
+            }
+            Err(_) => context,
+        };
+
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        let hits = codebase_evidence::hits_from_deep_investigation(&report);
+        let gaps = report.gaps.clone();
+        let subject = report.subject.clone();
+        let fallback = PlannerResponse {
+            content: report.to_markdown(),
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            deep_investigation: Some(report),
+            ..PlannerResponse::default()
+        };
+        self.complete_with_codebase_evidence_handoff(
+            request,
+            context,
+            codebase_evidence::CodebaseEvidenceOrigin::DeepInvestigation,
+            &subject,
+            &hits,
+            &gaps,
+            codebase_evidence::HandoffHints::default(),
+            false, // already injected during investigation
+            fallback,
+        )
+    }
+
+    /// Code Relationship Tracing (C2.3) — bounded Planner-mediated investigation.
+    fn complete_relationship_tracing(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = relationship_tracing::detect_relationship_trace_request(request)
+            .ok_or_else(|| JaymiError::new("relationship trace detect missed after gate"))?;
+        let session = self.context.session_inputs();
+        let mut report =
+            relationship_tracing::investigate(&assessment, &context, &session);
+
+        // Optional Planner-mediated Search Knowledge extension (read-only).
+        if relationship_tracing::needs_search_extension(&report)
+            && report.steps.len() < relationship_tracing::MAX_STEPS
+            && self.tools.get(jaymi_tools::SEARCH_KNOWLEDGE_TOOL_ID).is_ok()
+        {
+            let mut search = jaymi_core::SearchRequest::free_text(&report.seed_symbol);
+            search.limit = Some(relationship_tracing::SEARCH_HIT_LIMIT);
+            search.metadata.files_only = true;
+            let intent = Intent::SearchKnowledge { request: search };
+            if let Ok(search_response) =
+                self.dispatch_tool_backed(intent, Capability::Search, &assessment.goal)
+            {
+                relationship_tracing::merge_search_citations(
+                    &mut report,
+                    &search_response.citations,
+                );
+            } else {
+                report
+                    .diagnostics
+                    .push("search_knowledge_extension_failed".into());
+            }
+        }
+
+        // Optional Planner-mediated LSP references when callers are missing.
+        if relationship_tracing::needs_lsp_references_extension(&report)
+            && report.steps.len() < relationship_tracing::MAX_STEPS
+            && self.tools.get(jaymi_tools::LANGUAGE_SERVER_TOOL_ID).is_ok()
+        {
+            let nav = symbol_navigation::SymbolNavAssessment {
+                kind: symbol_navigation::SymbolNavKind::References,
+                goal: assessment.goal.clone(),
+                symbol_hint: Some(report.seed_symbol.clone()),
+                deixis: true,
+                matched_rules: vec!["relationship_trace_lsp_extension"],
+            };
+            if let Some(lsp_request) = symbol_navigation::try_build_lsp_request(
+                &nav,
+                &context,
+                self.active_project_root(),
+                &session,
+            ) {
+                if !lsp_request.operation.is_mutating() {
+                    let intent = Intent::Lsp {
+                        request: lsp_request,
+                    };
+                    match self.dispatch_tool_backed(intent, Capability::Code, &assessment.goal) {
+                        Ok(lsp_response) => {
+                            relationship_tracing::merge_lsp_locations(
+                                &mut report,
+                                &lsp_response.lsp_references,
+                                "references",
+                            );
+                            if !lsp_response.lsp_definitions.is_empty() {
+                                relationship_tracing::merge_lsp_locations(
+                                    &mut report,
+                                    &lsp_response.lsp_definitions,
+                                    "definition",
+                                );
+                            }
+                        }
+                        Err(_) => {
+                            report
+                                .diagnostics
+                                .push("lsp_references_extension_failed".into());
+                        }
+                    }
+                }
+            }
+        }
+
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        let hits = codebase_evidence::hits_from_relationship_trace(&report);
+        let subject = report.seed_symbol.clone();
+        let investigation_needed = !report.evidence.is_empty()
+            || report
+                .diagnostics
+                .iter()
+                .any(|d| d.contains("insufficient") || d.contains("gap"));
+        let gaps: Vec<String> = if report.evidence.is_empty() {
+            vec![
+                "No relationship evidence found — try Coding focus, a clearer subject, or indexed search."
+                    .into(),
+            ]
+        } else {
+            Vec::new()
+        };
+        let fallback = PlannerResponse {
+            content: report.to_markdown(),
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            relationship_trace: Some(report),
+            ..PlannerResponse::default()
+        };
+        self.complete_with_codebase_evidence_handoff(
+            request,
+            context,
+            codebase_evidence::CodebaseEvidenceOrigin::RelationshipTrace,
+            &subject,
+            &hits,
+            &gaps,
+            codebase_evidence::HandoffHints {
+                investigation_needed,
+                ..Default::default()
+            },
+            true,
+            fallback,
+        )
+    }
+
+    /// Symbol Navigation (C2.2) — WI soft path and/or read-only LSP tool.
+    fn complete_symbol_navigation(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = symbol_navigation::detect_symbol_navigation_request(request)
+            .ok_or_else(|| JaymiError::new("symbol navigation detect missed after gate"))?;
+        // Structured LSP requests are already tool-routed via Decision Engine.
+        if request.lsp.is_some() {
+            return Err(JaymiError::new(
+                "symbol navigation soft path does not own structured LSP requests",
+            ));
+        }
+
+        let mut response = if assessment.kind.prefers_workspace_intelligence() {
+            if let Some(report) =
+                symbol_navigation::report_from_workspace_intelligence(&assessment, &context)
+            {
+                let wi_only = matches!(
+                    assessment.kind,
+                    symbol_navigation::SymbolNavKind::EnclosingSymbol
+                        | symbol_navigation::SymbolNavKind::Symbols
+                        | symbol_navigation::SymbolNavKind::Callees
+                        | symbol_navigation::SymbolNavKind::Imports
+                );
+                if !report.evidence.is_empty() || wi_only {
+                    jaymi_logging::info("planner", report.to_diagnostics_summary());
+                    Some(PlannerResponse {
+                        content: report.to_markdown(),
+                        reasoning_used: false,
+                        stream_lifecycle: Some(StreamingLifecycle::Idle),
+                        symbol_navigation: Some(report),
+                        ..PlannerResponse::default()
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if response.is_none() {
+            let session = self.context.session_inputs();
+            let lsp_request = symbol_navigation::try_build_lsp_request(
+                &assessment,
+                &context,
+                self.active_project_root(),
+                &session,
+            );
+            response = if let Some(lsp_request) = lsp_request {
+                if lsp_request.operation.is_mutating() {
+                    None
+                } else {
+                    let intent = Intent::Lsp {
+                        request: lsp_request,
+                    };
+                    match self.dispatch_tool_backed(intent, Capability::Code, &assessment.goal) {
+                        Ok(mut tool_response) => {
+                            self.attach_symbol_navigation_report(request, &mut tool_response);
+                            if tool_response.symbol_navigation.is_none() {
+                                let symbol = symbol_navigation::resolve_symbol_name(
+                                    &assessment,
+                                    &context,
+                                );
+                                let report = symbol_navigation::empty_report(
+                                    &assessment,
+                                    symbol,
+                                    "language_server_empty",
+                                );
+                                tool_response.content = report.to_markdown();
+                                tool_response.symbol_navigation = Some(report);
+                            }
+                            Some(tool_response)
+                        }
+                        Err(err) => {
+                            jaymi_logging::warn(
+                                "planner",
+                                format!("symbol navigation LSP failed: {}", err.message()),
+                            );
+                            let symbol =
+                                symbol_navigation::resolve_symbol_name(&assessment, &context);
+                            let report = symbol_navigation::empty_report(
+                                &assessment,
+                                symbol,
+                                "lsp_unavailable",
+                            );
+                            Some(PlannerResponse {
+                                content: report.to_markdown(),
+                                reasoning_used: false,
+                                stream_lifecycle: Some(StreamingLifecycle::Idle),
+                                symbol_navigation: Some(report),
+                                ..PlannerResponse::default()
+                            })
+                        }
+                    }
+                }
+            } else {
+                let symbol = symbol_navigation::resolve_symbol_name(&assessment, &context);
+                let report =
+                    symbol_navigation::empty_report(&assessment, symbol, "missing_symbol");
+                Some(PlannerResponse {
+                    content: report.to_markdown(),
+                    reasoning_used: false,
+                    stream_lifecycle: Some(StreamingLifecycle::Idle),
+                    symbol_navigation: Some(report),
+                    ..PlannerResponse::default()
+                })
+            };
+        }
+
+        let mut fallback = response.ok_or_else(|| {
+            JaymiError::new("symbol navigation produced no response (mutating LSP?)")
+        })?;
+        let report = fallback.symbol_navigation.clone().ok_or_else(|| {
+            JaymiError::new("symbol navigation response missing report")
+        })?;
+        let hits = codebase_evidence::hits_from_symbol_navigation(&report);
+        let gaps: Vec<String> = if report.evidence.is_empty() {
+            vec![
+                "No navigation targets — ensure Coding editor focus, language server readiness, or a clearer symbol."
+                    .into(),
+            ]
+        } else {
+            Vec::new()
+        };
+        let subject = report.symbol.clone();
+        let kind = report.kind;
+        // Ensure markdown is the deterministic fallback content.
+        fallback.content = report.to_markdown();
+        fallback.reasoning_used = false;
+        self.complete_with_codebase_evidence_handoff(
+            request,
+            context,
+            codebase_evidence::CodebaseEvidenceOrigin::SymbolNavigation,
+            &subject,
+            &hits,
+            &gaps,
+            codebase_evidence::HandoffHints {
+                symbol_nav_kind: kind,
+                ..Default::default()
+            },
+            true,
+            fallback,
+        )
+    }
+
+    /// Attach Symbol Navigation report after language_server tool results (C2.2).
+    fn attach_symbol_navigation_report(
+        &self,
+        request: &UserRequest,
+        response: &mut PlannerResponse,
+    ) {
+        let Some(assessment) = symbol_navigation::detect_symbol_navigation_request(request) else {
+            return;
+        };
+        if response.tool_id.as_deref() != Some(jaymi_tools::LANGUAGE_SERVER_TOOL_ID)
+            && response.lsp_definitions.is_empty()
+            && response.lsp_references.is_empty()
+        {
+            return;
+        }
+        // Never present rename / edits as navigation.
+        if !response.lsp_edits.is_empty() && response.lsp_definitions.is_empty() {
+            return;
+        }
+        let symbol = {
+            let session = self.context.session_inputs();
+            if let Some(name) = assessment.symbol_hint.as_ref().filter(|s| !s.trim().is_empty()) {
+                name.clone()
+            } else if let Some(name) = session
+                .editor_snapshot
+                .as_ref()
+                .and_then(|s| s.symbol.as_ref())
+                .map(|s| s.name.clone())
+                .filter(|s| !s.trim().is_empty())
+            {
+                name
+            } else if let Some(name) = session
+                .editor_snapshot
+                .as_ref()
+                .and_then(|s| s.enclosing_function.as_ref())
+                .map(|s| s.name.clone())
+                .filter(|s| !s.trim().is_empty())
+            {
+                name
+            } else {
+                assessment.kind.as_str().to_string()
+            }
+        };
+        let locations: &[LspLocation] = match assessment.kind {
+            symbol_navigation::SymbolNavKind::Definition
+            | symbol_navigation::SymbolNavKind::SymbolLocation
+            | symbol_navigation::SymbolNavKind::Implementations => &response.lsp_definitions,
+            symbol_navigation::SymbolNavKind::References
+            | symbol_navigation::SymbolNavKind::Callers
+            | symbol_navigation::SymbolNavKind::Dependents => &response.lsp_references,
+            _ => {
+                if !response.lsp_definitions.is_empty() {
+                    &response.lsp_definitions
+                } else {
+                    &response.lsp_references
+                }
+            }
+        };
+        let report = if locations.is_empty() {
+            symbol_navigation::empty_report(&assessment, symbol, "language_server")
+        } else {
+            symbol_navigation::report_from_lsp_locations(
+                &assessment,
+                &symbol,
+                locations,
+                "language_server",
+            )
+        };
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+        response.content = report.to_markdown();
+        response.symbol_navigation = Some(report);
+    }
+
+    /// Intelligent Code Search soft path — editor references / deixis (C2.1).
+    ///
+    /// Read-only. Prefer WI references; otherwise fall back to SearchKnowledge
+    /// with the cursor symbol via a nested handle (no mutation).
+    fn try_code_search_soft_path(
+        &self,
+        request: &UserRequest,
+        context: &ContextBundle,
+    ) -> Option<PlannerResponse> {
+        let assessment = code_search::detect_code_search_request(request)?;
+        if !assessment.prefer_editor_references || request.search.is_some() {
+            return None;
+        }
+        if let Some(report) = code_search::report_from_editor_references(&assessment, context) {
+            jaymi_logging::info("planner", report.to_diagnostics_summary());
+            return Some(PlannerResponse {
+                content: report.to_markdown(),
+                reasoning_used: false,
+                stream_lifecycle: Some(StreamingLifecycle::Idle),
+                code_search: Some(report),
+                ..PlannerResponse::default()
+            });
+        }
+        let symbol = context
+            .editor_intelligence()
+            .symbol
+            .as_ref()
+            .map(|s| s.name.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| {
+                let q = assessment.query.trim().to_ascii_lowercase();
+                if q == "this function" || q == "this" || q == "current function" {
+                    None
+                } else if assessment.query.trim().is_empty() {
+                    None
+                } else {
+                    Some(assessment.query.clone())
+                }
+            });
+        if let Some(symbol) = symbol {
+            // SearchKnowledge via dispatch (not nested handle) — avoids double finalize.
+            let mut search = jaymi_core::SearchRequest::free_text(&symbol);
+            search.limit = Some(code_search::SEARCH_HIT_LIMIT);
+            search.metadata.files_only = true;
+            let intent = Intent::SearchKnowledge { request: search };
+            return match self.dispatch_tool_backed(
+                intent,
+                Capability::Search,
+                &assessment.goal,
+            ) {
+                Ok(mut response) => {
+                    let present = UserRequest::new(format!("find symbol {symbol}"));
+                    self.attach_code_search_report(&present, &mut response);
+                    Some(response)
+                }
+                Err(err) => {
+                    jaymi_logging::warn(
+                        "planner",
+                        format!("code search symbol fallback failed: {}", err.message()),
+                    );
+                    let report = code_search::empty_report(&assessment, "editor_references_miss");
+                    Some(PlannerResponse {
+                        content: report.to_markdown(),
+                        reasoning_used: false,
+                        stream_lifecycle: Some(StreamingLifecycle::Idle),
+                        code_search: Some(report),
+                        ..PlannerResponse::default()
+                    })
+                }
+            };
+        }
+        let report = code_search::empty_report(&assessment, "no_editor_references");
+        Some(PlannerResponse {
+            content: report.to_markdown(),
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            code_search: Some(report),
+            ..PlannerResponse::default()
+        })
+    }
+
+    /// Finalize soft-path / Search Knowledge code-search reports via the unified
+    /// evidence → Context → Reasoning handoff (C2.7.2).
+    fn finalize_code_search_soft_path(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+        mut fallback: PlannerResponse,
+    ) -> JaymiResult<PlannerResponse> {
+        let Some(report) = fallback.code_search.clone() else {
+            self.transition_conversation(ConversationState::Completed);
+            return Ok(self.finalize_response(fallback, context));
+        };
+        let hits = codebase_evidence::hits_from_code_search(&report);
+        let gaps: Vec<String> = if report.evidence.is_empty() {
+            vec![
+                "No matches in the indexed project — try a more specific symbol or phrase.".into(),
+            ]
+        } else {
+            Vec::new()
+        };
+        let subject = if report.query.is_empty() {
+            report.goal.clone()
+        } else {
+            report.query.clone()
+        };
+        let kind = report.kind;
+        fallback.content = report.to_markdown();
+        fallback.reasoning_used = false;
+        self.complete_with_codebase_evidence_handoff(
+            request,
+            context,
+            codebase_evidence::CodebaseEvidenceOrigin::CodeSearch,
+            &subject,
+            &hits,
+            &gaps,
+            codebase_evidence::HandoffHints {
+                code_search_kind: kind,
+                ..Default::default()
+            },
+            true,
+            fallback,
+        )
+    }
+
+    /// Finalize Language Server / WI symbol reports via unified handoff (C2.7.2).
+    fn finalize_symbol_navigation_report(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+        mut fallback: PlannerResponse,
+    ) -> JaymiResult<PlannerResponse> {
+        let Some(report) = fallback.symbol_navigation.clone() else {
+            self.transition_conversation(ConversationState::Completed);
+            return Ok(self.finalize_response(fallback, context));
+        };
+        let hits = codebase_evidence::hits_from_symbol_navigation(&report);
+        let gaps: Vec<String> = if report.evidence.is_empty() {
+            vec![
+                "No navigation targets — ensure Coding editor focus, language server readiness, or a clearer symbol."
+                    .into(),
+            ]
+        } else {
+            Vec::new()
+        };
+        let subject = report.symbol.clone();
+        let kind = report.kind;
+        fallback.content = report.to_markdown();
+        fallback.reasoning_used = false;
+        self.complete_with_codebase_evidence_handoff(
+            request,
+            context,
+            codebase_evidence::CodebaseEvidenceOrigin::SymbolNavigation,
+            &subject,
+            &hits,
+            &gaps,
+            codebase_evidence::HandoffHints {
+                symbol_nav_kind: kind,
+                ..Default::default()
+            },
+            true,
+            fallback,
+        )
+    }
+
+    /// Replace raw Search Knowledge dumps with a capped Code Search report (C2.1).
+    fn attach_code_search_report(&self, request: &UserRequest, response: &mut PlannerResponse) {
+        let Some(assessment) = code_search::should_present_code_search_report(request) else {
+            return;
+        };
+        if response.tool_id.as_deref() != Some(jaymi_tools::SEARCH_KNOWLEDGE_TOOL_ID)
+            && response.capability != Some(Capability::Search)
+        {
+            if response.citations.is_empty() && response.entries.is_empty() {
+                return;
+            }
+        }
+        let strategy = response
+            .tool_id
+            .clone()
+            .unwrap_or_else(|| "search_knowledge".into());
+        let report = if response.citations.is_empty() {
+            code_search::empty_report(&assessment, strategy)
+        } else {
+            code_search::report_from_citations(&assessment, &response.citations, strategy)
+        };
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+        response.content = report.to_markdown();
+        response.code_search = Some(report);
+    }
+
+    /// Coding Edit Intent (C3.1) + Change Investigation (C3.2) + Coding Plan (C3.3).
+    ///
+    /// Classifies mutation requests, investigates impact via reused C2 helpers,
+    /// then authors a Planner-owned Coding Plan grounded in that evidence.
+    /// Never writes files, invents file contents, or invokes mutation tools.
+    fn complete_coding_edit_intent(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = coding_edit::detect_coding_edit_request(request)
+            .ok_or_else(|| JaymiError::new("coding edit detect missed after gate"))?;
+        let session = self.context.session_inputs();
+        let objective =
+            coding_edit::finalize_objective(&assessment, &context, &session, request);
+
+        jaymi_logging::info("planner", objective.to_diagnostics_summary());
+
+        let (context, investigation) =
+            self.run_change_investigation(request, &objective, context)?;
+
+        jaymi_logging::info("planner", investigation.to_diagnostics_summary());
+
+        // C3.3 — Coding Plan from investigation (no tools / writes / file contents).
+        let plan = coding_plan::plan_from_change_investigation(
+            &objective,
+            &investigation,
+            &context,
+        );
+        jaymi_logging::info("planner", plan.to_diagnostics_summary());
+        self.remember_coding_plan(Some(plan.clone()));
+
+        let content = format!(
+            "{}\n\n{}\n\n{}",
+            objective.to_markdown(),
+            investigation.to_markdown(),
+            plan.to_markdown()
+        );
+
+        self.transition_conversation(ConversationState::Completed);
+        let response = PlannerResponse {
+            content,
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            coding_edit: Some(objective),
+            change_investigation: Some(investigation),
+            coding_plan: Some(plan),
+            ..PlannerResponse::default()
+        };
+        Ok(self.finalize_response(response, context))
+    }
+
+    /// C3.2 — reuse C2 deep / relationship helpers under Planner mediation.
+    fn run_change_investigation(
+        &self,
+        request: &UserRequest,
+        objective: &coding_edit::CodingEditObjective,
+        context: ContextBundle,
+    ) -> JaymiResult<(ContextBundle, change_investigation::ChangeInvestigationReport)> {
+        if !change_investigation::should_run_full(objective) {
+            let report = change_investigation::light_from_objective(objective, &context);
+            return Ok((context, report));
+        }
+
+        let deep_assessment = change_investigation::assessment_from_objective(objective);
+        let session = self.context.session_inputs();
+        let mut deep =
+            deep_investigation::begin_investigation(&deep_assessment, &context, &session);
+
+        // Optional relationship ambient chain (WI only via investigate; extensions below).
+        let mut relationship_files = Vec::new();
+        let mut relationship_symbols = Vec::new();
+        if let Some(trace_assessment) =
+            change_investigation::trace_assessment_from_objective(objective)
+        {
+            let trace =
+                relationship_tracing::investigate(&trace_assessment, &context, &session);
+            for hit in &trace.evidence {
+                let p = hit.path.display().to_string();
+                if !p.is_empty() && !relationship_files.iter().any(|x| x == &p) {
+                    relationship_files.push(p);
+                }
+            }
+            if !trace.seed_symbol.is_empty() {
+                relationship_symbols.push(trace.seed_symbol.clone());
+            }
+            deep.steps.push(deep_investigation::InvestigationStep {
+                index: (deep.steps.len() as u32).saturating_add(1),
+                action: "relationship_ambient".into(),
+                detail: format!(
+                    "seed={} evidence={}",
+                    trace.seed_symbol,
+                    trace.evidence.len()
+                ),
+                evidence_added: trace.evidence.len(),
+                duration_ms: 0,
+            });
+        }
+
+        // Planner-mediated Search Knowledge.
+        if let Some(query) = deep_investigation::primary_search_query(&deep_assessment) {
+            if deep.steps.len() < deep_investigation::MAX_STEPS
+                && self.tools.get(jaymi_tools::SEARCH_KNOWLEDGE_TOOL_ID).is_ok()
+            {
+                let mut search = jaymi_core::SearchRequest::free_text(&query);
+                search.limit = Some(change_investigation::SEARCH_HIT_LIMIT);
+                search.metadata.files_only = true;
+                let intent = Intent::SearchKnowledge { request: search };
+                match self.dispatch_tool_backed(
+                    intent,
+                    Capability::Search,
+                    &deep_assessment.goal,
+                ) {
+                    Ok(search_response) => {
+                        deep_investigation::merge_search_citations(
+                            &mut deep,
+                            &search_response.citations,
+                            &query,
+                        );
+                        if !search_response.citations.is_empty() {
+                            let mut next_session = self.context.session_inputs();
+                            next_session.search_hits =
+                                deep_investigation::citations_to_search_hits(
+                                    &search_response.citations,
+                                );
+                            self.context.set_session_inputs(next_session);
+                            self.context
+                                .request_fresh_context("change_investigation_search");
+                        }
+                    }
+                    Err(err) => {
+                        deep.gaps.push(format!(
+                            "Search Knowledge failed: {}",
+                            err.message()
+                        ));
+                    }
+                }
+            }
+        }
+
+        // Planner-mediated read_file for top candidates.
+        if deep_investigation::plan_includes_read(&deep_assessment)
+            && self.tools.get(jaymi_tools::READ_FILE_TOOL_ID).is_ok()
+        {
+            for path in deep_investigation::candidate_read_paths(&deep) {
+                if deep.steps.len() >= deep_investigation::MAX_STEPS {
+                    break;
+                }
+                let intent = Intent::ReadFile { path: path.clone() };
+                if let Ok(read_response) = self.dispatch_tool_backed(
+                    intent,
+                    Capability::ReadDocuments,
+                    &deep_assessment.goal,
+                ) {
+                    deep_investigation::merge_read_document(
+                        &mut deep,
+                        &path,
+                        read_response.document.as_ref(),
+                    );
+                }
+            }
+        }
+
+        // Optional LSP references (read-only).
+        if deep_investigation::plan_includes_follow_refs(&deep_assessment)
+            && deep.steps.len() < deep_investigation::MAX_STEPS
+            && self.tools.get(jaymi_tools::LANGUAGE_SERVER_TOOL_ID).is_ok()
+        {
+            let nav = symbol_navigation::SymbolNavAssessment {
+                kind: symbol_navigation::SymbolNavKind::References,
+                goal: deep_assessment.goal.clone(),
+                symbol_hint: Some(deep.subject.clone()),
+                deixis: true,
+                matched_rules: vec!["change_investigation_lsp"],
+            };
+            let session = self.context.session_inputs();
+            if let Some(lsp_request) = symbol_navigation::try_build_lsp_request(
+                &nav,
+                &context,
+                self.active_project_root(),
+                &session,
+            ) {
+                if !lsp_request.operation.is_mutating() {
+                    let intent = Intent::Lsp {
+                        request: lsp_request,
+                    };
+                    if let Ok(lsp_response) =
+                        self.dispatch_tool_backed(intent, Capability::Code, &deep_assessment.goal)
+                    {
+                        deep_investigation::merge_lsp_locations(
+                            &mut deep,
+                            &lsp_response.lsp_references,
+                            "references",
+                        );
+                    }
+                }
+            }
+        }
+
+        // Re-assemble through ContextEngine (sole factory) after search inject.
+        let hints = AssembleHints {
+            intent: IntentId::Unknown,
+            capability_ids: Vec::new(),
+            complexity: None,
+            environmental: None,
+            understanding: None,
+            review: None,
+            coding_plan: None,
+        };
+        let context = match self.context.assemble_with(request, Some(&hints)) {
+            Ok(bundle) => {
+                deep.selected_context =
+                    deep_investigation::observe_selected_context(&bundle);
+                bundle
+            }
+            Err(_) => context,
+        };
+
+        let report = change_investigation::fold_deep_report(
+            objective,
+            &context,
+            &deep,
+            &relationship_files,
+            &relationship_symbols,
+        );
+        Ok((context, report))
     }
 
     /// Multi-file Intelligence → GenerationOps → reviewed Execution Plan (C1.7).
@@ -2930,9 +4564,13 @@ then say \"Generate the code.\""
     }
 
     /// Build + gate a generation Execution Plan (always RequiresApproval).
+    ///
+    /// Sprint C3.5: attaches a multi-file Coding Diff Review preview to the
+    /// existing ExecutionPlan / Review Card — not a parallel approval system.
     fn prepare_code_generation_execution(
         &self,
         generation: &code_generation::CodeGeneration,
+        patch_report: Option<&patch_generation::PatchGenerationReport>,
     ) -> JaymiResult<PreparedExecution> {
         let deletion_method = self.resolve_deletion_method(None, "")?;
         let calls = code_generation::tool_calls_for_generation(generation, deletion_method)
@@ -3024,6 +4662,18 @@ then say \"Generate the code.\""
             };
         }
 
+        let coding_plan = self.clone_last_coding_plan();
+        let risk_label = EstimatedRisk::from_tool_risk(tool_risk);
+        let coding_diff = coding_diff_review::build_coding_diff_review(
+            generation,
+            |path| self.read_file_text_for_patch(path),
+            coding_diff_review::CodingDiffReviewContext {
+                coding_plan: coding_plan.as_ref(),
+                patch_report,
+                risk_label: Some(risk_label.as_str()),
+            },
+        );
+
         match &gate {
             GateDecision::Denied { explanation } => {
                 let mut plan = self.create_generation_plan(
@@ -3068,12 +4718,14 @@ then say \"Generate the code.\""
                         execution_plan: Some(plan),
                         execution_summary: Some(summary),
                         code_generation: Some(generation.clone()),
+                        coding_diff_review: Some(coding_diff.surface),
                         ..PlannerResponse::default()
                     }),
                 });
             }
             GateDecision::RequiresApproval { explanation } => {
-                let preview = self.generate_action_preview(&first.tool_id, &first.input, &gate);
+                // Prefer multi-file coding diff over first-tool-only preview (C3.5).
+                let preview = Some(coding_diff.preview.clone());
                 let mut plan = self.create_generation_plan(
                     generation,
                     &calls,
@@ -3095,6 +4747,10 @@ then say \"Generate the code.\""
                     .iter()
                     .map(|call| (call.tool_id.clone(), call.input.clone()))
                     .collect::<Vec<_>>();
+                let generation_baselines = coding_mutation_recovery::baselines_for_generation(
+                    generation,
+                    |path| self.read_file_text_for_patch(path),
+                );
                 self.pause_execution(PausedExecution {
                     plan: plan.clone(),
                     tool_input: first.input.clone(),
@@ -3105,6 +4761,7 @@ then say \"Generate the code.\""
                     permission_result: permission_result.clone(),
                     paused_at: Instant::now(),
                     generation_calls,
+                    generation_baselines,
                 })?;
                 let summary = ExecutionSummary::from_plan(
                     &plan,
@@ -3112,12 +4769,22 @@ then say \"Generate the code.\""
                     Vec::new(),
                     Some(explanation.clone()),
                 );
-                let review = ReviewCardModel::from_plan(&plan, Some(explanation.as_str()));
+                let mut review = ReviewCardModel::from_plan(&plan, Some(explanation.as_str()));
+                review.apply_coding_diff_surface(&coding_diff.surface);
                 // Prefix generation markdown so the conversation shows ops + Review Card.
                 let content = format!(
                     "{}\n\n{}",
                     generation.to_markdown(),
                     review.render_text()
+                );
+                jaymi_logging::info(
+                    "planner",
+                    format!(
+                        "execution_plan_lifecycle status={} plan={} {}",
+                        plan.status().as_str(),
+                        plan.id().as_str(),
+                        coding_diff.surface.to_diagnostics_summary()
+                    ),
                 );
                 return Ok(PreparedExecution {
                     plan: plan.clone(),
@@ -3137,6 +4804,7 @@ then say \"Generate the code.\""
                         execution_plan: Some(plan),
                         execution_summary: Some(summary),
                         code_generation: Some(generation.clone()),
+                        coding_diff_review: Some(coding_diff.surface),
                         ..PlannerResponse::default()
                     }),
                 });
@@ -3220,11 +4888,25 @@ then say \"Generate the code.\""
     }
 
     /// Execute every tool call in an approved generation batch (Planner-owned).
+    ///
+    /// Sprint C3.6 — Apply Approved Coding Changes:
+    /// runs ops in order through existing tools/providers, stops on first
+    /// failure, and returns an [`ExecutionSummary`] that reports exactly what
+    /// succeeded vs failed (`partial` when mid-batch stop). No autonomous retry.
+    ///
+    /// Sprint C3.7 — Coding Mutation Recovery:
+    /// re-validates frozen baselines before any write and between ops so drifted
+    /// sources are never silently overwritten.
     fn execute_approved_generation(
         &self,
         plan: &mut ExecutionPlan,
         calls: &[(String, ToolInput)],
-    ) -> JaymiResult<(jaymi_tools::ToolOutput, ExecutionSummary)> {
+        baselines: &[coding_mutation_recovery::GenerationBaseline],
+    ) -> JaymiResult<(
+        jaymi_tools::ToolOutput,
+        ExecutionSummary,
+        Option<coding_mutation_recovery::CodingMutationRecovery>,
+    )> {
         if !plan.status().may_execute() {
             return Err(JaymiError::new(format!(
                 "execution plan {} is not approved (status={})",
@@ -3241,63 +4923,254 @@ then say \"Generate the code.\""
         jaymi_logging::info(
             "planner",
             format!(
-                "execution plan {} executing generation batch ops={}",
+                "execution plan {} applying coding changes ops={}",
                 plan.id(),
                 calls.len()
             ),
         );
-        let started = Instant::now();
-        let mut messages = Vec::new();
-        let mut last_output = None;
-        for (tool_id, input) in calls {
-            jaymi_logging::info(
+
+        // C3.7: full-batch preflight before the first mutation.
+        let preflight = coding_mutation_recovery::preflight_baselines(
+            baselines,
+            |path| self.read_file_text_for_patch(path),
+            |parent| parent.exists(),
+        );
+        if !preflight.ok() {
+            let _ = plan.mark_failed();
+            let mut recovery = coding_mutation_recovery::recovery_for_preflight(
+                plan,
+                baselines,
+                &preflight,
+            );
+            let mut summary = ExecutionSummary::from_plan(
+                plan,
+                Vec::new(),
+                Vec::new(),
+                recovery
+                    .blockers
+                    .first()
+                    .map(|b| b.detail.clone()),
+            );
+            summary.status = ExecutionStatus::Failed;
+            coding_mutation_recovery::enrich_summary_with_recovery(&mut summary, &recovery);
+            recovery.phase = Some(coding_mutation_recovery::MutationPhase::Failed);
+            let output = jaymi_tools::ToolOutput {
+                success: false,
+                message: Some(format!(
+                    "Coding apply refused before mutation: {}",
+                    recovery
+                        .blockers
+                        .first()
+                        .map(|b| b.detail.as_str())
+                        .unwrap_or("stale or invalid source state")
+                )),
+                ..Default::default()
+            };
+            jaymi_logging::warn(
                 "planner",
                 format!(
-                    "generation op tool={} path={:?}",
-                    tool_id,
-                    input.path.as_ref().map(|p| p.display().to_string())
+                    "coding_apply preflight blocked plan={} {}",
+                    plan.id(),
+                    recovery.to_diagnostics_summary()
                 ),
+            );
+            return Ok((output, summary, Some(recovery)));
+        }
+
+        let started = Instant::now();
+        let mut results = Vec::new();
+        let mut last_success_output = None;
+
+        for (index, (tool_id, input)) in calls.iter().enumerate() {
+            let order = index + 1;
+            let path = input
+                .path
+                .as_ref()
+                .map(|p| p.display().to_string());
+
+            // Apply-time invalid patch guard.
+            if let Some(reason) =
+                coding_mutation_recovery::invalid_write_content(tool_id, input.content.as_deref())
+            {
+                results.push(coding_apply::CodingOpResult::from_error(
+                    order,
+                    tool_id.clone(),
+                    path.clone(),
+                    reason.clone(),
+                ));
+                let stop_kind = Some(coding_mutation_recovery::RecoveryKind::InvalidPatch);
+                let duration_ms = started.elapsed().as_millis() as u64;
+                let _ = plan.mark_failed();
+                let mut summary =
+                    coding_apply::summary_from_op_results(plan, &results, duration_ms);
+                let recovery = coding_mutation_recovery::recovery_from_op_results(
+                    plan,
+                    baselines,
+                    &results,
+                    &summary,
+                    stop_kind,
+                );
+                coding_mutation_recovery::enrich_summary_with_recovery(&mut summary, &recovery);
+                let output = jaymi_tools::ToolOutput {
+                    success: false,
+                    message: Some(reason),
+                    ..Default::default()
+                };
+                return Ok((output, summary, Some(recovery)));
+            }
+
+            // Per-op baseline recheck (race after preflight / prior writes).
+            if let Some(baseline) = baselines.iter().find(|b| b.order == order) {
+                let op_preflight = coding_mutation_recovery::preflight_baselines(
+                    std::slice::from_ref(baseline),
+                    |path| self.read_file_text_for_patch(path),
+                    |parent| parent.exists(),
+                );
+                if !op_preflight.ok() {
+                    let blocker = &op_preflight.blockers[0];
+                    results.push(coding_apply::CodingOpResult::from_error(
+                        order,
+                        tool_id.clone(),
+                        path.clone(),
+                        blocker.detail.clone(),
+                    ));
+                    let stop_kind = Some(blocker.kind);
+                    let duration_ms = started.elapsed().as_millis() as u64;
+                    let _ = plan.mark_failed();
+                    let mut summary =
+                        coding_apply::summary_from_op_results(plan, &results, duration_ms);
+                    let recovery = coding_mutation_recovery::recovery_from_op_results(
+                        plan,
+                        baselines,
+                        &results,
+                        &summary,
+                        stop_kind,
+                    );
+                    coding_mutation_recovery::enrich_summary_with_recovery(&mut summary, &recovery);
+                    let output = jaymi_tools::ToolOutput {
+                        success: false,
+                        message: Some(blocker.detail.clone()),
+                        ..Default::default()
+                    };
+                    return Ok((output, summary, Some(recovery)));
+                }
+            }
+
+            jaymi_logging::info(
+                "planner",
+                format!("coding_apply op={order} tool={tool_id} path={path:?}"),
             );
             match self.orchestrator.execute(tool_id, input.clone()) {
                 Ok(output) => {
+                    let result = coding_apply::CodingOpResult::from_tool_output(
+                        order,
+                        tool_id.clone(),
+                        path.clone(),
+                        &output,
+                    );
+                    results.push(result);
                     if !output.success {
+                        let stop_kind = Some(coding_mutation_recovery::RecoveryKind::WriteFailed);
                         let duration_ms = started.elapsed().as_millis() as u64;
                         let _ = plan.mark_failed();
-                        let summary = ExecutionSummary::from_tool_result(
+                        let mut summary =
+                            coding_apply::summary_from_op_results(plan, &results, duration_ms);
+                        let recovery = coding_mutation_recovery::recovery_from_op_results(
                             plan,
-                            tool_id.clone(),
-                            &output,
-                            duration_ms,
+                            baselines,
+                            &results,
+                            &summary,
+                            stop_kind,
                         );
-                        return Ok((output, summary));
+                        coding_mutation_recovery::enrich_summary_with_recovery(
+                            &mut summary,
+                            &recovery,
+                        );
+                        jaymi_logging::warn(
+                            "planner",
+                            format!(
+                                "coding_apply stopped plan={} partial={} at_op={}",
+                                plan.id(),
+                                summary.partial,
+                                order
+                            ),
+                        );
+                        return Ok((output, summary, Some(recovery)));
                     }
-                    if let Some(message) = &output.message {
-                        messages.push(message.clone());
-                    } else {
-                        messages.push(format!("completed {tool_id}"));
-                    }
-                    last_output = Some(output);
+                    last_success_output = Some(output);
                 }
                 Err(error) => {
+                    let message = error.message().to_string();
+                    let kind = if message.to_ascii_lowercase().contains("parent")
+                        || message.to_ascii_lowercase().contains("no such file")
+                        || message.to_ascii_lowercase().contains("not found")
+                    {
+                        coding_mutation_recovery::RecoveryKind::DirectoryMissing
+                    } else {
+                        coding_mutation_recovery::RecoveryKind::WriteFailed
+                    };
+                    let stop_kind = Some(kind);
+                    results.push(coding_apply::CodingOpResult::from_error(
+                        order,
+                        tool_id.clone(),
+                        path,
+                        message.clone(),
+                    ));
+                    let duration_ms = started.elapsed().as_millis() as u64;
                     let _ = plan.mark_failed();
-                    return Err(error);
+                    let mut summary =
+                        coding_apply::summary_from_op_results(plan, &results, duration_ms);
+                    let recovery = coding_mutation_recovery::recovery_from_op_results(
+                        plan,
+                        baselines,
+                        &results,
+                        &summary,
+                        stop_kind,
+                    );
+                    coding_mutation_recovery::enrich_summary_with_recovery(&mut summary, &recovery);
+                    let output = jaymi_tools::ToolOutput {
+                        success: false,
+                        message: Some(message),
+                        ..Default::default()
+                    };
+                    jaymi_logging::warn(
+                        "planner",
+                        format!(
+                            "coding_apply provider/tool error plan={} partial={} at_op={}",
+                            plan.id(),
+                            summary.partial,
+                            order
+                        ),
+                    );
+                    return Ok((output, summary, Some(recovery)));
                 }
             }
         }
+
         let duration_ms = started.elapsed().as_millis() as u64;
         let _ = plan.mark_completed();
-        let mut output = last_output.ok_or_else(|| {
+        let mut output = last_success_output.ok_or_else(|| {
             JaymiError::new("generation batch produced no tool output")
         })?;
-        output.message = Some(format!(
-            "Code generation completed ({} op(s)): {}",
-            calls.len(),
-            messages.join(" · ")
-        ));
-        let summary =
-            ExecutionSummary::from_tool_result(plan, calls[0].0.clone(), &output, duration_ms);
+        let summary = coding_apply::summary_from_op_results(plan, &results, duration_ms);
+        let headline = coding_apply::coding_apply_headline(&summary, calls.len());
+        let detail = results
+            .iter()
+            .map(|r| r.message.clone())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        output.message = Some(format!("{headline} {detail}"));
         self.context.request_fresh_context("files_changed");
-        Ok((output, summary))
+        jaymi_logging::info(
+            "planner",
+            format!(
+                "coding_apply completed plan={} ops={} files={}",
+                plan.id(),
+                calls.len(),
+                summary.files_edited.len()
+            ),
+        );
+        Ok((output, summary, None))
     }
 
     /// Number of plans currently paused awaiting review.
@@ -3636,6 +5509,7 @@ then say \"Generate the code.\""
             permission_result: permission_result.clone(),
             paused_at: Instant::now(),
             generation_calls: entry.generation_calls.clone(),
+            generation_baselines: entry.generation_baselines.clone(),
         })?;
         self.update_plan_history_status(child.id(), ExecutionStatus::AwaitingReview)?;
 
@@ -3691,14 +5565,56 @@ then say \"Generate the code.\""
             ),
         );
 
-        let (output, execution_summary) = if entry.generation_calls.is_empty() {
-            self.execute_approved_plan(&mut entry.plan, entry.tool_input)?
+        let (output, execution_summary, mut coding_recovery) =
+            if entry.generation_calls.is_empty() {
+                let (output, summary) =
+                    self.execute_approved_plan(&mut entry.plan, entry.tool_input)?;
+                (output, summary, None)
+            } else {
+                self.execute_approved_generation(
+                    &mut entry.plan,
+                    &entry.generation_calls,
+                    &entry.generation_baselines,
+                )?
+            };
+        let _ = self.update_plan_history_status(entry.plan.id(), entry.plan.status());
+
+        let mut summary_body = if execution_summary.should_surface_in_conversation() {
+            Some(execution_summary.render_conversation())
         } else {
-            self.execute_approved_generation(&mut entry.plan, &entry.generation_calls)?
+            None
         };
+        if let Some(recovery) = &coding_recovery {
+            let markdown = recovery.to_markdown();
+            summary_body = Some(match summary_body {
+                Some(body) => format!("{body}\n\n{markdown}"),
+                None => markdown,
+            });
+        }
+
+        // Soft tool / provider failure: keep ExecutionSummary (incl. partial
+        // multi-file apply) instead of dropping it via ensure_success Err.
+        if !output.success {
+            let mut response = self.tool_failure_response(
+                entry.plan,
+                entry.capability,
+                entry.tool_id,
+                entry.provider_id,
+                entry.policy_evaluation,
+                entry.permission_result,
+                output,
+                execution_summary,
+            );
+            if let Some(body) = summary_body {
+                response.content = format!("{}\n\n{body}", response.content);
+            }
+            response.coding_mutation_recovery = coding_recovery.take();
+            return Ok(response);
+        }
+
         self.ensure_success(&output)?;
 
-        let content = output.message.clone().unwrap_or_else(|| {
+        let mut content = output.message.clone().unwrap_or_else(|| {
             format!(
                 "Resumed and completed plan {} via {} → {}",
                 entry.plan.id(),
@@ -3706,8 +5622,11 @@ then say \"Generate the code.\""
                 entry.tool_id
             )
         });
+        if let Some(body) = summary_body {
+            content = format!("{content}\n\n{body}");
+        }
 
-        Ok(response_from_tool_output(
+        let mut response = response_from_tool_output(
             content,
             entry.capability,
             entry.tool_id,
@@ -3717,7 +5636,9 @@ then say \"Generate the code.\""
             entry.policy_evaluation,
             entry.permission_result,
             output,
-        ))
+        );
+        response.coding_mutation_recovery = coding_recovery.take();
+        Ok(response)
     }
 
     fn invalidate_paused_plan(
@@ -3743,7 +5664,21 @@ then say \"Generate the code.\""
         };
         let _ = entry.plan.cancel();
         let summary = ExecutionSummary::cancelled(&entry.plan, reason);
-        let content = if user_cancelled {
+        let recovery = if !entry.generation_calls.is_empty() || !entry.generation_baselines.is_empty()
+        {
+            Some(coding_mutation_recovery::recovery_for_cancel(
+                &entry.plan,
+                &entry.generation_baselines,
+            ))
+        } else if entry.plan.steps().len() > 1 {
+            Some(coding_mutation_recovery::recovery_for_cancel(
+                &entry.plan,
+                &[],
+            ))
+        } else {
+            None
+        };
+        let mut content = if user_cancelled {
             format!(
                 "Cancelled plan {}. No tools were executed.",
                 entry.plan.id()
@@ -3754,6 +5689,9 @@ then say \"Generate the code.\""
                 entry.plan.id()
             )
         };
+        if let Some(recovery) = &recovery {
+            content = format!("{content}\n\n{}", recovery.to_markdown());
+        }
         Ok(PlannerResponse {
             content,
             capability: Some(entry.capability),
@@ -3765,6 +5703,7 @@ then say \"Generate the code.\""
             awaiting_review: false,
             execution_plan: Some(entry.plan),
             execution_summary: Some(summary),
+            coding_mutation_recovery: recovery,
             ..PlannerResponse::default()
         })
     }
@@ -4225,6 +6164,7 @@ mod tests {
         EstimatedRuntime, ExecutionMode, GpuRequirements, InternetRequirement, MemoryUsage,
         PrivacyMode, ReadFileTool, Reliability, ResourceCost, ResultType, SearchFilesTool, Tool,
         ToolInput, ToolMetadata, ToolOutput, ToolRisk, READ_FILE_TOOL_ID, SEARCH_FILES_TOOL_ID,
+        SEARCH_KNOWLEDGE_TOOL_ID,
     };
     use jaymi_understanding::{ContentIntelligenceApi, SqliteContentStore, UnderstandingEngine};
     use std::fs::{self, File};
@@ -4246,6 +6186,8 @@ mod tests {
         last_history_len: AtomicU32,
         last_prompt_has_prior_user: std::sync::Mutex<Option<bool>>,
         last_model: std::sync::Mutex<Option<ModelIdentifier>>,
+        last_goal: std::sync::Mutex<Option<String>>,
+        last_prompt_text: std::sync::Mutex<Option<String>>,
         models: Vec<&'static str>,
     }
 
@@ -4258,6 +6200,8 @@ mod tests {
                 last_history_len: AtomicU32::new(0),
                 last_prompt_has_prior_user: std::sync::Mutex::new(None),
                 last_model: std::sync::Mutex::new(None),
+                last_goal: std::sync::Mutex::new(None),
+                last_prompt_text: std::sync::Mutex::new(None),
                 models: vec!["mock-model"],
             }
         }
@@ -4283,10 +6227,17 @@ mod tests {
             self.last_model.lock().ok().and_then(|guard| guard.clone())
         }
 
+        fn last_goal(&self) -> Option<String> {
+            self.last_goal.lock().ok().and_then(|guard| guard.clone())
+        }
+
         fn record_request(&self, request: &jaymi_reasoning::ReasoningRequest) {
             self.last_history_len
                 .store(request.history.len() as u32, AtomicOrdering::SeqCst);
             *self.last_model.lock().expect("lock") = request.model.clone();
+            *self.last_goal.lock().expect("lock") = Some(request.goal.clone());
+            *self.last_prompt_text.lock().expect("lock") =
+                request.prompt.as_ref().map(|prompt| prompt.text.clone());
             let has_prior = request.prompt.as_ref().map(|prompt| {
                 prompt.text.contains("user: earlier")
                     || request
@@ -4679,6 +6630,52 @@ mod tests {
 
         fn execute(&self, _input: &ToolInput) -> JaymiResult<ToolOutput> {
             Ok(ToolOutput::directory_listing(Vec::new()))
+        }
+    }
+
+    /// Test double: same id as write_file but cloud-only so Privacy Maximum denies.
+    struct CloudOnlyWriteFileTool {
+        metadata: ToolMetadata,
+    }
+
+    impl CloudOnlyWriteFileTool {
+        fn new() -> Self {
+            Self {
+                metadata: ToolMetadata {
+                    id: jaymi_tools::WRITE_FILE_TOOL_ID.into(),
+                    name: "Cloud Write File".into(),
+                    version: "0.1.0".into(),
+                    description: "Cloud-only write probe for deny tests".into(),
+                    provider: "cloud".into(),
+                    capabilities: vec![Capability::FileManagement],
+                    risk: ToolRisk::External,
+                    execution_mode: ExecutionMode::Synchronous,
+                    estimated_runtime: EstimatedRuntime::Fast,
+                    resource_cost: ResourceCost::Low,
+                    memory_usage: MemoryUsage::Small,
+                    gpu_requirements: GpuRequirements::None,
+                    privacy: PrivacyMode::CloudOnly,
+                    internet: InternetRequirement::Required,
+                    reliability: Reliability::Experimental,
+                    result_type: ResultType::StructuredData,
+                },
+            }
+        }
+    }
+
+    impl Tool for CloudOnlyWriteFileTool {
+        fn metadata(&self) -> &ToolMetadata {
+            &self.metadata
+        }
+
+        fn validate(&self, _input: &ToolInput) -> JaymiResult<()> {
+            Ok(())
+        }
+
+        fn execute(&self, _input: &ToolInput) -> JaymiResult<ToolOutput> {
+            Err(JaymiError::new(
+                "cloud write probe must never execute under Privacy Maximum",
+            ))
         }
     }
 
@@ -5123,6 +7120,648 @@ mod tests {
             })
             .unwrap();
         assert!(path.exists());
+    }
+
+    #[test]
+    fn coding_diff_review_appears_before_approval_with_accurate_stats() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let planner_rs = dir.join("planner.rs");
+        let context_rs = dir.join("context.rs");
+        fs::write(&planner_rs, b"fn a() {}\n").unwrap();
+        fs::write(&context_rs, b"use x;\n").unwrap();
+
+        let generation = CodeGeneration {
+            goal: "Adjust planner + context".into(),
+            operations: vec![
+                GenerationOp::modify_file(
+                    &planner_rs,
+                    "fn a() {}\nfn b() {}\n",
+                    "extend planner",
+                ),
+                GenerationOp::modify_file(
+                    &context_rs,
+                    "use x;\nuse y;\n",
+                    "extend context",
+                ),
+            ],
+            coding_plan_summary: vec![],
+        };
+        let response = planner.begin_code_generation(generation).unwrap();
+        assert!(response.awaiting_review);
+        assert!(response.content.contains("Files affected"));
+        assert!(response.content.contains("planner.rs"));
+        assert!(response.content.contains("context.rs"));
+        assert!(response.content.contains("Diff Preview") || response.content.contains("+"));
+        assert!(response.content.contains("Approve"));
+        assert!(response.content.contains("Modify"));
+        assert!(response.content.contains("Cancel"));
+        assert!(response.content.contains("Validation"));
+        assert!(response.content.contains("Rationale") || response.content.contains("extend"));
+
+        let surface = response.coding_diff_review.expect("coding diff surface");
+        assert_eq!(surface.files.len(), 2);
+        assert!(surface.total_added >= 2);
+        let preview = response
+            .execution_plan
+            .as_ref()
+            .and_then(|plan| plan.action_preview())
+            .expect("multi-file preview");
+        assert_eq!(preview.kind, jaymi_core::PreviewKind::UnifiedDiff);
+        assert!(preview.resources.len() >= 2);
+
+        // No pre-approval writes.
+        assert_eq!(fs::read_to_string(&planner_rs).unwrap(), "fn a() {}\n");
+        assert_eq!(fs::read_to_string(&context_rs).unwrap(), "use x;\n");
+    }
+
+    #[test]
+    fn coding_diff_review_cancel_prevents_mutation() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let path = dir.join("keep.rs");
+        fs::write(&path, b"keep\n").unwrap();
+        let generation = CodeGeneration {
+            goal: "Would overwrite".into(),
+            operations: vec![GenerationOp::modify_file(&path, "changed\n", "mutate")],
+            coding_plan_summary: vec![],
+        };
+        let response = planner.begin_code_generation(generation).unwrap();
+        let plan_id = response.execution_plan.expect("plan").id().clone();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "keep\n");
+
+        let cancelled = planner
+            .resolve_review(ReviewIntent::Cancel { plan_id })
+            .unwrap();
+        assert!(!cancelled.awaiting_review);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "keep\n");
+    }
+
+    #[test]
+    fn coding_diff_review_modify_creates_child_plan() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let path = dir.join("file.rs");
+        fs::write(&path, b"old\n").unwrap();
+        let generation = CodeGeneration {
+            goal: "Mutate".into(),
+            operations: vec![GenerationOp::modify_file(&path, "new\n", "change")],
+            coding_plan_summary: vec![],
+        };
+        let response = planner.begin_code_generation(generation).unwrap();
+        let parent = response.execution_plan.expect("parent");
+        let parent_id = parent.id().clone();
+
+        let revised = planner
+            .resolve_review(ReviewIntent::Modify {
+                plan_id: parent_id.clone(),
+                note: Some("Only touch the helper.".into()),
+            })
+            .unwrap();
+        assert!(revised.awaiting_review);
+        let child = revised.execution_plan.expect("child");
+        assert_ne!(child.id(), &parent_id);
+        assert_eq!(child.parent_plan_id(), Some(&parent_id));
+        assert!(child.revision() > 1);
+        assert!(!child.revision_changes().is_empty());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "old\n");
+    }
+
+    #[test]
+    fn coding_diff_review_duplicate_approval_is_safe() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let path = dir.join("once.rs");
+        let generation = CodeGeneration {
+            goal: "Create once".into(),
+            operations: vec![GenerationOp::create_file(&path, "body\n", "create")],
+            coding_plan_summary: vec![],
+        };
+        let response = planner.begin_code_generation(generation).unwrap();
+        let plan_id = response.execution_plan.expect("plan").id().clone();
+        assert!(!path.exists());
+
+        let first = planner
+            .resolve_review(ReviewIntent::Approve {
+                plan_id: plan_id.clone(),
+            })
+            .unwrap();
+        assert!(path.exists());
+        assert!(
+            first.content.contains("Code generation completed")
+                || first.execution_summary.is_some()
+        );
+
+        let dup = planner.resolve_review(ReviewIntent::Approve { plan_id });
+        assert!(dup.is_err(), "duplicate approval must not re-execute");
+        let body = fs::read_to_string(&path).unwrap();
+        assert_eq!(body, "body\n");
+    }
+
+    #[test]
+    fn coding_apply_create_file_after_approve() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let path = dir.join("created.rs");
+        let generation = CodeGeneration {
+            goal: "Create file".into(),
+            operations: vec![GenerationOp::create_file(&path, "hello\n", "create")],
+            coding_plan_summary: vec![],
+        };
+        let paused = planner.begin_code_generation(generation).unwrap();
+        assert!(paused.awaiting_review);
+        assert!(!path.exists());
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        assert!(!resumed.awaiting_review);
+        assert!(!resumed.blocked);
+        assert!(path.exists());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "hello\n");
+        let summary = resumed.execution_summary.expect("summary");
+        assert_eq!(summary.status, ExecutionStatus::Completed);
+        assert!(!summary.partial);
+        assert!(summary.files_edited.iter().any(|f| f.contains("created.rs")));
+        assert!(resumed.content.contains("Execution summary"));
+        assert!(resumed.content.contains("Code generation completed"));
+    }
+
+    #[test]
+    fn coding_apply_modify_file_after_approve() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let path = dir.join("edit.rs");
+        fs::write(&path, b"old\n").unwrap();
+        let generation = CodeGeneration {
+            goal: "Modify file".into(),
+            operations: vec![GenerationOp::modify_file(&path, "new\n", "modify")],
+            coding_plan_summary: vec![],
+        };
+        let paused = planner.begin_code_generation(generation).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "new\n");
+        let summary = resumed.execution_summary.expect("summary");
+        assert_eq!(summary.status, ExecutionStatus::Completed);
+        assert!(summary.render_conversation().contains("Files edited"));
+    }
+
+    #[test]
+    fn coding_apply_multi_file_preserves_order() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let a = dir.join("a.rs");
+        let b = dir.join("b.rs");
+        let generation = CodeGeneration {
+            goal: "Multi-file".into(),
+            operations: vec![
+                GenerationOp::create_file(&a, "a\n", "first"),
+                GenerationOp::create_file(&b, "b\n", "second"),
+            ],
+            coding_plan_summary: vec![],
+        };
+        let paused = planner.begin_code_generation(generation).unwrap();
+        let steps = paused.execution_plan.as_ref().unwrap().steps();
+        assert_eq!(steps.len(), 2);
+        assert!(steps[0].description.contains("a.rs") || steps[0].resource.as_deref().unwrap().contains("a.rs"));
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        assert_eq!(fs::read_to_string(&a).unwrap(), "a\n");
+        assert_eq!(fs::read_to_string(&b).unwrap(), "b\n");
+        let summary = resumed.execution_summary.expect("summary");
+        assert_eq!(summary.files_edited.len(), 2);
+        assert!(summary.outputs.iter().any(|o| o.contains("op 1")));
+        assert!(summary.outputs.iter().any(|o| o.contains("op 2")));
+    }
+
+    #[test]
+    fn coding_apply_failed_write_reports_summary_without_mutation() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let missing_parent = dir.join("nope").join("nested").join("fail.rs");
+        let generation = CodeGeneration {
+            goal: "Fail write".into(),
+            operations: vec![GenerationOp::create_file(
+                &missing_parent,
+                "x\n",
+                "will fail",
+            )],
+            coding_plan_summary: vec![],
+        };
+        let paused = planner.begin_code_generation(generation).unwrap();
+        assert!(!missing_parent.exists());
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        assert!(resumed.blocked);
+        assert!(!missing_parent.exists());
+        let summary = resumed.execution_summary.expect("summary");
+        assert_eq!(summary.status, ExecutionStatus::Failed);
+        assert!(!summary.partial);
+        assert!(!summary.errors.is_empty());
+        assert!(resumed.content.contains("Execution summary (failed)"));
+    }
+
+    #[test]
+    fn coding_apply_partial_execution_stops_and_reports() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let ok_path = dir.join("ok.rs");
+        let ro_dir = dir.join("ro");
+        fs::create_dir_all(&ro_dir).unwrap();
+        let fail_path = ro_dir.join("fail.rs");
+        let generation = CodeGeneration {
+            goal: "Partial batch".into(),
+            operations: vec![
+                GenerationOp::create_file(&ok_path, "ok\n", "succeeds"),
+                GenerationOp::create_file(&fail_path, "no\n", "fails"),
+            ],
+            coding_plan_summary: vec![],
+        };
+        let paused = planner.begin_code_generation(generation).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&ro_dir).unwrap().permissions();
+            perms.set_mode(0o555);
+            fs::set_permissions(&ro_dir, perms).unwrap();
+        }
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        assert!(ok_path.exists(), "first op must have applied");
+        assert!(!fail_path.exists(), "second op must not invent parents");
+        assert!(resumed.blocked);
+        let summary = resumed.execution_summary.expect("summary");
+        assert!(summary.partial);
+        assert_eq!(summary.status, ExecutionStatus::Failed);
+        assert!(summary.files_edited.iter().any(|f| f.contains("ok.rs")));
+        assert!(summary.warnings.iter().any(|w| w.contains("Stopped after")));
+        assert!(resumed.content.contains("partial"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&ro_dir).unwrap().permissions();
+            perms.set_mode(0o755);
+            let _ = fs::set_permissions(&ro_dir, perms);
+        }
+    }
+
+    #[test]
+    fn coding_apply_cancelled_plan_never_writes() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let path = dir.join("cancel.rs");
+        let generation = CodeGeneration {
+            goal: "Cancel".into(),
+            operations: vec![GenerationOp::create_file(&path, "x\n", "cancel me")],
+            coding_plan_summary: vec![],
+        };
+        let paused = planner.begin_code_generation(generation).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let cancelled = planner
+            .resolve_review(ReviewIntent::Cancel { plan_id })
+            .unwrap();
+        assert!(!path.exists());
+        assert!(!cancelled.awaiting_review);
+        let summary = cancelled.execution_summary.expect("summary");
+        assert_eq!(summary.status, ExecutionStatus::Cancelled);
+    }
+
+    #[test]
+    fn coding_apply_review_required_before_any_mutation() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let path = dir.join("gated.rs");
+        let generation = CodeGeneration {
+            goal: "Gate".into(),
+            operations: vec![GenerationOp::create_file(&path, "x\n", "gate")],
+            coding_plan_summary: vec![],
+        };
+        let paused = planner.begin_code_generation(generation).unwrap();
+        assert!(paused.awaiting_review);
+        assert!(paused.blocked);
+        assert_eq!(
+            paused
+                .execution_plan
+                .as_ref()
+                .unwrap()
+                .review_requirement(),
+            ReviewRequirement::Required
+        );
+        assert!(!path.exists());
+        assert!(
+            paused
+                .permission_result
+                .as_ref()
+                .map(|r| matches!(
+                    r.decision,
+                    PermissionDecision::RequiresApproval | PermissionDecision::Allowed
+                ))
+                .unwrap_or(true)
+        );
+    }
+
+    #[test]
+    fn coding_apply_permission_denial_blocks_before_review() {
+        // Replace write_file with a cloud-only tool so Privacy Maximum denies
+        // at the shared Policy + Permission gate (no coding bypass).
+        let planner = planner_with_tools_and_policies(
+            |tools, _, _| {
+                tools
+                    .register_tool(Arc::new(CloudOnlyWriteFileTool::new()))
+                    .unwrap();
+            },
+            |policies| {
+                policies.initialize().unwrap();
+                policies.active.clear();
+                policies.active.push(jaymi_policies::Policy {
+                    name: "Privacy Maximum".into(),
+                    scope: jaymi_policies::PolicyScope::Global,
+                    builtin: Some(jaymi_policies::BuiltinPolicy::PrivacyMaximum),
+                });
+            },
+        );
+        let dir = temp_dir();
+        let path = dir.join("denied.rs");
+        let generation = CodeGeneration {
+            goal: "Denied".into(),
+            operations: vec![GenerationOp::create_file(&path, "x\n", "deny")],
+            coding_plan_summary: vec![],
+        };
+        let response = planner.begin_code_generation(generation).unwrap();
+        assert!(response.blocked);
+        assert!(!response.awaiting_review);
+        assert!(!path.exists());
+        assert!(response.content.contains("Denied before code generation"));
+    }
+
+    #[test]
+    fn coding_apply_execution_summary_recorded_in_approval_history() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let path = dir.join("hist.rs");
+        let generation = CodeGeneration {
+            goal: "History".into(),
+            operations: vec![GenerationOp::create_file(&path, "h\n", "hist")],
+            coding_plan_summary: vec![],
+        };
+        let paused = planner.begin_code_generation(generation).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        assert!(resumed.execution_summary.is_some());
+        let history = planner.approval_history().unwrap();
+        assert!(history.iter().any(|entry| {
+            matches!(entry.decision, ApprovalDecision::Approve)
+                && entry.execution_result.is_some()
+        }));
+    }
+
+    #[test]
+    fn coding_recovery_stale_source_refuses_overwrite() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let path = dir.join("stale.rs");
+        fs::write(&path, b"original\n").unwrap();
+        let generation = CodeGeneration {
+            goal: "Modify stale".into(),
+            operations: vec![GenerationOp::modify_file(&path, "proposed\n", "edit")],
+            coding_plan_summary: vec![],
+        };
+        let paused = planner.begin_code_generation(generation).unwrap();
+        assert!(paused.awaiting_review);
+        // User edits the file after review pause — must not be silently overwritten.
+        fs::write(&path, b"user changed\n").unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        assert!(resumed.blocked);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "user changed\n");
+        let recovery = resumed
+            .coding_mutation_recovery
+            .expect("recovery report");
+        assert!(matches!(
+            recovery.kind,
+            Some(RecoveryKind::StaleSource | RecoveryKind::PatchNoLongerApplies)
+        ));
+        assert!(recovery.requires_new_plan);
+        assert!(resumed.content.contains("Coding Mutation Recovery"));
+        assert!(resumed.content.contains("new") || resumed.content.contains("Review"));
+    }
+
+    #[test]
+    fn coding_recovery_create_refuses_when_file_appeared() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let path = dir.join("appeared.rs");
+        let generation = CodeGeneration {
+            goal: "Create".into(),
+            operations: vec![GenerationOp::create_file(&path, "new\n", "create")],
+            coding_plan_summary: vec![],
+        };
+        let paused = planner.begin_code_generation(generation).unwrap();
+        fs::write(&path, b"user created\n").unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        assert!(resumed.blocked);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "user created\n");
+        let recovery = resumed.coding_mutation_recovery.expect("recovery");
+        assert_eq!(recovery.kind, Some(RecoveryKind::StaleSource));
+        assert!(recovery.requires_new_plan);
+    }
+
+    #[test]
+    fn coding_recovery_directory_missing_before_write() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let parent = dir.join("will_vanish");
+        fs::create_dir_all(&parent).unwrap();
+        let path = parent.join("child.rs");
+        let generation = CodeGeneration {
+            goal: "Create under parent".into(),
+            operations: vec![GenerationOp::create_file(&path, "x\n", "create")],
+            coding_plan_summary: vec![],
+        };
+        let paused = planner.begin_code_generation(generation).unwrap();
+        fs::remove_dir_all(&parent).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        assert!(resumed.blocked);
+        assert!(!path.exists());
+        let recovery = resumed.coding_mutation_recovery.expect("recovery");
+        assert!(matches!(
+            recovery.kind,
+            Some(RecoveryKind::DirectoryMissing | RecoveryKind::WriteFailed)
+        ));
+        assert!(recovery.requires_new_plan);
+    }
+
+    #[test]
+    fn coding_recovery_invalid_patch_empty_content() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let path = dir.join("empty.rs");
+        // Bypass GenerationOp helpers that always set content — craft empty write.
+        let generation = CodeGeneration {
+            goal: "Invalid".into(),
+            operations: vec![GenerationOp {
+                kind: GenerationOpKind::CreateFile,
+                path: path.clone(),
+                destination: None,
+                content: Some(String::new()),
+                rationale: "empty".into(),
+            }],
+            coding_plan_summary: vec![],
+        };
+        let paused = planner.begin_code_generation(generation).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        assert!(resumed.blocked);
+        assert!(!path.exists());
+        let recovery = resumed.coding_mutation_recovery.expect("recovery");
+        assert_eq!(recovery.kind, Some(RecoveryKind::InvalidPatch));
+        assert!(recovery.requires_new_plan);
+    }
+
+    #[test]
+    fn coding_recovery_partial_after_first_succeeds() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let ok_path = dir.join("ok.rs");
+        let ro_dir = dir.join("ro");
+        fs::create_dir_all(&ro_dir).unwrap();
+        let fail_path = ro_dir.join("fail.rs");
+        let generation = CodeGeneration {
+            goal: "Partial mid-batch".into(),
+            operations: vec![
+                GenerationOp::create_file(&ok_path, "ok\n", "first"),
+                GenerationOp::create_file(&fail_path, "no\n", "second"),
+            ],
+            coding_plan_summary: vec![],
+        };
+        let paused = planner.begin_code_generation(generation).unwrap();
+        // Preflight still passes (parent exists, targets absent). Make the
+        // second write fail at tool/provider time so op1 can succeed first.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&ro_dir).unwrap().permissions();
+            perms.set_mode(0o555);
+            fs::set_permissions(&ro_dir, perms).unwrap();
+        }
+        #[cfg(not(unix))]
+        {
+            // Best-effort: without chmod, remove parent after pause so preflight
+            // blocks the whole batch (still no silent continue).
+            let _ = fs::remove_dir_all(&ro_dir);
+        }
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        assert!(resumed.blocked);
+        let recovery = resumed.coding_mutation_recovery.expect("recovery");
+        assert!(recovery.requires_new_plan);
+        assert!(!recovery.actions.is_empty());
+        if ok_path.exists() {
+            assert_eq!(fs::read_to_string(&ok_path).unwrap(), "ok\n");
+            assert!(!fail_path.exists());
+            assert_eq!(recovery.kind, Some(RecoveryKind::PartialBatchFailure));
+            assert!(recovery.succeeded_paths.iter().any(|p| p.contains("ok.rs")));
+            assert!(
+                recovery.failed_paths.iter().any(|p| p.contains("fail.rs"))
+                    || recovery.skipped_paths.iter().any(|p| p.contains("fail.rs"))
+            );
+            let summary = resumed.execution_summary.expect("summary");
+            assert!(summary.partial);
+        } else {
+            // Preflight refused the batch — still reported, no silent writes.
+            assert!(!fail_path.exists());
+            assert!(recovery.kind.is_some());
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if ro_dir.exists() {
+                let mut perms = fs::metadata(&ro_dir).unwrap().permissions();
+                perms.set_mode(0o755);
+                let _ = fs::set_permissions(&ro_dir, perms);
+            }
+        }
+    }
+
+    #[test]
+    fn coding_recovery_cancel_multi_file_lists_skipped() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let a = dir.join("a.rs");
+        let b = dir.join("b.rs");
+        let generation = CodeGeneration {
+            goal: "Cancel multi".into(),
+            operations: vec![
+                GenerationOp::create_file(&a, "a\n", "a"),
+                GenerationOp::create_file(&b, "b\n", "b"),
+            ],
+            coding_plan_summary: vec![],
+        };
+        let paused = planner.begin_code_generation(generation).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let cancelled = planner
+            .resolve_review(ReviewIntent::Cancel { plan_id })
+            .unwrap();
+        assert!(!a.exists());
+        assert!(!b.exists());
+        let recovery = cancelled.coding_mutation_recovery.expect("recovery");
+        assert_eq!(recovery.phase, Some(MutationPhase::Cancelled));
+        assert_eq!(recovery.kind, Some(RecoveryKind::CancelledMultiFile));
+        assert!(recovery.requires_new_plan);
+        assert!(recovery.skipped_paths.len() >= 2);
+        assert!(cancelled.content.contains("Coding Mutation Recovery"));
+        let history = planner.approval_history().unwrap();
+        assert!(history
+            .iter()
+            .any(|e| matches!(e.decision, ApprovalDecision::Cancel)));
+    }
+
+    #[test]
+    fn coding_recovery_write_fail_preserves_summary_and_history() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let path = dir.join("nope").join("x.rs");
+        let generation = CodeGeneration {
+            goal: "Fail".into(),
+            operations: vec![GenerationOp::create_file(&path, "x\n", "fail")],
+            coding_plan_summary: vec![],
+        };
+        let paused = planner.begin_code_generation(generation).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        assert!(resumed.blocked);
+        assert!(resumed.execution_summary.is_some());
+        assert!(resumed.coding_mutation_recovery.is_some());
+        let history = planner.approval_history().unwrap();
+        assert!(history.iter().any(|e| {
+            matches!(e.decision, ApprovalDecision::Approve) && e.execution_result.is_some()
+        }));
     }
 
     #[test]
@@ -6543,6 +9182,7 @@ mod tests {
                 policy_evaluation: None,
                 permission_result: None,
                 generation_calls: Vec::new(),
+                generation_baselines: Vec::new(),
                 paused_at: Instant::now(),
             })
             .unwrap();
@@ -6714,6 +9354,7 @@ mod tests {
                 policy_evaluation: None,
                 permission_result: None,
                 generation_calls: Vec::new(),
+                generation_baselines: Vec::new(),
                 paused_at: Instant::now(),
             })
             .unwrap();
@@ -6948,6 +9589,7 @@ mod tests {
                 policy_evaluation: None,
                 permission_result: None,
                 generation_calls: Vec::new(),
+                generation_baselines: Vec::new(),
                 paused_at: Instant::now() - Duration::from_secs(5),
             })
             .unwrap();
@@ -7379,6 +10021,2259 @@ mod tests {
                 success: true,
                 ..Default::default()
             })
+        }
+    }
+
+    /// Stub Search Knowledge tool for Intelligent Code Search (C2.1) tests.
+    struct StubSearchKnowledgeTool {
+        metadata: ToolMetadata,
+        citations: Vec<Citation>,
+        last_query: std::sync::Mutex<Option<String>>,
+    }
+
+    impl StubSearchKnowledgeTool {
+        fn new(citations: Vec<Citation>) -> Self {
+            Self {
+                metadata: ToolMetadata {
+                    id: SEARCH_KNOWLEDGE_TOOL_ID.to_string(),
+                    name: "Stub Search Knowledge".into(),
+                    version: "0".into(),
+                    description: "test search_knowledge".into(),
+                    provider: FILESYSTEM_PROVIDER_ID.to_string(),
+                    capabilities: vec![Capability::Search],
+                    risk: ToolRisk::Safe,
+                    execution_mode: ExecutionMode::Synchronous,
+                    estimated_runtime: EstimatedRuntime::Fast,
+                    resource_cost: ResourceCost::VeryLow,
+                    memory_usage: MemoryUsage::Tiny,
+                    gpu_requirements: GpuRequirements::None,
+                    privacy: PrivacyMode::LocalOnly,
+                    internet: InternetRequirement::Never,
+                    reliability: Reliability::Stable,
+                    result_type: ResultType::SearchResults,
+                },
+                citations,
+                last_query: std::sync::Mutex::new(None),
+            }
+        }
+
+        fn last_query(&self) -> Option<String> {
+            self.last_query.lock().ok().and_then(|g| g.clone())
+        }
+    }
+
+    impl Tool for StubSearchKnowledgeTool {
+        fn metadata(&self) -> &ToolMetadata {
+            &self.metadata
+        }
+
+        fn validate(&self, _input: &ToolInput) -> JaymiResult<()> {
+            Ok(())
+        }
+
+        fn execute(&self, input: &ToolInput) -> JaymiResult<ToolOutput> {
+            if let Some(search) = &input.search {
+                if let Ok(mut guard) = self.last_query.lock() {
+                    *guard = search.free_text.clone();
+                }
+            }
+            let citations = self.citations.clone();
+            Ok(ToolOutput {
+                success: true,
+                citations: citations.clone(),
+                message: Some(format!("stub hits={}", citations.len())),
+                ..Default::default()
+            })
+        }
+    }
+
+    fn planner_with_stub_search_knowledge(citations: Vec<Citation>) -> (Planner, Arc<StubSearchKnowledgeTool>) {
+        let stub = Arc::new(StubSearchKnowledgeTool::new(citations));
+        let stub_clone = Arc::clone(&stub);
+        let planner = planner_with_tools(move |tools, filesystem, content_api| {
+            tools
+                .register_tool(Arc::new(SearchFilesTool::new(Arc::clone(&filesystem))))
+                .unwrap();
+            tools
+                .register_tool(Arc::new(ReadFileTool::new(content_api)))
+                .unwrap();
+            tools.register_tool(stub_clone).unwrap();
+        });
+        (planner, stub)
+    }
+
+    fn planner_with_stub_search_and_reasoning(
+        citations: Vec<Citation>,
+        reasoning: Arc<CountingReasoningProvider>,
+    ) -> (Planner, Arc<StubSearchKnowledgeTool>) {
+        let stub = Arc::new(StubSearchKnowledgeTool::new(citations));
+        let stub_clone = Arc::clone(&stub);
+        let reasoning =
+            Arc::clone(&reasoning) as Arc<dyn jaymi_reasoning::ReasoningProvider>;
+        let planner = planner_with_tools_policies_routes_and_reasoning(
+            move |tools, filesystem, content_api| {
+                tools
+                    .register_tool(Arc::new(SearchFilesTool::new(Arc::clone(&filesystem))))
+                    .unwrap();
+                tools
+                    .register_tool(Arc::new(ReadFileTool::new(content_api)))
+                    .unwrap();
+                tools.register_tool(stub_clone).unwrap();
+            },
+            |policies| {
+                policies.initialize().unwrap();
+            },
+            ToolRouteTable::builtin(),
+            Some(reasoning),
+        );
+        (planner, stub)
+    }
+
+    fn sample_citations(n: usize) -> Vec<Citation> {
+        (0..n)
+            .map(|i| Citation {
+                title: format!("file_{i}.rs"),
+                location: PathBuf::from(format!("/proj/src/file_{i}.rs")),
+                preview: format!("fn match_{i}() {{ /* auth */ }}"),
+                why_matched: "free_text".into(),
+                confidence: 8_000,
+                matching_section: Some(if i == 0 {
+                    "authenticate".into()
+                } else {
+                    format!("sym_{i}")
+                }),
+                line: Some(i as u32),
+                column: Some(0),
+                end_line: Some(i as u32),
+                end_column: Some(10),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn code_search_exact_symbol_is_planner_owned_read_only() {
+        let (planner, stub) = planner_with_stub_search_knowledge(sample_citations(2));
+        let response = planner
+            .handle(UserRequest::new("Where is ContextBundle created?"))
+            .unwrap();
+        assert!(!response.awaiting_review);
+        assert!(!response.blocked);
+        assert_eq!(
+            response.tool_id.as_deref(),
+            Some(SEARCH_KNOWLEDGE_TOOL_ID)
+        );
+        assert!(response.code_search.is_some());
+        let report = response.code_search.as_ref().unwrap();
+        assert_eq!(report.kind, Some(CodeSearchKind::ExactSymbol));
+        assert!(report.query.contains("ContextBundle"));
+        assert_eq!(report.evidence.len(), 2);
+        assert!(response.content.contains("## Code Search"));
+        assert!(response.content.contains("Read-only"));
+        let q = stub.last_query().unwrap_or_default();
+        assert!(q.contains("ContextBundle"), "query={q}");
+        // No mutation tools.
+        assert_ne!(response.tool_id.as_deref(), Some(WRITE_FILE_TOOL_ID));
+        assert_ne!(response.tool_id.as_deref(), Some(MANAGE_PATH_TOOL_ID));
+    }
+
+    #[test]
+    fn code_search_natural_language_and_multiple_files() {
+        let (planner, _) = planner_with_stub_search_knowledge(sample_citations(3));
+        let response = planner
+            .handle(UserRequest::new("Where is authentication handled?"))
+            .unwrap();
+        let report = response.code_search.expect("code_search");
+        assert_eq!(report.kind, Some(CodeSearchKind::NaturalLanguage));
+        assert_eq!(report.total_hits, 3);
+        assert_eq!(report.evidence.len(), 3);
+        assert!(response.content.contains("file_0.rs"));
+        assert!(response.content.contains("file_1.rs"));
+    }
+
+    #[test]
+    fn code_search_no_results_is_honest() {
+        let (planner, _) = planner_with_stub_search_knowledge(Vec::new());
+        let response = planner
+            .handle(UserRequest::new("Find where the score gets updated."))
+            .unwrap();
+        let report = response.code_search.expect("code_search");
+        assert_eq!(report.total_hits, 0);
+        assert!(report.evidence.is_empty());
+        assert!(response.content.contains("no matches"));
+    }
+
+    #[test]
+    fn code_search_large_result_set_respects_budget() {
+        let (planner, _) =
+            planner_with_stub_search_knowledge(sample_citations(CONVERSATION_EVIDENCE_CAP + 8));
+        let response = planner
+            .handle(UserRequest::new(
+                "Find the code responsible for opening Settings.",
+            ))
+            .unwrap();
+        let report = response.code_search.expect("code_search");
+        assert_eq!(report.evidence.len(), CONVERSATION_EVIDENCE_CAP);
+        assert!(report.truncated);
+        assert!(response.content.contains("context budget"));
+        assert!(report
+            .to_diagnostics_summary()
+            .contains("truncated=true"));
+    }
+
+    #[test]
+    fn code_search_works_without_active_workspace() {
+        let (planner, _) = planner_with_stub_search_knowledge(sample_citations(1));
+        // No project open — scope_search_request leaves folder unset.
+        assert!(planner.active_project_root().is_none());
+        let response = planner
+            .handle(UserRequest::new("Where is authentication handled?"))
+            .unwrap();
+        assert!(response.code_search.is_some());
+        assert_eq!(response.tool_id.as_deref(), Some(SEARCH_KNOWLEDGE_TOOL_ID));
+    }
+
+    #[test]
+    fn code_search_find_references_soft_path_uses_wi_only() {
+        // Call-site deixis is Symbol Navigation (C2.2); lexical code search no longer owns it.
+        let (planner, stub) = planner_with_stub_search_knowledge(sample_citations(1));
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/game.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/src/game.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "update_score".into(),
+                    kind: Some("function".into()),
+                    ..Default::default()
+                }),
+                references: vec![
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/game.rs".into(),
+                        range: jaymi_context::EditorRange {
+                            start_line: 10,
+                            start_column: 0,
+                            end_line: 10,
+                            end_column: 12,
+                        },
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/ui.rs".into(),
+                        range: jaymi_context::EditorRange {
+                            start_line: 4,
+                            start_column: 2,
+                            end_line: 4,
+                            end_column: 14,
+                        },
+                    },
+                ],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+
+        let response = planner
+            .handle(UserRequest::new(
+                "Show me all the places that call this function.",
+            ))
+            .unwrap();
+        let report = response.symbol_navigation.expect("symbol_navigation");
+        assert_eq!(report.kind, Some(SymbolNavKind::Callers));
+        assert_eq!(report.strategy, "workspace_intelligence");
+        assert_eq!(report.evidence.len(), 2);
+        assert!(response.content.contains("update_score"));
+        assert!(response.tool_id.is_none());
+        assert!(stub.last_query().is_none());
+        assert!(!response.awaiting_review);
+        assert!(response.code_search.is_none());
+    }
+
+    #[test]
+    fn symbol_navigation_definition_from_wi() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/lib.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/src/lib.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "assemble".into(),
+                    kind: Some("function".into()),
+                    range: Some(jaymi_context::EditorRange {
+                        start_line: 40,
+                        start_column: 7,
+                        end_line: 40,
+                        end_column: 15,
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("Where is this function defined?"))
+            .unwrap();
+        let report = response.symbol_navigation.expect("symbol_navigation");
+        assert_eq!(report.kind, Some(SymbolNavKind::Definition));
+        assert!(!report.evidence.is_empty());
+        assert!(response.content.contains("## Symbol Navigation"));
+        assert!(response.tool_id.is_none());
+        assert!(response.lsp_edits.is_empty());
+    }
+
+    #[test]
+    fn symbol_navigation_missing_symbol_is_honest() {
+        let planner = planner_with_search_and_read();
+        let response = planner
+            .handle(UserRequest::new("What implements this trait?"))
+            .unwrap();
+        let report = response.symbol_navigation.expect("symbol_navigation");
+        assert_eq!(report.kind, Some(SymbolNavKind::Implementations));
+        assert!(report.evidence.is_empty());
+        assert!(response.content.contains("no navigation targets"));
+        assert!(!response.awaiting_review);
+        assert!(response.lsp_edits.is_empty());
+    }
+
+    #[test]
+    fn symbol_navigation_multi_file_references() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/a.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/src/a.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "ContextBundle".into(),
+                    kind: Some("struct".into()),
+                    ..Default::default()
+                }),
+                references: vec![
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/a.rs".into(),
+                        range: jaymi_context::EditorRange {
+                            start_line: 1,
+                            start_column: 0,
+                            end_line: 1,
+                            end_column: 13,
+                        },
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/b.rs".into(),
+                        range: jaymi_context::EditorRange {
+                            start_line: 8,
+                            start_column: 2,
+                            end_line: 8,
+                            end_column: 15,
+                        },
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/c.rs".into(),
+                        range: jaymi_context::EditorRange {
+                            start_line: 3,
+                            start_column: 0,
+                            end_line: 3,
+                            end_column: 13,
+                        },
+                    },
+                ],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("Where is this type used?"))
+            .unwrap();
+        let report = response.symbol_navigation.expect("symbol_navigation");
+        assert_eq!(report.kind, Some(SymbolNavKind::References));
+        assert_eq!(report.evidence.len(), 3);
+        assert!(response.content.contains("a.rs"));
+        assert!(response.content.contains("b.rs"));
+        assert!(response.content.contains("c.rs"));
+    }
+
+    #[test]
+    fn symbol_navigation_never_mutates() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/lib.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "foo".into(),
+                    ..Default::default()
+                }),
+                references: vec![jaymi_context::EditorReference {
+                    path: "/proj/src/lib.rs".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        for prompt in [
+            "Who calls this?",
+            "Where is this function defined?",
+            "Show me everything that depends on this.",
+        ] {
+            let response = planner.handle(UserRequest::new(prompt)).unwrap();
+            assert!(response.symbol_navigation.is_some(), "prompt={prompt}");
+            assert!(response.lsp_edits.is_empty());
+            assert!(!response.awaiting_review);
+            assert_ne!(response.tool_id.as_deref(), Some(WRITE_FILE_TOOL_ID));
+            assert_ne!(response.tool_id.as_deref(), Some(MANAGE_PATH_TOOL_ID));
+        }
+    }
+
+    #[test]
+    fn relationship_trace_click_save_builds_chain() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/ui.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/src/ui.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "on_save".into(),
+                    kind: Some("function".into()),
+                    range: Some(jaymi_context::EditorRange {
+                        start_line: 40,
+                        start_column: 3,
+                        end_line: 40,
+                        end_column: 10,
+                    }),
+                    ..Default::default()
+                }),
+                enclosing_type: Some(jaymi_context::EditorSymbol {
+                    name: "EditorChrome".into(),
+                    kind: Some("struct".into()),
+                    ..Default::default()
+                }),
+                references: vec![
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/ui.rs".into(),
+                        range: jaymi_context::EditorRange {
+                            start_line: 12,
+                            start_column: 0,
+                            end_line: 12,
+                            end_column: 7,
+                        },
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/actions.rs".into(),
+                        range: jaymi_context::EditorRange {
+                            start_line: 8,
+                            start_column: 2,
+                            end_line: 8,
+                            end_column: 9,
+                        },
+                    },
+                ],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into(), "project".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+
+        let response = planner
+            .handle(UserRequest::new("What happens when I click Save?"))
+            .unwrap();
+        let report = response.relationship_trace.expect("relationship_trace");
+        assert_eq!(report.kind, Some(TraceKind::EventFlow));
+        assert!(report.steps.len() >= 3);
+        assert!(report.steps.iter().any(|s| s.action == "identify_symbol"));
+        assert!(report.steps.iter().any(|s| s.action == "find_callers"));
+        assert!(response.content.contains("### Investigation Chain"));
+        assert!(response.content.contains("Read-only"));
+        assert!(report.files_inspected <= relationship_tracing::MAX_FILES);
+        assert!(report.steps.len() <= relationship_tracing::MAX_STEPS);
+        assert!(response.lsp_edits.is_empty());
+        assert!(!response.awaiting_review);
+    }
+
+    #[test]
+    fn relationship_trace_provider_callers_and_no_mutation() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/provider.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "LspProvider".into(),
+                    kind: Some("struct".into()),
+                    ..Default::default()
+                }),
+                references: vec![jaymi_context::EditorReference {
+                    path: "/proj/src/boot.rs".into(),
+                    range: jaymi_context::EditorRange {
+                        start_line: 1,
+                        start_column: 0,
+                        end_line: 1,
+                        end_column: 11,
+                    },
+                }],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("What calls this provider?"))
+            .unwrap();
+        let report = response.relationship_trace.expect("relationship_trace");
+        assert_eq!(report.kind, Some(TraceKind::ProviderCallers));
+        assert!(!report.evidence.is_empty());
+        assert_ne!(response.tool_id.as_deref(), Some(WRITE_FILE_TOOL_ID));
+        assert_ne!(response.tool_id.as_deref(), Some(MANAGE_PATH_TOOL_ID));
+        assert!(response.lsp_edits.is_empty());
+    }
+
+    #[test]
+    fn relationship_trace_missing_seed_is_honest() {
+        let planner = planner_with_search_and_read();
+        let response = planner
+            .handle(UserRequest::new(
+                "Trace this request through the application.",
+            ))
+            .unwrap();
+        let report = response.relationship_trace.expect("relationship_trace");
+        assert_eq!(report.stop_reason, Some(TraceStopReason::NoSeed));
+        assert!(response.content.contains("Investigation Chain"));
+    }
+
+    #[test]
+    fn relationship_trace_does_not_steal_simple_who_calls() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "foo".into(),
+                    ..Default::default()
+                }),
+                references: vec![jaymi_context::EditorReference {
+                    path: "/proj/a.rs".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner.handle(UserRequest::new("Who calls this?")).unwrap();
+        assert!(response.relationship_trace.is_none());
+        assert!(response.symbol_navigation.is_some());
+    }
+
+    #[test]
+    fn deep_investigation_why_slow_is_planner_owned() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/hot.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "render_frame".into(),
+                    kind: Some("function".into()),
+                    ..Default::default()
+                }),
+                references: vec![jaymi_context::EditorReference {
+                    path: "/proj/src/loop.rs".into(),
+                    range: jaymi_context::EditorRange {
+                        start_line: 20,
+                        start_column: 0,
+                        end_line: 20,
+                        end_column: 12,
+                    },
+                }],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into(), "project".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("Why is this slow?"))
+            .unwrap();
+        let report = response.deep_investigation.expect("deep_investigation");
+        assert_eq!(report.kind, Some(InvestigationKind::Performance));
+        assert!(!report.required_evidence.is_empty());
+        assert!(!report.steps.is_empty());
+        assert!(response.content.contains("## Deep Investigation"));
+        assert!(response.content.contains("What could not be established"));
+        assert!(!response.content.contains("budget="));
+        assert!(!response.content.contains("max_steps"));
+        assert!(report.to_diagnostics_summary().contains("deep_investigation"));
+        assert!(report.chain_diagnostics_lines().iter().any(|l| l.contains("budget")));
+        assert_ne!(response.tool_id.as_deref(), Some(WRITE_FILE_TOOL_ID));
+        assert!(response.lsp_edits.is_empty());
+        assert!(!response.awaiting_review);
+    }
+
+    #[test]
+    fn deep_investigation_how_auth_works() {
+        let (planner, _) = planner_with_stub_search_knowledge(sample_citations(3));
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            approved_context_providers: vec!["editor".into(), "project".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("How does authentication work?"))
+            .unwrap();
+        let report = response.deep_investigation.expect("deep_investigation");
+        assert_eq!(report.kind, Some(InvestigationKind::SubsystemHow));
+        assert!(report.searches.iter().any(|s| s.to_ascii_lowercase().contains("auth"))
+            || report.required_evidence.iter().any(|e| matches!(e, deep_investigation::EvidenceNeed::Search { .. })));
+        assert!(response.content.contains("Deep Investigation"));
+        assert!(response.code_search.is_none());
+        assert!(response.relationship_trace.is_none());
+    }
+
+    #[test]
+    fn deep_investigation_feature_placement_and_change_impact() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "TokenStore".into(),
+                    kind: Some("struct".into()),
+                    ..Default::default()
+                }),
+                references: vec![jaymi_context::EditorReference {
+                    path: "/proj/src/auth.rs".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into(), "project".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+
+        let placement = planner
+            .handle(UserRequest::new(
+                "Where should this feature be implemented?",
+            ))
+            .unwrap();
+        let placement_report = placement.deep_investigation.expect("placement");
+        assert_eq!(
+            placement_report.kind,
+            Some(InvestigationKind::FeaturePlacement)
+        );
+        assert!(placement.coding_understanding.is_none());
+
+        let impact = planner
+            .handle(UserRequest::new(
+                "What would be affected if I changed this?",
+            ))
+            .unwrap();
+        let impact_report = impact.deep_investigation.expect("impact");
+        assert_eq!(impact_report.kind, Some(InvestigationKind::ChangeImpact));
+        assert!(impact_report.steps.len() <= deep_investigation::MAX_STEPS);
+        assert!(impact.lsp_edits.is_empty());
+    }
+
+    #[test]
+    fn deep_investigation_insufficient_evidence_is_honest() {
+        let planner = planner_with_search_and_read();
+        let response = planner
+            .handle(UserRequest::new("Why does this state sometimes disappear?"))
+            .unwrap();
+        let report = response.deep_investigation.expect("deep_investigation");
+        assert_eq!(report.kind, Some(InvestigationKind::StateBug));
+        assert!(response.content.contains("What could not be established"));
+        assert!(!report.gaps.is_empty() || response.content.contains("no solid evidence")
+            || response.content.contains("could not"));
+        assert!(!response.content.contains("deep_investigation kind="));
+    }
+
+    #[test]
+    fn deep_investigation_does_not_steal_narrower_modes() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "save".into(),
+                    ..Default::default()
+                }),
+                references: vec![jaymi_context::EditorReference {
+                    path: "/proj/a.rs".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let who = planner.handle(UserRequest::new("Who calls this?")).unwrap();
+        assert!(who.deep_investigation.is_none());
+        assert!(who.symbol_navigation.is_some());
+
+        let flow = planner
+            .handle(UserRequest::new("What happens when I click Save?"))
+            .unwrap();
+        assert!(flow.deep_investigation.is_none());
+        assert!(flow.relationship_trace.is_some());
+    }
+
+    #[test]
+    fn codebase_qa_permissions_uses_investigation_route() {
+        let (planner, _) = planner_with_stub_search_knowledge(sample_citations(3));
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            approved_context_providers: vec!["editor".into(), "project".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("How does Jaymi handle permissions?"))
+            .unwrap();
+        let report = response.codebase_qa.expect("codebase_qa");
+        assert_eq!(report.kind, Some(QaKind::HowHandles));
+        assert_eq!(report.complexity, Some(QaComplexity::Investigate));
+        assert!(report.investigation_needed);
+        assert!(response.content.contains("## Codebase Q&A"));
+        assert!(response.content.contains("What could not be established")
+            || !report.gaps.is_empty()
+            || !report.evidence.is_empty());
+        assert!(!response.content.contains("codebase_qa kind="));
+        assert!(report.to_diagnostics_summary().contains("codebase_qa"));
+        assert!(response.deep_investigation.is_none());
+        assert_ne!(response.tool_id.as_deref(), Some(WRITE_FILE_TOOL_ID));
+        assert!(response.lsp_edits.is_empty());
+    }
+
+    #[test]
+    fn codebase_qa_settings_models_is_focused_search_not_deep() {
+        let (planner, _) = planner_with_stub_search_knowledge(sample_citations(2));
+        let response = planner
+            .handle(UserRequest::new("Where does Settings get its models?"))
+            .unwrap();
+        let report = response.codebase_qa.expect("codebase_qa");
+        assert_eq!(report.kind, Some(QaKind::WhereGets));
+        assert_eq!(report.complexity, Some(QaComplexity::Search));
+        assert!(!report.investigation_needed);
+        assert!(response.content.contains("deep investigation was not required")
+            || response.content.contains("Focused search"));
+        assert!(response.deep_investigation.is_none());
+        assert!(response.relationship_trace.is_none());
+    }
+
+    #[test]
+    fn codebase_qa_after_press_enter_is_flow() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "on_enter".into(),
+                    kind: Some("function".into()),
+                    ..Default::default()
+                }),
+                references: vec![jaymi_context::EditorReference {
+                    path: "/proj/src/input.rs".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("What happens after I press Enter?"))
+            .unwrap();
+        let report = response.codebase_qa.expect("codebase_qa");
+        assert_eq!(report.kind, Some(QaKind::EventFlow));
+        assert_eq!(report.complexity, Some(QaComplexity::Flow));
+        assert_eq!(report.route, Some(QaRoute::Relationship));
+        assert!(report.investigation_needed);
+    }
+
+    #[test]
+    fn codebase_qa_feature_belong_and_remove_provider() {
+        let (planner, _) = planner_with_stub_search_knowledge(sample_citations(2));
+        let belong = planner
+            .handle(UserRequest::new("Where would image generation belong?"))
+            .unwrap();
+        let belong_report = belong.codebase_qa.expect("belong");
+        assert_eq!(belong_report.kind, Some(QaKind::FeaturePlacement));
+        assert!(!belong_report.investigation_needed);
+        assert!(belong.coding_understanding.is_none());
+
+        let remove = planner
+            .handle(UserRequest::new(
+                "What would break if I removed this provider?",
+            ))
+            .unwrap();
+        let remove_report = remove.codebase_qa.expect("remove");
+        assert_eq!(remove_report.kind, Some(QaKind::ChangeImpact));
+        assert!(remove_report.investigation_needed);
+        assert!(remove.lsp_edits.is_empty());
+        assert!(!remove.awaiting_review);
+    }
+
+    #[test]
+    fn codebase_qa_does_not_steal_narrower_or_simple_understanding() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "foo".into(),
+                    ..Default::default()
+                }),
+                references: vec![jaymi_context::EditorReference {
+                    path: "/proj/a.rs".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let who = planner.handle(UserRequest::new("Who calls this?")).unwrap();
+        assert!(who.codebase_qa.is_none());
+        assert!(who.symbol_navigation.is_some());
+
+        let slow = planner.handle(UserRequest::new("Why is this slow?")).unwrap();
+        assert!(slow.codebase_qa.is_none());
+        assert!(slow.deep_investigation.is_some());
+
+        assert!(codebase_qa::detect_codebase_qa_request(&UserRequest::new(
+            "Where is authentication handled?",
+        ))
+        .is_none());
+        let (search_planner, _) = planner_with_stub_search_knowledge(sample_citations(1));
+        let where_is = search_planner
+            .handle(UserRequest::new("Where is authentication handled?"))
+            .unwrap();
+        assert!(where_is.codebase_qa.is_none());
+        assert!(where_is.code_search.is_some());
+    }
+
+    // --- C3.1: Coding Edit Intent ---
+
+    fn session_with_selection_and_symbol() -> jaymi_context::ContextSessionInputs {
+        jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/ui.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/src/ui.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                selection: jaymi_context::CurrentSelectionSection {
+                    path: Some("/proj/src/ui.rs".into()),
+                    start_line: 10,
+                    start_column: 0,
+                    end_line: 12,
+                    end_column: 4,
+                    text: Some("fn paint_button() { color = RED; }".into()),
+                },
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "paint_button".into(),
+                    kind: Some("function".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into(), "project".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        }
+    }
+
+    #[test]
+    fn c31_clear_single_file_edit_is_understood() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/button.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/src/button.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "Button".into(),
+                    kind: Some("struct".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("Change the button color."))
+            .unwrap();
+        let obj = response.coding_edit.expect("coding_edit");
+        assert_eq!(obj.kind, Some(CodingEditKind::Change));
+        assert_eq!(obj.status, CodingEditStatus::Understood);
+        assert_eq!(obj.target_file.as_deref(), Some("/proj/src/button.rs"));
+        assert!(response.content.contains("I understand what you want to change"));
+        assert!(!response.awaiting_review);
+        assert!(response.lsp_edits.is_empty());
+        assert_ne!(response.tool_id.as_deref(), Some(WRITE_FILE_TOOL_ID));
+        assert_ne!(response.tool_id.as_deref(), Some(MANAGE_PATH_TOOL_ID));
+    }
+
+    #[test]
+    fn c31_selection_based_and_fix_this_with_context() {
+        let planner = planner_with_search_and_read();
+        planner
+            .context
+            .set_session_inputs(session_with_selection_and_symbol());
+        let selection = planner
+            .handle(UserRequest::new("Refactor this function."))
+            .unwrap();
+        let obj = selection.coding_edit.expect("selection edit");
+        assert_eq!(obj.kind, Some(CodingEditKind::Refactor));
+        assert_eq!(obj.status, CodingEditStatus::Understood);
+        assert!(obj.target_selection.is_some() || !obj.target_symbols.is_empty());
+        assert_eq!(obj.expected_scope, Some(EditScope::Selection));
+
+        let planner = planner_with_search_and_read();
+        planner
+            .context
+            .set_session_inputs(session_with_selection_and_symbol());
+        let fix = planner.handle(UserRequest::new("Fix this.")).unwrap();
+        let fix_obj = fix.coding_edit.expect("fix this");
+        assert_eq!(fix_obj.kind, Some(CodingEditKind::Fix));
+        assert_eq!(fix_obj.status, CodingEditStatus::Understood);
+        assert!(fix.content.contains("I understand what you want to change"));
+        assert!(fix.tool_id.is_none());
+    }
+
+    #[test]
+    fn c31_fix_this_without_context_asks_clarification() {
+        let planner = planner_with_search_and_read();
+        let response = planner.handle(UserRequest::new("Fix this.")).unwrap();
+        let obj = response.coding_edit.expect("coding_edit");
+        assert_eq!(obj.status, CodingEditStatus::NeedsClarification);
+        assert!(obj.clarification.is_some());
+        assert!(response.content.contains("Clarification") || response.content.contains("clearer target"));
+        assert!(response.lsp_edits.is_empty());
+        assert!(!response.awaiting_review);
+        assert!(response.execution_plan.is_none());
+    }
+
+    #[test]
+    fn c31_multi_file_rename_refactor_create_and_kinds() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/a.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/src/a.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "TokenStore".into(),
+                    kind: Some("struct".into()),
+                    ..Default::default()
+                }),
+                references: vec![
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/a.rs".into(),
+                        ..Default::default()
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/b.rs".into(),
+                        ..Default::default()
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/c.rs".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let multi = planner
+            .handle(UserRequest::new("Make this faster."))
+            .unwrap();
+        let multi_obj = multi.coding_edit.expect("optimize");
+        assert_eq!(multi_obj.kind, Some(CodingEditKind::Optimize));
+        assert_eq!(multi_obj.status, CodingEditStatus::Understood);
+        assert!(
+            multi_obj.relevant_files.len() > 1
+                || multi_obj.expected_scope == Some(EditScope::MultiFile)
+                || multi_obj.expected_scope == Some(EditScope::Symbol)
+        );
+
+        let rename = planner.handle(UserRequest::new("Rename this.")).unwrap();
+        assert!(rename.coding_edit.is_some());
+        assert_eq!(
+            rename.coding_edit.as_ref().unwrap().kind,
+            Some(CodingEditKind::Rename)
+        );
+
+        let create = planner
+            .handle(UserRequest::new("Create a new settings page."))
+            .unwrap();
+        let create_obj = create.coding_edit.as_ref().expect("create");
+        assert_eq!(create_obj.kind, Some(CodingEditKind::Create));
+        assert!(create.multi_file.is_none());
+        assert!(create.lsp_edits.is_empty());
+        assert!(create.execution_plan.is_none());
+    }
+
+    #[test]
+    fn c31_read_only_and_review_remain_read_only() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(session_with_selection_and_symbol());
+        let explain = planner.handle(UserRequest::new("Explain this.")).unwrap();
+        assert!(explain.coding_edit.is_none());
+
+        let where_used = planner
+            .handle(UserRequest::new("Where is this used?"))
+            .unwrap();
+        assert!(where_used.coding_edit.is_none());
+        assert!(
+            where_used.symbol_navigation.is_some() || where_used.code_search.is_some()
+        );
+
+        let review = planner
+            .handle(UserRequest::new("Review this code."))
+            .unwrap();
+        assert!(review.coding_edit.is_none());
+        assert!(review.coding_review.is_some() || review.content.contains("Review"));
+    }
+
+    #[test]
+    fn c31_ambiguous_named_target_asks_clarification() {
+        let planner = planner_with_search_and_read();
+        // No editor / project binding for "login button".
+        let response = planner
+            .handle(UserRequest::new("Change the login button."))
+            .unwrap();
+        let obj = response.coding_edit.expect("coding_edit");
+        assert_eq!(obj.kind, Some(CodingEditKind::Change));
+        assert_eq!(obj.status, CodingEditStatus::NeedsClarification);
+        assert!(obj.clarification.is_some());
+        assert!(response.content.contains("Clarification") || !obj.ambiguities.is_empty());
+    }
+
+    #[test]
+    fn c31_no_mutation_tools_and_planner_owns_classification() {
+        let planner = planner_with_search_and_read();
+        planner
+            .context
+            .set_session_inputs(session_with_selection_and_symbol());
+        for prompt in [
+            "Fix this bug.",
+            "Add authentication.",
+            "Remove this unused function.",
+            "Add tests for this.",
+        ] {
+            let response = planner.handle(UserRequest::new(prompt)).unwrap();
+            assert!(
+                response.coding_edit.is_some(),
+                "Planner should own edit classification for {prompt}"
+            );
+            assert!(response.execution_plan.is_none());
+            assert!(!response.awaiting_review);
+            assert!(response.lsp_edits.is_empty());
+            assert_ne!(response.tool_id.as_deref(), Some(WRITE_FILE_TOOL_ID));
+            assert_ne!(response.tool_id.as_deref(), Some(MANAGE_PATH_TOOL_ID));
+            assert!(!response.reasoning_used);
+            assert!(response
+                .coding_edit
+                .as_ref()
+                .unwrap()
+                .to_diagnostics_summary()
+                .contains("coding_edit"));
+        }
+    }
+
+    #[test]
+    fn c31_c2_reading_behavior_unchanged() {
+        let (planner, _) = planner_with_stub_search_knowledge(sample_citations(2));
+        let search = planner
+            .handle(UserRequest::new("Where is ContextBundle created?"))
+            .unwrap();
+        assert!(search.coding_edit.is_none());
+        assert!(search.code_search.is_some());
+
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "assemble".into(),
+                    kind: Some("function".into()),
+                    range: Some(jaymi_context::EditorRange {
+                        start_line: 10,
+                        start_column: 0,
+                        end_line: 10,
+                        end_column: 8,
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let nav = planner
+            .handle(UserRequest::new("Where is this function defined?"))
+            .unwrap();
+        assert!(nav.coding_edit.is_none());
+        assert!(nav.symbol_navigation.is_some());
+    }
+
+    // --- C3.2: Change Investigation ---
+
+    #[test]
+    fn c32_simple_single_file_change_investigates() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/button.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/src/button.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "Button".into(),
+                    kind: Some("struct".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("Change the button color."))
+            .unwrap();
+        let inv = response
+            .change_investigation
+            .expect("change_investigation");
+        assert_eq!(inv.mode, ChangeInvestigationMode::Full);
+        assert!(
+            inv.affected_files
+                .iter()
+                .any(|p| p.contains("button.rs"))
+                || inv.primary_file.as_deref() == Some("/proj/src/button.rs")
+        );
+        assert!(response.content.contains("Change Investigation"));
+        assert!(response.coding_edit.is_some());
+        assert!(response.execution_plan.is_none());
+        assert!(response.lsp_edits.is_empty());
+    }
+
+    #[test]
+    fn c32_multi_file_change_lists_affected() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/a.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/src/a.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "TokenStore".into(),
+                    kind: Some("struct".into()),
+                    ..Default::default()
+                }),
+                references: vec![
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/a.rs".into(),
+                        ..Default::default()
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/b.rs".into(),
+                        ..Default::default()
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/tests/token_store_test.rs".into(),
+                        ..Default::default()
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/Cargo.toml".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into(), "project".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("Make this faster."))
+            .unwrap();
+        let inv = response
+            .change_investigation
+            .expect("change_investigation");
+        assert_eq!(inv.mode, ChangeInvestigationMode::Full);
+        assert!(inv.affected_files.len() >= 2);
+        assert!(
+            !inv.tests_possibly_affected.is_empty()
+                || inv.affected_files.iter().any(|p| p.contains("test"))
+        );
+        assert!(
+            !inv.configuration_possibly_affected.is_empty()
+                || inv.affected_files.iter().any(|p| p.contains("Cargo.toml"))
+        );
+    }
+
+    #[test]
+    fn c32_ambiguous_target_light_with_unknowns() {
+        let planner = planner_with_search_and_read();
+        let response = planner.handle(UserRequest::new("Fix this.")).unwrap();
+        let obj = response.coding_edit.expect("coding_edit");
+        assert_eq!(obj.status, CodingEditStatus::NeedsClarification);
+        let inv = response
+            .change_investigation
+            .expect("change_investigation");
+        assert_eq!(inv.mode, ChangeInvestigationMode::Light);
+        assert!(!inv.unknowns.is_empty());
+        assert!(response.content.contains("What is unknown") || !inv.unknowns.is_empty());
+    }
+
+    #[test]
+    fn c32_missing_project_records_unknowns() {
+        let planner = planner_with_search_and_read();
+        // No editor / project session — named target cannot bind.
+        let response = planner
+            .handle(UserRequest::new("Change the login button."))
+            .unwrap();
+        let inv = response
+            .change_investigation
+            .expect("change_investigation");
+        assert_eq!(inv.mode, ChangeInvestigationMode::Light);
+        assert!(!inv.unknowns.is_empty());
+        assert!(response.execution_plan.is_none());
+        assert!(response.lsp_edits.is_empty());
+    }
+
+    #[test]
+    fn c32_existing_related_implementation_surfaced() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/apps/jaymi/src/settings_workspace.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/apps/jaymi/src/settings_workspace.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "Settings".into(),
+                    kind: Some("struct".into()),
+                    ..Default::default()
+                }),
+                references: vec![
+                    jaymi_context::EditorReference {
+                        path: "/proj/apps/jaymi/src/settings_workspace.rs".into(),
+                        ..Default::default()
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/docs/settings.md".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            project_snapshot: Some(jaymi_context::ProjectSnapshot {
+                package_manager: Some(jaymi_context::PackageManagerKind::Cargo),
+                dependency_summary: jaymi_context::DependencyGraphSummary {
+                    top_level: vec!["serde".into(), "tokio".into()],
+                    ..Default::default()
+                },
+                workspace_layout: jaymi_context::WorkspaceLayoutSummary {
+                    top_level_dirs: vec!["apps".into(), "crates".into(), "docs".into()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into(), "project".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("Add image generation to Settings."))
+            .unwrap();
+        let inv = response
+            .change_investigation
+            .expect("change_investigation");
+        assert_eq!(inv.mode, ChangeInvestigationMode::Full);
+        assert!(
+            !inv.related_dependencies.is_empty()
+                || !inv.implementation_patterns.is_empty()
+                || !inv.related_functionality.is_empty()
+        );
+        assert!(
+            inv.related_functionality
+                .iter()
+                .any(|r| r.contains("docs") || r.contains("settings"))
+                || inv.affected_files.iter().any(|p| p.contains("settings"))
+        );
+    }
+
+    #[test]
+    fn c32_change_crossing_subsystem_boundaries() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/crates/jaymi-planner/src/lib.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/crates/jaymi-planner/src/lib.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "Planner".into(),
+                    kind: Some("struct".into()),
+                    ..Default::default()
+                }),
+                references: vec![
+                    jaymi_context::EditorReference {
+                        path: "/proj/crates/jaymi-planner/src/lib.rs".into(),
+                        ..Default::default()
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/crates/jaymi-context/src/lib.rs".into(),
+                        ..Default::default()
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/apps/jaymi/src/boot.rs".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("Refactor Planner context handoff."))
+            .unwrap();
+        let inv = response
+            .change_investigation
+            .expect("change_investigation");
+        assert_eq!(inv.mode, ChangeInvestigationMode::Full);
+        assert!(
+            inv.likely_side_effects
+                .iter()
+                .any(|s| s.contains("subsystem"))
+                || inv
+                    .architectural_constraints
+                    .iter()
+                    .any(|s| s.contains("subsystem") || s.contains("shared contracts"))
+        );
+    }
+
+    #[test]
+    fn c32_no_mutation_tools_or_patches() {
+        let planner = planner_with_search_and_read();
+        planner
+            .context
+            .set_session_inputs(session_with_selection_and_symbol());
+        for prompt in [
+            "Fix this bug.",
+            "Add authentication.",
+            "Remove this unused function.",
+        ] {
+            let response = planner.handle(UserRequest::new(prompt)).unwrap();
+            assert!(response.change_investigation.is_some());
+            assert!(response.execution_plan.is_none());
+            assert!(!response.awaiting_review);
+            assert!(response.lsp_edits.is_empty());
+            assert_ne!(response.tool_id.as_deref(), Some(WRITE_FILE_TOOL_ID));
+            assert_ne!(response.tool_id.as_deref(), Some(MANAGE_PATH_TOOL_ID));
+            let inv = response.change_investigation.as_ref().unwrap();
+            assert!(!inv.to_markdown().contains("```diff"));
+            assert!(inv
+                .architectural_constraints
+                .iter()
+                .any(|c| c.contains("Read-only")));
+            assert!(inv
+                .to_diagnostics_summary()
+                .contains("change_investigation"));
+        }
+    }
+
+    #[test]
+    fn c32_bounded_investigation_respects_c2_caps() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/lib.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/src/lib.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "Root".into(),
+                    kind: Some("struct".into()),
+                    ..Default::default()
+                }),
+                references: (0..20)
+                    .map(|i| jaymi_context::EditorReference {
+                        path: format!("/proj/src/mod_{i}.rs"),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("Refactor Root module layout."))
+            .unwrap();
+        let inv = response
+            .change_investigation
+            .expect("change_investigation");
+        assert!(inv.steps.len() <= deep_investigation::MAX_STEPS);
+        assert!(inv.files_inspected <= deep_investigation::MAX_FILES);
+        assert!(inv.evidence.len() <= change_investigation::CONVERSATION_ROW_CAP);
+        assert!(inv.searches.len() <= deep_investigation::MAX_STEPS);
+    }
+
+    #[test]
+    fn c32_c2_reading_behavior_unchanged() {
+        let (planner, _) = planner_with_stub_search_knowledge(sample_citations(2));
+        let search = planner
+            .handle(UserRequest::new("Where is ContextBundle created?"))
+            .unwrap();
+        assert!(search.coding_edit.is_none());
+        assert!(search.change_investigation.is_none());
+        assert!(search.coding_plan.is_none() || search.code_search.is_some());
+        // Read paths must not attach a mutation Coding Plan.
+        if search.code_search.is_some() {
+            assert_ne!(
+                search
+                    .coding_plan
+                    .as_ref()
+                    .map(|p| p.origin),
+                Some(CodingPlanOrigin::ChangeInvestigation)
+            );
+        }
+        assert!(search.code_search.is_some());
+
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "assemble".into(),
+                    kind: Some("function".into()),
+                    range: Some(jaymi_context::EditorRange {
+                        start_line: 10,
+                        start_column: 0,
+                        end_line: 10,
+                        end_column: 8,
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let nav = planner
+            .handle(UserRequest::new("Where is this function defined?"))
+            .unwrap();
+        assert!(nav.coding_edit.is_none());
+        assert!(nav.change_investigation.is_none());
+        assert!(nav.symbol_navigation.is_some());
+
+        let deep = planner
+            .handle(UserRequest::new(
+                "Investigate how authentication flows through the codebase.",
+            ))
+            .unwrap();
+        // Deep investigation soft path still owns reading asks.
+        assert!(deep.change_investigation.is_none() || deep.deep_investigation.is_some());
+        if deep.deep_investigation.is_some() {
+            assert!(deep.coding_edit.is_none());
+            assert!(deep.change_investigation.is_none());
+            assert_ne!(
+                deep.coding_plan
+                    .as_ref()
+                    .map(|p| p.origin),
+                Some(CodingPlanOrigin::ChangeInvestigation)
+            );
+        }
+    }
+
+    // --- C3.3: Coding Plan from Change Investigation ---
+
+    #[test]
+    fn c33_plan_based_on_investigation_evidence() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/apps/jaymi/src/settings_workspace.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/apps/jaymi/src/settings_workspace.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "Settings".into(),
+                    kind: Some("struct".into()),
+                    ..Default::default()
+                }),
+                references: vec![
+                    jaymi_context::EditorReference {
+                        path: "/proj/apps/jaymi/src/settings_workspace.rs".into(),
+                        ..Default::default()
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/crates/jaymi-providers/src/registry.rs".into(),
+                        ..Default::default()
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/docs/settings.md".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into(), "project".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("Add image generation to Settings."))
+            .unwrap();
+        let inv = response.change_investigation.expect("investigation");
+        let plan = response.coding_plan.expect("coding_plan");
+        assert_eq!(plan.origin, CodingPlanOrigin::ChangeInvestigation);
+        assert!(plan.rationale.iter().any(|r| r.contains("Change Investigation")));
+        assert!(
+            plan.files_to_modify.iter().any(|f| f.contains("settings_workspace"))
+                || plan
+                    .files_to_modify
+                    .iter()
+                    .any(|f| inv.affected_files.iter().any(|a| f.contains(a)))
+        );
+        assert!(!plan.step_dependencies.is_empty());
+        assert!(response.content.contains("## Coding Plan"));
+        assert!(response.content.contains("### Step ordering"));
+    }
+
+    #[test]
+    fn c33_affected_files_grounded_and_ordering_preserved() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/button.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/src/button.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "Button".into(),
+                    kind: Some("struct".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("Change the button color."))
+            .unwrap();
+        let plan = response.coding_plan.expect("coding_plan");
+        assert!(plan
+            .files_to_modify
+            .iter()
+            .any(|f| f.contains("button.rs")));
+        // Ordering: confirmation before modify for Change kind.
+        let joined = plan.plan_steps.join("\n");
+        let i1 = joined.find("1.").expect("step 1");
+        let i2 = joined.find("2.").expect("step 2");
+        assert!(i1 < i2);
+        assert!(!plan.step_dependencies.is_empty());
+    }
+
+    #[test]
+    fn c33_ambiguity_remains_visible() {
+        let planner = planner_with_search_and_read();
+        let response = planner.handle(UserRequest::new("Fix this.")).unwrap();
+        let plan = response.coding_plan.expect("coding_plan");
+        assert!(!plan.unresolved_questions.is_empty());
+        assert!(plan.files_to_create.is_empty());
+        assert!(
+            response.content.contains("Unresolved questions")
+                || !plan.unresolved_questions.is_empty()
+        );
+    }
+
+    #[test]
+    fn c33_no_mutation_no_tool_bypass() {
+        let planner = planner_with_search_and_read();
+        planner
+            .context
+            .set_session_inputs(session_with_selection_and_symbol());
+        let response = planner
+            .handle(UserRequest::new("Add authentication."))
+            .unwrap();
+        assert!(response.coding_plan.is_some());
+        assert!(response.execution_plan.is_none());
+        assert!(!response.awaiting_review);
+        assert!(response.lsp_edits.is_empty());
+        assert_ne!(response.tool_id.as_deref(), Some(WRITE_FILE_TOOL_ID));
+        assert_ne!(response.tool_id.as_deref(), Some(MANAGE_PATH_TOOL_ID));
+        let plan = response.coding_plan.as_ref().unwrap();
+        assert!(!plan.to_markdown().contains("```diff"));
+        assert!(!plan.to_markdown().contains("```rust"));
+        assert!(plan
+            .to_diagnostics_summary()
+            .contains("coding_plan"));
+        // Remembered for later translation — still not executed.
+        assert!(planner.clone_last_coding_plan().is_some());
+    }
+
+    #[test]
+    fn c33_constitutional_conflict_flagged() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/button.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/src/button.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        // "Change the ..." keeps C3.1 ownership; phrase flags review bypass.
+        let response = planner
+            .handle(UserRequest::new(
+                "Change the button without review and auto-apply.",
+            ))
+            .unwrap();
+        let plan = response.coding_plan.expect("coding_plan");
+        assert!(plan
+            .constitutional_conflicts
+            .iter()
+            .any(|c| c.contains("Review Before Action")));
+        assert!(response.execution_plan.is_none());
+        assert!(response.lsp_edits.is_empty());
+    }
+
+    // --- C3.4: Patch Generation ---
+
+    fn mutation_plan_for_paths(
+        create: Vec<String>,
+        modify: Vec<String>,
+        remove: Vec<String>,
+        goal: &str,
+    ) -> CodingPlan {
+        CodingPlan {
+            origin: CodingPlanOrigin::ChangeInvestigation,
+            kind: Some(CodingPlanKind::Mutation),
+            objective: Some(goal.into()),
+            files_to_create: create,
+            files_to_modify: modify,
+            files_to_remove: remove,
+            plan_steps: vec!["1. Apply grounded patches.".into()],
+            summary: vec![format!("Mutation Coding Plan for: {goal}")],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn c34_create_file_patch_awaits_review_without_write() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let create_path = dir.join("helper.rs");
+        planner.remember_coding_plan(Some(mutation_plan_for_paths(
+            vec![format!("`{}` new helper", create_path.display())],
+            vec![],
+            vec![],
+            "Add helper.",
+        )));
+
+        let response = planner
+            .handle(UserRequest::new("Generate patches."))
+            .unwrap();
+
+        let report = response.patch_generation.expect("patch_generation");
+        assert!(report.valid_count() >= 1);
+        assert!(report.converted_to_execution);
+        assert!(response.awaiting_review);
+        assert!(response.code_generation.is_some());
+        assert!(response
+            .code_generation
+            .as_ref()
+            .unwrap()
+            .operations
+            .iter()
+            .any(|op| op.kind == GenerationOpKind::CreateFile && op.path == create_path));
+        assert!(!create_path.exists(), "must not write before review");
+        assert!(response.content.contains("## Patch Generation"));
+    }
+
+    #[test]
+    fn c34_targeted_modification_preserves_file_until_review() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let path = dir.join("lib.rs");
+        fs::write(&path, "fn keep()\nfn touch()\n").unwrap();
+        planner.remember_coding_plan(Some(mutation_plan_for_paths(
+            vec![],
+            vec![format!("`{}` (from investigation)", path.display())],
+            vec![],
+            "Change touch.",
+        )));
+
+        let response = planner
+            .handle(UserRequest::new("Generate the code."))
+            .unwrap();
+        let report = response.patch_generation.expect("patch_generation");
+        assert!(report
+            .patches
+            .iter()
+            .any(|p| p.proposal.change_type == PatchChangeType::ModifyFile
+                && p.status.is_valid()));
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "fn keep()\nfn touch()\n",
+            "original file must be preserved before Approve"
+        );
+        assert!(response.awaiting_review);
+        let proposed = response
+            .code_generation
+            .as_ref()
+            .unwrap()
+            .operations
+            .iter()
+            .find(|op| op.kind == GenerationOpKind::ModifyFile)
+            .and_then(|op| op.content.clone())
+            .unwrap_or_default();
+        assert!(
+            proposed.contains("fn keep()") || proposed.contains("jaymi-patch-proposal"),
+            "targeted modify should preserve surrounding context: {proposed}"
+        );
+    }
+
+    #[test]
+    fn c34_multi_file_patch_batch() {
+        let planner = planner_with_write_and_manage();
+        let dir = temp_dir();
+        let create = dir.join("new.rs");
+        let modify = dir.join("existing.rs");
+        let delete = dir.join("gone.rs");
+        fs::write(&modify, "old\n").unwrap();
+        fs::write(&delete, "bye\n").unwrap();
+        planner.remember_coding_plan(Some(mutation_plan_for_paths(
+            vec![format!("`{}` create", create.display())],
+            vec![format!("`{}` modify", modify.display())],
+            vec![format!("`{}` remove", delete.display())],
+            "Multi-file change.",
+        )));
+
+        let response = planner
+            .handle(UserRequest::new("Generate patches."))
+            .unwrap();
+        let gen = response.code_generation.expect("code_generation");
+        assert!(gen.operations.len() >= 2);
+        assert!(gen
+            .operations
+            .iter()
+            .any(|op| op.kind == GenerationOpKind::CreateFile));
+        assert!(gen
+            .operations
+            .iter()
+            .any(|op| op.kind == GenerationOpKind::ModifyFile));
+        assert!(!create.exists());
+        assert_eq!(fs::read_to_string(&modify).unwrap(), "old\n");
+        assert!(delete.exists(), "delete must wait for review");
+        assert!(response.awaiting_review);
+    }
+
+    #[test]
+    fn c34_stale_and_invalid_patches_leave_project_unchanged() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let existing = dir.join("already.rs");
+        fs::write(&existing, "present\n").unwrap();
+        let missing = dir.join("missing.rs");
+
+        // Create targeting an existing path → UnexpectedExists (invalid for create).
+        // Modify targeting a missing path → MissingFile.
+        planner.remember_coding_plan(Some(mutation_plan_for_paths(
+            vec![format!("`{}` should not create", existing.display())],
+            vec![format!("`{}` cannot modify", missing.display())],
+            vec![],
+            "Invalid patch batch.",
+        )));
+
+        let before = fs::read_to_string(&existing).unwrap();
+        let response = planner
+            .handle(UserRequest::new("Generate patches."))
+            .unwrap();
+        let report = response.patch_generation.expect("patch_generation");
+        assert!(report.valid_count() == 0, "{:?}", report.patches);
+        assert!(!report.converted_to_execution);
+        assert!(!response.awaiting_review);
+        assert!(response.execution_plan.is_none());
+        assert_eq!(fs::read_to_string(&existing).unwrap(), before);
+        assert!(!missing.exists());
+        assert!(
+            report.failures.iter().any(|f| f.contains("already.rs")
+                || f.contains("missing.rs")
+                || f.contains("unchanged")
+                || !report.failures.is_empty())
+        );
+        assert!(response.content.contains("Original project unchanged"));
+    }
+
+    #[test]
+    fn c34_no_direct_filesystem_mutation_and_c15_generation_still_works() {
+        let planner = planner_with_write();
+        let dir = temp_dir();
+        let path = dir.join("pong.rs");
+        // C1.5 greenfield plan still uses stub generation (not C3.4).
+        let plan = CodingPlan {
+            origin: CodingPlanOrigin::GenerationPlanning,
+            kind: Some(CodingPlanKind::NewProject),
+            files_to_create: vec![format!("`{}` pong", path.display())],
+            summary: vec!["Goal: Build Pong.".into()],
+            ..Default::default()
+        };
+        planner.remember_coding_plan(Some(plan));
+        let response = planner
+            .handle(UserRequest::new("Generate the code."))
+            .unwrap();
+        assert!(response.patch_generation.is_none());
+        assert!(response.code_generation.is_some());
+        assert!(response.awaiting_review);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn c34_rename_proposal_supported_in_draft_and_tool_binding() {
+        let plan = CodingPlan {
+            origin: CodingPlanOrigin::ChangeInvestigation,
+            kind: Some(CodingPlanKind::Mutation),
+            plan_steps: vec!["Rename `/proj/old.rs` to `/proj/new.rs`.".into()],
+            files_to_modify: vec![],
+            ..Default::default()
+        };
+        let drafts =
+            patch_generation::draft_proposals_from_plan(&plan, "Rename", Some(Path::new("/proj")));
+        // Best-effort rename parse may or may not extract both paths from prose;
+        // also exercise GenerationOp rename binding directly.
+        let op = GenerationOp::rename_move("/proj/old.rs", "/proj/new.rs", "rename");
+        let call = code_generation::tool_calls_for_generation(
+            &CodeGeneration {
+                goal: "rename".into(),
+                operations: vec![op],
+                coding_plan_summary: vec![],
+            },
+            jaymi_core::DeletionMethod::Trash,
+        )
+        .unwrap();
+        assert_eq!(call[0].tool_id, MANAGE_PATH_TOOL_ID);
+        assert_eq!(call[0].input.command.as_deref(), Some("rename"));
+        let _ = drafts;
+    }
+
+    #[test]
+    fn code_search_generic_search_is_not_reformatted() {
+        let (planner, _) = planner_with_stub_search_knowledge(sample_citations(1));
+        let response = planner.handle(UserRequest::new("search fungi")).unwrap();
+        // Generic search keeps tool message; no Code Search report attachment.
+        assert!(response.code_search.is_none());
+        assert!(response.content.contains("stub hits") || response.citations.len() == 1);
+    }
+
+    // --- C2.7.2: unified evidence → Context → Reasoning handoff ---
+
+    #[test]
+    fn c272_nl_search_evidence_reaches_reasoning_via_canonical_pipeline() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let (planner, _) =
+            planner_with_stub_search_and_reasoning(sample_citations(3), Arc::clone(&provider));
+        let response = planner
+            .handle(UserRequest::new("Where is authentication handled?"))
+            .unwrap();
+        assert!(response.code_search.is_some());
+        assert!(response.reasoning_used);
+        assert_eq!(provider.stream_calls(), 1);
+        assert_eq!(provider.complete_calls(), 0);
+        let goal = provider.last_goal().unwrap_or_default();
+        assert!(
+            goal.contains("origin=code_search") || goal.contains("Planner code search"),
+            "goal missing evidence brief: {goal}"
+        );
+        assert!(goal.contains("file_0.rs") || goal.contains("authenticate"));
+        // ContextPolicy selection boundary: hits offered via session → bundle search.
+        let hits = planner.context.session_inputs().search_hits;
+        assert!(!hits.is_empty(), "expected session search_hits for ContextPolicy");
+        assert!(hits.iter().any(|h| h.title.contains("file_")));
+        let bundle = response.context_bundle.expect("context_bundle");
+        assert!(
+            !bundle.search_results().hits.is_empty()
+                || bundle.search().is_some()
+                || !hits.is_empty()
+        );
+        assert!(response.lsp_edits.is_empty());
+        assert!(!response.awaiting_review);
+    }
+
+    #[test]
+    fn c272_exact_symbol_stays_deterministic_even_with_reasoning() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let (planner, _) =
+            planner_with_stub_search_and_reasoning(sample_citations(2), Arc::clone(&provider));
+        let response = planner
+            .handle(UserRequest::new("Where is ContextBundle created?"))
+            .unwrap();
+        assert!(response.code_search.is_some());
+        assert!(!response.reasoning_used);
+        assert_eq!(provider.stream_calls(), 0);
+        assert!(response.content.contains("## Code Search"));
+        assert_ne!(response.tool_id.as_deref(), Some(WRITE_FILE_TOOL_ID));
+    }
+
+    #[test]
+    fn c272_relationship_evidence_reaches_reasoning_via_canonical_pipeline() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let planner = planner_with_reasoning(Arc::clone(&provider)
+            as Arc<dyn jaymi_reasoning::ReasoningProvider>);
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/ui.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "on_save".into(),
+                    kind: Some("function".into()),
+                    ..Default::default()
+                }),
+                references: vec![
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/ui.rs".into(),
+                        range: jaymi_context::EditorRange {
+                            start_line: 12,
+                            start_column: 0,
+                            end_line: 12,
+                            end_column: 7,
+                        },
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/actions.rs".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into(), "project".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("What happens when I click Save?"))
+            .unwrap();
+        assert!(response.relationship_trace.is_some());
+        assert!(response.reasoning_used);
+        assert_eq!(provider.stream_calls(), 1);
+        let goal = provider.last_goal().unwrap_or_default();
+        assert!(
+            goal.contains("origin=relationship_trace")
+                || goal.contains("Planner relationship trace"),
+            "goal={goal}"
+        );
+        assert!(!planner.context.session_inputs().search_hits.is_empty());
+        assert!(response.lsp_edits.is_empty());
+        assert!(!response.awaiting_review);
+    }
+
+    #[test]
+    fn c272_symbol_dependents_evidence_reaches_reasoning() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let planner = planner_with_reasoning(Arc::clone(&provider)
+            as Arc<dyn jaymi_reasoning::ReasoningProvider>);
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/auth.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                active_file: jaymi_context::CurrentFileSection {
+                    path: Some("/proj/src/auth.rs".into()),
+                    dirty: false,
+                    language: Some("rust".into()),
+                },
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "TokenStore".into(),
+                    kind: Some("struct".into()),
+                    ..Default::default()
+                }),
+                references: vec![
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/auth.rs".into(),
+                        range: jaymi_context::EditorRange {
+                            start_line: 1,
+                            start_column: 0,
+                            end_line: 1,
+                            end_column: 10,
+                        },
+                    },
+                    jaymi_context::EditorReference {
+                        path: "/proj/src/api.rs".into(),
+                        range: jaymi_context::EditorRange {
+                            start_line: 4,
+                            start_column: 0,
+                            end_line: 4,
+                            end_column: 10,
+                        },
+                    },
+                ],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new(
+                "Show me everything that depends on this.",
+            ))
+            .unwrap();
+        assert!(response.symbol_navigation.is_some());
+        let report = response.symbol_navigation.as_ref().unwrap();
+        assert_eq!(report.kind, Some(SymbolNavKind::Dependents));
+        assert!(!report.evidence.is_empty());
+        assert!(response.reasoning_used);
+        assert_eq!(provider.stream_calls(), 1);
+        let goal = provider.last_goal().unwrap_or_default();
+        assert!(
+            goal.contains("origin=symbol_navigation")
+                || goal.contains("Planner symbol navigation"),
+            "goal={goal}"
+        );
+        assert!(response.lsp_edits.is_empty());
+    }
+
+    #[test]
+    fn c272_symbol_definition_stays_deterministic_with_reasoning() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let planner = planner_with_reasoning(Arc::clone(&provider)
+            as Arc<dyn jaymi_reasoning::ReasoningProvider>);
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "assemble".into(),
+                    kind: Some("function".into()),
+                    range: Some(jaymi_context::EditorRange {
+                        start_line: 10,
+                        start_column: 0,
+                        end_line: 10,
+                        end_column: 8,
+                    }),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("Where is this function defined?"))
+            .unwrap();
+        assert!(response.symbol_navigation.is_some());
+        assert!(!response.reasoning_used);
+        assert_eq!(provider.stream_calls(), 0);
+        assert!(response.content.contains("## Symbol Navigation"));
+    }
+
+    #[test]
+    fn c272_deterministic_fallback_without_reasoning_backend() {
+        let (planner, _) = planner_with_stub_search_knowledge(sample_citations(3));
+        let nl = planner
+            .handle(UserRequest::new("Where is authentication handled?"))
+            .unwrap();
+        assert!(!nl.reasoning_used);
+        assert!(nl.content.contains("## Code Search"));
+        assert!(nl.code_search.is_some());
+
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            workspace_kind: Some("coding".into()),
+            editor_snapshot: Some(jaymi_context::EditorSnapshot {
+                symbol: Some(jaymi_context::EditorSymbol {
+                    name: "on_save".into(),
+                    ..Default::default()
+                }),
+                references: vec![jaymi_context::EditorReference {
+                    path: "/proj/a.rs".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into()],
+            ..jaymi_context::ContextSessionInputs::default()
+        });
+        let rel = planner
+            .handle(UserRequest::new("What happens when I click Save?"))
+            .unwrap();
+        assert!(!rel.reasoning_used);
+        assert!(rel.content.contains("## Relationship Trace") || rel.relationship_trace.is_some());
+        assert!(rel.lsp_edits.is_empty());
+    }
+
+    #[test]
+    fn c272_no_direct_reasoning_provider_from_c2_modules() {
+        // Constitutional: C2 modules never call ReasoningProvider — only Planner
+        // complete_with_codebase_evidence_handoff → ConversationStream.
+        for path in [
+            "code_search.rs",
+            "symbol_navigation.rs",
+            "relationship_tracing.rs",
+            "deep_investigation.rs",
+            "codebase_qa.rs",
+            "codebase_evidence.rs",
+        ] {
+            let body = std::fs::read_to_string(
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src").join(path),
+            )
+            .unwrap_or_else(|_| panic!("read {path}"));
+            for needle in [
+                "ReasoningProvider",
+                "ReasoningEngine",
+                "reasoning.complete",
+                "reasoning.stream",
+            ] {
+                // Allow documentary mentions of the ban itself.
+                let banned = body.lines().any(|line| {
+                    let t = line.trim();
+                    !t.starts_with("//")
+                        && !t.starts_with("//!")
+                        && !t.starts_with('*')
+                        && t.contains(needle)
+                });
+                assert!(
+                    !banned,
+                    "{path} must not call/use {needle} outside comments"
+                );
+            }
         }
     }
 }

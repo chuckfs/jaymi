@@ -204,6 +204,78 @@ Modification → Execution. Suggested next actions are Planner-generated; Quick
 Actions mirror that list. Spec:
 [docs/pair-programming.md](pair-programming.md).
 
+**Intelligent Code Search** (Sprint C2.1) maps natural-language “where is …” /
+responsibility questions onto Search Knowledge. Evidence is capped and attached
+as `PlannerResponse.code_search`. Spec: [docs/code-search.md](code-search.md).
+
+**Symbol Navigation** (Sprint C2.2) maps definition / callers / implementations /
+usages / dependents onto Workspace Intelligence and read-only `language_server`
+(never Rename; Reasoning never calls LSP). Spec:
+[docs/symbol-navigation.md](symbol-navigation.md).
+
+**Code Relationship Tracing** (Sprint C2.3) runs a bounded multi-hop
+investigation chain (seed → definition → callers → related → optional Search/LSP)
+with hard limits and diagnostics for the chain. Spec:
+[docs/relationship-tracing.md](relationship-tracing.md).
+
+**Deep Codebase Investigation** (Sprint C2.4) plans required evidence for
+multi-source questions, gathers via Planner-mediated Search / reads / symbols,
+re-assembles through ContextEngine, then answers (with explicit gaps). Spec:
+[docs/deep-investigation.md](deep-investigation.md).
+
+**Codebase Q&A** (Sprint C2.5) routes natural conversational codebase questions
+by complexity across C2 search / symbols / relationship / investigation,
+grounds claims, and surfaces conflicts. Spec:
+[docs/codebase-qa.md](codebase-qa.md).
+
+**Codebase Reading Diagnostics Parity** (Sprint C2.7.1) surfaces C2.4/C2.5
+operational data on the existing Coding Diagnostics / `LastPlannerActivity`
+path (same model as C2.1–C2.3). Spec:
+[docs/codebase-reading-diagnostics.md](codebase-reading-diagnostics.md).
+
+**Unified Codebase Evidence → Reasoning Handoff** (Sprint C2.7.2) converts
+C2.1–C2.5 evidence into one Planner-owned representation, offers hits to
+ContextPolicy via session `search_hits`, and optionally hands off through
+ConversationStream → PromptBuilder → Reasoning when the ask is non-trivial.
+Trivial exact/reference lookups stay deterministic. Spec:
+[docs/codebase-evidence-handoff.md](codebase-evidence-handoff.md).
+
+**Coding Edit Intent** (Sprint C3.1) classifies mutation vs read requests and
+structures a Planner-owned `CodingEditObjective` (targets, scope, ambiguities,
+clarification). No file writes or mutation tools. Spec:
+[docs/coding-edit.md](coding-edit.md).
+
+**Change Investigation** (Sprint C3.2) runs inside the coding-edit complete path:
+reuses C2 deep / relationship / search helpers under Planner mediation to produce
+a read-only impact report (affected files/symbols, deps, tests, unknowns). Spec:
+[docs/change-investigation.md](change-investigation.md).
+
+**Coding Plan from Investigation** (Sprint C3.3) authors a Planner-owned
+`CodingPlan` grounded in that evidence (ordering, risk, unresolved questions,
+constitutional conflicts). No file contents or mutation tools. Spec:
+[docs/change-coding-plan.md](change-coding-plan.md).
+
+**Patch Generation** (Sprint C3.4) turns an approved mutation Coding Plan into
+validated, targeted patch proposals, then converts valid ones into the existing
+reviewed ExecutionPlan path — never automatic apply. Spec:
+[docs/patch-generation.md](patch-generation.md).
+
+**Coding Diff Review** (Sprint C3.5) enriches that same Review Card with
+multi-file +/− Diff Preview, proposed operations, rationale, dependencies, and
+validation status — still Approve / Modify / Cancel via `ReviewIntent`, with no
+pre-approval writes. Spec:
+[docs/coding-diff-review.md](coding-diff-review.md).
+
+**Apply Approved Coding Changes** (Sprint C3.6) executes the frozen generation
+batch after Approve through existing tools/providers, stops on failure with a
+partial `ExecutionSummary`, and records history — still no coding bypass. Spec:
+[docs/coding-apply.md](coding-apply.md).
+
+**Coding Mutation Recovery** (Sprint C3.7) re-checks frozen baselines before
+writes, refuses stale/invalid sources, and emits an actionable recovery report
+on fail / partial / cancel — further mutation needs a new reviewed plan. Spec:
+[docs/coding-mutation-recovery.md](coding-mutation-recovery.md).
+
 Reasoning is delegated.
 
 Execution is delegated.

@@ -71,6 +71,7 @@ Coding mutation (rename / write / generate / …)
 ## Related
 
 - [code-generation.md](code-generation.md) — C1.5 ops → reviewed plans
+- [coding-diff-review.md](coding-diff-review.md) — C3.5 multi-file +/− Review Card
 - [multi-file-intelligence.md](multi-file-intelligence.md) — C1.7 WI affected files
 - [planner.md](planner.md) — Execution Plans / Review Cards
 - [experience.md](experience.md) — in-conversation card
