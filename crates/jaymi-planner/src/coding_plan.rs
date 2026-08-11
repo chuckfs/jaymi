@@ -319,6 +319,7 @@ fn looks_like_generation_plan(lower: &str) -> bool {
         || crate::code_generation::steals_from_coding_plan_detect(lower)
         || crate::multi_file::steals_from_coding_plan_detect(lower)
         || crate::coding_edit::steals_from_coding_plan_detect(lower)
+        || crate::coding_goal::steals_from_coding_plan_detect(lower)
     {
         return false;
     }
@@ -1137,8 +1138,11 @@ mod tests {
 
     #[test]
     fn detects_generation_plan_examples() {
-        let pong = detect_coding_plan_request(&UserRequest::new("Build Pong.")).unwrap();
-        assert_eq!(pong.kind, CodingPlanKind::NewProject);
+        let pong = detect_coding_plan_request(&UserRequest::new("Build Pong."));
+        assert!(
+            pong.is_none(),
+            "greenfield pong yields to Coding Goal / agentic experience"
+        );
 
         let parser = detect_coding_plan_request(&UserRequest::new("Create a parser.")).unwrap();
         assert_eq!(parser.kind, CodingPlanKind::Feature);

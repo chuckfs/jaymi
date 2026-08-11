@@ -238,7 +238,7 @@ Capabilities also change the user experience.
 
 Conversation stays permanent. Workspaces expand beside it.
 
-**Current:** conversation shell + Coding Workspace shell (five dock pages — Terminal / Problems / Search / Git / Diagnostics — plus an Output placeholder not listed in `pages()`) + `CodingState` + workspace expansion model + capability state / inspector + **WorkspaceSnapshot** (B2.1 / B2.2 / B2.13.2) + **EditorSnapshot** (B2.3 / B2.13.3 editor intelligence) + **ProjectSnapshot** (B2.4 project intelligence) + **GitSnapshot** (B2.5 — **Current**) + **RuntimeSnapshot** (B2.6 — **Current**) + **Context Candidate Graph** (B2.7 / B2.13.1 — **Current**) + **Context Selection** (B2.8) + **Workspace Memory** (B2.9) + **Environmental Resolution** (B2.10) + **Workspace Diagnostics** (B2.11) + **Constitutional Audit** (B2.12) + **docs sync** (B2.13.4) + **Coding Actions** (C0.1) + **Code Talk** (C0.2) + **Coding Understanding** (C1.1) + **Project Understanding** (C1.2) + **Coding Review** (C1.3) + **Coding Plan / Generation Planning** (C1.4) + **Code Generation** (C1.5) + **Coding Execution Plans** (C1.6) + **Multi-file Intelligence** (C1.7) + **Pair Programming Experience** (C1.8) + **Intelligent Code Search** (C2.1) + **Symbol Navigation** (C2.2) + **Code Relationship Tracing** (C2.3) + **Deep Codebase Investigation** (C2.4) + **Codebase Q&A** (C2.5) + **Codebase Evidence Handoff** (C2.7.2) + **Coding Edit Intent** (C3.1) + **Change Investigation** (C3.2) + **Coding Plan from Investigation** (C3.3) + **Patch Generation** (C3.4) + **Coding Diff Review** (C3.5) + **Apply Approved Coding Changes** (C3.6) + **Coding Mutation Recovery** (C3.7).
+**Current:** conversation shell + Coding Workspace shell (five dock pages — Terminal / Problems / Search / Git / Diagnostics — plus an Output placeholder not listed in `pages()`) + `CodingState` + workspace expansion model + capability state / inspector + **WorkspaceSnapshot** (B2.1 / B2.2 / B2.13.2) + **EditorSnapshot** (B2.3 / B2.13.3 editor intelligence) + **ProjectSnapshot** (B2.4 project intelligence) + **GitSnapshot** (B2.5 — **Current**) + **RuntimeSnapshot** (B2.6 — **Current**) + **Context Candidate Graph** (B2.7 / B2.13.1 — **Current**) + **Context Selection** (B2.8) + **Workspace Memory** (B2.9) + **Environmental Resolution** (B2.10) + **Workspace Diagnostics** (B2.11) + **Constitutional Audit** (B2.12) + **docs sync** (B2.13.4) + **Coding Actions** (C0.1) + **Code Talk** (C0.2) + **Coding Understanding** (C1.1) + **Project Understanding** (C1.2) + **Coding Review** (C1.3) + **Coding Plan / Generation Planning** (C1.4) + **Code Generation** (C1.5) + **Coding Execution Plans** (C1.6) + **Multi-file Intelligence** (C1.7) + **Pair Programming Experience** (C1.8) + **Intelligent Code Search** (C2.1) + **Symbol Navigation** (C2.2) + **Code Relationship Tracing** (C2.3) + **Deep Codebase Investigation** (C2.4) + **Codebase Q&A** (C2.5) + **Codebase Evidence Handoff** (C2.7.2) + **Coding Edit Intent** (C3.1) + **Change Investigation** (C3.2) + **Coding Plan from Investigation** (C3.3) + **Patch Generation** (C3.4) + **Coding Diff Review** (C3.5) + **Apply Approved Coding Changes** (C3.6) + **Coding Mutation Recovery** (C3.7) + **Build Awareness** (C4.1) + **Test Execution** (C4.2) + **Verification Diagnostics Feedback** (C4.3) + **Fix From Verification Failure** (C4.4) + **Verification Summary** (C4.5) + **Bounded Coding Verification Loop** (C4.6) + **Coding Goal Model** (C5.1) + **Goal Decomposition** (C5.2) + **Agent State Machine** (C5.3) + **Multi-Step Coding Execution** (C5.4) + **Agent Context Maintenance** (C5.5) + **Approval and Autonomy Policy** (C5.6) + **Agent Progress UX** (C5.7) + **Agent Pause, Resume, and Cancellation** (C5.8) + **Agent Failure and Recovery** (C5.9) + **Coding Goal Completion** (C5.10) + **Long-Running Coding Sessions** (C5.11) + **Agentic Coding Experience** (C5.12) + **Resume Integrity Hardening** (C5.14).
 
 **Target UX:**
 
@@ -504,6 +504,107 @@ recording history. No coding bypass / retry loops. Spec:
 stale/invalid sources, actionable recovery on fail/partial/cancel, no silent
 retry or destructive auto-rollback; further mutation needs a new reviewed plan.
 Spec: [docs/coding-mutation-recovery.md](docs/coding-mutation-recovery.md).
+
+**C4.1:** Build Awareness — Planner-owned, read-only discovery of how the active
+project is built and which verification commands are appropriate (`VerificationTarget`
+from ProjectSnapshot / WI evidence). No command execution, no second discovery
+system, no Reasoning shell. Spec: [docs/build-awareness.md](docs/build-awareness.md).
+
+**C4.2:** Test Execution — Planner selects grounded test commands (C4.1), runs them
+via Terminal Tool under permission/ToolRisk review, captures exit/output/duration,
+bounds large logs, and publishes outcomes to RuntimeSnapshot for Context. No
+auto-mutation or silent retries. Spec: [docs/test-execution.md](docs/test-execution.md).
+
+**C4.3:** Verification Diagnostics Feedback — parse build/test output into structured
+`VerificationEvidence` (kind, errors, warnings, files, tests, bounded excerpts),
+feed existing Context diagnostics (`source=verification`), and explain failures
+conversationally without raw log dumps or automatic repair. Spec:
+[docs/verification-diagnostics.md](docs/verification-diagnostics.md).
+
+**C4.4:** Fix From Verification Failure — bridge structured verification failures into
+C2 investigation + C3 Coding Plan (proposal only). No auto-mutation, auto-approve,
+or silent retries; mutations still use Review Before Action. Spec:
+[docs/fix-from-verification.md](docs/fix-from-verification.md).
+
+**C4.5:** Verification Summary — concise conversational outcome from ExecutionSummary
++ VerificationEvidence (what changed / verified / passed / failed / remains / next).
+Never invents runs; recommended fixes are chips into C4.4, not auto-executed. Spec:
+[docs/verification-summary.md](docs/verification-summary.md).
+
+**C4.6:** Bounded Coding Verification Loop — Planner-owned Apply→Verify→(optional
+reviewed Fix) cycles with hard `MAX_CYCLES`, cancel/stop, and no auto-approve or
+silent mutation retry. Not C5. Spec:
+[docs/coding-verification-loop.md](docs/coding-verification-loop.md).
+
+**C5.1:** Coding Goal Model — Planner-owned multi-step coding objective
+(`CodingGoal` / `CodingGoalStore`). Represents *what* the user wants across turns;
+not a Coding Plan, Execution Plan, or verification result. Create/cancel/complete/block
+only — no tools, mutation, decomposition, autonomy, or progress UX. Spec:
+[docs/coding-goal.md](docs/coding-goal.md).
+
+**C5.2:** Goal Decomposition — Planner-owned proposed task graph on an active
+Coding Goal (statuses, deps, cycle detection). Never executes tasks, mutates files,
+or auto-approves; C2/C3/C4 reused as later hints only. Spec:
+[docs/goal-decomposition.md](docs/goal-decomposition.md).
+
+**C5.3:** Agent State Machine — Planner-owned bounded lifecycle for an active
+Coding Goal (Idle→…→Completed/Failed/Cancelled, Pause, Blocked, Correcting).
+Explicit events only; LLM/UI cannot invent transitions; Completed needs evidence;
+AwaitingApproval/Verifying do not mutate. Spec:
+[docs/agent-state-machine.md](docs/agent-state-machine.md).
+
+**C5.4:** Multi-Step Coding Execution — Planner-owned orchestration linking Goals →
+Tasks → C2/C3/C4 (one in-progress task; continue/advance; evidence-gated complete;
+no second plan/review; no auto-approve / auto-correct mutate). Spec:
+[docs/multi-step-execution.md](docs/multi-step-execution.md).
+
+**C5.5:** Agent Context Maintenance — compact Planner-owned goal context for
+multi-step work without stuffing full history into every model request; reuses
+ContextEngine + ContextPolicy + Workspace Intelligence (no AgentContextEngine).
+Spec: [docs/agent-context-maintenance.md](docs/agent-context-maintenance.md).
+
+**C5.6:** Approval and Autonomy Policy — default READ/OBSERVE vs MUTATION/SIDE_EFFECT
+boundaries; reuses Permission + ToolRisk + Review (no AgentApproval, no autonomy
+modes); approvals bind to plan_id + task_id. Spec:
+[docs/approval-autonomy-policy.md](docs/approval-autonomy-policy.md).
+
+**C5.7:** Agent Progress UX — derive-only progress view of an active Coding Goal
+(goal / phase / tasks / approval / verification / blockers) without CoT; Experience
+mirrors Planner (no second agent state); Diagnostics stay separate. Spec:
+[docs/agent-progress-ux.md](docs/agent-progress-ux.md).
+
+**C5.8:** Agent Pause, Resume, and Cancellation — reliable user control over
+Coding Goals (stop new ops on pause; fingerprint revalidation on resume; cancel
+invalidates approvals, preserves history, never silent rollback); reuses C5.3
+transitions + existing Tool/stream cancel (no parallel engine). Spec:
+[docs/agent-pause-resume-cancel.md](docs/agent-pause-resume-cancel.md).
+
+**C5.9:** Agent Failure and Recovery — goal-scoped failure classification and
+bounded disposition (read-only investigate / new reviewed C3 plan / AwaitUser→Blocked /
+Failed); never silent mutate, retry, approval reuse, or rollback. Spec:
+[docs/agent-failure-recovery.md](docs/agent-failure-recovery.md).
+
+**C5.10:** Coding Goal Completion — evidence-based completion ownership (acceptance
+criteria Satisfied/Unsatisfied/Unknown/Waived; failed verification blocks success;
+blocked cannot Complete; user-ended ≠ successfully completed). Spec:
+[docs/coding-goal-completion.md](docs/coding-goal-completion.md).
+
+**C5.11:** Long-Running Coding Sessions — bounded Planner store continuity across
+many tasks/turns/pauses (C5.5 compact, C5.8 revalidate, C5.6 approval invalidate;
+serde hitch; no agent DB; no background work). Spec:
+[docs/agent-session-continuity.md](docs/agent-session-continuity.md).
+
+**C5.12:** Agentic Coding Experience — compose C5.1–C5.11 into one Conversation First
+path for complex objectives (“Build me a Pong game.” → goal → decompose → … →
+evidence-based completion); Planner-orchestrated; no parallel agent; no CoT /
+hidden FS / model→tool. Spec:
+[docs/agentic-coding-experience.md](docs/agentic-coding-experience.md).
+
+**C5.14:** Resume Integrity Hardening — pause/resume capture real ContextEngine
+fingerprints; unavailable fingerprints are unknown/stale (never “unchanged”);
+stale state invalidates approvals before continue; no second context assembler.
+Spec: [docs/agent-pause-resume-cancel.md](docs/agent-pause-resume-cancel.md)
+(C5.14 section).
 
 ⸻
 

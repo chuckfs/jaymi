@@ -276,6 +276,112 @@ writes, refuses stale/invalid sources, and emits an actionable recovery report
 on fail / partial / cancel — further mutation needs a new reviewed plan. Spec:
 [docs/coding-mutation-recovery.md](coding-mutation-recovery.md).
 
+**Build Awareness** (Sprint C4.1) discovers grounded verification commands from
+Workspace Intelligence / `ProjectSnapshot` (`VerificationTarget`) without
+executing them or inventing unsupported commands. Spec:
+[docs/build-awareness.md](build-awareness.md).
+
+**Test Execution** (Sprint C4.2) runs those test targets through Terminal Tool
+under Review Before Action, reports pass/fail without mutating code, and feeds
+`RuntimeSnapshot` for later Context/Reasoning. Spec:
+[docs/test-execution.md](test-execution.md).
+
+**Verification Diagnostics Feedback** (Sprint C4.3) turns verification output
+into structured `VerificationEvidence`, merges findings into existing Context
+diagnostics (`source=verification`), and surfaces conversational summaries
+instead of raw log dumps — observational only, no automatic repair. Spec:
+[docs/verification-diagnostics.md](verification-diagnostics.md).
+
+**Fix From Verification Failure** (Sprint C4.4) bridges structured verification
+failures into C2 investigation and a C3 Coding Plan proposal — never auto-mutates,
+auto-approves, or silently retries; later mutations use Review Before Action. Spec:
+[docs/fix-from-verification.md](fix-from-verification.md).
+
+**Verification Summary** (Sprint C4.5) composes a concise conversational outcome from
+ExecutionSummary + VerificationEvidence after verification (or coding apply without
+a run) — never invents passes; recommended fixes are Conversation First chips into
+C4.4. Spec: [docs/verification-summary.md](verification-summary.md).
+
+**Bounded Coding Verification Loop** (Sprint C4.6) ties Apply→Verify→optional reviewed
+correction into Planner-owned session state with a hard cycle cap — never auto-approves
+or silently retries; not C5. Spec:
+[docs/coding-verification-loop.md](coding-verification-loop.md).
+
+**Coding Goal Model** (Sprint C5.1) introduces a Planner-owned `CodingGoal` for
+meaningful multi-step coding objectives across turns — representation only (create /
+cancel / complete / block). Not a Coding Plan, Execution Plan, or verification result;
+no tools, mutation, autonomy, or progress UX. Spec:
+[docs/coding-goal.md](coding-goal.md).
+
+**Goal Decomposition** (Sprint C5.2) turns an active Coding Goal into proposed tasks
+(deps, statuses, cycle detection) owned by the Planner — never executes, mutates, or
+auto-approves; C2/C3/C4 are reuse hints for later Review Before Action. Spec:
+[docs/goal-decomposition.md](goal-decomposition.md).
+
+**Agent State Machine** (Sprint C5.3) adds a Planner-owned bounded lifecycle on the
+active Coding Goal (explicit events, pause/resume, approval gates, evidence-backed
+completion). LLM/UI cannot invent transitions; not multi-task autonomy. Spec:
+[docs/agent-state-machine.md](agent-state-machine.md).
+
+**Multi-Step Coding Execution** (Sprint C5.4) orchestrates Goal → Task → C2/C3/C4
+sequentially under Planner ownership — one in-progress task, continue/advance,
+evidence-gated completion; reuses existing Review/Apply/Verify (no second stacks,
+no silent approve, no auto-correct mutate). Spec:
+[docs/multi-step-execution.md](multi-step-execution.md).
+
+**Agent Context Maintenance** (Sprint C5.5) keeps multi-step Coding Goal context
+coherent without stuffing full history into every model request — Planner-owned
+compact view attached after ContextEngine assemble (no AgentContextEngine). Spec:
+[docs/agent-context-maintenance.md](agent-context-maintenance.md).
+
+**Approval and Autonomy Policy** (Sprint C5.6) states default READ/OBSERVE vs
+MUTATION/SIDE_EFFECT boundaries, binding Review approvals to plan_id + task_id —
+reuses Permission + ToolRisk + Review (no AgentApproval, no autonomy modes). Spec:
+[docs/approval-autonomy-policy.md](approval-autonomy-policy.md).
+
+**Agent Progress UX** (Sprint C5.7) derives a user-visible progress view from the
+active Coding Goal (phase, tasks, approval, verification, blockers) without CoT —
+Experience mirrors Planner; no second agent state; Diagnostics stay separate. Spec:
+[docs/agent-progress-ux.md](agent-progress-ux.md).
+
+**Agent Pause, Resume, and Cancellation** (Sprint C5.8) gives reliable control
+over Coding Goals — pause stops new ops and preserves state; resume revalidates
+project fingerprints and refuses stale approved mutation; cancel invalidates
+approvals, preserves history, never silently rolls back. Reuses C5.3 transitions
+and existing Tool/stream cancel (no parallel engine). Spec:
+[docs/agent-pause-resume-cancel.md](agent-pause-resume-cancel.md).
+
+**Agent Failure and Recovery** (Sprint C5.9) generalizes C4 recovery to entire
+Coding Goals — classify failure, bound dispositions (read-only investigate /
+new reviewed C3 plan / AwaitUser→Blocked / Failed), never silent mutate, retry,
+approval reuse, or rollback. Spec:
+[docs/agent-failure-recovery.md](agent-failure-recovery.md).
+
+**Coding Goal Completion** (Sprint C5.10) makes completion evidence-based —
+every acceptance criterion is Satisfied, Unsatisfied, Unknown, or user-Waived;
+failed verification and blockers prevent successful completion; user-ended
+incomplete is distinct from SuccessfullyCompleted. Spec:
+[docs/coding-goal-completion.md](coding-goal-completion.md).
+
+**Long-Running Coding Sessions** (Sprint C5.11) keep Coding Goals coherent across
+many tasks, pauses, and verification cycles via bounded Planner store continuity
+(C5.5 compact, C5.8 revalidate, C5.6 approval invalidate; serde hitch; no agent
+DB; no background work). Spec:
+[docs/agent-session-continuity.md](agent-session-continuity.md).
+
+**Agentic Coding Experience** (Sprint C5.12) composes C5.1–C5.11 into one
+Conversation First path for complex objectives (“Build me a Pong game.”) —
+understand → goal → decompose → investigate → plan → approve → implement →
+verify → diagnose → reviewed corrections → continue → evidence-based completion.
+Planner remains the sole orchestrator; no parallel agent, CoT, hidden FS, or
+model→tool. Spec:
+[docs/agentic-coding-experience.md](agentic-coding-experience.md).
+
+**Resume Integrity Hardening** (Sprint C5.14) ensures pause/resume capture real
+ContextEngine fingerprints; unavailable ambient state is unknown/stale (never
+“unchanged”); stale resumes invalidate approvals before continuing. Spec:
+[docs/agent-pause-resume-cancel.md](agent-pause-resume-cancel.md).
+
 Reasoning is delegated.
 
 Execution is delegated.

@@ -5156,6 +5156,244 @@ impl Application {
                 .coding_mutation_recovery
                 .as_ref()
                 .map(|report| report.requires_new_plan),
+            build_awareness_summary: response
+                .build_awareness
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            build_awareness_status: response
+                .build_awareness
+                .as_ref()
+                .and_then(|report| report.status.map(|s| s.as_str().to_string())),
+            build_awareness_targets: response
+                .build_awareness
+                .as_ref()
+                .map(|report| report.targets.len()),
+            build_awareness_executed: response
+                .build_awareness
+                .as_ref()
+                .map(|report| report.executed),
+            test_execution_summary: response
+                .test_execution
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            test_execution_status: response
+                .test_execution
+                .as_ref()
+                .and_then(|report| report.status.map(|s| s.as_str().to_string())),
+            test_execution_command: response
+                .test_execution
+                .as_ref()
+                .and_then(|report| report.command.clone()),
+            test_execution_exit: response
+                .test_execution
+                .as_ref()
+                .and_then(|report| report.exit_status),
+            test_execution_truncated: response
+                .test_execution
+                .as_ref()
+                .map(|report| report.truncated),
+            verification_evidence_summary: response
+                .test_execution
+                .as_ref()
+                .and_then(|report| report.evidence.as_ref())
+                .map(|evidence| evidence.to_diagnostics_summary()),
+            verification_evidence_kind: response
+                .test_execution
+                .as_ref()
+                .and_then(|report| report.evidence.as_ref())
+                .and_then(|evidence| evidence.kind.map(|k| k.as_str().to_string())),
+            verification_evidence_errors: response
+                .test_execution
+                .as_ref()
+                .and_then(|report| report.evidence.as_ref())
+                .map(|evidence| evidence.errors.len()),
+            verification_evidence_warnings: response
+                .test_execution
+                .as_ref()
+                .and_then(|report| report.evidence.as_ref())
+                .map(|evidence| evidence.warnings.len()),
+            fix_from_verification_summary: response
+                .fix_from_verification
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            fix_from_verification_status: response
+                .fix_from_verification
+                .as_ref()
+                .and_then(|report| report.status.map(|s| s.as_str().to_string())),
+            fix_from_verification_mutated: response
+                .fix_from_verification
+                .as_ref()
+                .map(|report| report.mutated),
+            fix_from_verification_auto_approved: response
+                .fix_from_verification
+                .as_ref()
+                .map(|report| report.auto_approved),
+            verification_summary_line: response
+                .verification_summary
+                .as_ref()
+                .map(|summary| summary.to_diagnostics_summary()),
+            verification_summary_status: response
+                .verification_summary
+                .as_ref()
+                .and_then(|summary| summary.status.map(|s| s.as_str().to_string())),
+            verification_summary_next: response
+                .verification_summary
+                .as_ref()
+                .and_then(|summary| {
+                    summary
+                        .recommended_fix_prompt
+                        .clone()
+                        .or_else(|| summary.next_actions.first().cloned())
+                }),
+            coding_verification_loop_summary: response
+                .coding_verification_loop
+                .as_ref()
+                .map(|loop_state| loop_state.to_diagnostics_summary()),
+            coding_verification_loop_phase: response
+                .coding_verification_loop
+                .as_ref()
+                .map(|loop_state| loop_state.phase.as_str().to_string()),
+            coding_verification_loop_cycles: response.coding_verification_loop.as_ref().map(
+                |loop_state| {
+                    format!("{}/{}", loop_state.cycles_completed, loop_state.max_cycles)
+                },
+            ),
+            coding_goal_summary: response
+                .coding_goal
+                .as_ref()
+                .map(|goal| goal.to_diagnostics_summary()),
+            coding_goal_status: response
+                .coding_goal
+                .as_ref()
+                .map(|goal| goal.status.as_str().to_string()),
+            coding_goal_id: response.coding_goal.as_ref().map(|goal| goal.id.clone()),
+            goal_decomposition_summary: response
+                .goal_decomposition
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            goal_decomposition_status: response
+                .goal_decomposition
+                .as_ref()
+                .map(|report| report.status.as_str().to_string()),
+            goal_decomposition_tasks: response
+                .goal_decomposition
+                .as_ref()
+                .map(|report| report.tasks.len()),
+            agent_lifecycle_summary: response
+                .agent_lifecycle
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            agent_lifecycle_state: response
+                .agent_lifecycle
+                .as_ref()
+                .and_then(|report| report.to.or(report.from))
+                .map(|s| s.as_str().to_string())
+                .or_else(|| {
+                    response
+                        .coding_goal
+                        .as_ref()
+                        .map(|g| g.agent_lifecycle.state.as_str().to_string())
+                }),
+            multi_step_execution_summary: response
+                .multi_step_execution
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            multi_step_execution_status: response
+                .multi_step_execution
+                .as_ref()
+                .map(|report| report.status.as_str().to_string()),
+            multi_step_active_task_id: response
+                .multi_step_execution
+                .as_ref()
+                .and_then(|report| report.active_task_id.clone())
+                .or_else(|| {
+                    response
+                        .coding_goal
+                        .as_ref()
+                        .and_then(|g| g.active_task_id.clone())
+                }),
+            agent_context_maintenance_summary: response
+                .agent_context_maintenance
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            agent_context_maintenance_status: response
+                .agent_context_maintenance
+                .as_ref()
+                .map(|report| report.status.as_str().to_string()),
+            agent_context_chars: response
+                .agent_context_maintenance
+                .as_ref()
+                .and_then(|report| report.context.as_ref())
+                .map(|ctx| ctx.chars_estimate),
+            autonomy_policy_summary: response
+                .autonomy_policy
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            autonomy_policy_status: response
+                .autonomy_policy
+                .as_ref()
+                .map(|report| report.status.as_str().to_string()),
+            agent_progress_summary: response
+                .agent_progress
+                .as_ref()
+                .map(|view| view.to_diagnostics_summary())
+                .or_else(|| {
+                    response
+                        .agent_progress_report
+                        .as_ref()
+                        .map(|r| r.to_diagnostics_summary())
+                }),
+            agent_progress_phase: response
+                .agent_progress
+                .as_ref()
+                .map(|view| view.phase.as_str().to_string()),
+            agent_progress_tasks: response.agent_progress.as_ref().map(|view| {
+                format!("{}/{}", view.completed_count, view.total_tasks)
+            }),
+            agent_control_summary: response
+                .agent_control
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            agent_control_status: response
+                .agent_control
+                .as_ref()
+                .map(|report| report.status.as_str().to_string()),
+            agent_recovery_summary: response
+                .agent_recovery
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            agent_recovery_status: response
+                .agent_recovery
+                .as_ref()
+                .map(|report| report.status.as_str().to_string()),
+            goal_completion_summary: response
+                .goal_completion
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            goal_completion_status: response
+                .goal_completion
+                .as_ref()
+                .map(|report| report.status.as_str().to_string()),
+            session_continuity_summary: response
+                .session_continuity
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            session_continuity_status: response
+                .session_continuity
+                .as_ref()
+                .map(|report| report.status.as_str().to_string()),
+            agentic_coding_experience_summary: response
+                .agentic_coding_experience
+                .as_ref()
+                .map(|report| report.to_diagnostics_summary()),
+            agentic_coding_experience_status: response
+                .agentic_coding_experience
+                .as_ref()
+                .map(|report| report.status.as_str().to_string()),
+            agentic_coding_experience_stage: response
+                .agentic_coding_experience
+                .as_ref()
+                .map(|report| report.current_stage.as_str().to_string()),
         };
         if let Ok(mut guard) = self.last_planner_activity.lock() {
             *guard = Some(activity);

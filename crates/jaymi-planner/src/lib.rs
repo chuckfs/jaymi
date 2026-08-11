@@ -42,6 +42,24 @@ pub mod relationship_tracing;
 pub mod deep_investigation;
 pub mod codebase_qa;
 pub mod codebase_evidence;
+pub mod build_awareness;
+pub mod test_execution;
+pub mod verification_diagnostics;
+pub mod fix_from_verification;
+pub mod verification_summary;
+pub mod coding_verification_loop;
+pub mod coding_goal;
+pub mod goal_decomposition;
+pub mod agent_state_machine;
+pub mod multi_step_execution;
+pub mod agent_context_maintenance;
+pub mod approval_autonomy_policy;
+pub mod agent_progress_ux;
+pub mod agent_pause_resume_cancel;
+pub mod agent_failure_recovery;
+pub mod coding_goal_completion;
+pub mod agent_session_continuity;
+pub mod agentic_coding_experience;
 pub mod code_talk;
 pub mod complexity;
 pub mod conversation_history;
@@ -118,6 +136,72 @@ pub use codebase_qa::{
 };
 pub use codebase_evidence::{
     CodebaseEvidenceHit, CodebaseEvidenceOrigin, HandoffHints, prefers_reasoning_handoff,
+};
+pub use build_awareness::{
+    BuildAwarenessAssessment, BuildAwarenessIntent, BuildAwarenessReport, BuildAwarenessStatus,
+    ExpectedOutputType, VerificationConfidence, VerificationPurpose, VerificationTarget,
+};
+pub use test_execution::{
+    TestExecutionAssessment, TestExecutionIntent, TestExecutionReport, TestExecutionStatus,
+    TestScope,
+};
+pub use verification_diagnostics::{
+    VerificationEvidence, VerificationFinding, VerificationResultKind, FindingSeverity,
+};
+pub use fix_from_verification::{
+    FixActionability, FixFromVerificationAssessment, FixFromVerificationIntent,
+    FixFromVerificationReport,
+};
+pub use verification_summary::{
+    VerificationStatus, VerificationSummary, VerifiedCommandLine,
+};
+pub use coding_verification_loop::{
+    CodingVerificationLoop, CycleOutcome, CycleRecord, LoopPhase, MAX_CYCLES,
+};
+pub use coding_goal::{
+    AcceptanceCriterion, AcceptanceCriterionSource, CodingGoal, CodingGoalAssessment,
+    CodingGoalRequestKind, CodingGoalStatus, CodingGoalStore, GoalVerificationState,
+};
+pub use goal_decomposition::{
+    DecompositionStatus, GoalDecompositionReport, GoalTask, GoalTaskRisk, GoalTaskStatus,
+};
+pub use agent_state_machine::{
+    AgentLifecycle, AgentLifecycleEvent, AgentLifecycleReport, AgentLifecycleState,
+    CompletionEvidence, CompletionEvidenceSource, MAX_AGENT_TRANSITIONS,
+};
+pub use multi_step_execution::{
+    MultiStepExecutionReport, MultiStepStatus, TaskCompletionEvidence, WorkflowRecord,
+    MAX_IN_PROGRESS_TASKS, MAX_WORKFLOW_TRANSITIONS,
+};
+pub use agent_context_maintenance::{
+    AgentContextReport, AgentContextStatus, MaintainedAgentContext, MAX_GOAL_CONTEXT_CHARS,
+};
+pub use approval_autonomy_policy::{
+    AutonomyPolicyClass, AutonomyPolicyReport, AutonomyPolicyStatus, BoundApproval,
+    GoalAutonomyState,
+};
+pub use agent_progress_ux::{
+    AgentProgressReport, AgentProgressView, ProgressPhase, ProgressReportStatus,
+};
+pub use agent_pause_resume_cancel::{
+    AgentControlReport, AgentControlStatus, GoalControlState, InFlightKind, InFlightObservation,
+    ProjectFingerprint, StaleReason,
+};
+pub use agent_failure_recovery::{
+    FailureCategory, GoalRecoveryReport, GoalRecoveryState, GoalRecoveryStatus,
+    RecoveryDisposition, MAX_GOAL_RECOVERY_ATTEMPTS,
+};
+pub use coding_goal_completion::{
+    CriterionEvaluation, CriterionSatisfaction, GoalCompletionOutcome, GoalCompletionReport,
+    GoalCompletionState, GoalCompletionStatus, GoalEndingKind,
+};
+pub use agent_session_continuity::{
+    SessionContinuityReport, SessionContinuityState, SessionContinuityStatus,
+    MAX_TERMINAL_GOALS_PER_CONVERSATION, MAX_WORKFLOW_RETAINED,
+};
+pub use agentic_coding_experience::{
+    AgenticCodingExperienceReport, AgenticExperienceRequestKind, AgenticExperienceStatus,
+    ExperienceStage,
 };
 pub use code_talk::{chip_label_from_suggestion, next_action_chip, subject_title};
 pub use multi_file::{AffectedFile, MultiFileKind, MultiFilePlan};
@@ -350,6 +434,46 @@ pub struct PlannerResponse {
     pub deep_investigation: Option<deep_investigation::DeepInvestigationReport>,
     /// Codebase Q&A report (Sprint C2.5) — conversational grounded answers.
     pub codebase_qa: Option<codebase_qa::CodebaseQaReport>,
+    /// Build Awareness report (Sprint C4.1) — verification discovery only.
+    pub build_awareness: Option<build_awareness::BuildAwarenessReport>,
+    /// Test Execution report (Sprint C4.2) — Planner-mediated terminal tests.
+    pub test_execution: Option<test_execution::TestExecutionReport>,
+    /// Fix From Verification Failure report (Sprint C4.4) — diagnosis + corrective plan.
+    pub fix_from_verification: Option<fix_from_verification::FixFromVerificationReport>,
+    /// Verification Summary (Sprint C4.5) — concise conversational outcome.
+    pub verification_summary: Option<verification_summary::VerificationSummary>,
+    /// Bounded Coding Verification Loop state (Sprint C4.6), when active/relevant.
+    pub coding_verification_loop: Option<coding_verification_loop::CodingVerificationLoop>,
+    /// Coding Goal (Sprint C5.1) — multi-step objective representation only.
+    pub coding_goal: Option<coding_goal::CodingGoal>,
+    /// Goal Decomposition (Sprint C5.2) — proposed tasks for an active Coding Goal.
+    pub goal_decomposition: Option<goal_decomposition::GoalDecompositionReport>,
+    /// Agent Lifecycle report (Sprint C5.3), when a lifecycle transition ran.
+    pub agent_lifecycle: Option<agent_state_machine::AgentLifecycleReport>,
+    /// Multi-Step Coding Execution report (Sprint C5.4).
+    pub multi_step_execution: Option<multi_step_execution::MultiStepExecutionReport>,
+    /// Agent Context Maintenance report (Sprint C5.5).
+    pub agent_context_maintenance: Option<agent_context_maintenance::AgentContextReport>,
+    /// Approval / Autonomy Policy report (Sprint C5.6).
+    pub autonomy_policy: Option<approval_autonomy_policy::AutonomyPolicyReport>,
+    /// Agent Progress UX view (Sprint C5.7) — derive-only; not a second agent state.
+    pub agent_progress: Option<agent_progress_ux::AgentProgressView>,
+    /// Agent Progress soft-path report when “Show goal progress.” ran.
+    pub agent_progress_report: Option<agent_progress_ux::AgentProgressReport>,
+    /// Agent Pause / Resume / Cancel report (Sprint C5.8).
+    pub agent_control: Option<agent_pause_resume_cancel::AgentControlReport>,
+    /// Agent Failure / Recovery report (Sprint C5.9).
+    pub agent_recovery: Option<agent_failure_recovery::GoalRecoveryReport>,
+    /// Coding Goal Completion report (Sprint C5.10).
+    pub goal_completion: Option<coding_goal_completion::GoalCompletionReport>,
+    /// Long-running session continuity report (Sprint C5.11).
+    pub session_continuity: Option<agent_session_continuity::SessionContinuityReport>,
+    /// Agentic Coding Experience report (Sprint C5.12) — composes C5.1–C5.11.
+    pub agentic_coding_experience: Option<agentic_coding_experience::AgenticCodingExperienceReport>,
+    /// Terminal exit code when a Run completed (C4.2+).
+    pub terminal_exit_code: Option<i32>,
+    /// Terminal Run duration in milliseconds when measured.
+    pub terminal_duration_ms: Option<u64>,
 }
 
 impl PlannerResponse {
@@ -452,6 +576,14 @@ pub struct Planner {
     last_review: Mutex<Option<coding_review::CodingReview>>,
     /// Last Coding Plan scaffold for conversational diagnostics (C1.4).
     last_coding_plan: Mutex<Option<coding_plan::CodingPlan>>,
+    /// Last structured verification evidence (C4.3/C4.4) for fix-from-failure.
+    last_verification_evidence: Mutex<Option<verification_diagnostics::VerificationEvidence>>,
+    /// Last mutation-oriented ExecutionSummary (C4.5) for “what changed”.
+    last_execution_summary: Mutex<Option<execution_plan::ExecutionSummary>>,
+    /// Bounded Apply→Verify→Fix workflow (C4.6).
+    coding_verification_loop: Mutex<Option<coding_verification_loop::CodingVerificationLoop>>,
+    /// Multi-step coding goals across conversations (C5.1).
+    coding_goals: Mutex<coding_goal::CodingGoalStore>,
     /// How many times [`Self::handle`] has been entered (integrity tests).
     handle_count: AtomicU64,
     /// Plans waiting on conversational review (resume without replan).
@@ -491,6 +623,10 @@ impl Planner {
             last_understanding: Mutex::new(None),
             last_review: Mutex::new(None),
             last_coding_plan: Mutex::new(None),
+            last_verification_evidence: Mutex::new(None),
+            last_execution_summary: Mutex::new(None),
+            coding_verification_loop: Mutex::new(None),
+            coding_goals: Mutex::new(coding_goal::CodingGoalStore::default()),
             handle_count: AtomicU64::new(0),
             paused: Mutex::new(PausedPlanStore::default()),
             plan_history: Mutex::new(Vec::new()),
@@ -640,6 +776,358 @@ impl Planner {
             .and_then(|mut guard| guard.take())
     }
 
+    fn remember_verification_evidence(
+        &self,
+        evidence: Option<verification_diagnostics::VerificationEvidence>,
+    ) {
+        if let Ok(mut guard) = self.last_verification_evidence.lock() {
+            *guard = evidence;
+        }
+    }
+
+    fn clone_last_verification_evidence(
+        &self,
+    ) -> Option<verification_diagnostics::VerificationEvidence> {
+        self.last_verification_evidence
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    fn remember_execution_summary(&self, summary: Option<execution_plan::ExecutionSummary>) {
+        // Prefer summaries that record files edited (coding apply).
+        let Some(summary) = summary else {
+            return;
+        };
+        if summary.files_edited.is_empty() && summary.resources_changed.is_empty() {
+            return;
+        }
+        if let Ok(mut guard) = self.last_execution_summary.lock() {
+            *guard = Some(summary);
+        }
+    }
+
+    fn clone_last_execution_summary(&self) -> Option<execution_plan::ExecutionSummary> {
+        self.last_execution_summary
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    fn clone_coding_verification_loop(
+        &self,
+    ) -> Option<coding_verification_loop::CodingVerificationLoop> {
+        self.coding_verification_loop
+            .lock()
+            .ok()
+            .and_then(|guard| guard.clone())
+    }
+
+    fn store_coding_verification_loop(
+        &self,
+        loop_state: Option<coding_verification_loop::CodingVerificationLoop>,
+    ) {
+        if let Ok(mut guard) = self.coding_verification_loop.lock() {
+            *guard = loop_state;
+        }
+    }
+
+    fn clone_coding_goal_store(&self) -> coding_goal::CodingGoalStore {
+        self.coding_goals
+            .lock()
+            .ok()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
+    }
+
+    fn with_coding_goal_store<R>(
+        &self,
+        f: impl FnOnce(&mut coding_goal::CodingGoalStore) -> R,
+    ) -> Option<R> {
+        let mut guard = self.coding_goals.lock().ok()?;
+        Some(f(&mut guard))
+    }
+
+    fn active_conversation_id_for_goal(&self) -> Option<String> {
+        self.memory.active_conversation_id().map(|id| id.to_string())
+    }
+
+    fn update_coding_verification_loop(
+        &self,
+        update: impl FnOnce(
+            Option<coding_verification_loop::CodingVerificationLoop>,
+        ) -> Option<coding_verification_loop::CodingVerificationLoop>,
+    ) -> Option<coding_verification_loop::CodingVerificationLoop> {
+        let next = update(self.clone_coding_verification_loop());
+        self.store_coding_verification_loop(next.clone());
+        next
+    }
+
+    /// Attach a C4.5 verification summary to the response (conversation + chips).
+    fn attach_verification_summary(
+        &self,
+        response: &mut PlannerResponse,
+        cancelled: bool,
+        additional_commands: Vec<verification_summary::VerifiedCommandLine>,
+    ) {
+        let prior = self.clone_last_execution_summary();
+        let summary = verification_summary::compose(verification_summary::VerificationSummaryInput {
+            execution: response.execution_summary.as_ref(),
+            prior_execution: prior.as_ref(),
+            evidence: response
+                .test_execution
+                .as_ref()
+                .and_then(|r| r.evidence.as_ref())
+                .or(response
+                    .fix_from_verification
+                    .as_ref()
+                    .and_then(|r| r.evidence.as_ref())),
+            test_report: response.test_execution.as_ref(),
+            additional_commands,
+            cancelled,
+        });
+        jaymi_logging::info("planner", summary.to_diagnostics_summary());
+
+        // C4.6 — advance bounded loop from this verification result when active.
+        let evidence = response
+            .test_execution
+            .as_ref()
+            .and_then(|r| r.evidence.clone());
+        let loop_state = self.update_coding_verification_loop(|existing| {
+            let Some(existing) = existing else {
+                return None;
+            };
+            if cancelled {
+                return Some(coding_verification_loop::cancel_loop(
+                    existing,
+                    "Verification cancelled.",
+                ));
+            }
+            Some(coding_verification_loop::on_verification_result(
+                existing,
+                &summary,
+                evidence.as_ref(),
+            ))
+        });
+
+        let mut content =
+            verification_summary::prefer_summary_content(&summary, &response.content);
+        if let Some(loop_state) = &loop_state {
+            // Suppress Review Fix when exhausted.
+            if coding_verification_loop::suppress_fix_offer(Some(loop_state)) {
+                // Leave summary as-is but clear recommended fix for chips.
+            }
+            content = coding_verification_loop::append_progress_note(&content, loop_state);
+            if matches!(
+                loop_state.phase,
+                coding_verification_loop::LoopPhase::Exhausted
+            ) {
+                content = format!(
+                    "{content}\n\n{}",
+                    loop_state.to_markdown()
+                );
+            }
+            response.coding_verification_loop = Some(loop_state.clone());
+        }
+
+        // If exhausted, strip recommended fix from the summary copy on the response.
+        let mut summary = summary;
+        if coding_verification_loop::suppress_fix_offer(loop_state.as_ref()) {
+            summary.recommended_fix_label = None;
+            summary.recommended_fix_prompt = None;
+            summary.next_actions.retain(|a| {
+                !a.to_ascii_lowercase().contains("fix the build")
+                    && !a.to_ascii_lowercase().contains("fix the failing")
+                    && !a.to_ascii_lowercase().contains("fix the verification")
+            });
+            if summary.next_actions.is_empty() {
+                summary.next_actions.push(
+                    "Verification/recovery cycle limit reached — review the history or start a fresh request."
+                        .into(),
+                );
+            }
+            content = verification_summary::prefer_summary_content(&summary, &content);
+            if let Some(loop_state) = &loop_state {
+                content = coding_verification_loop::append_progress_note(&content, loop_state);
+            }
+        }
+
+        response.content = content;
+        response.verification_summary = Some(summary);
+        self.note_verify_for_multi_step_execution(response, cancelled);
+    }
+
+    fn note_apply_for_verification_loop(&self, response: &mut PlannerResponse) {
+        let Some(summary) = response.execution_summary.clone() else {
+            return;
+        };
+        if summary.files_edited.is_empty() {
+            return;
+        }
+        let loop_state = self.update_coding_verification_loop(|existing| {
+            Some(coding_verification_loop::on_apply_completed(
+                existing, &summary,
+            ))
+        });
+        if let Some(loop_state) = loop_state {
+            response.content =
+                coding_verification_loop::append_progress_note(&response.content, &loop_state);
+            response.coding_verification_loop = Some(loop_state);
+        }
+        self.note_apply_for_multi_step_execution(response, &summary);
+    }
+
+    /// C5.4 — sync active Coding Goal after an approved apply (no second Review).
+    fn note_apply_for_multi_step_execution(
+        &self,
+        response: &mut PlannerResponse,
+        summary: &execution_plan::ExecutionSummary,
+    ) {
+        let conversation_id = self.active_conversation_id_for_goal();
+        let plan_id = summary.plan_id.as_str().to_string();
+        let updated = self.with_coding_goal_store(|store| {
+            let Some(existing) = store.active_goal(conversation_id.as_deref()).cloned() else {
+                return None;
+            };
+            if existing.active_task_id.is_none()
+                && !existing
+                    .tasks
+                    .iter()
+                    .any(|t| t.status == goal_decomposition::GoalTaskStatus::InProgress)
+            {
+                return None;
+            }
+            match multi_step_execution::on_apply_success(existing, &plan_id) {
+                Ok(goal) => {
+                    if let Some(slot) = store.active_goal_mut(conversation_id.as_deref()) {
+                        *slot = goal.clone();
+                    }
+                    Some(goal)
+                }
+                Err(err) => {
+                    jaymi_logging::info(
+                        "planner",
+                        format!("multi_step apply sync skipped: {err}"),
+                    );
+                    None
+                }
+            }
+        });
+        if let Some(Some(goal)) = updated {
+            response.coding_goal = Some(goal);
+        }
+    }
+
+    /// C5.4 — sync goal/task after verification summary (pass/fail).
+    fn note_verify_for_multi_step_execution(
+        &self,
+        response: &mut PlannerResponse,
+        cancelled: bool,
+    ) {
+        if cancelled {
+            return;
+        }
+        let conversation_id = self.active_conversation_id_for_goal();
+        let evidence_ref = response
+            .test_execution
+            .as_ref()
+            .and_then(|r| r.evidence.as_ref())
+            .and_then(|e| {
+                e.command
+                    .clone()
+                    .or_else(|| e.kind.map(|k| k.as_str().to_string()))
+            })
+            .or_else(|| {
+                response
+                    .verification_summary
+                    .as_ref()
+                    .and_then(|s| s.status.map(|st| st.as_str().to_string()))
+            })
+            .unwrap_or_else(|| "verification".into());
+
+        let passed = response
+            .verification_summary
+            .as_ref()
+            .and_then(|s| s.status)
+            .map(|st| matches!(st, verification_summary::VerificationStatus::Passed))
+            .unwrap_or(false);
+        let failed = response
+            .verification_summary
+            .as_ref()
+            .and_then(|s| s.status)
+            .map(|st| {
+                matches!(
+                    st,
+                    verification_summary::VerificationStatus::Failed
+                        | verification_summary::VerificationStatus::Blocked
+                )
+            })
+            .unwrap_or(false);
+
+        if !passed && !failed {
+            return;
+        }
+
+        let synced = self.with_coding_goal_store(|store| {
+            let Some(existing) = store.active_goal(conversation_id.as_deref()).cloned() else {
+                return None;
+            };
+            if existing.active_task_id.is_none() && existing.tasks.is_empty() {
+                return None;
+            }
+            let result = if passed {
+                multi_step_execution::on_verify_pass(existing, &evidence_ref)
+            } else {
+                multi_step_execution::on_verify_fail(existing, &evidence_ref)
+            };
+            match result {
+                Ok((goal, report)) => {
+                    if let Some(slot) = store.active_goal_mut(conversation_id.as_deref()) {
+                        *slot = goal.clone();
+                    }
+                    Some((goal, report))
+                }
+                Err(err) => {
+                    jaymi_logging::info(
+                        "planner",
+                        format!("multi_step verify sync skipped: {err}"),
+                    );
+                    None
+                }
+            }
+        });
+        if let Some(Some((goal, report))) = synced {
+            response.coding_goal = Some(goal);
+            response.multi_step_execution = Some(report);
+        }
+    }
+
+    fn note_fix_proposed_for_verification_loop(&self, response: &mut PlannerResponse) {
+        let loop_state = self.update_coding_verification_loop(|existing| {
+            existing.map(coding_verification_loop::on_fix_proposed)
+        });
+        if let Some(loop_state) = loop_state {
+            response.content =
+                coding_verification_loop::append_progress_note(&response.content, &loop_state);
+            response.coding_verification_loop = Some(loop_state);
+        }
+    }
+
+    fn note_verify_awaiting_review(&self, response: &mut PlannerResponse) {
+        let loop_state = self.update_coding_verification_loop(|existing| {
+            existing.map(coding_verification_loop::on_verify_awaiting_review)
+        });
+        if let Some(loop_state) = loop_state {
+            response.coding_verification_loop = Some(loop_state);
+        }
+    }
+
+    fn cancel_coding_verification_loop(&self, reason: &str) -> Option<coding_verification_loop::CodingVerificationLoop> {
+        self.update_coding_verification_loop(|existing| {
+            existing.map(|state| coding_verification_loop::cancel_loop(state, reason))
+        })
+    }
+
     fn llm_context_for_understanding(
         &self,
         context: &ContextBundle,
@@ -687,7 +1175,14 @@ impl Planner {
                 }),
             );
         }
-        llm
+        // C5.5 — attach compact goal context when an active Coding Goal exists.
+        // ContextEngine already minted `context`; we never assemble a second bundle.
+        let conversation_id = self.active_conversation_id_for_goal();
+        let active_goal = self
+            .clone_coding_goal_store()
+            .active_goal(conversation_id.as_deref())
+            .cloned();
+        agent_context_maintenance::attach_to_llm(llm, active_goal.as_ref(), context)
     }
 
     /// Current conversation runtime state (Planner-owned).
@@ -749,8 +1244,43 @@ impl Planner {
         mut response: PlannerResponse,
         bundle: ContextBundle,
     ) -> PlannerResponse {
+        if let Some(summary) = response.execution_summary.clone() {
+            self.remember_execution_summary(Some(summary));
+        }
         if response.pair_programming.is_none() {
             response.pair_programming = Some(self.synthesize_pair_programming(&response, Some(&bundle)));
+        } else if let Some(summary) = response.verification_summary.as_ref() {
+            // Enrich an existing surface with grounded verification next actions.
+            if let Some(surface) = response.pair_programming.as_mut() {
+                pair_programming::enrich_from_verification_summary_with_loop(
+                    surface,
+                    summary,
+                    response.coding_verification_loop.as_ref(),
+                );
+            }
+        }
+        // C5.7 — attach derive-only progress when an active Coding Goal is in play.
+        if response.agent_progress.is_none() {
+            let conversation_id = self.active_conversation_id_for_goal();
+            let goal = response
+                .coding_goal
+                .clone()
+                .or_else(|| {
+                    self.clone_coding_goal_store()
+                        .active_goal(conversation_id.as_deref())
+                        .cloned()
+                });
+            if let Some(goal) = goal.filter(|g| !g.status.is_terminal()) {
+                let progress = agent_progress_ux::derive_progress(&goal);
+                if let Some(surface) = response.pair_programming.as_mut() {
+                    agent_progress_ux::enrich_pair_programming(surface, &progress);
+                }
+                response.agent_progress = Some(progress);
+            }
+        } else if let Some(progress) = response.agent_progress.as_ref() {
+            if let Some(surface) = response.pair_programming.as_mut() {
+                agent_progress_ux::enrich_pair_programming(surface, progress);
+            }
         }
         self.with_conversation_state(finalize(response, bundle))
     }
@@ -797,7 +1327,7 @@ impl Planner {
             .as_ref()
             .map(|summary| matches!(summary.status, ExecutionStatus::Completed))
             .unwrap_or(false);
-        pair_programming::synthesize(&pair_programming::PairSynthesisInput {
+        let mut surface = pair_programming::synthesize(&pair_programming::PairSynthesisInput {
             memory: self.pair_memory(),
             bundle,
             understanding: response.coding_understanding.is_some(),
@@ -808,7 +1338,16 @@ impl Planner {
             awaiting_review: response.awaiting_review,
             execution_summary: response.execution_summary.is_some(),
             execution_completed,
-        })
+            verification_summary: response.verification_summary.as_ref(),
+        });
+        if let Some(summary) = response.verification_summary.as_ref() {
+            pair_programming::enrich_from_verification_summary_with_loop(
+                &mut surface,
+                summary,
+                response.coding_verification_loop.as_ref(),
+            );
+        }
+        surface
     }
 
     /// Registered tool routes (Intent → tool) for diagnostics and tests.
@@ -1306,6 +1845,132 @@ impl Planner {
         self.invalidate_paused("new user request")?;
         self.enter_or_continue_preparing_context();
 
+        // C4.6 — explicit stop/cancel of the bounded verification loop.
+        if coding_verification_loop::detect_loop_cancel(&request.content) {
+            if let Some(loop_state) = self.clone_coding_verification_loop() {
+                if loop_state.active {
+                    let cancelled = self
+                        .cancel_coding_verification_loop("User stopped the verification workflow.")
+                        .unwrap_or(loop_state);
+                    self.transition_conversation(ConversationState::Completed);
+                    let response = PlannerResponse {
+                        content: format!(
+                            "Stopped the coding verification workflow.\n\n{}",
+                            cancelled.to_markdown()
+                        ),
+                        reasoning_used: false,
+                        stream_lifecycle: Some(StreamingLifecycle::Idle),
+                        coding_verification_loop: Some(cancelled),
+                        ..PlannerResponse::default()
+                    };
+                    let bundle = self.context.empty_bundle();
+                    return Ok(self.finalize_response(response, bundle));
+                }
+            }
+        }
+
+        // C5.8 / C5.14 — pause / resume need real fingerprints; cancel/status do not.
+        if let Some(assessment) =
+            agent_pause_resume_cancel::detect_control_request(&request)
+        {
+            let bundle = self.bundle_for_agent_control(&request, assessment.kind)?;
+            return self.complete_agent_pause_resume_cancel(&request, bundle);
+        }
+
+        // C5.9 — goal failure / recovery (after control; early-gated).
+        if agent_failure_recovery::detect_recovery_request(&request).is_some() {
+            let bundle = self.context.empty_bundle();
+            return self.complete_agent_failure_recovery(&request, bundle);
+        }
+
+        // C5.10 — coding goal completion (after recovery; early-gated).
+        if coding_goal_completion::detect_completion_request(&request).is_some() {
+            let bundle = self.context.empty_bundle();
+            return self.complete_coding_goal_completion(&request, bundle);
+        }
+
+        // C5.11 — long-running session continuity (after completion; early-gated).
+        if agent_session_continuity::detect_continuity_request(&request).is_some() {
+            let bundle = self.context.empty_bundle();
+            return self.complete_agent_session_continuity(&request, bundle);
+        }
+
+        // C5.12 — status-only early gate (Begin waits for assembled ContextBundle).
+        if let Some(assessment) =
+            agentic_coding_experience::detect_agentic_experience_request(&request)
+        {
+            if assessment.kind == agentic_coding_experience::AgenticExperienceRequestKind::Status {
+                let bundle = self.context.empty_bundle();
+                return self.complete_agentic_coding_experience(&request, bundle);
+            }
+        }
+
+        // C5.3 — agent lifecycle phrases must not be stolen by OpenProject / session intents.
+        if agent_state_machine::detect_agent_lifecycle_request(&request).is_some() {
+            let bundle = self.context.empty_bundle();
+            return self.complete_agent_lifecycle(&request, bundle);
+        }
+
+        // C5.4 — multi-step start/continue/advance (after agent pause/resume).
+        if multi_step_execution::detect_multi_step_execution_request(&request).is_some() {
+            let bundle = self.context.empty_bundle();
+            return self.complete_multi_step_execution(&request, bundle);
+        }
+
+        // C5.5 — agent context maintain/show/compact (after multi-step).
+        if agent_context_maintenance::detect_agent_context_request(&request).is_some() {
+            let bundle = self.context.empty_bundle();
+            return self.complete_agent_context_maintenance(&request, bundle);
+        }
+
+        // C5.6 — approval / autonomy policy status (after context maintenance).
+        if approval_autonomy_policy::detect_autonomy_policy_request(&request).is_some() {
+            let bundle = self.context.empty_bundle();
+            return self.complete_autonomy_policy(&request, bundle);
+        }
+
+        // C5.7 — goal progress UX (after autonomy policy).
+        if agent_progress_ux::detect_progress_request(&request).is_some() {
+            let bundle = self.context.empty_bundle();
+            return self.complete_agent_progress(&request, bundle);
+        }
+
+        // C5.8 / C5.14 — also soft-pathed after progress.
+        if let Some(assessment) =
+            agent_pause_resume_cancel::detect_control_request(&request)
+        {
+            let bundle = self.bundle_for_agent_control(&request, assessment.kind)?;
+            return self.complete_agent_pause_resume_cancel(&request, bundle);
+        }
+
+        // C5.9 — goal failure / recovery.
+        if agent_failure_recovery::detect_recovery_request(&request).is_some() {
+            let bundle = self.context.empty_bundle();
+            return self.complete_agent_failure_recovery(&request, bundle);
+        }
+
+        // C5.10 — coding goal completion.
+        if coding_goal_completion::detect_completion_request(&request).is_some() {
+            let bundle = self.context.empty_bundle();
+            return self.complete_coding_goal_completion(&request, bundle);
+        }
+
+        // C5.11 — long-running session continuity.
+        if agent_session_continuity::detect_continuity_request(&request).is_some() {
+            let bundle = self.context.empty_bundle();
+            return self.complete_agent_session_continuity(&request, bundle);
+        }
+
+        // C5.12 — status-only early gate (Begin waits for assembled ContextBundle).
+        if let Some(assessment) =
+            agentic_coding_experience::detect_agentic_experience_request(&request)
+        {
+            if assessment.kind == agentic_coding_experience::AgenticExperienceRequestKind::Status {
+                let bundle = self.context.empty_bundle();
+                return self.complete_agentic_coding_experience(&request, bundle);
+            }
+        }
+
         jaymi_logging::info(
             "planner",
             format!(
@@ -1464,6 +2129,62 @@ impl Planner {
             }
             if let Some(kind) = multi_file::detect_multi_file_request(&request) {
                 return self.complete_multi_file_from_request(kind, &request, context);
+            }
+            if test_execution::detect_test_execution_request(&request).is_some() {
+                return self.complete_test_execution(&request, context);
+            }
+            if build_awareness::detect_build_awareness_request(&request).is_some() {
+                return self.complete_build_awareness(&request, context);
+            }
+            {
+                let evidence = fix_from_verification::load_verification_evidence(
+                    self.clone_last_verification_evidence().as_ref(),
+                    &self.context.session_inputs(),
+                );
+                if fix_from_verification::detect_fix_from_verification_request(
+                    &request,
+                    evidence.as_ref(),
+                )
+                .is_some()
+                {
+                    return self.complete_fix_from_verification(&request, context);
+                }
+            }
+            if agent_pause_resume_cancel::detect_control_request(&request).is_some() {
+                return self.complete_agent_pause_resume_cancel(&request, context);
+            }
+            if agent_failure_recovery::detect_recovery_request(&request).is_some() {
+                return self.complete_agent_failure_recovery(&request, context);
+            }
+            if coding_goal_completion::detect_completion_request(&request).is_some() {
+                return self.complete_coding_goal_completion(&request, context);
+            }
+            if agent_session_continuity::detect_continuity_request(&request).is_some() {
+                return self.complete_agent_session_continuity(&request, context);
+            }
+            if agentic_coding_experience::detect_agentic_experience_request(&request).is_some() {
+                return self.complete_agentic_coding_experience(&request, context);
+            }
+            if coding_goal::detect_coding_goal_request(&request).is_some() {
+                return self.complete_coding_goal(&request, context);
+            }
+            if goal_decomposition::detect_decomposition_request(&request).is_some() {
+                return self.complete_goal_decomposition(&request, context);
+            }
+            if agent_state_machine::detect_agent_lifecycle_request(&request).is_some() {
+                return self.complete_agent_lifecycle(&request, context);
+            }
+            if multi_step_execution::detect_multi_step_execution_request(&request).is_some() {
+                return self.complete_multi_step_execution(&request, context);
+            }
+            if agent_context_maintenance::detect_agent_context_request(&request).is_some() {
+                return self.complete_agent_context_maintenance(&request, context);
+            }
+            if approval_autonomy_policy::detect_autonomy_policy_request(&request).is_some() {
+                return self.complete_autonomy_policy(&request, context);
+            }
+            if agent_progress_ux::detect_progress_request(&request).is_some() {
+                return self.complete_agent_progress(&request, context);
             }
             if coding_edit::detect_coding_edit_request(&request).is_some() {
                 return self.complete_coding_edit_intent(&request, context);
@@ -1719,6 +2440,62 @@ impl Planner {
         }
         if let Some(kind) = multi_file::detect_multi_file_request(&request) {
             return self.complete_multi_file_from_request(kind, &request, assembled.context);
+        }
+        if test_execution::detect_test_execution_request(&request).is_some() {
+            return self.complete_test_execution(&request, assembled.context);
+        }
+        if build_awareness::detect_build_awareness_request(&request).is_some() {
+            return self.complete_build_awareness(&request, assembled.context);
+        }
+        {
+            let evidence = fix_from_verification::load_verification_evidence(
+                self.clone_last_verification_evidence().as_ref(),
+                &self.context.session_inputs(),
+            );
+            if fix_from_verification::detect_fix_from_verification_request(
+                &request,
+                evidence.as_ref(),
+            )
+            .is_some()
+            {
+                return self.complete_fix_from_verification(&request, assembled.context);
+            }
+        }
+        if agent_pause_resume_cancel::detect_control_request(&request).is_some() {
+            return self.complete_agent_pause_resume_cancel(&request, assembled.context);
+        }
+        if agent_failure_recovery::detect_recovery_request(&request).is_some() {
+            return self.complete_agent_failure_recovery(&request, assembled.context);
+        }
+        if coding_goal_completion::detect_completion_request(&request).is_some() {
+            return self.complete_coding_goal_completion(&request, assembled.context);
+        }
+        if agent_session_continuity::detect_continuity_request(&request).is_some() {
+            return self.complete_agent_session_continuity(&request, assembled.context);
+        }
+        if agentic_coding_experience::detect_agentic_experience_request(&request).is_some() {
+            return self.complete_agentic_coding_experience(&request, assembled.context);
+        }
+        if coding_goal::detect_coding_goal_request(&request).is_some() {
+            return self.complete_coding_goal(&request, assembled.context);
+        }
+        if goal_decomposition::detect_decomposition_request(&request).is_some() {
+            return self.complete_goal_decomposition(&request, assembled.context);
+        }
+        if agent_state_machine::detect_agent_lifecycle_request(&request).is_some() {
+            return self.complete_agent_lifecycle(&request, assembled.context);
+        }
+        if multi_step_execution::detect_multi_step_execution_request(&request).is_some() {
+            return self.complete_multi_step_execution(&request, assembled.context);
+        }
+        if agent_context_maintenance::detect_agent_context_request(&request).is_some() {
+            return self.complete_agent_context_maintenance(&request, assembled.context);
+        }
+        if approval_autonomy_policy::detect_autonomy_policy_request(&request).is_some() {
+            return self.complete_autonomy_policy(&request, assembled.context);
+        }
+        if agent_progress_ux::detect_progress_request(&request).is_some() {
+            return self.complete_agent_progress(&request, assembled.context);
         }
         if coding_edit::detect_coding_edit_request(&request).is_some() {
             return self.complete_coding_edit_intent(&request, assembled.context);
@@ -2748,6 +3525,7 @@ impl Planner {
                     paused_at: Instant::now(),
                     generation_calls: Vec::new(),
                     generation_baselines: Vec::new(),
+                    test_execution: None,
                 })?;
                 let summary = ExecutionSummary::from_plan(
                     &plan,
@@ -2990,7 +3768,7 @@ impl Planner {
             let response = PlannerResponse {
                 content: "I don't have a Coding Plan to generate from yet. \
 Ask me to plan first (for example \"Build Pong.\" or \"Add image generation.\"), \
-then say \"Generate the code.\" or \"Generate patches.\""
+then say \"Generate the changes.\" / \"Generate the code.\" / \"Generate patches.\""
                     .into(),
                 reasoning_used: false,
                 stream_lifecycle: Some(StreamingLifecycle::Idle),
@@ -4289,6 +5067,1192 @@ Original project unchanged — no files were written.",
         response.code_search = Some(report);
     }
 
+    /// Build Awareness (C4.1) — discover verification commands from WI / ProjectSnapshot.
+    ///
+    /// Read-only. Never runs terminal commands, never mutates, never lets Reasoning
+    /// execute shell. No second project/build discovery system.
+    fn complete_build_awareness(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = build_awareness::detect_build_awareness_request(request)
+            .ok_or_else(|| JaymiError::new("build awareness detect missed after gate"))?;
+        let session = self.context.session_inputs();
+        let report =
+            build_awareness::discover_verification(&assessment, &context, &session);
+
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        self.transition_conversation(ConversationState::Completed);
+        let response = PlannerResponse {
+            content: report.to_markdown(),
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            build_awareness: Some(report),
+            ..PlannerResponse::default()
+        };
+        Ok(self.finalize_response(response, context))
+    }
+
+    /// Test Execution (C4.2) — run grounded project tests via Terminal Tool.
+    ///
+    /// Reuses C4.1 VerificationTarget discovery. Always goes through
+    /// Planner → Tool → Provider with permission / ToolRisk review. Never
+    /// mutates code from failures and never retries silently.
+    fn complete_test_execution(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = test_execution::detect_test_execution_request(request)
+            .ok_or_else(|| JaymiError::new("test execution detect missed after gate"))?;
+        let session = self.context.session_inputs();
+        let mut report =
+            test_execution::select_test_target(&assessment, &context, &session);
+
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        if matches!(
+            report.status,
+            Some(test_execution::TestExecutionStatus::MissingCommand)
+        ) || report.command.is_none()
+        {
+            self.transition_conversation(ConversationState::Completed);
+            let mut response = PlannerResponse {
+                content: String::new(),
+                reasoning_used: false,
+                stream_lifecycle: Some(StreamingLifecycle::Idle),
+                test_execution: Some(report),
+                ..PlannerResponse::default()
+            };
+            self.attach_verification_summary(&mut response, false, Vec::new());
+            return Ok(self.finalize_response(response, context));
+        }
+
+        let command = report.command.clone().unwrap_or_default();
+        let cwd = report
+            .working_directory
+            .clone()
+            .unwrap_or_else(|| {
+                context
+                    .active_project()
+                    .root_directory
+                    .clone()
+                    .unwrap_or_else(|| ".".into())
+            });
+        let intent = Intent::RunTerminal {
+            operation: jaymi_core::TerminalOperation::Run,
+            session_id: jaymi_providers::DEFAULT_TERMINAL_SESSION_ID.to_string(),
+            cwd: std::path::PathBuf::from(&cwd),
+            command: Some(command),
+            title: Some("Tests".into()),
+        };
+
+        let mut response = self.dispatch_tool_backed(
+            intent,
+            Capability::ExecuteTerminalCommands,
+            &assessment.goal,
+        )?;
+
+        if response.blocked && !response.awaiting_review {
+            let explanation = response
+                .permission_result
+                .as_ref()
+                .map(|p| p.explanation.clone())
+                .or_else(|| {
+                    response
+                        .policy_evaluation
+                        .as_ref()
+                        .map(|p| p.explanation())
+                })
+                .unwrap_or_else(|| "Execution denied".into());
+            report = test_execution::mark_denied(report, explanation);
+            response.test_execution = Some(report);
+            self.attach_verification_summary(&mut response, false, Vec::new());
+            self.transition_conversation(ConversationState::Completed);
+            return Ok(self.finalize_response(response, context));
+        }
+
+        if response.awaiting_review {
+            report = test_execution::mark_awaiting_review(report);
+            if let Some(plan_id) = response.execution_plan.as_ref().map(|p| p.id().clone()) {
+                let mut store = self.paused_store()?;
+                let _ = store.set_test_execution(&plan_id, report.clone());
+            }
+            response.test_execution = Some(report);
+            self.attach_verification_summary(&mut response, false, Vec::new());
+            self.note_verify_awaiting_review(&mut response);
+            return Ok(self.finalize_response(response, context));
+        }
+
+        // Immediate execution path (Allowed) — still finalize from terminal fields.
+        let tool_like = jaymi_tools::ToolOutput {
+            success: !response.blocked,
+            terminal_output: response.terminal_output.clone(),
+            terminal_exit_code: response.terminal_exit_code,
+            terminal_duration_ms: response.terminal_duration_ms,
+            message: Some(response.content.clone()),
+            ..Default::default()
+        };
+        report = test_execution::finalize_from_tool_output(report, &tool_like, None);
+        let mut next_session = self.context.session_inputs();
+        test_execution::publish_to_context(&mut next_session, &report);
+        self.context.set_session_inputs(next_session);
+        self.context.request_fresh_context("test_execution");
+        self.remember_verification_evidence(report.evidence.clone());
+
+        response.test_execution = Some(report);
+        self.attach_verification_summary(&mut response, false, Vec::new());
+        self.transition_conversation(ConversationState::Completed);
+        Ok(self.finalize_response(response, context))
+    }
+
+    /// Fix From Verification Failure (C4.4).
+    ///
+    /// Uses structured VerificationEvidence + C2 investigation to author a C3
+    /// Coding Plan for a proposed correction. Never mutates files, never
+    /// auto-approves, never silently retries verification or mutations.
+    fn complete_fix_from_verification(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let session = self.context.session_inputs();
+        let evidence = fix_from_verification::load_verification_evidence(
+            self.clone_last_verification_evidence().as_ref(),
+            &session,
+        );
+        let assessment = fix_from_verification::detect_fix_from_verification_request(
+            request,
+            evidence.as_ref(),
+        )
+        .ok_or_else(|| JaymiError::new("fix_from_verification detect missed after gate"))?;
+
+        let actionability = fix_from_verification::classify_actionability(evidence.as_ref());
+        let mut report =
+            fix_from_verification::diagnose(&assessment, evidence.as_ref(), actionability);
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        // Non-actionable: honest diagnosis only — no invented Coding Plan targets.
+        if !matches!(actionability, fix_from_verification::FixActionability::Actionable) {
+            if let Some(evidence) = evidence.as_ref() {
+                let objective = fix_from_verification::objective_from_evidence(
+                    &assessment,
+                    evidence,
+                    &session,
+                    actionability,
+                );
+                let investigation =
+                    change_investigation::light_from_objective(&objective, &context);
+                let plan = coding_plan::plan_from_change_investigation(
+                    &objective,
+                    &investigation,
+                    &context,
+                );
+                // Remember deferred plan only when NeedsClarification still produces one —
+                // never auto-execute. Keep remember for continuity when user clarifies.
+                if matches!(
+                    actionability,
+                    fix_from_verification::FixActionability::InsufficientEvidence
+                ) {
+                    self.remember_coding_plan(Some(plan.clone()));
+                }
+                report = fix_from_verification::attach_plan_artifacts(
+                    report,
+                    objective.clone(),
+                    investigation.clone(),
+                    plan.clone(),
+                );
+                let content = format!(
+                    "{}\n\n{}\n\n{}\n\n{}",
+                    report.to_markdown(),
+                    objective.to_markdown(),
+                    investigation.to_markdown(),
+                    plan.to_markdown()
+                );
+                self.transition_conversation(ConversationState::Completed);
+                let response = PlannerResponse {
+                    content,
+                    reasoning_used: false,
+                    stream_lifecycle: Some(StreamingLifecycle::Idle),
+                    coding_edit: Some(objective),
+                    change_investigation: Some(investigation),
+                    coding_plan: Some(plan),
+                    fix_from_verification: Some(report),
+                    ..PlannerResponse::default()
+                };
+                return Ok(self.finalize_response(response, context));
+            }
+
+            self.transition_conversation(ConversationState::Completed);
+            let response = PlannerResponse {
+                content: report.to_markdown(),
+                reasoning_used: false,
+                stream_lifecycle: Some(StreamingLifecycle::Idle),
+                fix_from_verification: Some(report),
+                ..PlannerResponse::default()
+            };
+            return Ok(self.finalize_response(response, context));
+        }
+
+        let evidence = evidence.expect("actionable requires evidence");
+        let objective = fix_from_verification::objective_from_evidence(
+            &assessment,
+            &evidence,
+            &session,
+            actionability,
+        );
+        jaymi_logging::info("planner", objective.to_diagnostics_summary());
+
+        let (context, investigation) =
+            self.run_change_investigation(request, &objective, context)?;
+        jaymi_logging::info("planner", investigation.to_diagnostics_summary());
+
+        let plan = coding_plan::plan_from_change_investigation(
+            &objective,
+            &investigation,
+            &context,
+        );
+        jaymi_logging::info("planner", plan.to_diagnostics_summary());
+        self.remember_coding_plan(Some(plan.clone()));
+
+        report = fix_from_verification::attach_plan_artifacts(
+            report,
+            objective.clone(),
+            investigation.clone(),
+            plan.clone(),
+        );
+
+        let content = format!(
+            "{}\n\n{}\n\n{}\n\n{}",
+            report.to_markdown(),
+            objective.to_markdown(),
+            investigation.to_markdown(),
+            plan.to_markdown()
+        );
+
+        self.transition_conversation(ConversationState::Completed);
+        let mut response = PlannerResponse {
+            content,
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            coding_edit: Some(objective),
+            change_investigation: Some(investigation),
+            coding_plan: Some(plan),
+            fix_from_verification: Some(report),
+            ..PlannerResponse::default()
+        };
+        self.note_fix_proposed_for_verification_loop(&mut response);
+        Ok(self.finalize_response(response, context))
+    }
+
+    /// Coding Goal Model (C5.1).
+    ///
+    /// Creates or updates a Planner-owned multi-step coding objective.
+    /// Never executes tools, never mutates files, never decomposes or runs work.
+    fn complete_coding_goal(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = coding_goal::detect_coding_goal_request(request)
+            .ok_or_else(|| JaymiError::new("coding goal detect missed after gate"))?;
+        let conversation_id = self.active_conversation_id_for_goal();
+
+        let goal = match assessment.kind {
+            coding_goal::CodingGoalRequestKind::Create => {
+                let created =
+                    coding_goal::create_goal(&assessment, &context, conversation_id.clone());
+                jaymi_logging::info("planner", created.to_diagnostics_summary());
+                self.with_coding_goal_store(|store| {
+                    store.push_active(created.clone());
+                });
+                created
+            }
+            coding_goal::CodingGoalRequestKind::Cancel => {
+                let updated = self
+                    .with_coding_goal_store(|store| {
+                        let Some(existing) =
+                            store.active_goal(conversation_id.as_deref()).cloned()
+                        else {
+                            return None;
+                        };
+                        let cancelled =
+                            coding_goal::cancel_goal(existing, "User cancelled the coding goal.");
+                        if let Some(slot) = store.active_goal_mut(conversation_id.as_deref()) {
+                            *slot = cancelled.clone();
+                        }
+                        let key = coding_goal::CodingGoalStore::conversation_key(
+                            conversation_id.as_deref(),
+                        );
+                        store.active_by_conversation.remove(&key);
+                        Some(cancelled)
+                    })
+                    .flatten();
+                match updated {
+                    Some(goal) => {
+                        jaymi_logging::info("planner", goal.to_diagnostics_summary());
+                        goal
+                    }
+                    None => {
+                        self.transition_conversation(ConversationState::Completed);
+                        let response = PlannerResponse {
+                            content: coding_goal::no_active_goal_markdown(assessment.kind),
+                            reasoning_used: false,
+                            stream_lifecycle: Some(StreamingLifecycle::Idle),
+                            ..PlannerResponse::default()
+                        };
+                        return Ok(self.finalize_response(response, context));
+                    }
+                }
+            }
+            coding_goal::CodingGoalRequestKind::Complete => {
+                let result = self.with_coding_goal_store(|store| {
+                    let Some(existing) = store.active_goal(conversation_id.as_deref()).cloned()
+                    else {
+                        return Ok::<Option<coding_goal::CodingGoal>, String>(None);
+                    };
+                    let evidence = existing.agent_lifecycle.completion_evidence.clone();
+                    let completed = coding_goal::complete_goal(existing, evidence)?;
+                    if let Some(slot) = store.active_goal_mut(conversation_id.as_deref()) {
+                        *slot = completed.clone();
+                    }
+                    let key = coding_goal::CodingGoalStore::conversation_key(
+                        conversation_id.as_deref(),
+                    );
+                    store.active_by_conversation.remove(&key);
+                    Ok(Some(completed))
+                });
+                match result {
+                    Some(Ok(Some(goal))) => {
+                        jaymi_logging::info("planner", goal.to_diagnostics_summary());
+                        goal
+                    }
+                    Some(Ok(None)) | None => {
+                        self.transition_conversation(ConversationState::Completed);
+                        let response = PlannerResponse {
+                            content: coding_goal::no_active_goal_markdown(assessment.kind),
+                            reasoning_used: false,
+                            stream_lifecycle: Some(StreamingLifecycle::Idle),
+                            ..PlannerResponse::default()
+                        };
+                        return Ok(self.finalize_response(response, context));
+                    }
+                    Some(Err(msg)) => {
+                        self.transition_conversation(ConversationState::Completed);
+                        let response = PlannerResponse {
+                            content: format!(
+                                "## Coding Goal\n\nCould not mark complete: {msg}\n\nProvide verification or approved-apply evidence first, then ask again.\n"
+                            ),
+                            reasoning_used: false,
+                            stream_lifecycle: Some(StreamingLifecycle::Idle),
+                            ..PlannerResponse::default()
+                        };
+                        return Ok(self.finalize_response(response, context));
+                    }
+                }
+            }
+            coding_goal::CodingGoalRequestKind::Block => {
+                let updated = self
+                    .with_coding_goal_store(|store| {
+                        let Some(existing) =
+                            store.active_goal(conversation_id.as_deref()).cloned()
+                        else {
+                            return None;
+                        };
+                        let blocked =
+                            coding_goal::block_goal(existing, assessment.block_reason.clone());
+                        if let Some(slot) = store.active_goal_mut(conversation_id.as_deref()) {
+                            *slot = blocked.clone();
+                        }
+                        Some(blocked)
+                    })
+                    .flatten();
+                match updated {
+                    Some(goal) => {
+                        jaymi_logging::info("planner", goal.to_diagnostics_summary());
+                        goal
+                    }
+                    None => {
+                        self.transition_conversation(ConversationState::Completed);
+                        let response = PlannerResponse {
+                            content: coding_goal::no_active_goal_markdown(assessment.kind),
+                            reasoning_used: false,
+                            stream_lifecycle: Some(StreamingLifecycle::Idle),
+                            ..PlannerResponse::default()
+                        };
+                        return Ok(self.finalize_response(response, context));
+                    }
+                }
+            }
+            coding_goal::CodingGoalRequestKind::Status => {
+                match self
+                    .clone_coding_goal_store()
+                    .active_goal(conversation_id.as_deref())
+                    .cloned()
+                {
+                    Some(goal) => {
+                        jaymi_logging::info("planner", goal.to_diagnostics_summary());
+                        goal
+                    }
+                    None => {
+                        self.transition_conversation(ConversationState::Completed);
+                        let response = PlannerResponse {
+                            content: coding_goal::no_active_goal_markdown(assessment.kind),
+                            reasoning_used: false,
+                            stream_lifecycle: Some(StreamingLifecycle::Idle),
+                            ..PlannerResponse::default()
+                        };
+                        return Ok(self.finalize_response(response, context));
+                    }
+                }
+            }
+        };
+
+        debug_assert!(!goal.mutated);
+        debug_assert!(!goal.tools_executed);
+
+        self.transition_conversation(ConversationState::Completed);
+        let response = PlannerResponse {
+            content: goal.to_markdown(),
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            coding_goal: Some(goal),
+            ..PlannerResponse::default()
+        };
+        Ok(self.finalize_response(response, context))
+    }
+
+    /// Goal Decomposition (C5.2).
+    ///
+    /// Turns an active Coding Goal into proposed tasks owned by the Planner.
+    /// Never executes tasks, mutates files, or auto-approves plans.
+    fn complete_goal_decomposition(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = goal_decomposition::detect_decomposition_request(request)
+            .ok_or_else(|| JaymiError::new("goal decomposition detect missed after gate"))?;
+        let conversation_id = self.active_conversation_id_for_goal();
+        let active = self
+            .clone_coding_goal_store()
+            .active_goal(conversation_id.as_deref())
+            .cloned();
+
+        let (report, updated_goal) =
+            goal_decomposition::decompose_active_goal(active.as_ref(), &assessment);
+
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        if let Some(goal) = updated_goal.clone() {
+            self.with_coding_goal_store(|store| {
+                if let Some(slot) = store.active_goal_mut(conversation_id.as_deref()) {
+                    *slot = goal.clone();
+                } else {
+                    // Defensive: re-attach if pointer was lost but we produced an update.
+                    store.push_active(goal);
+                }
+            });
+        }
+
+        debug_assert!(!report.mutated);
+        debug_assert!(!report.tools_executed);
+        debug_assert!(!report.auto_approved);
+
+        let content = if let Some(goal) = &updated_goal {
+            format!("{}\n\n{}", report.to_markdown(), goal.to_markdown())
+        } else {
+            report.to_markdown()
+        };
+
+        self.transition_conversation(ConversationState::Completed);
+        let response = PlannerResponse {
+            content,
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            coding_goal: updated_goal.or(active),
+            goal_decomposition: Some(report),
+            ..PlannerResponse::default()
+        };
+        Ok(self.finalize_response(response, context))
+    }
+
+    /// Agent State Machine (C5.3).
+    ///
+    /// Planner-owned lifecycle transitions for the active Coding Goal.
+    /// LLM/UI cannot invent transitions; no autonomous multi-task orchestration.
+    fn complete_agent_lifecycle(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = agent_state_machine::detect_agent_lifecycle_request(request)
+            .ok_or_else(|| JaymiError::new("agent lifecycle detect missed after gate"))?;
+        let conversation_id = self.active_conversation_id_for_goal();
+        let active = self
+            .clone_coding_goal_store()
+            .active_goal(conversation_id.as_deref())
+            .cloned();
+
+        let (report, updated_goal) =
+            agent_state_machine::apply_assessment(active.as_ref(), &assessment);
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        if let Some(goal) = updated_goal.clone() {
+            self.with_coding_goal_store(|store| {
+                if let Some(slot) = store.active_goal_mut(conversation_id.as_deref()) {
+                    *slot = goal.clone();
+                } else if !goal.status.is_terminal()
+                    || goal.agent_lifecycle.state == agent_state_machine::AgentLifecycleState::Paused
+                {
+                    store.push_active(goal);
+                }
+            });
+        }
+
+        debug_assert!(!report.mutated);
+        debug_assert!(!report.tools_executed);
+        debug_assert!(!report.llm_directed);
+        debug_assert!(!report.ui_arbitrary);
+
+        let content = if let Some(goal) = &updated_goal {
+            format!("{}\n\n{}", report.to_markdown(), goal.to_markdown())
+        } else {
+            report.to_markdown()
+        };
+
+        let coding_goal = updated_goal.or_else(|| {
+            self.clone_coding_goal_store()
+                .active_goal(conversation_id.as_deref())
+                .cloned()
+                .or(active)
+        });
+
+        self.transition_conversation(ConversationState::Completed);
+        let response = PlannerResponse {
+            content,
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            coding_goal,
+            agent_lifecycle: Some(report),
+            ..PlannerResponse::default()
+        };
+        Ok(self.finalize_response(response, context))
+    }
+
+    /// Multi-Step Coding Execution (C5.4).
+    ///
+    /// Orchestrates ready GoalTasks through existing C2/C3/C4 paths — never
+    /// auto-approves, never invents a second ExecutionPlan/Review, never
+    /// auto-starts all remaining tasks in one turn.
+    fn complete_multi_step_execution(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = multi_step_execution::detect_multi_step_execution_request(request)
+            .ok_or_else(|| JaymiError::new("multi-step execution detect missed after gate"))?;
+        let conversation_id = self.active_conversation_id_for_goal();
+        let active = self
+            .clone_coding_goal_store()
+            .active_goal(conversation_id.as_deref())
+            .cloned();
+
+        let (report, updated_goal) =
+            multi_step_execution::apply_assessment(active.as_ref(), &assessment);
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        if let Some(goal) = updated_goal.clone() {
+            self.with_coding_goal_store(|store| {
+                if let Some(slot) = store.active_goal_mut(conversation_id.as_deref()) {
+                    *slot = goal.clone();
+                } else if !goal.status.is_terminal() {
+                    store.push_active(goal);
+                }
+            });
+        }
+
+        debug_assert!(!report.mutated);
+        debug_assert!(!report.tools_executed);
+        debug_assert!(!report.auto_approved);
+        debug_assert!(!report.llm_direct_tools);
+
+        let content = if let Some(goal) = &updated_goal {
+            format!("{}\n\n{}", report.to_markdown(), goal.to_markdown())
+        } else {
+            report.to_markdown()
+        };
+
+        let coding_goal = updated_goal.or_else(|| {
+            self.clone_coding_goal_store()
+                .active_goal(conversation_id.as_deref())
+                .cloned()
+                .or(active)
+        });
+
+        self.transition_conversation(ConversationState::Completed);
+        let response = PlannerResponse {
+            content,
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            coding_goal,
+            multi_step_execution: Some(report),
+            ..PlannerResponse::default()
+        };
+        Ok(self.finalize_response(response, context))
+    }
+
+    /// Agent Context Maintenance (C5.5).
+    ///
+    /// Builds a compact Planner-owned goal context from the active Coding Goal
+    /// plus Policy-selected labels from the already-assembled ContextBundle.
+    /// Never creates AgentContextEngine, never mutates files, never writes Memory.
+    fn complete_agent_context_maintenance(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = agent_context_maintenance::detect_agent_context_request(request)
+            .ok_or_else(|| JaymiError::new("agent context detect missed after gate"))?;
+        let conversation_id = self.active_conversation_id_for_goal();
+        let active = self
+            .clone_coding_goal_store()
+            .active_goal(conversation_id.as_deref())
+            .cloned();
+
+        let (report, updated_goal) = agent_context_maintenance::apply_assessment(
+            active.as_ref(),
+            &assessment,
+            Some(&context),
+        );
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        if let Some(goal) = updated_goal.clone() {
+            self.with_coding_goal_store(|store| {
+                if let Some(slot) = store.active_goal_mut(conversation_id.as_deref()) {
+                    *slot = goal.clone();
+                }
+            });
+        }
+
+        debug_assert!(!report.mutated);
+        debug_assert!(!report.tools_executed);
+        debug_assert!(!report.memory_written);
+        debug_assert!(!report.duplicate_assembler);
+
+        let content = if let Some(ctx) = &report.context {
+            format!("{}\n\n{}", report.to_markdown(), ctx.to_markdown())
+        } else {
+            report.to_markdown()
+        };
+
+        let coding_goal = updated_goal.or_else(|| {
+            self.clone_coding_goal_store()
+                .active_goal(conversation_id.as_deref())
+                .cloned()
+                .or(active)
+        });
+
+        self.transition_conversation(ConversationState::Completed);
+        let response = PlannerResponse {
+            content,
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            coding_goal,
+            agent_context_maintenance: Some(report),
+            ..PlannerResponse::default()
+        };
+        Ok(self.finalize_response(response, context))
+    }
+
+    /// Approval and Autonomy Policy (C5.6).
+    ///
+    /// Explains READ/OBSERVE vs MUTATION/SIDE_EFFECT defaults and current
+    /// plan+task approval binding. Does not create AgentApproval or autonomy modes.
+    fn complete_autonomy_policy(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = approval_autonomy_policy::detect_autonomy_policy_request(request)
+            .ok_or_else(|| JaymiError::new("autonomy policy detect missed after gate"))?;
+        let conversation_id = self.active_conversation_id_for_goal();
+        let active = self
+            .clone_coding_goal_store()
+            .active_goal(conversation_id.as_deref())
+            .cloned();
+
+        let report = approval_autonomy_policy::apply_assessment(active.as_ref(), &assessment);
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        debug_assert!(!report.modes_implemented);
+        debug_assert!(!report.agent_approval_system);
+        debug_assert!(!report.llm_self_authorize);
+
+        let content = report.to_markdown();
+        self.transition_conversation(ConversationState::Completed);
+        let response = PlannerResponse {
+            content,
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            coding_goal: active,
+            autonomy_policy: Some(report),
+            ..PlannerResponse::default()
+        };
+        Ok(self.finalize_response(response, context))
+    }
+
+    /// Agent Progress UX (C5.7).
+    ///
+    /// Derive-only view of the active Coding Goal — mirrors Planner state into
+    /// conversation without exposing chain-of-thought or inventing a second agent state.
+    fn complete_agent_progress(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = agent_progress_ux::detect_progress_request(request)
+            .ok_or_else(|| JaymiError::new("agent progress detect missed after gate"))?;
+        let conversation_id = self.active_conversation_id_for_goal();
+        let active = self
+            .clone_coding_goal_store()
+            .active_goal(conversation_id.as_deref())
+            .cloned();
+
+        let report = agent_progress_ux::apply_assessment(active.as_ref(), &assessment);
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        if let Some(progress) = &report.progress {
+            debug_assert!(!progress.exposes_chain_of_thought);
+            debug_assert!(!progress.second_agent_state);
+        }
+
+        let content = report.to_markdown();
+        let progress = report.progress.clone();
+        self.transition_conversation(ConversationState::Completed);
+        let response = PlannerResponse {
+            content,
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            coding_goal: active,
+            agent_progress: progress,
+            agent_progress_report: Some(report),
+            ..PlannerResponse::default()
+        };
+        Ok(self.finalize_response(response, context))
+    }
+
+    /// ContextBundle for C5.8/C5.14 control turns.
+    ///
+    /// Pause/Resume assemble via ContextEngine (sole factory) so fingerprints are
+    /// real or honestly unavailable. Cancel/Status do not need fingerprints and
+    /// keep the lightweight empty bundle.
+    fn bundle_for_agent_control(
+        &self,
+        request: &UserRequest,
+        kind: agent_pause_resume_cancel::AgentControlRequestKind,
+    ) -> JaymiResult<ContextBundle> {
+        use agent_pause_resume_cancel::AgentControlRequestKind;
+        match kind {
+            AgentControlRequestKind::Pause | AgentControlRequestKind::Resume => {
+                self.assemble_agent_control_context(request)
+            }
+            AgentControlRequestKind::Cancel | AgentControlRequestKind::Status => {
+                Ok(self.context.empty_bundle())
+            }
+        }
+    }
+
+    /// Assemble ambient Context for pause/resume fingerprint integrity (C5.14).
+    ///
+    /// Uses ContextEngine as the sole ContextBundle factory — no parallel
+    /// workspace assembler. Required so fingerprints are real (or honestly
+    /// unavailable), never silently “unchanged” via `empty_bundle`.
+    fn assemble_agent_control_context(
+        &self,
+        request: &UserRequest,
+    ) -> JaymiResult<ContextBundle> {
+        let hints = AssembleHints::new(jaymi_core::IntentId::Unknown, Vec::<String>::new());
+        let bundle = self.context.assemble_with(request, Some(&hints))?;
+        jaymi_logging::info(
+            "planner",
+            format!(
+                "agent_control context assembled {}",
+                agent_pause_resume_cancel::ProjectFingerprint::from_bundle(&bundle)
+                    .to_diagnostics_summary()
+            ),
+        );
+        Ok(bundle)
+    }
+
+    /// Agent Pause, Resume, and Cancellation (C5.8 + C5.14 integrity).
+    ///
+    /// Planner-owned control over an active Coding Goal. Reuses C5.3 transitions
+    /// and existing Tool / stream cancellation — never invents a parallel cancel
+    /// engine or silently rolls back successful mutations.
+    fn complete_agent_pause_resume_cancel(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = agent_pause_resume_cancel::detect_control_request(request)
+            .ok_or_else(|| JaymiError::new("agent control detect missed after gate"))?;
+        let conversation_id = self.active_conversation_id_for_goal();
+        let active = self
+            .clone_coding_goal_store()
+            .active_goal(conversation_id.as_deref())
+            .cloned();
+
+        let has_review_paused = self
+            .paused_store()
+            .ok()
+            .map(|store| !store.is_empty())
+            .unwrap_or(false);
+        let lifecycle = active
+            .as_ref()
+            .map(|g| g.agent_lifecycle.state)
+            .unwrap_or(agent_state_machine::AgentLifecycleState::Idle);
+        let in_flight = agent_pause_resume_cancel::observe_in_flight(
+            self.conversation_state(),
+            None,
+            has_review_paused,
+            lifecycle,
+        );
+
+        let (report, updated_goal) = agent_pause_resume_cancel::apply_assessment(
+            active.as_ref(),
+            &assessment,
+            &context,
+            &in_flight,
+        );
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        debug_assert!(!report.rolled_back_mutations);
+        debug_assert!(!report.parallel_cancel_engine);
+        debug_assert!(report.planner_owned);
+        debug_assert!(!report.continued_after_cancel);
+
+        if let Some(goal) = updated_goal.clone() {
+            self.with_coding_goal_store(|store| {
+                if goal.control.cancelled || goal.status == coding_goal::CodingGoalStatus::Cancelled
+                {
+                    if let Some(slot) = store.active_goal_mut(conversation_id.as_deref()) {
+                        *slot = goal.clone();
+                    }
+                    let key = coding_goal::CodingGoalStore::conversation_key(
+                        conversation_id.as_deref(),
+                    );
+                    store.active_by_conversation.remove(&key);
+                } else if let Some(slot) = store.active_goal_mut(conversation_id.as_deref()) {
+                    *slot = goal.clone();
+                } else if !goal.status.is_terminal()
+                    || goal.agent_lifecycle.state == agent_state_machine::AgentLifecycleState::Paused
+                {
+                    store.push_active(goal);
+                }
+            });
+        }
+
+        let content = if let Some(goal) = &updated_goal {
+            format!("{}\n\n{}", report.to_markdown(), goal.to_markdown())
+        } else {
+            report.to_markdown()
+        };
+
+        let coding_goal = updated_goal.or(active);
+
+        self.transition_conversation(ConversationState::Completed);
+        let response = PlannerResponse {
+            content,
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            coding_goal,
+            agent_control: Some(report),
+            ..PlannerResponse::default()
+        };
+        Ok(self.finalize_response(response, context))
+    }
+
+    /// Agent Failure and Recovery (C5.9).
+    ///
+    /// Classify goal-scoped failures and apply a Planner-owned disposition —
+    /// read-only investigate, propose a new reviewed C3 plan, AwaitUser→Blocked,
+    /// or StopFailed — never silent mutation / retry / approval reuse / rollback.
+    fn complete_agent_failure_recovery(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = agent_failure_recovery::detect_recovery_request(request)
+            .ok_or_else(|| JaymiError::new("agent recovery detect missed after gate"))?;
+        let conversation_id = self.active_conversation_id_for_goal();
+        let active = self
+            .clone_coding_goal_store()
+            .active_goal(conversation_id.as_deref())
+            .cloned();
+
+        let (report, updated_goal) =
+            agent_failure_recovery::apply_assessment(active.as_ref(), &assessment);
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        debug_assert!(!report.mutated);
+        debug_assert!(!report.auto_retried);
+        debug_assert!(!report.approval_reused);
+        debug_assert!(!report.automatic_rollback);
+        debug_assert!(!report.parallel_repair_engine);
+        debug_assert!(report.planner_owned);
+
+        if let Some(plan) = report.corrective_plan.clone() {
+            self.remember_coding_plan(Some(plan));
+        }
+
+        if let Some(goal) = updated_goal.clone() {
+            self.with_coding_goal_store(|store| {
+                if let Some(slot) = store.active_goal_mut(conversation_id.as_deref()) {
+                    *slot = goal.clone();
+                } else if !goal.status.is_terminal() {
+                    store.push_active(goal);
+                }
+            });
+        }
+
+        let content = if let Some(goal) = &updated_goal {
+            format!("{}\n\n{}", report.to_markdown(), goal.to_markdown())
+        } else {
+            report.to_markdown()
+        };
+
+        let coding_goal = updated_goal.or(active);
+
+        self.transition_conversation(ConversationState::Completed);
+        let response = PlannerResponse {
+            content,
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            coding_goal,
+            agent_recovery: Some(report),
+            ..PlannerResponse::default()
+        };
+        Ok(self.finalize_response(response, context))
+    }
+
+    /// Coding Goal Completion (C5.10).
+    ///
+    /// Evidence-based completion ownership — evaluate acceptance criteria,
+    /// block on failed verification / blockers, allow user end incomplete
+    /// (distinct from successfully completed). Never invent success.
+    fn complete_coding_goal_completion(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = coding_goal_completion::detect_completion_request(request)
+            .ok_or_else(|| JaymiError::new("goal completion detect missed after gate"))?;
+        let conversation_id = self.active_conversation_id_for_goal();
+        let active = self
+            .clone_coding_goal_store()
+            .active_goal(conversation_id.as_deref())
+            .cloned();
+
+        let (report, updated_goal) =
+            coding_goal_completion::apply_assessment(active.as_ref(), &assessment);
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        debug_assert!(!report.mutated);
+        debug_assert!(!report.invented_success);
+        debug_assert!(!report.model_authoritative);
+        debug_assert!(!report.unknown_treated_as_satisfied);
+        debug_assert!(report.planner_owned);
+
+        if let Some(goal) = updated_goal.clone() {
+            self.with_coding_goal_store(|store| {
+                if goal.status.is_terminal() {
+                    if let Some(slot) = store.active_goal_mut(conversation_id.as_deref()) {
+                        *slot = goal.clone();
+                    }
+                    let key = coding_goal::CodingGoalStore::conversation_key(
+                        conversation_id.as_deref(),
+                    );
+                    store.active_by_conversation.remove(&key);
+                } else if let Some(slot) = store.active_goal_mut(conversation_id.as_deref()) {
+                    *slot = goal.clone();
+                } else {
+                    store.push_active(goal);
+                }
+            });
+        }
+
+        let content = if let Some(goal) = &updated_goal {
+            format!("{}\n\n{}", report.to_markdown(), goal.to_markdown())
+        } else {
+            report.to_markdown()
+        };
+
+        let coding_goal = updated_goal.or(active);
+
+        self.transition_conversation(ConversationState::Completed);
+        let response = PlannerResponse {
+            content,
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            coding_goal,
+            goal_completion: Some(report),
+            ..PlannerResponse::default()
+        };
+        Ok(self.finalize_response(response, context))
+    }
+
+    /// Long-Running Session Continuity (C5.11).
+    ///
+    /// Bound histories, compact context (constraints preserved), revalidate
+    /// fingerprints after pauses, invalidate stale approvals — no agent DB,
+    /// no background autonomous work, paused goals do not keep executing.
+    fn complete_agent_session_continuity(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = agent_session_continuity::detect_continuity_request(request)
+            .ok_or_else(|| JaymiError::new("session continuity detect missed after gate"))?;
+        let conversation_id = self.active_conversation_id_for_goal();
+        let store_clone = self.clone_coding_goal_store();
+        let active = store_clone.active_goal(conversation_id.as_deref()).cloned();
+
+        let (report, updated_goal, updated_store) = agent_session_continuity::apply_assessment(
+            active.as_ref(),
+            &assessment,
+            Some(&context),
+            Some(&store_clone),
+        );
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        debug_assert!(!report.mutated);
+        debug_assert!(!report.background_autonomous_work);
+        debug_assert!(!report.independent_agent_database);
+        debug_assert!(!report.blindly_resumed_stale_plan);
+        debug_assert!(!report.paused_continues_executing);
+        debug_assert!(report.planner_owned);
+
+        if let Some(store) = updated_store {
+            self.with_coding_goal_store(|slot| {
+                *slot = store;
+            });
+        }
+        if let Some(goal) = updated_goal.clone() {
+            self.with_coding_goal_store(|store| {
+                let _ = agent_session_continuity::prune_store(
+                    store,
+                    conversation_id.as_deref(),
+                );
+                if let Some(slot) = store.active_goal_mut(conversation_id.as_deref()) {
+                    *slot = goal;
+                } else if !goal.status.is_terminal() {
+                    store.push_active(goal);
+                }
+            });
+        }
+
+        let content = if let Some(goal) = &updated_goal {
+            format!("{}\n\n{}", report.to_markdown(), goal.to_markdown())
+        } else {
+            report.to_markdown()
+        };
+
+        let coding_goal = updated_goal.or(active);
+
+        self.transition_conversation(ConversationState::Completed);
+        let response = PlannerResponse {
+            content,
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            coding_goal,
+            session_continuity: Some(report),
+            ..PlannerResponse::default()
+        };
+        Ok(self.finalize_response(response, context))
+    }
+
+    /// Agentic Coding Experience (C5.12).
+    ///
+    /// Compose C5.1–C5.11 into one conversational experience narrative —
+    /// create/status only; no parallel agent, no CoT, no silent mutation.
+    fn complete_agentic_coding_experience(
+        &self,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        let assessment = agentic_coding_experience::detect_agentic_experience_request(request)
+            .ok_or_else(|| JaymiError::new("agentic experience detect missed after gate"))?;
+        let conversation_id = self.active_conversation_id_for_goal();
+        let store = self.clone_coding_goal_store();
+        let active = agentic_coding_experience::resolve_goal_for_experience(
+            &store,
+            conversation_id.as_deref(),
+        );
+
+        let (report, updated_goal) = agentic_coding_experience::apply_assessment(
+            active.as_ref(),
+            &assessment,
+            &context,
+            conversation_id.clone(),
+        );
+        jaymi_logging::info("planner", report.to_diagnostics_summary());
+
+        debug_assert!(!report.mutated);
+        debug_assert!(!report.tools_executed);
+        debug_assert!(!report.exposes_chain_of_thought);
+        debug_assert!(!report.parallel_coding_agent);
+        debug_assert!(!report.silent_continue_after_cancel);
+        debug_assert!(!report.silent_destructive_retry);
+        debug_assert!(!report.hidden_filesystem_access);
+        debug_assert!(!report.model_direct_tools);
+        debug_assert!(!report.unrelated_capabilities);
+        debug_assert!(report.planner_owned);
+        debug_assert!(report.conversation_primary);
+
+        if let Some(goal) = updated_goal.clone() {
+            self.with_coding_goal_store(|store| {
+                // Status narration of a terminal goal must not re-activate it.
+                if assessment.kind == agentic_coding_experience::AgenticExperienceRequestKind::Status
+                    && goal.status.is_terminal()
+                {
+                    if let Some(slot) = store.goals.iter_mut().find(|g| g.id == goal.id) {
+                        *slot = goal;
+                    }
+                    return;
+                }
+                if let Some(slot) = store.active_goal_mut(conversation_id.as_deref()) {
+                    *slot = goal;
+                } else if !goal.status.is_terminal() {
+                    store.push_active(goal);
+                }
+            });
+        }
+
+        let content = if let Some(goal) = &updated_goal {
+            format!("{}\n\n{}", report.to_markdown(), goal.to_markdown())
+        } else {
+            report.to_markdown()
+        };
+
+        let progress = report.progress.clone();
+        let coding_goal = updated_goal.or(active);
+
+        self.transition_conversation(ConversationState::Completed);
+        let response = PlannerResponse {
+            content,
+            reasoning_used: false,
+            stream_lifecycle: Some(StreamingLifecycle::Idle),
+            coding_goal,
+            agent_progress: progress,
+            agentic_coding_experience: Some(report),
+            ..PlannerResponse::default()
+        };
+        Ok(self.finalize_response(response, context))
+    }
+
     /// Coding Edit Intent (C3.1) + Change Investigation (C3.2) + Coding Plan (C3.3).
     ///
     /// Classifies mutation requests, investigates impact via reused C2 helpers,
@@ -4762,6 +6726,7 @@ Original project unchanged — no files were written.",
                     paused_at: Instant::now(),
                     generation_calls,
                     generation_baselines,
+                    test_execution: None,
                 })?;
                 let summary = ExecutionSummary::from_plan(
                     &plan,
@@ -5510,6 +7475,7 @@ Original project unchanged — no files were written.",
             paused_at: Instant::now(),
             generation_calls: entry.generation_calls.clone(),
             generation_baselines: entry.generation_baselines.clone(),
+            test_execution: entry.test_execution.clone(),
         })?;
         self.update_plan_history_status(child.id(), ExecutionStatus::AwaitingReview)?;
 
@@ -5595,6 +7561,9 @@ Original project unchanged — no files were written.",
         // Soft tool / provider failure: keep ExecutionSummary (incl. partial
         // multi-file apply) instead of dropping it via ensure_success Err.
         if !output.success {
+            let test_report = entry.test_execution.take().map(|pending| {
+                test_execution::finalize_from_tool_output(pending, &output, None)
+            });
             let mut response = self.tool_failure_response(
                 entry.plan,
                 entry.capability,
@@ -5609,6 +7578,25 @@ Original project unchanged — no files were written.",
                 response.content = format!("{}\n\n{body}", response.content);
             }
             response.coding_mutation_recovery = coding_recovery.take();
+            if let Some(report) = test_report {
+                let mut next_session = self.context.session_inputs();
+                test_execution::publish_to_context(&mut next_session, &report);
+                self.context.set_session_inputs(next_session);
+                self.context.request_fresh_context("test_execution");
+                self.remember_verification_evidence(report.evidence.clone());
+                response.test_execution = Some(report);
+                self.attach_verification_summary(&mut response, false, Vec::new());
+            } else {
+                self.remember_execution_summary(response.execution_summary.clone());
+                if response
+                    .execution_summary
+                    .as_ref()
+                    .is_some_and(|s| !s.files_edited.is_empty())
+                {
+                    self.note_apply_for_verification_loop(&mut response);
+                    self.attach_verification_summary(&mut response, false, Vec::new());
+                }
+            }
             return Ok(response);
         }
 
@@ -5626,6 +7614,9 @@ Original project unchanged — no files were written.",
             content = format!("{content}\n\n{body}");
         }
 
+        let test_report = entry.test_execution.take().map(|pending| {
+            test_execution::finalize_from_tool_output(pending, &output, None)
+        });
         let mut response = response_from_tool_output(
             content,
             entry.capability,
@@ -5638,6 +7629,25 @@ Original project unchanged — no files were written.",
             output,
         );
         response.coding_mutation_recovery = coding_recovery.take();
+        if let Some(report) = test_report {
+            let mut next_session = self.context.session_inputs();
+            test_execution::publish_to_context(&mut next_session, &report);
+            self.context.set_session_inputs(next_session);
+            self.context.request_fresh_context("test_execution");
+            self.remember_verification_evidence(report.evidence.clone());
+            response.test_execution = Some(report);
+            self.attach_verification_summary(&mut response, false, Vec::new());
+        } else {
+            self.remember_execution_summary(response.execution_summary.clone());
+            if response
+                .execution_summary
+                .as_ref()
+                .is_some_and(|s| !s.files_edited.is_empty())
+            {
+                self.note_apply_for_verification_loop(&mut response);
+                self.attach_verification_summary(&mut response, false, Vec::new());
+            }
+        }
         Ok(response)
     }
 
@@ -5662,6 +7672,8 @@ Original project unchanged — no files were written.",
                 Err(error) => return Err(JaymiError::new(error.to_string())),
             }
         };
+        let had_pending_test = entry.test_execution.is_some();
+        let pending_test = entry.test_execution.take();
         let _ = entry.plan.cancel();
         let summary = ExecutionSummary::cancelled(&entry.plan, reason);
         let recovery = if !entry.generation_calls.is_empty() || !entry.generation_baselines.is_empty()
@@ -5692,7 +7704,7 @@ Original project unchanged — no files were written.",
         if let Some(recovery) = &recovery {
             content = format!("{content}\n\n{}", recovery.to_markdown());
         }
-        Ok(PlannerResponse {
+        let mut response = PlannerResponse {
             content,
             capability: Some(entry.capability),
             tool_id: Some(entry.tool_id),
@@ -5704,8 +7716,22 @@ Original project unchanged — no files were written.",
             execution_plan: Some(entry.plan),
             execution_summary: Some(summary),
             coding_mutation_recovery: recovery,
+            test_execution: pending_test,
             ..PlannerResponse::default()
-        })
+        };
+        if had_pending_test {
+            self.attach_verification_summary(&mut response, true, Vec::new());
+        }
+        if let Some(cancelled) =
+            self.cancel_coding_verification_loop("Review cancelled by user.")
+        {
+            response.coding_verification_loop = Some(cancelled.clone());
+            response.content = coding_verification_loop::append_progress_note(
+                &response.content,
+                &cancelled,
+            );
+        }
+        Ok(response)
     }
 
     fn timeout_response(&self, plan_id: &str) -> JaymiResult<PlannerResponse> {
@@ -5856,6 +7882,8 @@ fn response_from_tool_output(
         terminal_history: output.terminal_history,
         terminal_title: output.terminal_title,
         terminal_alive: output.terminal_alive,
+        terminal_exit_code: output.terminal_exit_code,
+        terminal_duration_ms: output.terminal_duration_ms,
         git_branch: output.git_branch,
         git_summary: output.git_summary,
         git_is_repository: output.git_is_repository,
@@ -6941,7 +8969,7 @@ mod tests {
     }
 
     #[test]
-    fn build_pong_returns_coding_plan_without_codegen() {
+    fn build_pong_returns_agentic_coding_goal_experience() {
         let planner = planner_with_search_and_read();
         planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
             workspace_kind: Some("coding".into()),
@@ -6954,36 +8982,32 @@ mod tests {
             ..jaymi_context::ContextSessionInputs::default()
         });
 
-        let response = planner.handle(UserRequest::new("Build Pong.")).unwrap();
+        let response = planner.handle(UserRequest::new("Build me a Pong game.")).unwrap();
 
         assert!(!response.awaiting_review);
         assert!(!response.reasoning_used);
         assert!(response.tool_id.is_none());
         assert!(response.capability.is_none());
         assert!(response.execution_plan.is_none());
-        assert!(response.coding_review.is_none());
-        assert!(response.coding_understanding.is_none());
+        assert!(response.coding_plan.is_none());
 
-        let plan = response.coding_plan.expect("coding_plan attached");
-        assert!(!plan.summary.is_empty());
-        assert!(response.content.contains("## Coding Plan"));
-        assert!(response.content.contains("### Plan"));
-        assert!(response.content.contains("### Files to Create"));
-        assert!(response.content.contains("### Files to Modify"));
-        assert!(response.content.contains("### Dependencies"));
-        assert!(response.content.contains("### Estimated Risk"));
-        assert!(response.content.contains("### Summary"));
-
-        let notes = &response
-            .context_bundle
-            .as_ref()
-            .unwrap()
-            .planner_metadata()
-            .notes;
-        assert!(
-            notes.iter().any(|n| n.contains("coding_plan=")),
-            "{notes:?}"
+        let experience = response
+            .agentic_coding_experience
+            .expect("agentic experience");
+        assert_eq!(
+            experience.status,
+            crate::AgenticExperienceStatus::Created
         );
+        assert!(!experience.mutated);
+        assert!(!experience.tools_executed);
+        assert!(!experience.exposes_chain_of_thought);
+        assert!(!experience.parallel_coding_agent);
+        assert!(response.content.contains("## Agentic Coding Experience"));
+        assert!(response.content.contains("## Coding Goal"));
+        let goal = response.coding_goal.expect("coding goal");
+        assert!(goal.user_objective.to_ascii_lowercase().contains("pong"));
+        assert!(!goal.mutated);
+        assert!(!goal.tools_executed);
     }
 
     #[test]
@@ -7043,6 +9067,74 @@ mod tests {
         assert!(create_path.exists(), "create_file should run after approve");
         let body = fs::read_to_string(&create_path).unwrap();
         assert!(body.contains("Generated by Jaymi Planner"));
+    }
+
+    #[test]
+    fn generate_the_changes_from_that_plan_enters_patch_review_not_new_plan() {
+        // Exact failure: completed CodingPlan + "Generate the changes from that plan."
+        // must consume the remembered plan (C3 patch/codegen → Review Card), not
+        // author a second CodingPlan via the C1.4 `generate ` catch-all.
+        let dir = temp_dir();
+        let html = dir.join("index.html");
+        let css = dir.join("style.css");
+        let js = dir.join("script.js");
+
+        for phrase in [
+            "Generate the changes from that plan.",
+            "Implement that plan.",
+            "Make those changes.",
+            "Go ahead and code it.",
+            "Apply the plan.",
+        ] {
+            let planner = planner_with_write();
+            planner.remember_coding_plan(Some(mutation_plan_for_paths(
+                vec![
+                    format!("`{}` Pong canvas shell", html.display()),
+                    format!("`{}` Pong styles", css.display()),
+                    format!("`{}` Pong game loop", js.display()),
+                ],
+                vec![],
+                vec![],
+                "Create a simple Pong game.",
+            )));
+
+            let response = planner.handle(UserRequest::new(phrase)).unwrap();
+
+            assert!(
+                response.awaiting_review,
+                "{phrase}: expected Review Card / awaiting_review"
+            );
+            assert!(
+                response.blocked,
+                "{phrase}: generation must pause before mutation"
+            );
+            assert!(
+                response.patch_generation.is_some() || response.code_generation.is_some(),
+                "{phrase}: expected patch/codegen path"
+            );
+            // Must not fall through to C1.4 and replace the actionable plan with a
+            // fresh Generic scaffold (no ExecutionPlan / no review).
+            assert!(
+                response.execution_plan.is_some(),
+                "{phrase}: expected ExecutionPlan awaiting review"
+            );
+            assert_eq!(
+                response.execution_plan.as_ref().unwrap().status(),
+                ExecutionStatus::AwaitingReview
+            );
+            assert!(
+                !html.exists() && !css.exists() && !js.exists(),
+                "{phrase}: must not write before Approve"
+            );
+            // Soft-path generation responses do not re-author a CodingPlan body.
+            if let Some(plan) = &response.coding_plan {
+                assert!(
+                    plan.files_to_create.iter().any(|p| p.contains("index.html"))
+                        || plan.summary.iter().any(|s| s.contains("Pong")),
+                    "{phrase}: if coding_plan is mirrored it must be the remembered plan, not a new Generic scaffold"
+                );
+            }
+        }
     }
 
     #[test]
@@ -7762,6 +9854,3583 @@ mod tests {
         assert!(history.iter().any(|e| {
             matches!(e.decision, ApprovalDecision::Approve) && e.execution_result.is_some()
         }));
+    }
+
+    #[test]
+    fn c41_build_awareness_rust_project_soft_path() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            project_open: true,
+            project_snapshot: Some(jaymi_context::ProjectSnapshot {
+                metadata: jaymi_context::ProjectMetadata {
+                    project_id: Some("jaymi".into()),
+                    name: Some("jaymi".into()),
+                    root_directory: Some("/proj".into()),
+                    ..Default::default()
+                },
+                package_manager: Some(jaymi_context::PackageManagerKind::Cargo),
+                build_system: Some(jaymi_context::BuildSystemKind::Cargo),
+                cargo: Some(jaymi_context::CargoProjectMeta {
+                    package_name: Some("jaymi".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["project".into()],
+            ..Default::default()
+        });
+        // Seed active project via open project is heavy — ProjectProvider needs
+        // engine. Soft path still reads session project_snapshot for discovery.
+        let response = planner
+            .handle(UserRequest::new("Does this build?"))
+            .unwrap();
+        let report = response.build_awareness.expect("build_awareness");
+        assert!(!report.executed);
+        assert!(report
+            .targets
+            .iter()
+            .any(|t| t.candidate_command.as_deref() == Some("cargo check")
+                || t.candidate_command.as_deref() == Some("cargo build")));
+        assert!(response.tool_id.is_none());
+        assert!(response.execution_plan.is_none());
+        assert!(!response.awaiting_review);
+        assert!(response.content.contains("Build Awareness"));
+        assert!(response.content.contains("no verification command was executed"));
+    }
+
+    #[test]
+    fn c41_build_awareness_no_active_project() {
+        let planner = planner_with_search_and_read();
+        let response = planner
+            .handle(UserRequest::new("Is this project currently buildable?"))
+            .unwrap();
+        let report = response.build_awareness.expect("build_awareness");
+        assert_eq!(
+            report.status,
+            Some(crate::BuildAwarenessStatus::NoActiveProject)
+        );
+        assert!(report.targets.is_empty());
+        assert!(!report.executed);
+        assert!(response.tool_id.is_none());
+    }
+
+    #[test]
+    fn c41_build_awareness_no_direct_terminal_bypass() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            project_open: true,
+            project_snapshot: Some(jaymi_context::ProjectSnapshot {
+                metadata: jaymi_context::ProjectMetadata {
+                    project_id: Some("web".into()),
+                    name: Some("web".into()),
+                    root_directory: Some("/web".into()),
+                    ..Default::default()
+                },
+                package_manager: Some(jaymi_context::PackageManagerKind::Npm),
+                build_system: Some(jaymi_context::BuildSystemKind::NpmScripts),
+                npm: Some(jaymi_context::NpmProjectMeta {
+                    scripts: vec!["build".into(), "lint".into()],
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("What should I run to check this?"))
+            .unwrap();
+        let report = response.build_awareness.expect("build_awareness");
+        assert!(!report.executed);
+        assert!(response.terminal_session_id.is_none());
+        assert!(response.terminal_output.is_none());
+        assert!(response.tool_id.is_none());
+        assert!(response.provider_id.is_none());
+        assert!(!response.reasoning_used);
+    }
+
+    #[derive(Debug)]
+    struct StubTerminalTool {
+        metadata: ToolMetadata,
+        exit_code: i32,
+        output: String,
+        fail_with: Option<String>,
+        ran: std::sync::Mutex<usize>,
+    }
+
+    impl StubTerminalTool {
+        fn passing(output: &str) -> Arc<Self> {
+            Arc::new(Self {
+                metadata: Self::meta(),
+                exit_code: 0,
+                output: output.into(),
+                fail_with: None,
+                ran: std::sync::Mutex::new(0),
+            })
+        }
+
+        fn failing(exit: i32, output: &str) -> Arc<Self> {
+            Arc::new(Self {
+                metadata: Self::meta(),
+                exit_code: exit,
+                output: output.into(),
+                fail_with: None,
+                ran: std::sync::Mutex::new(0),
+            })
+        }
+
+        fn timeout() -> Arc<Self> {
+            Arc::new(Self {
+                metadata: Self::meta(),
+                exit_code: -1,
+                output: String::new(),
+                fail_with: Some("timed out waiting for terminal command: cargo test".into()),
+                ran: std::sync::Mutex::new(0),
+            })
+        }
+
+        fn meta() -> ToolMetadata {
+            ToolMetadata {
+                id: jaymi_tools::TERMINAL_TOOL_ID.to_string(),
+                name: "Terminal".into(),
+                version: "0".into(),
+                description: "stub terminal".into(),
+                provider: "stub_terminal".into(),
+                capabilities: vec![
+                    Capability::ExecuteTerminalCommands,
+                    Capability::Code,
+                ],
+                risk: ToolRisk::Destructive,
+                estimated_runtime: EstimatedRuntime::Medium,
+                execution_mode: ExecutionMode::Synchronous,
+                resource_cost: ResourceCost::Low,
+                memory_usage: MemoryUsage::Small,
+                gpu_requirements: GpuRequirements::None,
+                privacy: PrivacyMode::LocalOnly,
+                internet: InternetRequirement::Never,
+                reliability: Reliability::Stable,
+                result_type: ResultType::StructuredData,
+            }
+        }
+
+        fn run_count(&self) -> usize {
+            *self.ran.lock().unwrap()
+        }
+    }
+
+    impl Tool for StubTerminalTool {
+        fn metadata(&self) -> &ToolMetadata {
+            &self.metadata
+        }
+
+        fn validate(&self, _input: &ToolInput) -> JaymiResult<()> {
+            Ok(())
+        }
+
+        fn execute(&self, input: &ToolInput) -> JaymiResult<ToolOutput> {
+            *self.ran.lock().unwrap() += 1;
+            if let Some(err) = &self.fail_with {
+                return Err(JaymiError::new(err.clone()));
+            }
+            let command = input.command.clone().unwrap_or_default();
+            let success = self.exit_code == 0;
+            Ok(ToolOutput::terminal_with_status(
+                "coding",
+                input.path.clone().unwrap_or_else(|| "/proj".into()),
+                self.output.clone(),
+                self.output.clone(),
+                vec![command],
+                "Tests",
+                true,
+                format!("stub ran exit={}", self.exit_code),
+                Some(self.exit_code),
+                Some(42),
+                success,
+            ))
+        }
+    }
+
+    fn planner_with_stub_terminal(stub: Arc<StubTerminalTool>) -> Planner {
+        let stub_clone = Arc::clone(&stub);
+        planner_with_tools(move |tools, filesystem, content_api| {
+            tools
+                .register_tool(Arc::new(SearchFilesTool::new(Arc::clone(&filesystem))))
+                .unwrap();
+            tools
+                .register_tool(Arc::new(ReadFileTool::new(content_api)))
+                .unwrap();
+            tools.register_tool(stub_clone).unwrap();
+        })
+    }
+
+    fn session_cargo_for_tests() -> jaymi_context::ContextSessionInputs {
+        jaymi_context::ContextSessionInputs {
+            project_open: true,
+            project_snapshot: Some(jaymi_context::ProjectSnapshot {
+                metadata: jaymi_context::ProjectMetadata {
+                    project_id: Some("jaymi".into()),
+                    name: Some("jaymi".into()),
+                    root_directory: Some("/proj".into()),
+                    ..Default::default()
+                },
+                package_manager: Some(jaymi_context::PackageManagerKind::Cargo),
+                build_system: Some(jaymi_context::BuildSystemKind::Cargo),
+                cargo: Some(jaymi_context::CargoProjectMeta {
+                    package_name: Some("jaymi".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn c42_run_tests_awaits_review_no_direct_provider() {
+        let stub = StubTerminalTool::passing("ok\n");
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        let response = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let report = response.test_execution.expect("test_execution");
+        assert_eq!(
+            report.status,
+            Some(crate::TestExecutionStatus::AwaitingReview)
+        );
+        assert_eq!(report.command.as_deref(), Some("cargo test"));
+        assert!(response.awaiting_review);
+        assert_eq!(stub.run_count(), 0, "must not run before Approve");
+        assert!(!report.mutated);
+        assert!(response.reasoning_used == false);
+    }
+
+    #[test]
+    fn c42_passing_tests_after_approve() {
+        let stub = StubTerminalTool::passing("test result: ok\n");
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        let paused = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        let report = resumed.test_execution.expect("test_execution");
+        assert_eq!(report.status, Some(crate::TestExecutionStatus::Passed));
+        assert_eq!(report.exit_status, Some(0));
+        assert_eq!(stub.run_count(), 1);
+        assert!(!report.mutated);
+        assert!(report.evidence.is_some());
+        assert!(
+            resumed.content.contains("Verification succeeded")
+                || resumed.content.contains("succeeded")
+                || resumed.content.contains("Tests passed")
+                || resumed.content.contains("passed")
+        );
+    }
+
+    #[test]
+    fn c42_failing_tests_no_mutation() {
+        let stub = StubTerminalTool::failing(101, "FAILED\n");
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        let paused = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        let report = resumed.test_execution.expect("test_execution");
+        assert_eq!(report.status, Some(crate::TestExecutionStatus::Failed));
+        assert_eq!(report.exit_status, Some(101));
+        assert!(!report.mutated);
+        assert!(report.evidence.is_some());
+        assert_eq!(stub.run_count(), 1);
+        // Structured feedback — not a raw dump of the failed run.
+        assert!(!resumed.content.contains("12,000"));
+        assert!(
+            resumed.content.contains("Verification")
+                || resumed.content.contains("failed")
+                || resumed.content.contains("Unknown")
+        );
+    }
+
+    #[test]
+    fn c42_missing_test_command() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            project_open: true,
+            project_snapshot: Some(jaymi_context::ProjectSnapshot {
+                metadata: jaymi_context::ProjectMetadata {
+                    project_id: Some("notes".into()),
+                    name: Some("notes".into()),
+                    root_directory: Some("/notes".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        });
+        let response = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let report = response.test_execution.expect("test_execution");
+        assert_eq!(
+            report.status,
+            Some(crate::TestExecutionStatus::MissingCommand)
+        );
+        assert!(!response.awaiting_review);
+        assert!(response.tool_id.is_none());
+    }
+
+    #[test]
+    fn c42_timeout_surface() {
+        let stub = StubTerminalTool::timeout();
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        let paused = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner.resolve_review(ReviewIntent::Approve { plan_id });
+        // Provider Err may surface as JaymiError or failed tool path.
+        match resumed {
+            Ok(response) => {
+                if let Some(report) = response.test_execution {
+                    assert!(
+                        matches!(
+                            report.status,
+                            Some(crate::TestExecutionStatus::TimedOut)
+                                | Some(crate::TestExecutionStatus::CommandError)
+                                | Some(crate::TestExecutionStatus::Failed)
+                        ),
+                        "{:?}",
+                        report.status
+                    );
+                }
+            }
+            Err(err) => {
+                assert!(err.message().contains("timed out"));
+            }
+        }
+        assert_eq!(stub.run_count(), 1);
+    }
+
+    #[test]
+    fn c42_large_output_truncated_on_finalize() {
+        let huge = format!("{}ERROR_TAIL", "y".repeat(20_000));
+        let stub = StubTerminalTool::failing(1, &huge);
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        let paused = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        let report = resumed.test_execution.expect("test_execution");
+        assert!(report.truncated);
+        assert!(
+            report
+                .stdout
+                .as_deref()
+                .unwrap_or("")
+                .contains("ERROR_TAIL")
+        );
+    }
+
+    #[test]
+    fn c42_permission_gate_blocks_until_approve() {
+        let stub = StubTerminalTool::passing("ok");
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        let response = planner
+            .handle(UserRequest::new("Verify the tests pass."))
+            .unwrap();
+        assert!(response.awaiting_review);
+        assert!(response.permission_result.is_some());
+        assert_eq!(stub.run_count(), 0);
+        let cancelled = planner
+            .resolve_review(ReviewIntent::Cancel {
+                plan_id: response.execution_plan.expect("plan").id().clone(),
+            })
+            .unwrap();
+        assert_eq!(stub.run_count(), 0, "cancel must not execute");
+        assert!(!cancelled.awaiting_review);
+    }
+
+    #[test]
+    fn c43_compiler_errors_become_structured_feedback() {
+        let out = r#"
+error[E0308]: mismatched types
+  --> src/foo.rs:42:5
+error[E0382]: borrow of moved value
+  --> src/bar.rs:91:12
+error: aborting due to 2 previous errors
+"#;
+        let stub = StubTerminalTool::failing(101, out);
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        let paused = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        let report = resumed.test_execution.expect("test_execution");
+        let evidence = report.evidence.expect("verification evidence");
+        assert_eq!(
+            evidence.kind,
+            Some(crate::VerificationResultKind::BuildFailure)
+        );
+        assert!(evidence.errors.len() >= 2);
+        assert!(
+            resumed.content.to_ascii_lowercase().contains("build failed")
+                || resumed.content.contains("## Failure")
+        );
+        assert!(resumed.content.contains("src/foo.rs:42"));
+        assert!(resumed.verification_summary.is_some());
+        assert!(!resumed.content.contains("aborting due to 2 previous errors")
+            || resumed.content.contains("### Errors")
+            || resumed.content.contains("## Failure"));
+        // Context diagnostics pipeline received verification findings.
+        let session = planner.context.session_inputs();
+        assert!(session
+            .diagnostics
+            .diagnostics
+            .iter()
+            .any(|d| d.source.as_deref() == Some("verification")));
+    }
+
+    #[test]
+    fn c43_malformed_failure_does_not_invent_errors() {
+        let stub = StubTerminalTool::failing(2, "blargle frobnitz exited weirdly\n");
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        let paused = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        let evidence = resumed
+            .test_execution
+            .expect("test_execution")
+            .evidence
+            .expect("evidence");
+        assert_eq!(evidence.kind, Some(crate::VerificationResultKind::Unknown));
+        assert!(evidence.errors.is_empty());
+        assert!(resumed.content.contains("unclear") || resumed.content.contains("Unknown"));
+    }
+
+    #[test]
+    fn c44_compiler_failure_yields_corrective_plan_no_mutation() {
+        let out = r#"
+error[E0308]: mismatched types
+  --> src/foo.rs:42:5
+error[E0382]: borrow of moved value
+  --> src/bar.rs:91:12
+error: aborting due to 2 previous errors
+"#;
+        let stub = StubTerminalTool::failing(101, out);
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        let paused = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let _failed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        let runs_before_fix = stub.run_count();
+
+        let fixed = planner
+            .handle(UserRequest::new("Fix the build failure."))
+            .unwrap();
+        let report = fixed
+            .fix_from_verification
+            .expect("fix_from_verification");
+        assert_eq!(
+            report.status,
+            Some(crate::FixActionability::Actionable)
+        );
+        assert!(!report.mutated);
+        assert!(!report.auto_approved);
+        assert!(!report.auto_retried);
+        assert!(report.failing_files.iter().any(|f| f.contains("foo.rs")));
+        assert!(fixed.coding_plan.is_some());
+        assert!(!fixed.awaiting_review, "C4.4 must not auto-open mutation review");
+        assert!(fixed.tool_id.is_none());
+        assert_eq!(
+            stub.run_count(),
+            runs_before_fix,
+            "must not silently re-run verification"
+        );
+        assert!(fixed.content.contains("Review Before Action"));
+        assert!(planner.clone_last_coding_plan().is_some());
+    }
+
+    #[test]
+    fn c44_insufficient_evidence_does_not_invent_targets() {
+        let stub = StubTerminalTool::failing(2, "blargle frobnitz exited weirdly\n");
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        let paused = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let _ = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+
+        let fixed = planner
+            .handle(UserRequest::new("Fix the verification failure."))
+            .unwrap();
+        let report = fixed
+            .fix_from_verification
+            .expect("fix_from_verification");
+        assert_eq!(
+            report.status,
+            Some(crate::FixActionability::InsufficientEvidence)
+        );
+        assert!(report.failing_files.is_empty());
+        assert!(!report.mutated);
+        assert!(!fixed.awaiting_review);
+    }
+
+    #[test]
+    fn c44_environment_failure_is_not_code_mutation() {
+        let stub = StubTerminalTool::failing(
+            127,
+            "cargo: command not found\nNo such file or directory\n",
+        );
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        // Seed remembered environment evidence directly via a timed-out-style
+        // parse path: publish a CommandError-like evidence through finalize.
+        let mut seed = crate::TestExecutionReport {
+            status: Some(crate::TestExecutionStatus::CommandError),
+            command: Some("cargo test".into()),
+            working_directory: Some("/proj".into()),
+            exit_status: Some(127),
+            stdout: Some("cargo: command not found\nNo such file or directory\n".into()),
+            gaps: vec!["command not found".into()],
+            ..Default::default()
+        };
+        crate::verification_diagnostics::enrich_test_report(&mut seed);
+        // Force environment kind when parser classifies from output.
+        if let Some(evidence) = seed.evidence.as_mut() {
+            evidence.kind = Some(crate::VerificationResultKind::EnvironmentFailure);
+        }
+        planner.remember_verification_evidence(seed.evidence.clone());
+
+        let fixed = planner
+            .handle(UserRequest::new("Fix the failing tests."))
+            .unwrap();
+        let report = fixed
+            .fix_from_verification
+            .expect("fix_from_verification");
+        assert_eq!(
+            report.status,
+            Some(crate::FixActionability::NotCodeRelated)
+        );
+        assert!(!report.mutated);
+        assert!(!report.auto_approved);
+        assert_eq!(stub.run_count(), 0);
+    }
+
+    #[test]
+    fn c44_test_failure_and_no_auto_approve() {
+        let out = r#"
+running 1 test
+test suite::bad ... FAILED
+
+failures:
+
+---- suite::bad stdout ----
+thread 'suite::bad' panicked at 'assertion failed', src/lib.rs:10:5
+
+failures:
+    suite::bad
+
+test result: FAILED. 0 passed; 1 failed
+"#;
+        let stub = StubTerminalTool::failing(101, out);
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        let paused = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let _ = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+
+        let fixed = planner
+            .handle(UserRequest::new("Fix the failing tests."))
+            .unwrap();
+        let report = fixed.fix_from_verification.expect("report");
+        assert_eq!(report.status, Some(crate::FixActionability::Actionable));
+        assert!(
+            report
+                .failing_symbols
+                .iter()
+                .any(|s| s.contains("suite::bad"))
+                || report
+                    .supporting_evidence
+                    .iter()
+                    .any(|s| s.contains("suite::bad"))
+        );
+        assert!(!report.auto_approved);
+        assert!(!fixed.awaiting_review);
+        assert!(fixed.coding_plan.is_some());
+    }
+
+    #[test]
+    fn c44_fix_this_without_evidence_stays_coding_edit() {
+        let planner = planner_with_stub_terminal(StubTerminalTool::passing("ok"));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        let response = planner.handle(UserRequest::new("Fix this.")).unwrap();
+        assert!(response.fix_from_verification.is_none());
+        assert!(response.coding_edit.is_some());
+    }
+
+    #[test]
+    fn c45_passing_tests_produce_concise_summary() {
+        let stub = StubTerminalTool::passing("test result: ok. 43 passed; 0 failed\n");
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        let paused = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        let summary = resumed
+            .verification_summary
+            .expect("verification_summary");
+        assert_eq!(summary.status, Some(crate::VerificationStatus::Passed));
+        assert!(!summary.invented);
+        assert!(resumed.content.contains("## Verification"));
+        assert!(resumed.content.contains("43 tests passed") || resumed.content.contains("passed"));
+        assert!(!resumed.content.contains("12,000"));
+    }
+
+    #[test]
+    fn c45_not_run_while_awaiting_review() {
+        let stub = StubTerminalTool::passing("ok");
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        let response = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        assert!(response.awaiting_review);
+        let summary = response
+            .verification_summary
+            .expect("verification_summary");
+        assert_eq!(summary.status, Some(crate::VerificationStatus::NotRun));
+        assert!(!response.content.to_ascii_lowercase().contains("tests passed"));
+    }
+
+    #[test]
+    fn c45_cancelled_verification_is_not_claimed_passed() {
+        let stub = StubTerminalTool::passing("ok");
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        let response = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let cancelled = planner
+            .resolve_review(ReviewIntent::Cancel {
+                plan_id: response.execution_plan.expect("plan").id().clone(),
+            })
+            .unwrap();
+        let summary = cancelled
+            .verification_summary
+            .expect("verification_summary");
+        assert_eq!(summary.status, Some(crate::VerificationStatus::Cancelled));
+        assert!(!cancelled.content.to_ascii_lowercase().contains("tests passed"));
+        assert_eq!(stub.run_count(), 0);
+    }
+
+    #[test]
+    fn c45_failure_recommends_review_fix_chip() {
+        let out = r#"
+error[E0308]: mismatched types
+  --> src/foo.rs:42:5
+"#;
+        let stub = StubTerminalTool::failing(101, out);
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        let paused = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        let summary = resumed
+            .verification_summary
+            .expect("verification_summary");
+        assert_eq!(summary.status, Some(crate::VerificationStatus::Failed));
+        assert_eq!(
+            summary.recommended_fix_prompt.as_deref(),
+            Some("Fix the build failure.")
+        );
+        assert!(resumed.content.contains("[Review Fix]"));
+        let pair = resumed.pair_programming.expect("pair");
+        assert!(pair.suggested_actions.iter().any(|a| a.id == "review_fix"));
+        // Chip is conversational — not auto-executed.
+        assert_eq!(stub.run_count(), 1);
+        assert!(!resumed.awaiting_review);
+    }
+
+    fn seed_apply_loop(planner: &Planner, files: &[&str]) {
+        let summary = ExecutionSummary {
+            plan_id: ExecutionPlanId::from_existing("seed-apply"),
+            status: ExecutionStatus::Completed,
+            goal: "Fix this bug.".into(),
+            actions_performed: vec!["write_file".into()],
+            resources_changed: Vec::new(),
+            files_edited: files.iter().map(|s| (*s).to_string()).collect(),
+            duration_ms: 5,
+            warnings: Vec::new(),
+            errors: Vec::new(),
+            next_suggested_actions: Vec::new(),
+            tools_executed: vec!["write_file".into()],
+            outputs: Vec::new(),
+            partial: false,
+            files_moved_to_trash: Vec::new(),
+            files_permanently_deleted: Vec::new(),
+            recovery_available: None,
+            deletion_method: None,
+            error: None,
+        };
+        let mut response = PlannerResponse {
+            execution_summary: Some(summary),
+            content: "Applied.".into(),
+            ..PlannerResponse::default()
+        };
+        planner.note_apply_for_verification_loop(&mut response);
+        planner.attach_verification_summary(&mut response, false, Vec::new());
+        assert!(response.coding_verification_loop.is_some());
+        assert_eq!(
+            response
+                .verification_summary
+                .as_ref()
+                .and_then(|s| s.status),
+            Some(crate::VerificationStatus::NotRun)
+        );
+    }
+
+    #[test]
+    fn c46_apply_offers_verify_without_running_tests() {
+        let stub = StubTerminalTool::passing("ok");
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        seed_apply_loop(&planner, &["src/lib.rs"]);
+        let loop_state = planner
+            .clone_coding_verification_loop()
+            .expect("loop");
+        assert_eq!(
+            loop_state.phase,
+            crate::LoopPhase::AppliedAwaitingVerify
+        );
+        assert_eq!(stub.run_count(), 0);
+        assert!(!loop_state.auto_approved);
+        assert!(!loop_state.silent_retry);
+    }
+
+    #[test]
+    fn c46_verify_pass_ends_loop() {
+        let stub = StubTerminalTool::passing("test result: ok. 3 passed; 0 failed\n");
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        seed_apply_loop(&planner, &["src/a.rs"]);
+        let paused = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        let loop_state = resumed
+            .coding_verification_loop
+            .expect("loop on response");
+        assert_eq!(loop_state.phase, crate::LoopPhase::Passed);
+        assert!(!loop_state.active);
+        assert_eq!(
+            resumed
+                .verification_summary
+                .as_ref()
+                .and_then(|s| s.status),
+            Some(crate::VerificationStatus::Passed)
+        );
+    }
+
+    #[test]
+    fn c46_failure_then_user_cancellation() {
+        let stub = StubTerminalTool::failing(101, "error[E0308]: x\n  --> src/a.rs:1:1\n");
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        seed_apply_loop(&planner, &["src/a.rs"]);
+        let paused = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let _ = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        let stopped = planner.handle(UserRequest::new("Stop.")).unwrap();
+        let loop_state = stopped
+            .coding_verification_loop
+            .expect("cancelled loop");
+        assert_eq!(loop_state.phase, crate::LoopPhase::Cancelled);
+        assert!(!loop_state.active);
+        assert!(stopped.content.contains("Stopped"));
+    }
+
+    #[test]
+    fn c46_max_cycles_suppresses_review_fix() {
+        let out = "error[E0308]: x\n  --> src/a.rs:1:1\n";
+        let stub = StubTerminalTool::failing(101, out);
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        seed_apply_loop(&planner, &["src/a.rs"]);
+        for _ in 0..crate::MAX_CYCLES {
+            let paused = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+            let plan_id = paused.execution_plan.expect("plan").id().clone();
+            let _ = planner
+                .resolve_review(ReviewIntent::Approve { plan_id })
+                .unwrap();
+        }
+        let loop_state = planner
+            .clone_coding_verification_loop()
+            .expect("loop");
+        assert_eq!(loop_state.phase, crate::LoopPhase::Exhausted);
+        assert!(crate::coding_verification_loop::suppress_fix_offer(Some(
+            &loop_state
+        )));
+        assert!(!loop_state.auto_approved);
+        assert_eq!(loop_state.cycles_completed, crate::MAX_CYCLES);
+    }
+
+    #[test]
+    fn c46_no_mutation_without_review_on_failure() {
+        let stub = StubTerminalTool::failing(
+            101,
+            "error[E0308]: mismatched types\n  --> src/foo.rs:42:5\n",
+        );
+        let planner = planner_with_stub_terminal(Arc::clone(&stub));
+        planner
+            .context
+            .set_session_inputs(session_cargo_for_tests());
+        seed_apply_loop(&planner, &["src/foo.rs"]);
+        let paused = planner.handle(UserRequest::new("Run the tests.")).unwrap();
+        let plan_id = paused.execution_plan.expect("plan").id().clone();
+        let resumed = planner
+            .resolve_review(ReviewIntent::Approve { plan_id })
+            .unwrap();
+        assert!(!resumed.awaiting_review || resumed.test_execution.is_some());
+        // Failure offers fix conversationally — does not open mutation review.
+        let loop_state = resumed.coding_verification_loop.expect("loop");
+        assert_eq!(loop_state.phase, crate::LoopPhase::FailedAwaitingFix);
+        assert!(!loop_state.auto_approved);
+        assert!(!loop_state.silent_retry);
+        let pair = resumed.pair_programming.expect("pair");
+        assert!(pair.suggested_actions.iter().any(|a| a.id == "review_fix"));
+    }
+
+    #[test]
+    fn c51_create_multi_step_goal_no_mutation() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            project_open: true,
+            project_snapshot: Some(jaymi_context::ProjectSnapshot {
+                metadata: jaymi_context::ProjectMetadata {
+                    project_id: Some("demo".into()),
+                    name: Some("demo".into()),
+                    root_directory: Some("/proj".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["project".into()],
+            ..Default::default()
+        });
+        let response = planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        let goal = response.coding_goal.expect("coding_goal");
+        assert_eq!(goal.status, crate::CodingGoalStatus::Active);
+        assert!(!goal.mutated);
+        assert!(!goal.tools_executed);
+        assert!(response.tool_id.is_none());
+        assert!(response.execution_plan.is_none());
+        assert!(!response.awaiting_review);
+        assert!(response.coding_plan.is_none());
+        assert!(response.content.contains("Coding Goal"));
+        assert!(response.content.contains("proposed") || response.content.contains("Acceptance"));
+    }
+
+    #[test]
+    fn c51_one_step_and_readonly_do_not_create_goal() {
+        let planner = planner_with_search_and_read();
+        for prompt in [
+            "Rename this variable.",
+            "Write tests.",
+            "Explain this function.",
+            "Help with authentication.",
+            "What does AuthService do?",
+        ] {
+            let response = planner.handle(UserRequest::new(prompt)).unwrap();
+            assert!(
+                response.coding_goal.is_none(),
+                "unexpected coding_goal for {prompt}: {}",
+                response.content
+            );
+        }
+    }
+
+    #[test]
+    fn c51_multi_step_examples_create_goals() {
+        let planner = planner_with_search_and_read();
+        for prompt in [
+            "Refactor the authentication architecture.",
+            "Add image generation to the application.",
+            "Fix all the compiler errors in this project.",
+        ] {
+            let response = planner.handle(UserRequest::new(prompt)).unwrap();
+            let goal = response
+                .coding_goal
+                .unwrap_or_else(|| panic!("expected coding_goal for {prompt}"));
+            assert_eq!(goal.status, crate::CodingGoalStatus::Active);
+            assert!(!goal.mutated);
+            assert!(!goal.tools_executed);
+        }
+    }
+
+    #[test]
+    fn c51_goal_persists_across_turns() {
+        let planner = planner_with_search_and_read();
+        let created = planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        let id = created.coding_goal.expect("goal").id.clone();
+
+        // Ordinary question must not clear or replace the goal.
+        let qa = planner
+            .handle(UserRequest::new("Explain this function."))
+            .unwrap();
+        assert!(qa.coding_goal.is_none());
+
+        let status = planner
+            .handle(UserRequest::new("What's my current goal?"))
+            .unwrap();
+        let goal = status.coding_goal.expect("persisted goal");
+        assert_eq!(goal.id, id);
+        assert_eq!(goal.status, crate::CodingGoalStatus::Active);
+        assert!(goal.user_objective.contains("login"));
+    }
+
+    #[test]
+    fn c51_cancel_complete_and_blocked() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        let cancelled = planner
+            .handle(UserRequest::new("Cancel this goal."))
+            .unwrap();
+        let cancelled_goal = cancelled.coding_goal.expect("cancelled");
+        assert_eq!(cancelled_goal.status, crate::CodingGoalStatus::Cancelled);
+        assert_eq!(
+            cancelled_goal.agent_lifecycle.state,
+            crate::AgentLifecycleState::Cancelled
+        );
+        assert!(!cancelled_goal.mutated);
+
+        planner
+            .handle(UserRequest::new(
+                "Refactor the authentication architecture.",
+            ))
+            .unwrap();
+        let blocked = planner
+            .handle(UserRequest::new(
+                "This goal is blocked because OAuth keys are missing.",
+            ))
+            .unwrap();
+        let blocked_goal = blocked.coding_goal.expect("blocked");
+        assert_eq!(blocked_goal.status, crate::CodingGoalStatus::Blocked);
+        assert_eq!(
+            blocked_goal.agent_lifecycle.state,
+            crate::AgentLifecycleState::Blocked
+        );
+        assert!(blocked_goal
+            .blockers
+            .iter()
+            .any(|b| b.to_ascii_lowercase().contains("oauth")));
+
+        // Complete without evidence is refused (C5.3).
+        let refused = planner
+            .handle(UserRequest::new("Mark this goal complete."))
+            .unwrap();
+        assert!(
+            refused.content.to_ascii_lowercase().contains("evidence")
+                || refused.content.to_ascii_lowercase().contains("could not")
+        );
+    }
+
+    #[test]
+    fn c53_pause_resume_and_cancel_during_investigation() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        let understanding = planner
+            .handle(UserRequest::new("Begin understanding."))
+            .unwrap();
+        assert_eq!(
+            understanding
+                .coding_goal
+                .as_ref()
+                .unwrap()
+                .agent_lifecycle
+                .state,
+            crate::AgentLifecycleState::Understanding
+        );
+
+        let paused = planner
+            .handle(UserRequest::new("Pause this goal."))
+            .unwrap();
+        assert_eq!(
+            paused.coding_goal.as_ref().unwrap().agent_lifecycle.state,
+            crate::AgentLifecycleState::Paused
+        );
+        assert!(
+            paused.agent_control.is_some() || paused.agent_lifecycle.as_ref().is_some_and(|r| r.ok),
+            "pause should report via C5.8 control or C5.3 lifecycle"
+        );
+
+        let resumed = planner
+            .handle(UserRequest::new("Resume this goal."))
+            .unwrap();
+        assert_eq!(
+            resumed.coding_goal.as_ref().unwrap().agent_lifecycle.state,
+            crate::AgentLifecycleState::Understanding
+        );
+
+        planner
+            .handle(UserRequest::new("Begin investigation."))
+            .unwrap();
+        let cancelled = planner
+            .handle(UserRequest::new("Cancel this goal."))
+            .unwrap();
+        assert_eq!(
+            cancelled.coding_goal.as_ref().unwrap().agent_lifecycle.state,
+            crate::AgentLifecycleState::Cancelled
+        );
+        assert!(cancelled.coding_goal.as_ref().unwrap().control.cancelled);
+    }
+
+    #[test]
+    fn c53_awaiting_approval_blocks_execution_without_record() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        // Drive lifecycle via Planner store (Planner-owned API — not LLM).
+        let conversation_id = None;
+        planner.with_coding_goal_store(|store| {
+            let goal = store.active_goal_mut(conversation_id).unwrap();
+            *goal = crate::agent_state_machine::transition_goal(
+                goal.clone(),
+                crate::AgentLifecycleEvent::BeginPlanning {
+                    reason: "plan".into(),
+                },
+            )
+            .unwrap();
+            *goal = crate::agent_state_machine::transition_goal(
+                goal.clone(),
+                crate::AgentLifecycleEvent::SubmitForApproval {
+                    plan_id: "plan-1".into(),
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                goal.agent_lifecycle.state,
+                crate::AgentLifecycleState::AwaitingApproval
+            );
+            assert!(!goal.agent_lifecycle.state.allows_mutation_execution());
+            assert!(crate::agent_state_machine::transition_goal(
+                goal.clone(),
+                crate::AgentLifecycleEvent::BeginExecution {
+                    approved_plan_id: "plan-1".into(),
+                },
+            )
+            .is_err());
+        });
+    }
+
+    #[test]
+    fn c54_two_sequential_tasks_and_no_mutation_without_approval() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        let started = planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+        let report = started.multi_step_execution.expect("multi_step");
+        assert_eq!(report.status, crate::MultiStepStatus::Started);
+        assert!(!report.mutated);
+        assert!(!report.tools_executed);
+        assert!(!report.auto_approved);
+        assert!(!report.llm_direct_tools);
+        assert!(started.execution_plan.is_none());
+        assert!(started.tool_id.is_none());
+        let goal = started.coding_goal.expect("goal");
+        assert!(goal.active_task_id.is_some());
+        assert_eq!(
+            goal.tasks
+                .iter()
+                .filter(|t| t.status == crate::GoalTaskStatus::InProgress)
+                .count(),
+            1
+        );
+
+        // Cannot advance while first task is still in progress.
+        let blocked_advance = planner
+            .handle(UserRequest::new("Advance to the next task."))
+            .unwrap();
+        assert_eq!(
+            blocked_advance
+                .multi_step_execution
+                .as_ref()
+                .unwrap()
+                .status,
+            crate::MultiStepStatus::Rejected
+        );
+
+        // Complete first task with evidence (Planner-owned), then continue.
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            let tid = g.active_task_id.clone().unwrap();
+            let task = g.tasks.iter().find(|t| t.id == tid).unwrap().clone();
+            let evidence = crate::TaskCompletionEvidence {
+                summary: "First task investigation complete".into(),
+                approved_plan_id: if task.mutation_expected {
+                    Some("plan-1".into())
+                } else {
+                    None
+                },
+                verification_ref: task.expected_verification.as_ref().map(|_| "ver-1".into()),
+                verification_passed: task.expected_verification.is_some(),
+                investigation_complete: !task.mutation_expected,
+            };
+            let (next, _) =
+                crate::multi_step_execution::complete_active_task_with_evidence(g.clone(), evidence)
+                    .unwrap();
+            *g = next;
+        });
+
+        let continued = planner
+            .handle(UserRequest::new("Continue the goal."))
+            .unwrap();
+        let cont = continued.multi_step_execution.expect("continue");
+        assert!(matches!(
+            cont.status,
+            crate::MultiStepStatus::Continued | crate::MultiStepStatus::Advanced
+        ));
+        assert!(continued.coding_goal.as_ref().unwrap().active_task_id.is_some());
+        assert!(!cont.mutated);
+        assert!(!cont.auto_approved);
+    }
+
+    #[test]
+    fn c54_dependent_blocked_independent_and_failure() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+
+        // Replace with controlled graph: t1 → t2 (dep), t3 independent.
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            g.tasks = vec![
+                crate::GoalTask {
+                    id: "t1".into(),
+                    description: "Investigate auth".into(),
+                    objective: "Investigate auth".into(),
+                    dependencies: vec![],
+                    mutation_expected: false,
+                    expected_verification: None,
+                    status: crate::GoalTaskStatus::Pending,
+                    ..crate::GoalTask::default()
+                },
+                crate::GoalTask {
+                    id: "t2".into(),
+                    description: "Implement login".into(),
+                    objective: "Implement login".into(),
+                    dependencies: vec!["t1".into()],
+                    mutation_expected: true,
+                    expected_verification: Some("tests".into()),
+                    status: crate::GoalTaskStatus::Pending,
+                    ..crate::GoalTask::default()
+                },
+                crate::GoalTask {
+                    id: "t3".into(),
+                    description: "Docs pass".into(),
+                    objective: "Docs pass".into(),
+                    dependencies: vec![],
+                    mutation_expected: false,
+                    expected_verification: None,
+                    status: crate::GoalTaskStatus::Pending,
+                    ..crate::GoalTask::default()
+                },
+            ];
+            g.active_task_id = None;
+        });
+
+        // Dependent t2 cannot start before t1.
+        let blocked = {
+            let g = planner
+                .clone_coding_goal_store()
+                .active_goal(None)
+                .unwrap()
+                .clone();
+            crate::goal_decomposition::transition_task_status(
+                g,
+                "t2",
+                crate::GoalTaskStatus::InProgress,
+            )
+        };
+        assert!(blocked.is_err());
+
+        let started = planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+        let active = started
+            .coding_goal
+            .as_ref()
+            .unwrap()
+            .active_task_id
+            .clone()
+            .unwrap();
+        assert!(active == "t1" || active == "t3");
+
+        // Fail active task — dependents of that task stay blocked.
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            let tid = g.active_task_id.clone().unwrap();
+            let (next, _) = crate::goal_decomposition::transition_task_status(
+                g.clone(),
+                &tid,
+                crate::GoalTaskStatus::Failed,
+            )
+            .unwrap();
+            *g = next;
+            g.active_task_id = None;
+        });
+
+        let after_fail = planner
+            .handle(UserRequest::new("Continue the goal."))
+            .unwrap();
+        if let Some(goal) = after_fail.coding_goal.as_ref() {
+            if goal.tasks.iter().any(|t| t.id == "t1" && t.status == crate::GoalTaskStatus::Failed)
+            {
+                assert!(goal
+                    .tasks
+                    .iter()
+                    .find(|t| t.id == "t2")
+                    .map(|t| t.status != crate::GoalTaskStatus::InProgress)
+                    .unwrap_or(true));
+            }
+        }
+    }
+
+    #[test]
+    fn c54_verification_failure_cancel_pause_and_bounds() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+
+        // Verification failure after observing approved apply.
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            let next = crate::multi_step_execution::on_apply_success(g.clone(), "plan-v").unwrap();
+            let (next, report) =
+                crate::multi_step_execution::on_verify_fail(next, "cargo-test").unwrap();
+            assert_eq!(report.status, crate::MultiStepStatus::VerificationFailed);
+            assert_eq!(
+                next.agent_lifecycle.state,
+                crate::AgentLifecycleState::Correcting
+            );
+            *g = next;
+        });
+
+        // Pause / resume still work via C5.3.
+        let paused = planner
+            .handle(UserRequest::new("Pause this goal."))
+            .unwrap();
+        assert_eq!(
+            paused.coding_goal.as_ref().unwrap().agent_lifecycle.state,
+            crate::AgentLifecycleState::Paused
+        );
+        // Multi-step start rejected while paused.
+        let rejected = planner
+            .handle(UserRequest::new("Continue the goal."))
+            .unwrap();
+        assert_eq!(
+            rejected.multi_step_execution.as_ref().unwrap().status,
+            crate::MultiStepStatus::Rejected
+        );
+        planner
+            .handle(UserRequest::new("Resume this goal."))
+            .unwrap();
+
+        // Workflow bound prevents infinite orchestration loops.
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            g.workflow_transition_count =
+                crate::MAX_WORKFLOW_TRANSITIONS as u32;
+            assert!(crate::multi_step_execution::start_goal_execution(g.clone()).is_err());
+        });
+
+        let cancelled = planner
+            .handle(UserRequest::new("Cancel this goal."))
+            .unwrap();
+        assert_eq!(
+            cancelled.coding_goal.as_ref().unwrap().agent_lifecycle.state,
+            crate::AgentLifecycleState::Cancelled
+        );
+    }
+
+    #[test]
+    fn c54_approval_rejection_and_successful_goal_completion() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+
+        // Approval gate: AwaitingApproval blocks BeginExecution without RecordApproval.
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginPlanning {
+                    reason: "c54".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::SubmitForApproval {
+                    plan_id: "plan-reject".into(),
+                },
+            )
+            .unwrap();
+            assert!(!g.agent_lifecycle.state.allows_mutation_execution());
+            assert!(crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginExecution {
+                    approved_plan_id: "plan-reject".into(),
+                },
+            )
+            .is_err());
+        });
+
+        // Fresh goal for successful completion path.
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new(
+                "Build a login system. Keep this as one task only.",
+            ))
+            .unwrap();
+        planner.with_coding_goal_store(|store| {
+            if let Some(goal) = store.active_goal_mut(None) {
+                if !goal.constraints.iter().any(|c| c.contains("one task")) {
+                    goal.constraints
+                        .push("Keep this as one task only.".into());
+                }
+            }
+        });
+        planner
+            .handle(UserRequest::new("Decompose the goal."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            let tid = g.active_task_id.clone().unwrap();
+            let task = g.tasks.iter().find(|t| t.id == tid).unwrap().clone();
+            let evidence = crate::TaskCompletionEvidence {
+                summary: "Task done with investigation".into(),
+                approved_plan_id: if task.mutation_expected {
+                    Some("plan-ok".into())
+                } else {
+                    None
+                },
+                verification_ref: None,
+                verification_passed: false,
+                investigation_complete: true,
+            };
+            // If mutation expected without verification, approved_plan_id is enough.
+            let evidence = if task.mutation_expected && task.expected_verification.is_some() {
+                crate::TaskCompletionEvidence {
+                    verification_ref: Some("ver-ok".into()),
+                    verification_passed: true,
+                    ..evidence
+                }
+            } else {
+                evidence
+            };
+            let (next, _) =
+                crate::multi_step_execution::complete_active_task_with_evidence(g.clone(), evidence)
+                    .unwrap();
+            *g = next;
+        });
+
+        let ready = planner
+            .handle(UserRequest::new("Continue the goal."))
+            .unwrap();
+        assert!(matches!(
+            ready.multi_step_execution.as_ref().unwrap().status,
+            crate::MultiStepStatus::GoalReadyToComplete | crate::MultiStepStatus::Continued
+        ));
+
+        // Goal complete still requires C5.3 completion evidence.
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::Complete {
+                    evidence: crate::CompletionEvidence {
+                        summary: "Login goal verified".into(),
+                        references: vec!["ver-ok".into()],
+                        source: crate::CompletionEvidenceSource::VerificationPassed,
+                        verification_passed: true,
+                    },
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                g.agent_lifecycle.state,
+                crate::AgentLifecycleState::Completed
+            );
+        });
+    }
+
+    #[test]
+    fn c55_multi_task_context_and_compaction() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system without OAuth."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+
+        let maintained = planner
+            .handle(UserRequest::new("Maintain agent context."))
+            .unwrap();
+        let report = maintained
+            .agent_context_maintenance
+            .expect("agent_context_maintenance");
+        assert_eq!(report.status, crate::AgentContextStatus::Maintained);
+        assert!(!report.mutated);
+        assert!(!report.tools_executed);
+        assert!(!report.memory_written);
+        assert!(!report.duplicate_assembler);
+        let ctx = report.context.expect("context");
+        assert!(ctx.current_task.is_some());
+        assert!(
+            ctx.constraints
+                .iter()
+                .any(|c| c.to_ascii_lowercase().contains("oauth")),
+            "constraints must survive maintenance"
+        );
+        assert!(maintained.content.contains("Agent Context"));
+
+        // Inflate history then compact — constraints + decisions retained.
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            g.notes
+                .push("Decision: prefer session cookies over JWT.".into());
+            for i in 0..50 {
+                g.workflow_history
+                    .push(crate::WorkflowRecord {
+                        sequence: 100 + i,
+                        kind: "noise".into(),
+                        task_id: None,
+                        detail: format!("bulk history {i} {}", "z".repeat(40)),
+                    });
+                g.completed_work.push(format!("finished chunk {i}"));
+            }
+        });
+
+        let compacted = planner
+            .handle(UserRequest::new("Compact goal context."))
+            .unwrap();
+        let creport = compacted.agent_context_maintenance.expect("compact");
+        assert_eq!(creport.status, crate::AgentContextStatus::Compacted);
+        let cctx = creport.context.expect("compacted ctx");
+        assert!(cctx.compacted);
+        assert!(cctx
+            .constraints
+            .iter()
+            .any(|c| c.to_ascii_lowercase().contains("oauth")));
+        assert!(cctx
+            .decisions
+            .iter()
+            .any(|d| d.summary.contains("session cookies")));
+        assert!(cctx.chars_estimate <= crate::MAX_GOAL_CONTEXT_CHARS + 400);
+    }
+
+    #[test]
+    fn c55_failed_verification_and_workspace_refresh() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            g.verification_state = crate::GoalVerificationState::Failed;
+            g.agent_lifecycle.state = crate::AgentLifecycleState::Correcting;
+            g.workflow_history.push(crate::WorkflowRecord {
+                sequence: 1,
+                kind: "verify_fail".into(),
+                task_id: g.active_task_id.clone(),
+                detail: "Verification failed `cargo test`".into(),
+            });
+        });
+
+        // Build a ContextBundle with Policy-selected labels (still engine-minted empty + patched).
+        let mut bundle = jaymi_context::ContextBundle::default();
+        // Prefer assemble via engine when possible.
+        let assembled = planner.context.assemble(&UserRequest::new("status")).ok();
+        let response = if let Some(ctx_bundle) = assembled {
+            // Soft path uses handle which reassembles; drive maintain_from_goal for refresh.
+            let goal = planner
+                .clone_coding_goal_store()
+                .active_goal(None)
+                .cloned()
+                .unwrap();
+            let maintained =
+                crate::agent_context_maintenance::maintain_from_goal(&goal, Some(&ctx_bundle));
+            assert!(
+                !maintained.failures.is_empty(),
+                "failed verification must remain available"
+            );
+            // workspace_refresh may be None on empty session — still must not invent snapshots.
+            let s = serde_json::to_string(&maintained).unwrap();
+            assert!(!s.contains("WorkspaceSnapshot"));
+            assert!(!s.contains("ProjectSnapshot"));
+            planner
+                .handle(UserRequest::new("Show agent context."))
+                .unwrap()
+        } else {
+            let _ = &mut bundle;
+            planner
+                .handle(UserRequest::new("Show agent context."))
+                .unwrap()
+        };
+        let report = response.agent_context_maintenance.expect("show");
+        assert!(!report.duplicate_assembler);
+        assert!(report
+            .context
+            .as_ref()
+            .map(|c| !c.failures.is_empty())
+            .unwrap_or(false));
+    }
+
+    #[test]
+    fn c55_no_goal_and_llm_attach_only_with_active_goal() {
+        let planner = planner_with_search_and_read();
+        let no_goal = planner
+            .handle(UserRequest::new("Maintain agent context."))
+            .unwrap();
+        assert_eq!(
+            no_goal
+                .agent_context_maintenance
+                .as_ref()
+                .unwrap()
+                .status,
+            crate::AgentContextStatus::NoActiveGoal
+        );
+
+        // Ordinary coding conversation path must not invent agent context without a goal.
+        let bundle = jaymi_context::ContextBundle::default();
+        let llm = jaymi_context::LlmContext::from_bundle(&bundle);
+        let same = crate::agent_context_maintenance::attach_to_llm(llm.clone(), None, &bundle);
+        assert_eq!(same.extensions.len(), llm.extensions.len());
+
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        let goal = planner
+            .clone_coding_goal_store()
+            .active_goal(None)
+            .cloned();
+        let attached =
+            crate::agent_context_maintenance::attach_to_llm(llm, goal.as_ref(), &bundle);
+        assert!(attached
+            .extensions
+            .contains_key(crate::agent_context_maintenance::LLM_EXTENSION_KEY));
+    }
+
+    #[test]
+    fn c56_autonomy_policy_status_and_gates() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+
+        let status = planner
+            .handle(UserRequest::new("Autonomy policy status."))
+            .unwrap();
+        let report = status.autonomy_policy.expect("autonomy_policy");
+        assert_eq!(report.status, crate::AutonomyPolicyStatus::Status);
+        assert!(!report.modes_implemented);
+        assert!(!report.agent_approval_system);
+        assert!(!report.llm_self_authorize);
+        assert!(!report.read_observe_examples.is_empty());
+        assert!(!report.mutation_examples.is_empty());
+        assert!(!report.side_effect_examples.is_empty());
+        assert!(status.content.contains("READ / OBSERVE"));
+
+        let explain = planner
+            .handle(UserRequest::new("What can this goal do automatically?"))
+            .unwrap();
+        assert_eq!(
+            explain.autonomy_policy.as_ref().unwrap().status,
+            crate::AutonomyPolicyStatus::Explained
+        );
+
+        // Bind approval via lifecycle Submit → Record; rejection of mismatched plan.
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginPlanning {
+                    reason: "c56".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::SubmitForApproval {
+                    plan_id: "plan-c56".into(),
+                },
+            )
+            .unwrap();
+            assert!(g.autonomy_policy.active.is_some());
+            assert_eq!(
+                g.autonomy_policy.active.as_ref().unwrap().plan_id,
+                "plan-c56"
+            );
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::RecordApproval {
+                    plan_id: "plan-c56".into(),
+                },
+            )
+            .unwrap();
+            assert!(g.autonomy_policy.active.as_ref().unwrap().recorded);
+            assert!(crate::approval_autonomy_policy::assert_execution_authorized(
+                g, "plan-c56"
+            )
+            .is_ok());
+            assert!(crate::approval_autonomy_policy::assert_execution_authorized(
+                g, "plan-other"
+            )
+            .is_err());
+
+            // Rejection path: BeginExecution without matching approval still fails.
+            assert!(crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginExecution {
+                    approved_plan_id: "plan-stale".into(),
+                },
+            )
+            .is_err());
+
+            // Cancel invalidates.
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::Cancel {
+                    reason: "c56 cancel".into(),
+                },
+            )
+            .unwrap();
+            assert!(crate::approval_autonomy_policy::assert_execution_authorized(
+                g, "plan-c56"
+            )
+            .is_err());
+        });
+    }
+
+    #[test]
+    fn c57_goal_start_and_task_transition_progress() {
+        let planner = planner_with_search_and_read();
+        let created = planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        assert!(created.agent_progress.is_some(), "active goal attaches progress");
+        assert!(!created
+            .agent_progress
+            .as_ref()
+            .unwrap()
+            .exposes_chain_of_thought);
+        assert!(!created.agent_progress.as_ref().unwrap().second_agent_state);
+
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        let started = planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+        let progress = started.agent_progress.expect("progress after start");
+        assert!(progress.total_tasks >= 2);
+        assert!(progress.current_task.is_some());
+        assert_eq!(progress.completed_count, 0);
+        assert!(!progress.exposes_chain_of_thought);
+
+        let shown = planner
+            .handle(UserRequest::new("Show goal progress."))
+            .unwrap();
+        let report = shown.agent_progress_report.expect("progress report");
+        assert_eq!(report.status, crate::ProgressReportStatus::Shown);
+        assert!(shown.content.contains("Goal Progress"));
+        assert!(shown.content.contains("tasks"));
+        let lower = shown.content.to_ascii_lowercase();
+        assert!(
+            lower.contains("no private reasoning") || lower.contains("operational progress only"),
+            "progress UX must disclaim private reasoning, not embed CoT"
+        );
+        assert!(!lower.contains("hidden reasoning"));
+        assert!(!lower.contains("deliberation scratch"));
+
+        // Transition: complete active task → continue → progress updates.
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            let tid = g.active_task_id.clone().unwrap();
+            let task = g.tasks.iter().find(|t| t.id == tid).unwrap().clone();
+            let evidence = crate::TaskCompletionEvidence {
+                summary: "c57 first task done".into(),
+                approved_plan_id: if task.mutation_expected {
+                    Some("plan-c57".into())
+                } else {
+                    None
+                },
+                verification_ref: task.expected_verification.as_ref().map(|_| "ver-c57".into()),
+                verification_passed: task.expected_verification.is_some(),
+                investigation_complete: !task.mutation_expected,
+            };
+            let (next, _) =
+                crate::multi_step_execution::complete_active_task_with_evidence(g.clone(), evidence)
+                    .unwrap();
+            *g = next;
+        });
+        let continued = planner
+            .handle(UserRequest::new("Continue the goal."))
+            .unwrap();
+        let after = continued.agent_progress.expect("progress after transition");
+        assert!(after.completed_count >= 1);
+        assert_eq!(
+            after.goal_id,
+            continued.coding_goal.as_ref().unwrap().id,
+            "UI progress mirrors Planner goal id"
+        );
+    }
+
+    #[test]
+    fn c57_approval_execution_verification_failure_blocked() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginPlanning {
+                    reason: "c57".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::SubmitForApproval {
+                    plan_id: "plan-c57".into(),
+                },
+            )
+            .unwrap();
+        });
+        let approval = planner
+            .handle(UserRequest::new("Show goal progress."))
+            .unwrap();
+        let ap = approval.agent_progress.expect("approval progress");
+        assert_eq!(ap.phase, crate::ProgressPhase::ApprovalRequired);
+        assert!(ap.approval_required);
+        assert!(ap.actions.iter().any(|a| a.id == "review_goal"));
+
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::RecordApproval {
+                    plan_id: "plan-c57".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginExecution {
+                    approved_plan_id: "plan-c57".into(),
+                },
+            )
+            .unwrap();
+        });
+        let exec = planner
+            .handle(UserRequest::new("Show goal progress."))
+            .unwrap();
+        assert_eq!(
+            exec.agent_progress.as_ref().unwrap().phase,
+            crate::ProgressPhase::Executing
+        );
+
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginVerification {
+                    reason: "c57 verify".into(),
+                },
+            )
+            .unwrap();
+        });
+        let verifying = planner
+            .handle(UserRequest::new("Show goal progress."))
+            .unwrap();
+        assert_eq!(
+            verifying.agent_progress.as_ref().unwrap().phase,
+            crate::ProgressPhase::Verifying
+        );
+
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::VerificationFailed {
+                    evidence_ref: "tests failed".into(),
+                },
+            )
+            .unwrap();
+        });
+        let failed = planner
+            .handle(UserRequest::new("Show goal progress."))
+            .unwrap();
+        let fp = failed.agent_progress.expect("failed progress");
+        assert_eq!(fp.phase, crate::ProgressPhase::Correcting);
+
+        // Fresh goal for blocked.
+        let planner2 = planner_with_search_and_read();
+        planner2
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner2
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner2
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+        planner2.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::Block {
+                    reason: "missing credentials".into(),
+                },
+            )
+            .unwrap();
+        });
+        let blocked = planner2
+            .handle(UserRequest::new("Show goal progress."))
+            .unwrap();
+        let bp = blocked.agent_progress.expect("blocked progress");
+        assert_eq!(bp.phase, crate::ProgressPhase::Blocked);
+        assert!(!bp.blockers.is_empty());
+    }
+
+    #[test]
+    fn c57_pause_cancel_completion_and_ui_mirrors_planner() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+
+        let paused = planner
+            .handle(UserRequest::new("Pause this goal."))
+            .unwrap();
+        let pp = paused.agent_progress.expect("paused progress");
+        assert_eq!(pp.phase, crate::ProgressPhase::Paused);
+        assert!(pp.actions.iter().any(|a| a.id == "resume_goal"));
+        assert_eq!(
+            pp.phase,
+            crate::ProgressPhase::from_lifecycle(
+                paused.coding_goal.as_ref().unwrap().agent_lifecycle.state
+            )
+        );
+
+        planner
+            .handle(UserRequest::new("Resume this goal."))
+            .unwrap();
+        let cancelled = planner
+            .handle(UserRequest::new("Cancel this goal."))
+            .unwrap();
+        // Terminal goals do not auto-attach progress in finalize; explicit show may report none.
+        assert!(
+            cancelled.coding_goal.as_ref().map(|g| g.status.is_terminal()) == Some(true)
+                || cancelled
+                    .agent_progress
+                    .as_ref()
+                    .map(|p| p.phase == crate::ProgressPhase::Cancelled)
+                    .unwrap_or(true)
+        );
+
+        // Completion path on a fresh goal.
+        let planner2 = planner_with_search_and_read();
+        planner2
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner2
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner2
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+        let completed_view = planner2
+            .with_coding_goal_store(|store| {
+                let g = store.active_goal_mut(None).unwrap();
+                for t in &mut g.tasks {
+                    t.status = crate::GoalTaskStatus::Completed;
+                }
+                g.active_task_id = None;
+                *g = crate::agent_state_machine::transition_goal(
+                    g.clone(),
+                    crate::AgentLifecycleEvent::Complete {
+                        evidence: crate::CompletionEvidence {
+                            summary: "all tasks done".into(),
+                            references: vec!["ver-c57".into()],
+                            source: crate::CompletionEvidenceSource::VerificationPassed,
+                            verification_passed: true,
+                        },
+                    },
+                )
+                .unwrap();
+                assert_eq!(
+                    g.agent_lifecycle.state,
+                    crate::AgentLifecycleState::Completed
+                );
+                crate::agent_progress_ux::derive_progress(g)
+            })
+            .expect("coding goal store");
+        assert_eq!(completed_view.phase, crate::ProgressPhase::Completed);
+        assert_eq!(completed_view.completed_count, completed_view.total_tasks);
+        assert!(!completed_view.exposes_chain_of_thought);
+        assert!(!completed_view.second_agent_state);
+        let panel = completed_view.panel_lines();
+        assert!(panel
+            .iter()
+            .any(|l| l.contains(&completed_view.title) || l == &completed_view.title));
+    }
+
+    #[test]
+    fn c58_pause_resume_cancel_and_stale_resume() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+
+        let paused = planner
+            .handle(UserRequest::new("Pause this goal."))
+            .unwrap();
+        let control = paused.agent_control.expect("agent_control");
+        assert_eq!(control.status, crate::AgentControlStatus::Paused);
+        assert!(control.stop_new_operations);
+        assert!(control.resumable);
+        assert!(!control.rolled_back_mutations);
+        assert!(!control.parallel_cancel_engine);
+        assert!(control.planner_owned);
+        assert!(!crate::agent_pause_resume_cancel::allows_new_operations(
+            paused.coding_goal.as_ref().unwrap()
+        ));
+
+        // Multi-step must not continue while paused.
+        let rejected = planner
+            .handle(UserRequest::new("Continue the goal."))
+            .unwrap();
+        assert_eq!(
+            rejected.multi_step_execution.as_ref().unwrap().status,
+            crate::MultiStepStatus::Rejected
+        );
+
+        let resumed = planner
+            .handle(UserRequest::new("Resume this goal."))
+            .unwrap();
+        assert_eq!(
+            resumed.agent_control.as_ref().unwrap().status,
+            crate::AgentControlStatus::Resumed
+        );
+        assert!(crate::agent_pause_resume_cancel::allows_new_operations(
+            resumed.coding_goal.as_ref().unwrap()
+        ));
+
+        // Cancel during execution phase.
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginPlanning {
+                    reason: "c58".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::SubmitForApproval {
+                    plan_id: "plan-c58".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::RecordApproval {
+                    plan_id: "plan-c58".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginExecution {
+                    approved_plan_id: "plan-c58".into(),
+                },
+            )
+            .unwrap();
+        });
+        let cancelled = planner
+            .handle(UserRequest::new("Cancel this goal."))
+            .unwrap();
+        let creport = cancelled.agent_control.expect("cancel report");
+        assert_eq!(creport.status, crate::AgentControlStatus::Cancelled);
+        assert!(creport.approvals_invalidated);
+        assert!(!creport.rolled_back_mutations);
+        assert!(!creport.continued_after_cancel);
+        assert!(cancelled.coding_goal.as_ref().unwrap().control.cancelled);
+
+        // Repeated cancel is idempotent.
+        let again = planner
+            .handle(UserRequest::new("Cancel this goal."))
+            .unwrap();
+        assert!(matches!(
+            again.agent_control.as_ref().map(|r| r.status),
+            Some(crate::AgentControlStatus::CancelRepeated)
+                | Some(crate::AgentControlStatus::NoActiveGoal)
+                | None
+        ));
+    }
+
+    #[test]
+    fn c58_stale_resume_and_resume_after_verification_failure() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+
+        // Drive to Executing, pause with fingerprint, resume with changed HEAD.
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginPlanning {
+                    reason: "c58".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::SubmitForApproval {
+                    plan_id: "plan-stale".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::RecordApproval {
+                    plan_id: "plan-stale".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginExecution {
+                    approved_plan_id: "plan-stale".into(),
+                },
+            )
+            .unwrap();
+            let pause_fp = crate::ProjectFingerprint {
+                head_sha: Some("aaa".into()),
+                branch: Some("main".into()),
+                dirty_count: 0,
+                ..crate::ProjectFingerprint::default()
+            };
+            let (paused, _) = crate::agent_pause_resume_cancel::pause_goal(
+                g.clone(),
+                &jaymi_context::ContextBundle::builder()
+                    .git_status(jaymi_context::GitStatusSection {
+                        head_sha: pause_fp.head_sha.clone(),
+                        branch: pause_fp.branch.clone(),
+                        modified_count: 0,
+                        ..jaymi_context::GitStatusSection::default()
+                    })
+                    .build(),
+                &crate::InFlightObservation::default(),
+                "unit pause",
+            )
+            .unwrap();
+            *g = paused;
+        });
+
+        // Soft-path resume uses empty bundle (no HEAD) — inject stale via store resume helper.
+        let stale_report = planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            let resume_bundle = jaymi_context::ContextBundle::builder()
+                .git_status(jaymi_context::GitStatusSection {
+                    head_sha: Some("bbb".into()),
+                    branch: Some("main".into()),
+                    modified_count: 2,
+                    ..jaymi_context::GitStatusSection::default()
+                })
+                .build();
+            let (resumed, report) = crate::agent_pause_resume_cancel::resume_goal(
+                g.clone(),
+                &resume_bundle,
+                &crate::InFlightObservation::default(),
+                "stale resume",
+            )
+            .unwrap();
+            *g = resumed;
+            report
+        })
+        .expect("store");
+        assert!(!stale_report.stale_reasons.is_empty());
+        assert!(stale_report.requires_fresh_approval);
+        assert_ne!(
+            stale_report.to,
+            Some(crate::AgentLifecycleState::Executing)
+        );
+
+        // Fresh goal: pause/resume after verification failure (Correcting).
+        let planner2 = planner_with_search_and_read();
+        planner2
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner2
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+        planner2.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginPlanning {
+                    reason: "c58".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::SubmitForApproval {
+                    plan_id: "p".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::RecordApproval {
+                    plan_id: "p".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginExecution {
+                    approved_plan_id: "p".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginVerification {
+                    reason: "v".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::VerificationFailed {
+                    evidence_ref: "fail".into(),
+                },
+            )
+            .unwrap();
+        });
+        let paused = planner2
+            .handle(UserRequest::new("Pause this goal."))
+            .unwrap();
+        assert_eq!(
+            paused.coding_goal.as_ref().unwrap().agent_lifecycle.state,
+            crate::AgentLifecycleState::Paused
+        );
+        let resumed = planner2
+            .handle(UserRequest::new("Resume this goal."))
+            .unwrap();
+        assert_eq!(
+            resumed.coding_goal.as_ref().unwrap().agent_lifecycle.state,
+            crate::AgentLifecycleState::Correcting
+        );
+    }
+
+    #[test]
+    fn c59_recover_verification_and_no_hidden_mutation() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            if let Some(t) = g.tasks.get_mut(0) {
+                t.status = crate::GoalTaskStatus::Completed;
+            }
+            g.tasks.push(crate::GoalTask {
+                id: "failed-1".into(),
+                description: "Verify auth".into(),
+                status: crate::GoalTaskStatus::Failed,
+                ..crate::GoalTask::default()
+            });
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginPlanning {
+                    reason: "c59".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::SubmitForApproval {
+                    plan_id: "old".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::RecordApproval {
+                    plan_id: "old".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginExecution {
+                    approved_plan_id: "old".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginVerification {
+                    reason: "v".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::VerificationFailed {
+                    evidence_ref: "fail".into(),
+                },
+            )
+            .unwrap();
+        });
+
+        let recovered = planner
+            .handle(UserRequest::new("Recover from verification failure."))
+            .unwrap();
+        let report = recovered.agent_recovery.expect("recovery report");
+        assert_eq!(report.category, crate::FailureCategory::VerificationFailure);
+        assert_eq!(
+            report.disposition,
+            crate::RecoveryDisposition::ProposeCorrectivePlan
+        );
+        assert!(!report.mutated);
+        assert!(!report.auto_retried);
+        assert!(!report.approval_reused);
+        assert!(!report.automatic_rollback);
+        assert!(report.corrective_plan.is_some());
+        assert!(planner.clone_last_coding_plan().is_some());
+        let goal = recovered.coding_goal.expect("goal");
+        assert!(!goal.agent_lifecycle.approval_recorded);
+        assert!(goal
+            .tasks
+            .iter()
+            .any(|t| t.status == crate::GoalTaskStatus::Completed));
+        assert!(goal
+            .tasks
+            .iter()
+            .any(|t| t.status == crate::GoalTaskStatus::Failed));
+        assert!(!goal.recovery.history.is_empty());
+
+        // User can still cancel.
+        let cancelled = planner
+            .handle(UserRequest::new("Cancel this goal."))
+            .unwrap();
+        assert!(cancelled.coding_goal.as_ref().unwrap().control.cancelled);
+    }
+
+    #[test]
+    fn c59_await_user_exhaustion_and_consistent_state() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        let blocked = planner
+            .handle(UserRequest::new("Recover from ambiguous requirement."))
+            .unwrap();
+        let report = blocked.agent_recovery.expect("recovery");
+        assert_eq!(
+            report.disposition,
+            crate::RecoveryDisposition::AwaitUser
+        );
+        assert!(
+            blocked
+                .coding_goal
+                .as_ref()
+                .unwrap()
+                .agent_lifecycle
+                .state
+                == crate::AgentLifecycleState::Blocked
+                || blocked.coding_goal.as_ref().unwrap().status
+                    == crate::CodingGoalStatus::Blocked
+        );
+
+        // Exhaust recovery attempts on a fresh goal.
+        let planner2 = planner_with_search_and_read();
+        planner2
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        for _ in 0..crate::MAX_GOAL_RECOVERY_ATTEMPTS {
+            let r = planner2
+                .handle(UserRequest::new("Recover from execution failure."))
+                .unwrap();
+            assert_ne!(
+                r.agent_recovery.as_ref().unwrap().status,
+                crate::GoalRecoveryStatus::Exhausted
+            );
+        }
+        let exhausted = planner2
+            .handle(UserRequest::new("Recover from execution failure."))
+            .unwrap();
+        assert_eq!(
+            exhausted.agent_recovery.as_ref().unwrap().status,
+            crate::GoalRecoveryStatus::Exhausted
+        );
+        assert!(!exhausted.agent_recovery.as_ref().unwrap().auto_retried);
+    }
+
+    #[test]
+    fn c510_successful_completion_and_evidence() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            for t in &mut g.tasks {
+                t.status = crate::GoalTaskStatus::Completed;
+            }
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginPlanning {
+                    reason: "c510".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::SubmitForApproval {
+                    plan_id: "p1".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::RecordApproval {
+                    plan_id: "p1".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginExecution {
+                    approved_plan_id: "p1".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginVerification {
+                    reason: "v".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::VerificationPassed {
+                    evidence_ref: "ok".into(),
+                },
+            )
+            .unwrap();
+            g.verification_state = crate::GoalVerificationState::Passed;
+            g.completed_work.push("Login applied.".into());
+            g.remaining_work.clear();
+        });
+
+        let assessed = planner
+            .handle(UserRequest::new("Assess goal completion."))
+            .unwrap();
+        let assess_report = assessed.goal_completion.expect("assess");
+        assert_eq!(
+            assess_report.outcome,
+            crate::GoalCompletionOutcome::Ready
+        );
+        assert!(!assess_report.invented_success);
+        assert!(!assess_report.model_authoritative);
+        assert!(!assess_report.unknown_treated_as_satisfied);
+
+        let completed = planner
+            .handle(UserRequest::new("Mark this goal complete."))
+            .unwrap();
+        let report = completed.goal_completion.expect("complete");
+        assert_eq!(
+            report.outcome,
+            crate::GoalCompletionOutcome::SuccessfullyCompleted
+        );
+        assert!(!report.mutated);
+        let goal = completed.coding_goal.expect("goal");
+        assert_eq!(goal.status, crate::CodingGoalStatus::Completed);
+        assert_eq!(
+            goal.completion.ending_kind,
+            Some(crate::GoalEndingKind::SuccessfullyCompleted)
+        );
+        assert!(!goal.completion.history.is_empty());
+    }
+
+    #[test]
+    fn c510_incomplete_and_failed_verification() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+
+        let incomplete = planner
+            .handle(UserRequest::new("Mark this goal complete."))
+            .unwrap();
+        let incomplete_report = incomplete.goal_completion.expect("incomplete");
+        assert_eq!(
+            incomplete_report.outcome,
+            crate::GoalCompletionOutcome::Incomplete
+        );
+        assert_eq!(
+            incomplete.coding_goal.as_ref().unwrap().status,
+            crate::CodingGoalStatus::Active
+        );
+
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            g.verification_state = crate::GoalVerificationState::Failed;
+        });
+        let failed_v = planner
+            .handle(UserRequest::new("Mark this goal complete."))
+            .unwrap();
+        assert_eq!(
+            failed_v.goal_completion.as_ref().unwrap().outcome,
+            crate::GoalCompletionOutcome::FailedVerification
+        );
+    }
+
+    #[test]
+    fn c510_blocked_cannot_complete() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("This goal is blocked because missing API key."))
+            .unwrap();
+        let blocked = planner
+            .handle(UserRequest::new("Mark this goal complete."))
+            .unwrap();
+        assert_eq!(
+            blocked.goal_completion.as_ref().unwrap().outcome,
+            crate::GoalCompletionOutcome::Blocked
+        );
+    }
+
+    #[test]
+    fn c510_waiver_user_end_and_cancel() {
+        let planner2 = planner_with_search_and_read();
+        planner2
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        let waived = planner2
+            .handle(UserRequest::new(
+                "Waive remaining criteria because demo scope.",
+            ))
+            .unwrap();
+        assert!(waived
+            .goal_completion
+            .as_ref()
+            .unwrap()
+            .criteria
+            .iter()
+            .any(|c| c.satisfaction == crate::CriterionSatisfaction::Waived));
+        let ended = planner2
+            .handle(UserRequest::new(
+                "End this goal incomplete because pausing work.",
+            ))
+            .unwrap();
+        let end_report = ended.goal_completion.expect("user end");
+        assert_eq!(end_report.outcome, crate::GoalCompletionOutcome::UserEnded);
+        assert_eq!(
+            end_report.ending_kind,
+            Some(crate::GoalEndingKind::UserEnded)
+        );
+        assert_eq!(
+            ended.coding_goal.as_ref().unwrap().status,
+            crate::CodingGoalStatus::Cancelled
+        );
+        assert_ne!(
+            ended.coding_goal.as_ref().unwrap().completion.ending_kind,
+            Some(crate::GoalEndingKind::SuccessfullyCompleted)
+        );
+
+        let planner3 = planner_with_search_and_read();
+        planner3
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        let cancelled = planner3
+            .handle(UserRequest::new("Cancel this goal."))
+            .unwrap();
+        assert!(cancelled.coding_goal.as_ref().unwrap().control.cancelled);
+        assert_eq!(
+            cancelled.coding_goal.as_ref().unwrap().status,
+            crate::CodingGoalStatus::Cancelled
+        );
+    }
+
+    #[test]
+    fn c511_prepare_compact_and_serde_restart_shape() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            // Inflate to a long task list + completed/failed history.
+            while g.tasks.len() < 36 {
+                let i = g.tasks.len();
+                g.tasks.push(crate::GoalTask {
+                    id: format!("extra-{i}"),
+                    description: format!("Extra task {i}"),
+                    status: if i % 5 == 0 {
+                        crate::GoalTaskStatus::Failed
+                    } else if i % 2 == 0 {
+                        crate::GoalTaskStatus::Completed
+                    } else {
+                        crate::GoalTaskStatus::Pending
+                    },
+                    ..crate::GoalTask::default()
+                });
+            }
+            g.constraints.push("Do not use OAuth.".into());
+        });
+
+        let prepared = planner
+            .handle(UserRequest::new("Prepare long-running session."))
+            .unwrap();
+        let report = prepared.session_continuity.expect("continuity");
+        assert_eq!(report.status, crate::SessionContinuityStatus::Prepared);
+        assert!(!report.mutated);
+        assert!(!report.background_autonomous_work);
+        assert!(!report.independent_agent_database);
+        assert!(!report.survives_process_restart);
+        assert!(report.serde_portable_snapshot);
+        assert!(report.task_count >= 36);
+        assert!(report.constraints_preserved);
+        let goal = prepared.coding_goal.expect("goal");
+        assert!(goal.maintained_context.is_some());
+        assert!(goal
+            .tasks
+            .iter()
+            .any(|t| t.status == crate::GoalTaskStatus::Failed));
+        assert!(goal
+            .tasks
+            .iter()
+            .any(|t| t.status == crate::GoalTaskStatus::Completed));
+
+        let compacted = planner
+            .handle(UserRequest::new("Compact session context."))
+            .unwrap();
+        assert!(
+            compacted
+                .session_continuity
+                .as_ref()
+                .unwrap()
+                .context_compacted
+                || compacted
+                    .session_continuity
+                    .as_ref()
+                    .unwrap()
+                    .constraints_preserved
+        );
+
+        // Application restart shape via existing serde hitch (no agent DB).
+        let snap = crate::agent_session_continuity::snapshot_store(
+            &planner.clone_coding_goal_store(),
+        )
+        .unwrap();
+        let restored = crate::agent_session_continuity::restore_store(&snap).unwrap();
+        assert_eq!(
+            restored.active_goal(None).unwrap().id,
+            planner
+                .clone_coding_goal_store()
+                .active_goal(None)
+                .unwrap()
+                .id
+        );
+    }
+
+    #[test]
+    fn c511_pause_revalidate_stale_and_no_blind_resume() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+        let paused = planner
+            .handle(UserRequest::new("Pause this goal."))
+            .unwrap();
+        assert_eq!(
+            paused.coding_goal.as_ref().unwrap().agent_lifecycle.state,
+            crate::AgentLifecycleState::Paused
+        );
+
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            g.continuity.last_fingerprint =
+                Some(crate::agent_pause_resume_cancel::ProjectFingerprint {
+                    head_sha: Some("old-sha".into()),
+                    branch: Some("main".into()),
+                    dirty_count: 0,
+                    staged_count: 0,
+                    conflict_count: 0,
+                    workspace_root: Some("/tmp/old".into()),
+                    ..Default::default()
+                });
+            g.agent_lifecycle.approval_recorded = true;
+            g.agent_lifecycle.approved_plan_id = Some("plan-old".into());
+            g.autonomy_policy.active = Some(crate::BoundApproval {
+                goal_id: g.id.clone(),
+                plan_id: "plan-old".into(),
+                task_id: None,
+                recorded: true,
+                class: crate::AutonomyPolicyClass::Mutation,
+                invalidated: false,
+                invalidate_reason: None,
+            });
+        });
+
+        let revalidated = planner
+            .handle(UserRequest::new("Revalidate after pause."))
+            .unwrap();
+        let report = revalidated.session_continuity.expect("revalidate");
+        assert_eq!(report.status, crate::SessionContinuityStatus::Revalidated);
+        assert!(!report.paused_continues_executing);
+        assert!(report.stop_new_operations);
+        assert!(!report.blindly_resumed_stale_plan);
+        assert!(!report.background_autonomous_work);
+        assert!(
+            report.requires_fresh_approval
+                || report.approvals_invalidated
+                || !report.stale_reasons.is_empty()
+        );
+        assert_eq!(
+            revalidated
+                .coding_goal
+                .as_ref()
+                .unwrap()
+                .agent_lifecycle
+                .state,
+            crate::AgentLifecycleState::Paused
+        );
+    }
+
+    fn c514_session(
+        head: &str,
+        dirty: &[&str],
+        file: Option<(&str, bool)>,
+    ) -> jaymi_context::ContextSessionInputs {
+        use jaymi_context::{GitPathEntry, GitSnapshot, ProjectMetadata, ProjectSnapshot};
+        jaymi_context::ContextSessionInputs {
+            project_open: true,
+            project_snapshot: Some(ProjectSnapshot {
+                metadata: ProjectMetadata {
+                    project_id: Some("demo".into()),
+                    name: Some("demo".into()),
+                    root_directory: Some("/proj".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            git_snapshot: Some(GitSnapshot {
+                is_repository: true,
+                repo_root: Some("/proj".into()),
+                branch: Some("main".into()),
+                head_sha: Some(head.into()),
+                head_short: Some(head.chars().take(7).collect()),
+                summary: if dirty.is_empty() {
+                    "clean".into()
+                } else {
+                    format!("{} modified", dirty.len())
+                },
+                dirty: dirty
+                    .iter()
+                    .map(|p| GitPathEntry {
+                        path: (*p).into(),
+                        status: "M".into(),
+                    })
+                    .collect(),
+                ..Default::default()
+            }),
+            current_file: file
+                .map(|(path, dirty)| jaymi_context::CurrentFileSection {
+                    path: Some(path.into()),
+                    dirty,
+                    language: Some("rust".into()),
+                })
+                .unwrap_or_default(),
+            approved_context_providers: vec![
+                "project".into(),
+                "git".into(),
+                "editor".into(),
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn c514_planner_unchanged_workspace_resume() {
+        let planner = planner_with_search_and_read();
+        planner
+            .context
+            .set_session_inputs(c514_session("abc123", &[], Some(("/proj/src/main.rs", false))));
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+        let paused = planner
+            .handle(UserRequest::new("Pause this goal."))
+            .unwrap();
+        let pause_fp = paused
+            .coding_goal
+            .as_ref()
+            .unwrap()
+            .control
+            .checkpoint
+            .as_ref()
+            .expect("checkpoint")
+            .fingerprint
+            .clone();
+        assert!(pause_fp.is_available(), "{pause_fp:?}");
+        assert_eq!(pause_fp.head_sha.as_deref(), Some("abc123"));
+
+        let resumed = planner
+            .handle(UserRequest::new("Resume this goal."))
+            .unwrap();
+        let report = resumed.agent_control.expect("control");
+        assert!(
+            report.stale_reasons.is_empty(),
+            "unchanged workspace should not be stale: {:?}",
+            report.stale_reasons
+        );
+        assert!(!report.requires_fresh_approval);
+        assert_ne!(
+            resumed.coding_goal.as_ref().unwrap().agent_lifecycle.state,
+            crate::AgentLifecycleState::Paused
+        );
+        assert!(!resumed.coding_goal.as_ref().unwrap().mutated);
+        assert!(!report.rolled_back_mutations);
+    }
+
+    #[test]
+    fn c514_planner_changed_file_and_project_stale() {
+        let planner = planner_with_search_and_read();
+        planner
+            .context
+            .set_session_inputs(c514_session("aaa", &[], Some(("/proj/src/a.rs", false))));
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginPlanning {
+                    reason: "c514".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::SubmitForApproval {
+                    plan_id: "plan-c514".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::RecordApproval {
+                    plan_id: "plan-c514".into(),
+                },
+            )
+            .unwrap();
+            g.autonomy_policy.active = Some(crate::BoundApproval {
+                goal_id: g.id.clone(),
+                plan_id: "plan-c514".into(),
+                task_id: None,
+                recorded: true,
+                class: crate::AutonomyPolicyClass::Mutation,
+                invalidated: false,
+                invalidate_reason: None,
+            });
+        });
+        planner
+            .handle(UserRequest::new("Pause this goal."))
+            .unwrap();
+
+        planner.context.set_session_inputs(c514_session(
+            "bbb",
+            &["src/a.rs"],
+            Some(("/proj/src/a.rs", true)),
+        ));
+        let resumed = planner
+            .handle(UserRequest::new("Resume this goal."))
+            .unwrap();
+        let report = resumed.agent_control.expect("control");
+        assert!(!report.stale_reasons.is_empty(), "{:?}", report.stale_reasons);
+        assert!(report.requires_fresh_approval);
+        assert!(report.approvals_invalidated);
+        assert!(!resumed.coding_goal.as_ref().unwrap().mutated);
+        assert!(crate::approval_autonomy_policy::assert_execution_authorized(
+            resumed.coding_goal.as_ref().unwrap(),
+            "plan-c514"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn c514_planner_unavailable_fingerprint_unknown_stale() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            approved_context_providers: Vec::new(),
+            ..Default::default()
+        });
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+        let paused = planner
+            .handle(UserRequest::new("Pause this goal."))
+            .unwrap();
+        let fp = &paused
+            .coding_goal
+            .as_ref()
+            .unwrap()
+            .control
+            .checkpoint
+            .as_ref()
+            .unwrap()
+            .fingerprint;
+        assert!(!fp.is_available(), "empty ambient context must be unavailable");
+
+        let resumed = planner
+            .handle(UserRequest::new("Resume this goal."))
+            .unwrap();
+        let report = resumed.agent_control.expect("control");
+        assert!(report
+            .stale_reasons
+            .contains(&crate::StaleReason::FingerprintUnavailable));
+        assert!(report.requires_fresh_approval);
+        assert!(!report.rolled_back_mutations);
+        assert!(!resumed.coding_goal.as_ref().unwrap().mutated);
+    }
+
+    #[test]
+    fn c512_simple_goal_experience() {
+        let planner = planner_with_search_and_read();
+        let response = planner
+            .handle(UserRequest::new("Build me a Pong game."))
+            .unwrap();
+        let experience = response
+            .agentic_coding_experience
+            .expect("agentic experience");
+        assert_eq!(experience.status, crate::AgenticExperienceStatus::Created);
+        assert!(!experience.what_planned.is_empty());
+        assert!(!experience.what_doing.is_empty());
+        assert!(!experience.what_changed.is_empty());
+        assert!(!experience.whether_worked.is_empty());
+        assert!(!experience.what_went_wrong.is_empty());
+        assert!(!experience.what_remains.is_empty());
+        assert!(!experience.exposes_chain_of_thought);
+        assert!(!experience.parallel_coding_agent);
+        assert!(!experience.mutated);
+        assert!(!experience.tools_executed);
+        assert!(experience.planner_owned);
+        assert!(experience.conversation_primary);
+        assert!(response.coding_goal.is_some());
+        assert!(response.coding_plan.is_none());
+
+        let status = planner
+            .handle(UserRequest::new("Show agentic coding experience."))
+            .unwrap();
+        assert_eq!(
+            status
+                .agentic_coding_experience
+                .as_ref()
+                .unwrap()
+                .status,
+            crate::AgenticExperienceStatus::Status
+        );
+    }
+
+    #[test]
+    fn c512_multi_file_goal_experience() {
+        let planner = planner_with_search_and_read();
+        planner.context.set_session_inputs(jaymi_context::ContextSessionInputs {
+            project_open: true,
+            current_file: jaymi_context::CurrentFileSection {
+                path: Some("/proj/src/auth.rs".into()),
+                dirty: false,
+                language: Some("rust".into()),
+            },
+            project_snapshot: Some(jaymi_context::ProjectSnapshot {
+                metadata: jaymi_context::ProjectMetadata {
+                    project_id: Some("demo".into()),
+                    name: Some("demo".into()),
+                    root_directory: Some("/proj".into()),
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            approved_context_providers: vec!["editor".into(), "project".into()],
+            ..Default::default()
+        });
+        let response = planner
+            .handle(UserRequest::new(
+                "Refactor the authentication architecture.",
+            ))
+            .unwrap();
+        let experience = response
+            .agentic_coding_experience
+            .expect("multi-file agentic");
+        assert_eq!(experience.status, crate::AgenticExperienceStatus::Created);
+        let goal = response.coding_goal.expect("goal");
+        assert!(
+            goal.user_objective.to_ascii_lowercase().contains("authentication")
+                || goal.user_objective.to_ascii_lowercase().contains("refactor")
+        );
+        // Light relevant files may be ambient from Context — never a hidden FS walk.
+        assert!(!experience.hidden_filesystem_access);
+        assert!(!experience.model_direct_tools);
+        assert!(!experience.unrelated_capabilities);
+    }
+
+    #[test]
+    fn c512_multi_task_goal_experience() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        let decomposed = planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        assert!(
+            decomposed
+                .coding_goal
+                .as_ref()
+                .unwrap()
+                .tasks
+                .len()
+                > 1
+        );
+        let experience = planner
+            .handle(UserRequest::new("Show agentic coding experience."))
+            .unwrap()
+            .agentic_coding_experience
+            .expect("status");
+        assert!(experience.what_planned.to_ascii_lowercase().contains("task"));
+        assert!(experience.stages.iter().any(|s| {
+            s.stage == crate::ExperienceStage::Decompose && s.state == crate::agentic_coding_experience::StageState::Done
+        }));
+        assert!(!experience.exposes_chain_of_thought);
+    }
+
+    #[test]
+    fn c512_verification_failure_and_correction() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            g.verification_state = crate::GoalVerificationState::Failed;
+            g.agent_lifecycle.last_error = Some("tests failed: login_flow".into());
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginVerification {
+                    reason: "c512".into(),
+                },
+            )
+            .unwrap_or_else(|_| g.clone());
+        });
+        // Force failed verification state for narration even if transition bounced.
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            g.verification_state = crate::GoalVerificationState::Failed;
+            g.agent_lifecycle.last_error = Some("tests failed: login_flow".into());
+        });
+
+        let recovered = planner
+            .handle(UserRequest::new("Recover from verification failure."))
+            .unwrap();
+        assert!(recovered.agent_recovery.is_some());
+        assert!(!recovered.agent_recovery.as_ref().unwrap().mutated);
+        assert!(!recovered.agent_recovery.as_ref().unwrap().auto_retried);
+
+        let experience = planner
+            .handle(UserRequest::new("Show agentic coding experience."))
+            .unwrap()
+            .agentic_coding_experience
+            .expect("experience after failure");
+        assert!(
+            experience.whether_worked.to_ascii_lowercase().contains("fail")
+                || experience.what_went_wrong.to_ascii_lowercase().contains("fail")
+                || experience.what_went_wrong.to_ascii_lowercase().contains("login")
+        );
+        // Corrective path must not silently mutate or reuse destructive retries.
+        assert!(!experience.silent_destructive_retry);
+        assert!(!experience.mutated);
+        assert!(!experience.model_direct_tools);
+    }
+
+    #[test]
+    fn c512_cancellation_cannot_silently_continue() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build me a Pong game."))
+            .unwrap();
+        let cancelled = planner
+            .handle(UserRequest::new("Cancel this goal."))
+            .unwrap();
+        assert!(cancelled.coding_goal.as_ref().unwrap().control.cancelled);
+        assert_eq!(
+            cancelled.coding_goal.as_ref().unwrap().status,
+            crate::CodingGoalStatus::Cancelled
+        );
+
+        let experience = planner
+            .handle(UserRequest::new("Show agentic coding experience."))
+            .unwrap()
+            .agentic_coding_experience
+            .expect("status");
+        assert!(!experience.silent_continue_after_cancel);
+        assert!(
+            experience.what_remains.to_ascii_lowercase().contains("cancel")
+                || experience.what_doing.to_ascii_lowercase().contains("cancel")
+        );
+        // Cancelled goals are terminal — Begin would create a new goal; status still narrates.
+        assert_eq!(experience.status, crate::AgenticExperienceStatus::Status);
+    }
+
+    #[test]
+    fn c512_pause_and_resume() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+        let paused = planner
+            .handle(UserRequest::new("Pause this goal."))
+            .unwrap();
+        assert_eq!(
+            paused.coding_goal.as_ref().unwrap().agent_lifecycle.state,
+            crate::AgentLifecycleState::Paused
+        );
+        let paused_xp = planner
+            .handle(UserRequest::new("Show agentic coding experience."))
+            .unwrap()
+            .agentic_coding_experience
+            .expect("paused xp");
+        assert!(paused_xp.what_doing.to_ascii_lowercase().contains("pause"));
+
+        let resumed = planner
+            .handle(UserRequest::new("Resume this goal."))
+            .unwrap();
+        assert_ne!(
+            resumed.coding_goal.as_ref().unwrap().agent_lifecycle.state,
+            crate::AgentLifecycleState::Paused
+        );
+        let control = resumed.agent_control.as_ref().expect("control");
+        assert!(!control.rolled_back_mutations);
+        assert!(!control.continued_after_cancel);
+        assert!(!control.parallel_cancel_engine);
+    }
+
+    #[test]
+    fn c512_blocked_goal_experience() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new(
+                "This goal is blocked because missing API key.",
+            ))
+            .unwrap();
+        let experience = planner
+            .handle(UserRequest::new("Show agentic coding experience."))
+            .unwrap()
+            .agentic_coding_experience
+            .expect("blocked xp");
+        assert!(
+            experience.what_doing.to_ascii_lowercase().contains("block")
+                || experience.what_went_wrong.to_ascii_lowercase().contains("block")
+                || experience.what_went_wrong.to_ascii_lowercase().contains("api")
+        );
+        let complete_attempt = planner
+            .handle(UserRequest::new("Mark this goal complete."))
+            .unwrap();
+        assert_eq!(
+            complete_attempt.goal_completion.as_ref().unwrap().outcome,
+            crate::GoalCompletionOutcome::Blocked
+        );
+    }
+
+    #[test]
+    fn c512_successful_completion_experience() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Start the goal."))
+            .unwrap();
+        planner.with_coding_goal_store(|store| {
+            let g = store.active_goal_mut(None).unwrap();
+            for t in &mut g.tasks {
+                t.status = crate::GoalTaskStatus::Completed;
+            }
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginPlanning {
+                    reason: "c512".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::SubmitForApproval {
+                    plan_id: "p-c512".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::RecordApproval {
+                    plan_id: "p-c512".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginExecution {
+                    approved_plan_id: "p-c512".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::BeginVerification {
+                    reason: "v".into(),
+                },
+            )
+            .unwrap();
+            *g = crate::agent_state_machine::transition_goal(
+                g.clone(),
+                crate::AgentLifecycleEvent::VerificationPassed {
+                    evidence_ref: "ok".into(),
+                },
+            )
+            .unwrap();
+            g.verification_state = crate::GoalVerificationState::Passed;
+            g.completed_work.push("Login applied.".into());
+            g.remaining_work.clear();
+        });
+
+        let completed = planner
+            .handle(UserRequest::new("Mark this goal complete."))
+            .unwrap();
+        assert_eq!(
+            completed.goal_completion.as_ref().unwrap().outcome,
+            crate::GoalCompletionOutcome::SuccessfullyCompleted
+        );
+        assert_eq!(
+            completed.coding_goal.as_ref().unwrap().status,
+            crate::CodingGoalStatus::Completed
+        );
+
+        let experience = planner
+            .handle(UserRequest::new("Show agentic coding experience."))
+            .unwrap()
+            .agentic_coding_experience
+            .expect("completed xp");
+        assert!(
+            experience.whether_worked.to_ascii_lowercase().contains("complet")
+                || experience.whether_worked.to_ascii_lowercase().contains("pass")
+        );
+        assert!(!experience.parallel_coding_agent);
+        assert!(experience.planner_owned);
+        assert!(!experience.silent_continue_after_cancel);
+    }
+
+    #[test]
+    fn c51_multiple_goals_across_conversations() {
+        let planner = planner_with_search_and_read();
+        // Without an active Memory conversation, goals share `_default`.
+        // C5.12 Begin will not create a second goal while one is active —
+        // cancel (or complete) first, then start the next objective.
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new("Cancel this goal."))
+            .unwrap();
+        planner
+            .handle(UserRequest::new(
+                "Add image generation to the application.",
+            ))
+            .unwrap();
+        let store = planner.clone_coding_goal_store();
+        assert!(store.goals.len() >= 2);
+        let active = store.active_goal(None).expect("active");
+        assert!(active.user_objective.contains("image generation"));
+
+        // Isolate by conversation id via the store API (Planner-owned).
+        let mut isolated = crate::CodingGoalStore::default();
+        let a = crate::coding_goal::detect_coding_goal_request(&UserRequest::new(
+            "Build a login system.",
+        ))
+        .unwrap();
+        let b = crate::coding_goal::detect_coding_goal_request(&UserRequest::new(
+            "Refactor the authentication architecture.",
+        ))
+        .unwrap();
+        isolated.push_active(crate::coding_goal::create_goal(
+            &a,
+            &jaymi_context::ContextBundle::default(),
+            Some("conv-a".into()),
+        ));
+        isolated.push_active(crate::coding_goal::create_goal(
+            &b,
+            &jaymi_context::ContextBundle::default(),
+            Some("conv-b".into()),
+        ));
+        assert_ne!(
+            isolated.active_goal(Some("conv-a")).unwrap().id,
+            isolated.active_goal(Some("conv-b")).unwrap().id
+        );
+    }
+
+    #[test]
+    fn c52_multi_task_decomposition_no_mutation() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system."))
+            .unwrap();
+        let response = planner
+            .handle(UserRequest::new("Break this goal into tasks."))
+            .unwrap();
+        let report = response
+            .goal_decomposition
+            .expect("goal_decomposition");
+        assert_eq!(report.status, crate::DecompositionStatus::Proposed);
+        assert!(report.tasks.len() >= 5);
+        assert!(!report.mutated);
+        assert!(!report.tools_executed);
+        assert!(!report.auto_approved);
+        assert!(response.tool_id.is_none());
+        assert!(response.execution_plan.is_none());
+        let goal = response.coding_goal.expect("coding_goal");
+        assert_eq!(goal.tasks.len(), report.tasks.len());
+        assert!(!goal.mutated);
+        assert!(response.content.contains("Goal Decomposition"));
+        assert!(report.order.len() == report.tasks.len());
+    }
+
+    #[test]
+    fn c52_single_task_when_constrained() {
+        let planner = planner_with_search_and_read();
+        // Constraint via objective phrasing extracted into goal.constraints.
+        planner
+            .handle(UserRequest::new(
+                "Build a login system. Keep this as one task only.",
+            ))
+            .unwrap();
+        // If create didn't capture the constraint phrase as a separate constraint,
+        // inject via store for the soft-path contract.
+        let conversation_id = None;
+        planner.with_coding_goal_store(|store| {
+            if let Some(goal) = store.active_goal_mut(conversation_id) {
+                if !goal.constraints.iter().any(|c| c.contains("one task")) {
+                    goal.constraints
+                        .push("Keep this as one task only.".into());
+                }
+            }
+        });
+        let response = planner
+            .handle(UserRequest::new("Decompose the goal."))
+            .unwrap();
+        let report = response.goal_decomposition.expect("decomp");
+        assert_eq!(report.tasks.len(), 1);
+        assert!(!report.mutated);
+    }
+
+    #[test]
+    fn c52_ambiguous_without_goal() {
+        let planner = planner_with_search_and_read();
+        let response = planner
+            .handle(UserRequest::new("Break things down."))
+            .unwrap();
+        let report = response.goal_decomposition.expect("decomp");
+        assert!(matches!(
+            report.status,
+            crate::DecompositionStatus::Ambiguous | crate::DecompositionStatus::NoActiveGoal
+        ));
+        assert!(report.tasks.is_empty());
+        assert!(!report.mutated);
+    }
+
+    #[test]
+    fn c52_preserves_constraints_and_task_transitions() {
+        let planner = planner_with_search_and_read();
+        planner
+            .handle(UserRequest::new("Build a login system without OAuth."))
+            .unwrap();
+        let decomp = planner
+            .handle(UserRequest::new("Propose tasks for this goal."))
+            .unwrap();
+        let report = decomp.goal_decomposition.expect("decomp");
+        assert!(!report.preserved_constraints.is_empty());
+        assert!(report
+            .preserved_constraints
+            .iter()
+            .any(|c| c.to_ascii_lowercase().contains("oauth")));
+
+        let goal = decomp.coding_goal.expect("goal");
+        let first = goal
+            .tasks
+            .iter()
+            .find(|t| t.dependencies.is_empty())
+            .map(|t| t.id.clone())
+            .expect("root task");
+        let completed = planner
+            .handle(UserRequest::new(format!("Complete task {first}")))
+            .unwrap();
+        let done = completed.goal_decomposition.expect("complete");
+        assert!(done
+            .tasks
+            .iter()
+            .any(|t| t.id == first && t.status == crate::GoalTaskStatus::Completed));
+
+        // Cancel a still-pending later task (e.g. UI) — status only, no execution.
+        let cancel_id = done
+            .tasks
+            .iter()
+            .find(|t| t.status == crate::GoalTaskStatus::Pending)
+            .map(|t| t.id.clone())
+            .expect("pending task");
+        let cancelled = planner
+            .handle(UserRequest::new(format!("Cancel task {cancel_id}")))
+            .unwrap();
+        let updated = cancelled.goal_decomposition.expect("task update");
+        assert_eq!(updated.status, crate::DecompositionStatus::TaskUpdated);
+        assert!(updated
+            .tasks
+            .iter()
+            .any(|t| t.id == cancel_id && t.status == crate::GoalTaskStatus::Cancelled));
+        assert!(!updated.mutated);
+        assert!(!updated.auto_approved);
+    }
+
+    #[test]
+    fn c52_circular_dependency_detection_unit() {
+        let a = crate::GoalTask {
+            id: "a".into(),
+            description: "A".into(),
+            objective: "A".into(),
+            dependencies: vec!["b".into()],
+            ..Default::default()
+        };
+        let b = crate::GoalTask {
+            id: "b".into(),
+            description: "B".into(),
+            objective: "B".into(),
+            dependencies: vec!["a".into()],
+            ..Default::default()
+        };
+        let err = crate::goal_decomposition::validate_dependencies(&[a, b]).unwrap_err();
+        assert!(matches!(
+            err,
+            crate::goal_decomposition::DependencyError::Circular { .. }
+        ));
     }
 
     #[test]
@@ -9183,6 +14852,7 @@ mod tests {
                 permission_result: None,
                 generation_calls: Vec::new(),
                 generation_baselines: Vec::new(),
+                test_execution: None,
                 paused_at: Instant::now(),
             })
             .unwrap();
@@ -9355,6 +15025,7 @@ mod tests {
                 permission_result: None,
                 generation_calls: Vec::new(),
                 generation_baselines: Vec::new(),
+                test_execution: None,
                 paused_at: Instant::now(),
             })
             .unwrap();
@@ -9590,6 +15261,7 @@ mod tests {
                 permission_result: None,
                 generation_calls: Vec::new(),
                 generation_baselines: Vec::new(),
+                test_execution: None,
                 paused_at: Instant::now() - Duration::from_secs(5),
             })
             .unwrap();

@@ -204,6 +204,8 @@ pub struct PairSynthesisInput<'a> {
     pub execution_summary: bool,
     /// Execution completed successfully.
     pub execution_completed: bool,
+    /// C4.5 verification summary when present (observational chip bias).
+    pub verification_summary: Option<&'a crate::verification_summary::VerificationSummary>,
 }
 
 /// Baseline partner actions (Planner-authored defaults — not UI chrome).
@@ -532,6 +534,88 @@ fn enrich_from_workspace(
 fn dedupe_actions(actions: &mut Vec<SuggestedAction>) {
     let mut seen = std::collections::BTreeSet::new();
     actions.retain(|action| seen.insert(action.id.clone()));
+}
+
+/// Prefer grounded verification next actions (C4.5) without inventing new systems.
+pub fn enrich_from_verification_summary(
+    surface: &mut PairProgrammingSurface,
+    summary: &crate::verification_summary::VerificationSummary,
+) {
+    enrich_from_verification_summary_with_loop(surface, summary, None);
+}
+
+/// Same as [`enrich_from_verification_summary`], honoring C4.6 cycle limits.
+pub fn enrich_from_verification_summary_with_loop(
+    surface: &mut PairProgrammingSurface,
+    summary: &crate::verification_summary::VerificationSummary,
+    loop_state: Option<&crate::coding_verification_loop::CodingVerificationLoop>,
+) {
+    let suppress_fix =
+        crate::coding_verification_loop::suppress_fix_offer(loop_state);
+
+    if !suppress_fix {
+        if let (Some(label), Some(prompt)) = (
+            summary.recommended_fix_label.as_ref(),
+            summary.recommended_fix_prompt.as_ref(),
+        ) {
+            surface.suggested_actions.insert(
+                0,
+                SuggestedAction::conversational(
+                    "review_fix",
+                    label.clone(),
+                    PairPhase::Planning,
+                    prompt.clone(),
+                    true,
+                ),
+            );
+            surface.notes.insert(
+                0,
+                "Recommended fix enters Fix From Verification Failure (Review Before Action)."
+                    .into(),
+            );
+        }
+    } else if loop_state.is_some_and(|s| {
+        matches!(
+            s.phase,
+            crate::coding_verification_loop::LoopPhase::Exhausted
+        )
+    }) {
+        surface.notes.insert(
+            0,
+            "Verification/recovery cycle limit reached — no further automatic fix offers.".into(),
+        );
+    }
+
+    if matches!(
+        summary.status,
+        Some(crate::verification_summary::VerificationStatus::NotRun)
+    ) && !summary.changed_files.is_empty()
+        && !loop_state.is_some_and(|s| {
+            matches!(
+                s.phase,
+                crate::coding_verification_loop::LoopPhase::Exhausted
+                    | crate::coding_verification_loop::LoopPhase::Cancelled
+                    | crate::coding_verification_loop::LoopPhase::Passed
+            )
+        })
+    {
+        surface.suggested_actions.insert(
+            0,
+            SuggestedAction::conversational(
+                "run_tests",
+                "Run Tests",
+                PairPhase::Execution,
+                "Run the tests.",
+                true,
+            ),
+        );
+    }
+    if let Some(state) = loop_state {
+        if let Some(note) = state.progress_note() {
+            surface.notes.insert(0, note);
+        }
+    }
+    dedupe_actions(&mut surface.suggested_actions);
 }
 
 /// True when free-text asks for dead-code orientation (read-only).

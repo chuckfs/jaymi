@@ -132,6 +132,8 @@ pub struct ExperienceSession {
     conversation_state: ConversationState,
     /// Last Planner-generated pair-programming suggestions (Sprint C1.8).
     pair_programming: Option<jaymi_planner::PairProgrammingSurface>,
+    /// Mirrored Agent Progress UX (Sprint C5.7) — derive-only; never invent.
+    agent_progress: Option<jaymi_planner::AgentProgressView>,
 }
 
 impl ExperienceSession {
@@ -219,6 +221,19 @@ impl ExperienceSession {
     /// Last Planner-authored pair-programming suggestions (Quick Actions source).
     pub fn pair_programming(&self) -> Option<&jaymi_planner::PairProgrammingSurface> {
         self.pair_programming.as_ref()
+    }
+
+    /// Mirrored goal progress (C5.7), when Planner attached a view.
+    pub fn agent_progress(&self) -> Option<&jaymi_planner::AgentProgressView> {
+        self.agent_progress.as_ref()
+    }
+
+    /// Mirror Planner-authored progress without inventing state.
+    pub fn mirror_agent_progress(
+        &mut self,
+        progress: Option<jaymi_planner::AgentProgressView>,
+    ) {
+        self.agent_progress = progress;
     }
 
     /// Suggested next actions for the Coding Quick Action menu (Planner-owned).
@@ -497,6 +512,9 @@ impl ExperienceSession {
         self.mirror_conversation_state(response.conversation_state);
         if let Some(surface) = response.pair_programming.clone() {
             self.pair_programming = Some(surface);
+        }
+        if let Some(progress) = response.agent_progress.clone() {
+            self.agent_progress = Some(progress);
         }
         if response.awaiting_review {
             if let Some(plan) = &response.execution_plan {
@@ -1022,5 +1040,48 @@ mod tests {
         let history = session.to_reasoning_history(None);
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].content, "hi");
+    }
+
+    #[test]
+    fn apply_planner_response_mirrors_agent_progress() {
+        let mut session = ExperienceSession::new();
+        let progress = jaymi_planner::AgentProgressView {
+            title: "Building authentication".into(),
+            phase: jaymi_planner::ProgressPhase::Executing,
+            phase_label: "Executing".into(),
+            completed_count: 2,
+            total_tasks: 5,
+            current_task: Some(jaymi_planner::agent_progress_ux::ProgressTaskLine {
+                task_id: "t3".into(),
+                description: "Implementing login UI".into(),
+                mark: jaymi_planner::agent_progress_ux::ProgressTaskMark::Current,
+            }),
+            exposes_chain_of_thought: false,
+            second_agent_state: false,
+            ..jaymi_planner::AgentProgressView::default()
+        };
+        session.apply_planner_response(&PlannerResponse {
+            content: "## Goal Progress\n\nBuilding authentication\n".into(),
+            agent_progress: Some(progress.clone()),
+            ..PlannerResponse::default()
+        });
+        let mirrored = session.agent_progress().expect("mirrored progress");
+        assert_eq!(mirrored.title, "Building authentication");
+        assert_eq!(mirrored.phase, jaymi_planner::ProgressPhase::Executing);
+        assert_eq!(mirrored.completed_count, 2);
+        assert_eq!(mirrored.total_tasks, 5);
+        assert!(!mirrored.exposes_chain_of_thought);
+        assert!(!mirrored.second_agent_state);
+        assert_eq!(
+            mirrored.current_task.as_ref().map(|t| t.description.as_str()),
+            Some("Implementing login UI")
+        );
+        // Experience never invents progress without a Planner payload.
+        let mut empty = ExperienceSession::new();
+        empty.apply_planner_response(&PlannerResponse {
+            content: "hello".into(),
+            ..PlannerResponse::default()
+        });
+        assert!(empty.agent_progress().is_none());
     }
 }

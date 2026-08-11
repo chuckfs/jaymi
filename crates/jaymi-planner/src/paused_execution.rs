@@ -50,6 +50,8 @@ pub struct PausedExecution {
     /// Captured at pause time so Approve can refuse stale / drifted sources
     /// before any write. Empty for non-generation pauses.
     pub generation_baselines: Vec<crate::coding_mutation_recovery::GenerationBaseline>,
+    /// Pending Test Execution report (Sprint C4.2) to finalize after Approve.
+    pub test_execution: Option<crate::test_execution::TestExecutionReport>,
 }
 
 impl PausedExecution {
@@ -168,6 +170,20 @@ impl PausedPlanStore {
         self.expire_due(Instant::now());
         let id = entry.plan_id().as_str().to_string();
         self.entries.insert(id, entry)
+    }
+
+    /// Attach a pending C4.2 test-execution report onto an existing pause.
+    pub fn set_test_execution(
+        &mut self,
+        plan_id: &ExecutionPlanId,
+        report: crate::test_execution::TestExecutionReport,
+    ) -> bool {
+        if let Some(entry) = self.entries.get_mut(plan_id.as_str()) {
+            entry.test_execution = Some(report);
+            true
+        } else {
+            false
+        }
     }
 
     /// Remove and return a pause for resume/cancel without timeout enforcement.
@@ -493,6 +509,7 @@ mod tests {
             paused_at: Instant::now(),
             generation_calls: Vec::new(),
             generation_baselines: Vec::new(),
+            test_execution: None,
         }
     }
 

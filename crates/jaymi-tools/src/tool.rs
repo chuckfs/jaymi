@@ -258,6 +258,10 @@ pub struct ToolOutput {
     pub terminal_title: Option<String>,
     /// Whether the terminal session is still alive after the operation.
     pub terminal_alive: Option<bool>,
+    /// Shell exit code when a terminal Run completed.
+    pub terminal_exit_code: Option<i32>,
+    /// Duration of the terminal Run wait, when measured.
+    pub terminal_duration_ms: Option<u64>,
     /// Current Git branch when applicable.
     pub git_branch: Option<String>,
     /// Short Git status summary when applicable.
@@ -453,8 +457,38 @@ impl ToolOutput {
         alive: bool,
         message: impl Into<String>,
     ) -> Self {
+        Self::terminal_with_status(
+            session_id,
+            cwd,
+            output,
+            scrollback,
+            history,
+            title,
+            alive,
+            message,
+            None,
+            None,
+            true,
+        )
+    }
+
+    /// Terminal operation with exit status / duration (Sprint C4.2).
+    #[allow(clippy::too_many_arguments)]
+    pub fn terminal_with_status(
+        session_id: impl Into<String>,
+        cwd: impl Into<std::path::PathBuf>,
+        output: impl Into<String>,
+        scrollback: impl Into<String>,
+        history: Vec<String>,
+        title: impl Into<String>,
+        alive: bool,
+        message: impl Into<String>,
+        exit_code: Option<i32>,
+        duration_ms: Option<u64>,
+        success: bool,
+    ) -> Self {
         Self {
-            success: true,
+            success,
             message: Some(message.into()),
             listed_path: Some(cwd.into()),
             session_id: Some(session_id.into()),
@@ -463,6 +497,8 @@ impl ToolOutput {
             terminal_history: history,
             terminal_title: Some(title.into()),
             terminal_alive: Some(alive),
+            terminal_exit_code: exit_code,
+            terminal_duration_ms: duration_ms,
             ..Self::default()
         }
     }

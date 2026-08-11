@@ -217,6 +217,11 @@ pub struct GenerationToolCall {
 }
 
 /// Detect “generate / implement the (coding) plan” — not C1.4 planning.
+///
+/// Creating a Coding Plan and **applying** a remembered Coding Plan are different
+/// intents. Natural follow-ups after a completed plan (“Generate the changes.”,
+/// “Implement that plan.”) must enter C1.5 / C3.4 generation — never author a
+/// second plan via the C1.4 `generate `/`implement `/`make ` catch-all.
 pub fn detect_generation_request(request: &UserRequest) -> bool {
     if request.coding_action.is_some()
         || request.write_file.is_some()
@@ -235,8 +240,12 @@ pub fn detect_generation_request(request: &UserRequest) -> bool {
 }
 
 fn looks_like_apply_generation(lower: &str) -> bool {
-    let trimmed = lower.trim_end_matches(|c: char| c == '.' || c == '!');
-    matches!(
+    let trimmed = lower
+        .trim_end_matches(|c: char| c == '.' || c == '!' || c == '?')
+        .trim();
+
+    // Exact / near-exact apply phrases (canonical + natural follow-ups).
+    if matches!(
         trimmed,
         "generate the code"
             | "generate code"
@@ -246,22 +255,75 @@ fn looks_like_apply_generation(lower: &str) -> bool {
             | "generate the patches"
             | "propose patches"
             | "generate patch"
+            | "generate the changes"
+            | "generate changes"
+            | "generate those changes"
+            | "generate these changes"
+            | "generate from the plan"
+            | "generate from that plan"
+            | "generate the changes from that plan"
+            | "generate the changes from the plan"
+            | "generate changes from that plan"
+            | "generate changes from the plan"
             | "implement the plan"
+            | "implement that plan"
+            | "implement this plan"
             | "implement the coding plan"
+            | "implement it"
             | "apply the plan"
+            | "apply that plan"
+            | "apply this plan"
             | "apply the coding plan"
+            | "apply those changes"
+            | "apply these changes"
+            | "apply the changes"
             | "execute the coding plan"
             | "run the coding plan"
-    ) || trimmed.starts_with("generate the code ")
+            | "make those changes"
+            | "make these changes"
+            | "make the changes"
+            | "code it"
+            | "code that plan"
+            | "code the plan"
+            | "go ahead and code it"
+            | "go ahead and implement it"
+            | "go ahead and apply it"
+            | "go ahead and generate it"
+            | "go ahead and generate the changes"
+    ) {
+        return true;
+    }
+
+    trimmed.starts_with("generate the code ")
         || trimmed.starts_with("generate code for")
         || trimmed.starts_with("generate patches ")
+        || trimmed.starts_with("generate the changes")
+        || trimmed.starts_with("generate changes from")
+        || trimmed.starts_with("generate from the plan")
+        || trimmed.starts_with("generate from that plan")
         || trimmed.starts_with("implement the coding plan")
+        || trimmed.starts_with("implement that plan")
+        || trimmed.starts_with("implement this plan")
+        || trimmed.starts_with("implement the plan")
         || trimmed.starts_with("apply the coding plan")
+        || trimmed.starts_with("apply that plan")
+        || trimmed.starts_with("apply this plan")
+        || trimmed.starts_with("apply the plan")
+        || trimmed.starts_with("apply those changes")
+        || trimmed.starts_with("apply these changes")
+        || trimmed.starts_with("apply the changes")
+        || trimmed.starts_with("make those changes")
+        || trimmed.starts_with("make these changes")
+        || trimmed.starts_with("make the changes")
+        || trimmed.starts_with("go ahead and code")
+        || trimmed.starts_with("go ahead and implement")
+        || trimmed.starts_with("go ahead and apply")
+        || trimmed.starts_with("go ahead and generate")
 }
 
 /// True when a phrase should stay on C1.5 generation, not C1.4 Coding Plan detect.
 pub fn steals_from_coding_plan_detect(lower: &str) -> bool {
-    looks_like_apply_generation(lower.trim_end_matches(|c: char| c == '.' || c == '!'))
+    looks_like_apply_generation(lower.trim_end_matches(|c: char| c == '.' || c == '!' || c == '?'))
 }
 
 /// Materialize Planner-owned ops from a Coding Plan (deterministic stubs; no FS / LLM writes).
@@ -557,14 +619,53 @@ mod tests {
         assert!(detect_generation_request(&UserRequest::new(
             "Apply the plan."
         )));
+        // Natural follow-ups after a completed Coding Plan (must not re-plan).
+        assert!(detect_generation_request(&UserRequest::new(
+            "Generate the changes from that plan."
+        )));
+        assert!(detect_generation_request(&UserRequest::new(
+            "Implement that plan."
+        )));
+        assert!(detect_generation_request(&UserRequest::new(
+            "Make those changes."
+        )));
+        assert!(detect_generation_request(&UserRequest::new(
+            "Go ahead and code it."
+        )));
+        assert!(detect_generation_request(&UserRequest::new(
+            "Apply the plan."
+        )));
         assert!(!detect_generation_request(&UserRequest::new("Build Pong.")));
         assert!(!detect_generation_request(&UserRequest::new(
             "Write tests."
+        )));
+        assert!(!detect_generation_request(&UserRequest::new(
+            "Generate a parser."
         )));
         assert!(!detect_generation_request(&UserRequest::write_file(
             "/tmp/a.rs",
             "x"
         )));
+    }
+
+    #[test]
+    fn apply_followups_steal_from_coding_plan_detect() {
+        for phrase in [
+            "generate the changes from that plan.",
+            "implement that plan.",
+            "make those changes.",
+            "go ahead and code it.",
+            "apply the plan.",
+        ] {
+            assert!(
+                steals_from_coding_plan_detect(phrase),
+                "expected steal for {phrase}"
+            );
+            assert!(
+                crate::coding_plan::detect_coding_plan_request(&UserRequest::new(phrase)).is_none(),
+                "must not author a new CodingPlan for {phrase}"
+            );
+        }
     }
 
     #[test]

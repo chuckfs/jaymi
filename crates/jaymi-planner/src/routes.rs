@@ -543,6 +543,8 @@ impl IntentToolHandler for RunTerminalRoute {
         response.terminal_history = output.terminal_history;
         response.terminal_title = output.terminal_title;
         response.terminal_alive = output.terminal_alive;
+        response.terminal_exit_code = output.terminal_exit_code;
+        response.terminal_duration_ms = output.terminal_duration_ms;
         Ok(response)
     }
 }

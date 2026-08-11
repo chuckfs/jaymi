@@ -414,6 +414,9 @@ pub fn detect_codebase_qa_request(request: &UserRequest) -> Option<CodebaseQaAss
         || crate::coding_plan::detect_coding_plan_request(request).is_some()
         || crate::multi_file::detect_multi_file_request(request).is_some()
         || crate::code_generation::detect_generation_request(request)
+        || crate::build_awareness::detect_build_awareness_request(request).is_some()
+        || crate::test_execution::detect_test_execution_request(request).is_some()
+        || crate::fix_from_verification::steals_from_other_detect(request)
     {
         return None;
     }

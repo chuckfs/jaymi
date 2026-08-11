@@ -216,6 +216,24 @@ pub fn build_coding_diagnostics_view(
                     lines.extend(coding_diff_review_activity_lines(activity));
                     lines.extend(execution_plan_lifecycle_activity_lines(activity));
                     lines.extend(coding_mutation_recovery_activity_lines(activity));
+                    lines.extend(build_awareness_activity_lines(activity));
+                    lines.extend(test_execution_activity_lines(activity));
+                    lines.extend(verification_evidence_activity_lines(activity));
+                    lines.extend(fix_from_verification_activity_lines(activity));
+                    lines.extend(verification_summary_activity_lines(activity));
+                    lines.extend(coding_verification_loop_activity_lines(activity));
+                    lines.extend(coding_goal_activity_lines(activity));
+                    lines.extend(goal_decomposition_activity_lines(activity));
+                    lines.extend(agent_lifecycle_activity_lines(activity));
+                    lines.extend(multi_step_execution_activity_lines(activity));
+                    lines.extend(agent_context_maintenance_activity_lines(activity));
+                    lines.extend(autonomy_policy_activity_lines(activity));
+                    lines.extend(agent_progress_activity_lines(activity));
+                    lines.extend(agent_control_activity_lines(activity));
+                    lines.extend(agent_recovery_activity_lines(activity));
+                    lines.extend(goal_completion_activity_lines(activity));
+                    lines.extend(session_continuity_activity_lines(activity));
+                    lines.extend(agentic_coding_experience_activity_lines(activity));
                 }
                 None => lines.push("last: no planner requests yet".into()),
             }
@@ -637,6 +655,112 @@ pub struct LastPlannerActivity {
     pub coding_mutation_recovery_kind: Option<String>,
     /// Whether recovery requires a new reviewed plan.
     pub coding_mutation_recovery_requires_new_plan: Option<bool>,
+    /// Build Awareness diagnostics summary (C4.1), when any.
+    pub build_awareness_summary: Option<String>,
+    /// Discovery status (`ready` / `no_active_project` / …).
+    pub build_awareness_status: Option<String>,
+    /// Number of verification targets discovered.
+    pub build_awareness_targets: Option<usize>,
+    /// Whether a verification command was executed (always false in C4.1).
+    pub build_awareness_executed: Option<bool>,
+    /// Test Execution diagnostics summary (C4.2), when any.
+    pub test_execution_summary: Option<String>,
+    /// Test execution status (`passed` / `failed` / `awaiting_review` / …).
+    pub test_execution_status: Option<String>,
+    /// Selected test command.
+    pub test_execution_command: Option<String>,
+    /// Exit status when known.
+    pub test_execution_exit: Option<i32>,
+    /// Whether output was truncated.
+    pub test_execution_truncated: Option<bool>,
+    /// Verification evidence diagnostics summary (C4.3), when any.
+    pub verification_evidence_summary: Option<String>,
+    /// Verification result kind (`build_failure` / `test_failure` / …).
+    pub verification_evidence_kind: Option<String>,
+    /// Structured error finding count.
+    pub verification_evidence_errors: Option<usize>,
+    /// Structured warning finding count.
+    pub verification_evidence_warnings: Option<usize>,
+    /// Fix-from-verification diagnostics summary (C4.4), when any.
+    pub fix_from_verification_summary: Option<String>,
+    /// Fix actionability (`actionable` / `insufficient_evidence` / …).
+    pub fix_from_verification_status: Option<String>,
+    /// Whether C4.4 mutated files (always false).
+    pub fix_from_verification_mutated: Option<bool>,
+    /// Whether C4.4 auto-approved a corrective plan (always false).
+    pub fix_from_verification_auto_approved: Option<bool>,
+    /// Verification Summary diagnostics (C4.5), when any.
+    pub verification_summary_line: Option<String>,
+    /// Summary status (`passed` / `failed` / `not_run` / …).
+    pub verification_summary_status: Option<String>,
+    /// Recommended next-step prompt when grounded.
+    pub verification_summary_next: Option<String>,
+    /// Coding verification loop diagnostics (C4.6), when any.
+    pub coding_verification_loop_summary: Option<String>,
+    /// Loop phase label.
+    pub coding_verification_loop_phase: Option<String>,
+    /// Completed cycles / max.
+    pub coding_verification_loop_cycles: Option<String>,
+    /// Coding Goal diagnostics (C5.1), when any.
+    pub coding_goal_summary: Option<String>,
+    /// Goal status (`active` / `completed` / `cancelled` / `blocked`).
+    pub coding_goal_status: Option<String>,
+    /// Goal id when a coding goal was created or updated this turn.
+    pub coding_goal_id: Option<String>,
+    /// Goal Decomposition diagnostics (C5.2), when any.
+    pub goal_decomposition_summary: Option<String>,
+    /// Decomposition status.
+    pub goal_decomposition_status: Option<String>,
+    /// Number of proposed tasks.
+    pub goal_decomposition_tasks: Option<usize>,
+    /// Agent lifecycle diagnostics (C5.3), when any.
+    pub agent_lifecycle_summary: Option<String>,
+    /// Agent lifecycle state label.
+    pub agent_lifecycle_state: Option<String>,
+    /// Multi-step coding execution diagnostics (C5.4), when any.
+    pub multi_step_execution_summary: Option<String>,
+    /// Multi-step status label.
+    pub multi_step_execution_status: Option<String>,
+    /// Active task id when multi-step orchestration is running.
+    pub multi_step_active_task_id: Option<String>,
+    /// Agent context maintenance diagnostics (C5.5), when any.
+    pub agent_context_maintenance_summary: Option<String>,
+    /// Agent context status label.
+    pub agent_context_maintenance_status: Option<String>,
+    /// Compacted char estimate for agent context.
+    pub agent_context_chars: Option<usize>,
+    /// Autonomy / approval policy diagnostics (C5.6), when any.
+    pub autonomy_policy_summary: Option<String>,
+    /// Autonomy policy status label.
+    pub autonomy_policy_status: Option<String>,
+    /// Agent progress UX diagnostics summary (C5.7), when any.
+    pub agent_progress_summary: Option<String>,
+    /// Progress phase label.
+    pub agent_progress_phase: Option<String>,
+    /// Completed / total tasks for progress chrome.
+    pub agent_progress_tasks: Option<String>,
+    /// Agent pause/resume/cancel diagnostics (C5.8), when any.
+    pub agent_control_summary: Option<String>,
+    /// Agent control status label.
+    pub agent_control_status: Option<String>,
+    /// Agent failure/recovery diagnostics (C5.9), when any.
+    pub agent_recovery_summary: Option<String>,
+    /// Recovery status label.
+    pub agent_recovery_status: Option<String>,
+    /// Coding goal completion diagnostics (C5.10), when any.
+    pub goal_completion_summary: Option<String>,
+    /// Goal completion status label.
+    pub goal_completion_status: Option<String>,
+    /// Long-running session continuity diagnostics (C5.11), when any.
+    pub session_continuity_summary: Option<String>,
+    /// Session continuity status label.
+    pub session_continuity_status: Option<String>,
+    /// Agentic coding experience diagnostics (C5.12), when any.
+    pub agentic_coding_experience_summary: Option<String>,
+    /// Agentic experience status label.
+    pub agentic_coding_experience_status: Option<String>,
+    /// Current agentic experience stage.
+    pub agentic_coding_experience_stage: Option<String>,
 }
 
 /// Observational C2.1–C2.5 diagnostic lines for the Coding Diagnostics panel.
@@ -964,6 +1088,323 @@ pub fn coding_mutation_recovery_activity_lines(activity: &LastPlannerActivity) -
         ));
     }
     lines
+}
+
+/// Observational C4.1 Build Awareness lines for Coding Diagnostics.
+pub fn build_awareness_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.build_awareness_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "build_awareness status={} targets={} executed={}",
+            activity.build_awareness_status.as_deref().unwrap_or("—"),
+            activity
+                .build_awareness_targets
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .build_awareness_executed
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| "—".into()),
+        ));
+    }
+    lines
+}
+
+/// Observational C4.2 Test Execution lines for Coding Diagnostics.
+pub fn test_execution_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.test_execution_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "test_execution status={} command={} exit={} truncated={}",
+            activity.test_execution_status.as_deref().unwrap_or("—"),
+            activity.test_execution_command.as_deref().unwrap_or("—"),
+            activity
+                .test_execution_exit
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .test_execution_truncated
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| "—".into()),
+        ));
+    }
+    lines
+}
+
+/// Observational C4.3 Verification Diagnostics lines for Coding Diagnostics.
+pub fn verification_evidence_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.verification_evidence_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "verification_evidence kind={} errors={} warnings={}",
+            activity.verification_evidence_kind.as_deref().unwrap_or("—"),
+            activity
+                .verification_evidence_errors
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .verification_evidence_warnings
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+        ));
+    }
+    lines
+}
+
+/// Observational C4.4 Fix From Verification lines for Coding Diagnostics.
+pub fn fix_from_verification_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.fix_from_verification_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "fix_from_verification status={} mutated={} auto_approved={}",
+            activity.fix_from_verification_status.as_deref().unwrap_or("—"),
+            activity
+                .fix_from_verification_mutated
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| "—".into()),
+            activity
+                .fix_from_verification_auto_approved
+                .map(|b| b.to_string())
+                .unwrap_or_else(|| "—".into()),
+        ));
+    }
+    lines
+}
+
+/// Observational C4.5 Verification Summary lines for Coding Diagnostics.
+pub fn verification_summary_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.verification_summary_line {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "verification_summary status={} next={}",
+            activity.verification_summary_status.as_deref().unwrap_or("—"),
+            activity.verification_summary_next.as_deref().unwrap_or("—"),
+        ));
+    }
+    lines
+}
+
+/// Observational C4.6 Coding Verification Loop lines for Coding Diagnostics.
+pub fn coding_verification_loop_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.coding_verification_loop_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "coding_verification_loop phase={} cycles={}",
+            activity
+                .coding_verification_loop_phase
+                .as_deref()
+                .unwrap_or("—"),
+            activity
+                .coding_verification_loop_cycles
+                .as_deref()
+                .unwrap_or("—"),
+        ));
+    }
+    lines
+}
+
+/// Observational C5.1 Coding Goal lines for Coding Diagnostics.
+pub fn coding_goal_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.coding_goal_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "coding_goal status={} id={}",
+            activity.coding_goal_status.as_deref().unwrap_or("—"),
+            activity.coding_goal_id.as_deref().unwrap_or("—"),
+        ));
+    }
+    lines
+}
+
+/// Observational C5.2 Goal Decomposition lines for Coding Diagnostics.
+pub fn goal_decomposition_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.goal_decomposition_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "goal_decomposition status={} tasks={}",
+            activity
+                .goal_decomposition_status
+                .as_deref()
+                .unwrap_or("—"),
+            activity
+                .goal_decomposition_tasks
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+        ));
+    }
+    lines
+}
+
+/// Observational C5.3 Agent Lifecycle lines for Coding Diagnostics.
+pub fn agent_lifecycle_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.agent_lifecycle_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "agent_lifecycle state={}",
+            activity.agent_lifecycle_state.as_deref().unwrap_or("—"),
+        ));
+    }
+    lines
+}
+
+/// Observational C5.4 Multi-Step Coding Execution lines for Coding Diagnostics.
+pub fn multi_step_execution_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.multi_step_execution_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "multi_step_execution status={} active_task={}",
+            activity
+                .multi_step_execution_status
+                .as_deref()
+                .unwrap_or("—"),
+            activity
+                .multi_step_active_task_id
+                .as_deref()
+                .unwrap_or("—"),
+        ));
+    }
+    lines
+}
+
+/// Observational C5.5 Agent Context Maintenance lines for Coding Diagnostics.
+pub fn agent_context_maintenance_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.agent_context_maintenance_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "agent_context_maintenance status={} chars={}",
+            activity
+                .agent_context_maintenance_status
+                .as_deref()
+                .unwrap_or("—"),
+            activity
+                .agent_context_chars
+                .map(|n| n.to_string())
+                .unwrap_or_else(|| "—".into()),
+        ));
+    }
+    lines
+}
+
+/// Observational C5.6 Approval / Autonomy Policy lines for Coding Diagnostics.
+pub fn autonomy_policy_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.autonomy_policy_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "autonomy_policy status={}",
+            activity.autonomy_policy_status.as_deref().unwrap_or("—"),
+        ));
+    }
+    lines
+}
+
+/// Observational C5.7 Agent Progress diagnostics lines (not the user Progress panel).
+pub fn agent_progress_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.agent_progress_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "agent_progress phase={} tasks={}",
+            activity.agent_progress_phase.as_deref().unwrap_or("—"),
+            activity.agent_progress_tasks.as_deref().unwrap_or("—"),
+        ));
+    }
+    lines
+}
+
+/// Observational C5.8 Agent Control diagnostics lines.
+pub fn agent_control_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.agent_control_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "agent_control status={}",
+            activity.agent_control_status.as_deref().unwrap_or("—"),
+        ));
+    }
+    lines
+}
+
+/// Observational C5.9 Agent Failure/Recovery diagnostics lines.
+pub fn agent_recovery_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.agent_recovery_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "agent_recovery status={}",
+            activity.agent_recovery_status.as_deref().unwrap_or("—"),
+        ));
+    }
+    lines
+}
+
+/// Observational C5.10 Coding Goal Completion diagnostics lines.
+pub fn goal_completion_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.goal_completion_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "goal_completion status={}",
+            activity.goal_completion_status.as_deref().unwrap_or("—"),
+        ));
+    }
+    lines
+}
+
+/// Observational C5.11 Long-Running Session Continuity diagnostics lines.
+pub fn session_continuity_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.session_continuity_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "session_continuity status={}",
+            activity.session_continuity_status.as_deref().unwrap_or("—"),
+        ));
+    }
+    lines
+}
+
+/// Observational C5.12 Agentic Coding Experience diagnostics lines.
+pub fn agentic_coding_experience_activity_lines(activity: &LastPlannerActivity) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(summary) = &activity.agentic_coding_experience_summary {
+        lines.push(summary.clone());
+        lines.push(format!(
+            "agentic_experience status={} stage={}",
+            activity
+                .agentic_coding_experience_status
+                .as_deref()
+                .unwrap_or("—"),
+            activity
+                .agentic_coding_experience_stage
+                .as_deref()
+                .unwrap_or("—"),
+        ));
+    }
+    lines
+}
+
+/// User-facing Goal Progress panel lines (C5.7) — separate from Diagnostics.
+///
+/// Experience/UI mirrors Planner `AgentProgressView`; this helper only formats.
+pub fn goal_progress_panel_lines(
+    progress: Option<&jaymi_planner::AgentProgressView>,
+) -> Vec<String> {
+    match progress {
+        Some(view) => view.panel_lines(),
+        None => Vec::new(),
+    }
 }
 
 /// Events emitted by interactive Coding shell panels.
@@ -3724,5 +4165,272 @@ mod tests {
         assert!(joined.contains("coding_mutation_recovery phase=failed"));
         assert!(joined.contains("requires_new_plan=true"));
         assert!(coding_mutation_recovery_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn build_awareness_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            build_awareness_summary: Some(
+                "build_awareness status=ready targets=2 preferred=0 executed=false gaps=0 ambient_diag=0 rules=2"
+                    .into(),
+            ),
+            build_awareness_status: Some("ready".into()),
+            build_awareness_targets: Some(2),
+            build_awareness_executed: Some(false),
+            ..LastPlannerActivity::default()
+        };
+        let joined = build_awareness_activity_lines(&activity).join("\n");
+        assert!(joined.contains("build_awareness status=ready"));
+        assert!(joined.contains("executed=false"));
+        assert!(build_awareness_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn test_execution_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            test_execution_summary: Some(
+                "test_execution status=passed scope=full_suite command=Some(\"cargo test\") exit=Some(0) ms=Some(42) truncated=false dispatched=true mutated=false"
+                    .into(),
+            ),
+            test_execution_status: Some("passed".into()),
+            test_execution_command: Some("cargo test".into()),
+            test_execution_exit: Some(0),
+            test_execution_truncated: Some(false),
+            ..LastPlannerActivity::default()
+        };
+        let joined = test_execution_activity_lines(&activity).join("\n");
+        assert!(joined.contains("test_execution status=passed"));
+        assert!(joined.contains("cargo test"));
+        assert!(test_execution_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn verification_evidence_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            verification_evidence_summary: Some(
+                "verification_evidence kind=build_failure errors=3 warnings=1 files=3 tests=0 truncated=false"
+                    .into(),
+            ),
+            verification_evidence_kind: Some("build_failure".into()),
+            verification_evidence_errors: Some(3),
+            verification_evidence_warnings: Some(1),
+            ..LastPlannerActivity::default()
+        };
+        let joined = verification_evidence_activity_lines(&activity).join("\n");
+        assert!(joined.contains("verification_evidence kind=build_failure"));
+        assert!(joined.contains("errors=3"));
+        assert!(verification_evidence_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn fix_from_verification_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            fix_from_verification_summary: Some(
+                "fix_from_verification status=actionable intent=fix_build_failure files=2 symbols=0 mutated=false auto_retried=false auto_approved=false gaps=0"
+                    .into(),
+            ),
+            fix_from_verification_status: Some("actionable".into()),
+            fix_from_verification_mutated: Some(false),
+            fix_from_verification_auto_approved: Some(false),
+            ..LastPlannerActivity::default()
+        };
+        let joined = fix_from_verification_activity_lines(&activity).join("\n");
+        assert!(joined.contains("fix_from_verification status=actionable"));
+        assert!(joined.contains("mutated=false"));
+        assert!(fix_from_verification_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn verification_summary_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            verification_summary_line: Some(
+                "verification_summary status=failed changed=0 commands=1 failures=1 next=1 invented=false"
+                    .into(),
+            ),
+            verification_summary_status: Some("failed".into()),
+            verification_summary_next: Some("Fix the build failure.".into()),
+            ..LastPlannerActivity::default()
+        };
+        let joined = verification_summary_activity_lines(&activity).join("\n");
+        assert!(joined.contains("verification_summary status=failed"));
+        assert!(joined.contains("Fix the build failure."));
+        assert!(verification_summary_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn coding_verification_loop_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            coding_verification_loop_summary: Some(
+                "coding_verification_loop phase=failed_awaiting_fix cycles=1/3 history=1 active=true auto_approved=false silent_retry=false"
+                    .into(),
+            ),
+            coding_verification_loop_phase: Some("failed_awaiting_fix".into()),
+            coding_verification_loop_cycles: Some("1/3".into()),
+            ..LastPlannerActivity::default()
+        };
+        let joined = coding_verification_loop_activity_lines(&activity).join("\n");
+        assert!(joined.contains("coding_verification_loop phase=failed_awaiting_fix"));
+        assert!(joined.contains("cycles=1/3"));
+        assert!(coding_verification_loop_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn multi_step_execution_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            multi_step_execution_summary: Some(
+                "multi_step_execution status=started goal=g1 active_task=t1 history=1 mutated=false auto_approved=false"
+                    .into(),
+            ),
+            multi_step_execution_status: Some("started".into()),
+            multi_step_active_task_id: Some("t1".into()),
+            ..LastPlannerActivity::default()
+        };
+        let joined = multi_step_execution_activity_lines(&activity).join("\n");
+        assert!(joined.contains("multi_step_execution status=started"));
+        assert!(joined.contains("active_task=t1"));
+        assert!(multi_step_execution_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn agent_context_maintenance_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            agent_context_maintenance_summary: Some(
+                "agent_context_maintenance status=maintained mutated=false memory_written=false duplicate_assembler=false agent_context goal=g1"
+                    .into(),
+            ),
+            agent_context_maintenance_status: Some("maintained".into()),
+            agent_context_chars: Some(1200),
+            ..LastPlannerActivity::default()
+        };
+        let joined = agent_context_maintenance_activity_lines(&activity).join("\n");
+        assert!(joined.contains("agent_context_maintenance status=maintained"));
+        assert!(joined.contains("chars=1200"));
+        assert!(agent_context_maintenance_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn autonomy_policy_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            autonomy_policy_summary: Some(
+                "autonomy_policy status=status goal=g1 binding_plan=plan-1 modes=false agent_approval=false llm_auth=false"
+                    .into(),
+            ),
+            autonomy_policy_status: Some("status".into()),
+            ..LastPlannerActivity::default()
+        };
+        let joined = autonomy_policy_activity_lines(&activity).join("\n");
+        assert!(joined.contains("autonomy_policy status=status"));
+        assert!(autonomy_policy_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn agent_progress_activity_and_panel_lines() {
+        let activity = LastPlannerActivity {
+            agent_progress_summary: Some(
+                "agent_progress goal=g1 phase=investigating tasks=1/5 approval=false verification=not_started cot=false second_state=false"
+                    .into(),
+            ),
+            agent_progress_phase: Some("investigating".into()),
+            agent_progress_tasks: Some("1/5".into()),
+            ..LastPlannerActivity::default()
+        };
+        let joined = agent_progress_activity_lines(&activity).join("\n");
+        assert!(joined.contains("agent_progress phase=investigating"));
+        assert!(joined.contains("tasks=1/5"));
+        assert!(agent_progress_activity_lines(&LastPlannerActivity::default()).is_empty());
+
+        let view = jaymi_planner::AgentProgressView {
+            title: "Building authentication".into(),
+            phase_label: "Investigating".into(),
+            completed_count: 2,
+            total_tasks: 5,
+            current_task: Some(jaymi_planner::agent_progress_ux::ProgressTaskLine {
+                task_id: "t".into(),
+                description: "Implementing login UI".into(),
+                mark: jaymi_planner::agent_progress_ux::ProgressTaskMark::Current,
+            }),
+            ..jaymi_planner::AgentProgressView::default()
+        };
+        let panel = goal_progress_panel_lines(Some(&view));
+        assert!(panel.iter().any(|l| l.contains("Building authentication")));
+        assert!(panel.iter().any(|l| l.contains("2/5")));
+        assert!(goal_progress_panel_lines(None).is_empty());
+    }
+
+    #[test]
+    fn agent_control_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            agent_control_summary: Some(
+                "agent_control status=paused from=investigating to=paused stop_new=true stale=0 fresh_approval=false invalidated=false rollback=false in_flight=none parallel_engine=false planner_owned=true"
+                    .into(),
+            ),
+            agent_control_status: Some("paused".into()),
+            ..LastPlannerActivity::default()
+        };
+        let joined = agent_control_activity_lines(&activity).join("\n");
+        assert!(joined.contains("agent_control status=paused"));
+        assert!(agent_control_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn agent_recovery_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            agent_recovery_summary: Some(
+                "agent_recovery status=applied category=verification_failure disposition=propose_corrective_plan attempt=1/3 mutated=false auto_retry=false approval_reuse=false rollback=false parallel_engine=false planner_owned=true"
+                    .into(),
+            ),
+            agent_recovery_status: Some("applied".into()),
+            ..LastPlannerActivity::default()
+        };
+        let joined = agent_recovery_activity_lines(&activity).join("\n");
+        assert!(joined.contains("agent_recovery status=applied"));
+        assert!(agent_recovery_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn goal_completion_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            goal_completion_summary: Some(
+                "goal_completion status=completed outcome=successfully_completed ending=successfully_completed criteria=1 verified=passed waived_v=false blocked=false mutated=false invented=false model_auth=false unknown_as_sat=false planner_owned=true"
+                    .into(),
+            ),
+            goal_completion_status: Some("completed".into()),
+            ..LastPlannerActivity::default()
+        };
+        let joined = goal_completion_activity_lines(&activity).join("\n");
+        assert!(joined.contains("goal_completion status=completed"));
+        assert!(goal_completion_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn session_continuity_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            session_continuity_summary: Some(
+                "session_continuity status=prepared tasks=10/40 workflow=4 ctx=1200 compacted=true paused=false stop_ops=false stale=0 fresh_approval=false invalidated=false restart=false serde=true pruned=0 mutated=false bg=false db=false planner_owned=true"
+                    .into(),
+            ),
+            session_continuity_status: Some("prepared".into()),
+            ..LastPlannerActivity::default()
+        };
+        let joined = session_continuity_activity_lines(&activity).join("\n");
+        assert!(joined.contains("session_continuity status=prepared"));
+        assert!(session_continuity_activity_lines(&LastPlannerActivity::default()).is_empty());
+    }
+
+    #[test]
+    fn agentic_coding_experience_activity_lines_render() {
+        let activity = LastPlannerActivity {
+            agentic_coding_experience_summary: Some(
+                "agentic_experience status=created stage=goal phase=Not started approval=false mutated=false tools=false cot=false parallel=false cancel_continue=false destructive_retry=false hidden_fs=false model_tools=false unrelated=false planner_owned=true conversation=true"
+                    .into(),
+            ),
+            agentic_coding_experience_status: Some("created".into()),
+            agentic_coding_experience_stage: Some("goal".into()),
+            ..LastPlannerActivity::default()
+        };
+        let joined = agentic_coding_experience_activity_lines(&activity).join("\n");
+        assert!(joined.contains("agentic_experience status=created"));
+        assert!(joined.contains("stage=goal"));
+        assert!(agentic_coding_experience_activity_lines(&LastPlannerActivity::default()).is_empty());
     }
 }

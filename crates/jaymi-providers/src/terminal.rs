@@ -67,6 +67,10 @@ pub struct TerminalCommandResult {
     pub history: Vec<String>,
     /// Whether the session is still alive after this operation.
     pub alive: bool,
+    /// Shell exit status when a Run completed (`echo __JAYMI_DONE:$?`).
+    pub exit_code: Option<i32>,
+    /// Wall-clock duration of the Run wait loop, when measured.
+    pub duration_ms: Option<u64>,
 }
 
 struct PtyHandle {
@@ -149,7 +153,14 @@ impl TerminalManager {
             .sessions
             .get(session_id)
             .ok_or_else(|| JaymiError::new(format!("missing terminal session {session_id}")))?;
-        Ok(snapshot_result(session_id, handle, None, String::new()))
+        Ok(snapshot_result(
+            session_id,
+            handle,
+            None,
+            String::new(),
+            None,
+            None,
+        ))
     }
 
     /// Create a new session with a generated id (cwd follows the project root).
@@ -184,7 +195,14 @@ impl TerminalManager {
             .get_mut(session_id)
             .ok_or_else(|| JaymiError::new(format!("missing terminal session {session_id}")))?;
         handle.title = title.to_string();
-        Ok(snapshot_result(session_id, handle, None, String::new()))
+        Ok(snapshot_result(
+            session_id,
+            handle,
+            None,
+            String::new(),
+            None,
+            None,
+        ))
     }
 
     /// Kill / close one session.
@@ -202,6 +220,8 @@ impl TerminalManager {
             scrollback: String::new(),
             history: handle.history,
             alive: false,
+            exit_code: None,
+            duration_ms: None,
         })
     }
 
@@ -245,7 +265,8 @@ impl TerminalManager {
         })?;
 
         let timeout = command_timeout(command);
-        let deadline = Instant::now() + timeout;
+        let started = Instant::now();
+        let deadline = started + timeout;
         let marker = DONE_MARKER.to_string();
         loop {
             let output = handle
@@ -264,6 +285,7 @@ impl TerminalManager {
             drop(output);
             thread::sleep(POLL_INTERVAL);
         }
+        let duration_ms = started.elapsed().as_millis() as u64;
 
         let raw_chunk = {
             let output = handle
@@ -272,7 +294,7 @@ impl TerminalManager {
                 .map_err(|_| JaymiError::new("terminal output lock poisoned"))?;
             output[before_len..].to_string()
         };
-        let cleaned = strip_done_marker(&raw_chunk);
+        let (exit_code, cleaned) = parse_done_marker(&raw_chunk);
         let display = strip_ansi(&cleaned);
 
         handle.history.push(command.to_string());
@@ -284,7 +306,7 @@ impl TerminalManager {
         jaymi_logging::info(
             "providers",
             format!(
-                "terminal run session={session_id} command={command} bytes={}",
+                "terminal run session={session_id} command={command} exit={exit_code:?} ms={duration_ms} bytes={}",
                 display.len()
             ),
         );
@@ -294,6 +316,8 @@ impl TerminalManager {
             handle,
             Some(command.to_string()),
             display,
+            exit_code,
+            Some(duration_ms),
         ))
     }
 
@@ -549,11 +573,16 @@ fn snapshot_result(
     handle: &PtyHandle,
     command: Option<String>,
     output: String,
+    exit_code: Option<i32>,
+    duration_ms: Option<u64>,
 ) -> TerminalCommandResult {
     let scrollback = handle
         .output
         .lock()
-        .map(|guard| strip_ansi(&strip_done_marker(&guard)))
+        .map(|guard| {
+            let (_, cleaned) = parse_done_marker(&guard);
+            strip_ansi(&cleaned)
+        })
         .unwrap_or_default();
     TerminalCommandResult {
         session_id: session_id.to_string(),
@@ -564,6 +593,8 @@ fn snapshot_result(
         scrollback,
         history: handle.history.clone(),
         alive: true,
+        exit_code,
+        duration_ms,
     }
 }
 
@@ -602,17 +633,27 @@ fn default_shell() -> String {
 
 fn command_timeout(command: &str) -> Duration {
     let lower = command.to_ascii_lowercase();
-    if lower.contains("cargo ") || lower.starts_with("cargo") {
+    if lower.contains("cargo ")
+        || lower.starts_with("cargo")
+        || lower.contains("npm test")
+        || lower.contains("npm run test")
+        || lower.contains("pnpm test")
+        || lower.contains("yarn test")
+        || lower.contains("pytest")
+        || lower.contains("go test")
+    {
         CARGO_TIMEOUT
     } else {
         DEFAULT_TIMEOUT
     }
 }
 
-fn strip_done_marker(text: &str) -> String {
+fn parse_done_marker(text: &str) -> (Option<i32>, String) {
     let mut out = String::new();
+    let mut exit_code = None;
     for line in text.lines() {
-        if line.contains(DONE_MARKER) {
+        if let Some(code) = line_exit_code(line) {
+            exit_code = Some(code);
             continue;
         }
         if line.trim_start().starts_with("echo ") && line.contains(DONE_MARKER) {
@@ -624,7 +665,42 @@ fn strip_done_marker(text: &str) -> String {
     if !text.ends_with('\n') && out.ends_with('\n') {
         out.pop();
     }
-    out
+    (exit_code, out)
+}
+
+fn line_exit_code(line: &str) -> Option<i32> {
+    let trimmed = line.trim();
+    let idx = trimmed.find(DONE_MARKER)?;
+    let after = &trimmed[idx + DONE_MARKER.len()..];
+    let digits: String = after
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '-')
+        .collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
+    }
+}
+
+#[allow(dead_code)]
+fn strip_done_marker(text: &str) -> String {
+    parse_done_marker(text).1
+}
+
+#[cfg(test)]
+mod done_marker_tests {
+    use super::*;
+
+    #[test]
+    fn parse_exit_code_from_done_marker() {
+        let raw = "hello\n__JAYMI_DONE:17\n";
+        let (code, cleaned) = parse_done_marker(raw);
+        assert_eq!(code, Some(17));
+        assert!(cleaned.contains("hello"));
+        assert!(!cleaned.contains("__JAYMI_DONE"));
+        assert_eq!(strip_done_marker(raw), cleaned);
+    }
 }
 
 fn strip_ansi(text: &str) -> String {

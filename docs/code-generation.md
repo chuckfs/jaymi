@@ -26,7 +26,7 @@ the Coding Plan — not live LLM edits of the workspace.
 | Provider writes | Planner → Tool → Provider only |
 | LLM edits of files | Ops → Execution Plan → Review → Tool |
 | Skipping review | Review Before Action for every generation batch |
-| Silent codegen on C1.4 plan turns | Separate “Generate the code.” turn |
+| Silent codegen on C1.4 plan turns | Separate apply turn (“Generate the changes.” / “Generate the code.”) |
 
 ## Pipeline
 
@@ -34,7 +34,7 @@ the Coding Plan — not live LLM edits of the workspace.
 Coding Plan (C1.4) remembered
         │
         ▼
-UserRequest ("Generate the code." / begin_code_generation)
+UserRequest ("Generate the changes." / "Generate the code." / begin_code_generation)
         │
         ▼
 Planner materializes CreateFile / ModifyFile / DeleteFile
@@ -53,7 +53,7 @@ PausedExecution + Review Card
 
 | Entry | Behavior |
 |-------|----------|
-| `"Generate the code."` / `"Implement the coding plan."` / `"Apply the plan."` | Uses last Coding Plan → ops → reviewed plan |
+| `"Generate the changes."` / `"Generate the code."` / `"Implement that plan."` / `"Apply the plan."` | Uses last Coding Plan → ops → reviewed plan (never a new Coding Plan) |
 | `Planner::begin_code_generation(CodeGeneration)` | Explicit ops batch → reviewed plan |
 | `PlannerResponse.code_generation` | Proposed ops (observational until Approve) |
 

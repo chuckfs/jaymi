@@ -186,7 +186,12 @@ impl Tool for TerminalTool {
             TerminalOperation::Kill => format!("Killed terminal session {}", result.session_id),
         };
 
-        Ok(ToolOutput::terminal(
+        let success = match operation {
+            TerminalOperation::Run => result.exit_code.map(|code| code == 0).unwrap_or(true),
+            _ => true,
+        };
+
+        Ok(ToolOutput::terminal_with_status(
             result.session_id,
             result.cwd,
             result.output,
@@ -195,6 +200,9 @@ impl Tool for TerminalTool {
             result.title,
             result.alive,
             message,
+            result.exit_code,
+            result.duration_ms,
+            success,
         ))
     }
 }
