@@ -78,6 +78,7 @@ pub mod reasoning;
 pub mod request_lifecycle;
 pub mod review_card;
 mod routes;
+pub mod structured_route;
 
 pub use approval_history::{
     ApprovalDecision, ApprovalExecutionResult, ApprovalHistoryAccess, ApprovalHistoryEntry,
@@ -230,7 +231,7 @@ pub use plan_revision::{ModificationScope, PlanHistoryEntry, PlanRevisionDraft};
 pub use review_card::{EstimatedDuration, ReviewCardModel, ReviewCardState, ReviewIntent};
 
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -586,6 +587,14 @@ pub struct Planner {
     coding_goals: Mutex<coding_goal::CodingGoalStore>,
     /// How many times [`Self::handle`] has been entered (integrity tests).
     handle_count: AtomicU64,
+    /// True when the current turn published a Coding Plan (C5.16).
+    ///
+    /// Guards the streaming turn-completion take so a plan is never destroyed by
+    /// the very turn that created it. Mirrors the observer path's
+    /// `coding_plan.map(..).or_else(|| take())` semantics without threading the
+    /// assessment through the public pumpable API. Staleness cleanup on a later
+    /// unrelated turn is unchanged.
+    coding_plan_published_this_turn: AtomicBool,
     /// Plans waiting on conversational review (resume without replan).
     paused: Mutex<PausedPlanStore>,
     /// Lineage of proposed / revised / cancelled plans for this Planner.
@@ -628,6 +637,7 @@ impl Planner {
             coding_verification_loop: Mutex::new(None),
             coding_goals: Mutex::new(coding_goal::CodingGoalStore::default()),
             handle_count: AtomicU64::new(0),
+            coding_plan_published_this_turn: AtomicBool::new(false),
             paused: Mutex::new(PausedPlanStore::default()),
             plan_history: Mutex::new(Vec::new()),
             approval_history: Mutex::new(ApprovalHistoryStore::new()),
@@ -764,6 +774,10 @@ impl Planner {
     }
 
     fn remember_coding_plan(&self, plan: Option<coding_plan::CodingPlan>) {
+        // Publishing marks the turn so `take_coding_plan_for_turn_end` keeps it
+        // available for the next turn ("Create a parser." → "Generate the code.").
+        self.coding_plan_published_this_turn
+            .store(plan.is_some(), Ordering::Relaxed);
         if let Ok(mut guard) = self.last_coding_plan.lock() {
             *guard = plan;
         }
@@ -774,6 +788,29 @@ impl Planner {
             .lock()
             .ok()
             .and_then(|mut guard| guard.take())
+    }
+
+    /// Clear the per-turn Coding Plan publication marker (start of a new turn).
+    fn reset_coding_plan_turn_marker(&self) {
+        self.coding_plan_published_this_turn
+            .store(false, Ordering::Relaxed);
+    }
+
+    /// Turn-end Coding Plan resolution for the pumpable streaming path (C5.16).
+    ///
+    /// Keeps a plan published during *this* turn (so the next turn can generate
+    /// from it) and otherwise falls back to the historical destructive take,
+    /// which is what expires a stale plan after an unrelated turn. This is the
+    /// pumpable-path equivalent of the observer path's
+    /// `coding_plan.map(..).or_else(|| take())`.
+    fn take_coding_plan_for_turn_end(&self) -> Option<coding_plan::CodingPlan> {
+        if self
+            .coding_plan_published_this_turn
+            .swap(false, Ordering::Relaxed)
+        {
+            return self.clone_last_coding_plan();
+        }
+        self.take_coding_plan()
     }
 
     fn remember_verification_evidence(
@@ -1843,6 +1880,8 @@ impl Planner {
         // A new user request (not resolve_review) invalidates any paused plan —
         // editing the request must never resume a stale plan.
         self.invalidate_paused("new user request")?;
+        // C5.16 — a new turn starts with no plan published yet.
+        self.reset_coding_plan_turn_marker();
         self.enter_or_continue_preparing_context();
 
         // C4.6 — explicit stop/cancel of the bounded verification loop.
@@ -2079,115 +2118,10 @@ impl Planner {
             // History is empty on the generic handle path; Application
             // conversational UX passes prior turns via
             // handle_conversational_with_observer / start_conversation_stream.
-            if let Some(action) = request.coding_action {
-                let surface = self.synthesize_pair_programming(
-                    &PlannerResponse::default(),
-                    Some(&context),
-                );
-                if let Some(response) =
-                    coding_actions::deterministic_coding_action_response_with_surface(
-                        action, &surface,
-                    )
-                {
-                    self.transition_conversation(ConversationState::Completed);
-                    return Ok(self.finalize_response(response, context));
-                }
-            }
-            if pair_programming::looks_like_dead_code_request(
-                &request.content.trim().to_ascii_lowercase(),
-            ) {
-                self.transition_conversation(ConversationState::Completed);
-                let response = PlannerResponse {
-                    content: coding_actions::find_dead_code_content().to_string(),
-                    reasoning_used: false,
-                    stream_lifecycle: Some(StreamingLifecycle::Idle),
-                    ..PlannerResponse::default()
-                };
-                return Ok(self.finalize_response(response, context));
-            }
-            if relationship_tracing::detect_relationship_trace_request(&request).is_some() {
-                return self.complete_relationship_tracing(&request, context);
-            }
-            if deep_investigation::detect_deep_investigation_request(&request).is_some() {
-                return self.complete_deep_investigation(&request, context);
-            }
-            if codebase_qa::detect_codebase_qa_request(&request).is_some() {
-                return self.complete_codebase_qa(&request, context);
-            }
-            if symbol_navigation::detect_symbol_navigation_request(&request).is_some()
-                && request.lsp.is_none()
-            {
-                return self.complete_symbol_navigation(&request, context);
-            }
-            if let Some(response) =
-                self.try_code_search_soft_path(&request, &context)
-            {
-                return self.finalize_code_search_soft_path(&request, context, response);
-            }
-            if code_generation::detect_generation_request(&request) {
-                return self.complete_code_generation_from_request(&request, context);
-            }
-            if let Some(kind) = multi_file::detect_multi_file_request(&request) {
-                return self.complete_multi_file_from_request(kind, &request, context);
-            }
-            if test_execution::detect_test_execution_request(&request).is_some() {
-                return self.complete_test_execution(&request, context);
-            }
-            if build_awareness::detect_build_awareness_request(&request).is_some() {
-                return self.complete_build_awareness(&request, context);
-            }
-            {
-                let evidence = fix_from_verification::load_verification_evidence(
-                    self.clone_last_verification_evidence().as_ref(),
-                    &self.context.session_inputs(),
-                );
-                if fix_from_verification::detect_fix_from_verification_request(
-                    &request,
-                    evidence.as_ref(),
-                )
-                .is_some()
-                {
-                    return self.complete_fix_from_verification(&request, context);
-                }
-            }
-            if agent_pause_resume_cancel::detect_control_request(&request).is_some() {
-                return self.complete_agent_pause_resume_cancel(&request, context);
-            }
-            if agent_failure_recovery::detect_recovery_request(&request).is_some() {
-                return self.complete_agent_failure_recovery(&request, context);
-            }
-            if coding_goal_completion::detect_completion_request(&request).is_some() {
-                return self.complete_coding_goal_completion(&request, context);
-            }
-            if agent_session_continuity::detect_continuity_request(&request).is_some() {
-                return self.complete_agent_session_continuity(&request, context);
-            }
-            if agentic_coding_experience::detect_agentic_experience_request(&request).is_some() {
-                return self.complete_agentic_coding_experience(&request, context);
-            }
-            if coding_goal::detect_coding_goal_request(&request).is_some() {
-                return self.complete_coding_goal(&request, context);
-            }
-            if goal_decomposition::detect_decomposition_request(&request).is_some() {
-                return self.complete_goal_decomposition(&request, context);
-            }
-            if agent_state_machine::detect_agent_lifecycle_request(&request).is_some() {
-                return self.complete_agent_lifecycle(&request, context);
-            }
-            if multi_step_execution::detect_multi_step_execution_request(&request).is_some() {
-                return self.complete_multi_step_execution(&request, context);
-            }
-            if agent_context_maintenance::detect_agent_context_request(&request).is_some() {
-                return self.complete_agent_context_maintenance(&request, context);
-            }
-            if approval_autonomy_policy::detect_autonomy_policy_request(&request).is_some() {
-                return self.complete_autonomy_policy(&request, context);
-            }
-            if agent_progress_ux::detect_progress_request(&request).is_some() {
-                return self.complete_agent_progress(&request, context);
-            }
-            if coding_edit::detect_coding_edit_request(&request).is_some() {
-                return self.complete_coding_edit_intent(&request, context);
+            // C5.16 — same shared ownership decision as the conversational
+            // entry points, so all three paths can never drift apart.
+            if let Some(route) = self.structured_route(&request, &intent) {
+                return self.dispatch_structured_route(route, &request, context);
             }
             let review = coding_review::detect_review_request(&request).map(|assessment| {
                 coding_review::finalize_assessment(assessment, &context)
@@ -2358,6 +2292,152 @@ impl Planner {
         result
     }
 
+    /// Snapshot the Planner state that routing is allowed to consult (C5.16).
+    ///
+    /// Read-only: clones/booleans only, so `structured_route` stays a pure
+    /// predicate and can never reach into stores or providers on its own.
+    fn routing_state_snapshot<'a>(
+        &self,
+        evidence: Option<&'a verification_diagnostics::VerificationEvidence>,
+    ) -> structured_route::RoutingState<'a> {
+        structured_route::RoutingState {
+            verification_evidence: evidence,
+            verification_loop_active: self
+                .clone_coding_verification_loop()
+                .map(|state| state.active)
+                .unwrap_or(false),
+            has_actionable_coding_plan: self.clone_last_coding_plan().is_some(),
+        }
+    }
+
+    /// Resolve verification evidence exactly as the C4.4 dispatch does.
+    fn routing_verification_evidence(
+        &self,
+    ) -> Option<verification_diagnostics::VerificationEvidence> {
+        fix_from_verification::load_verification_evidence(
+            self.clone_last_verification_evidence().as_ref(),
+            &self.context.session_inputs(),
+        )
+    }
+
+    /// Single authoritative routing-ownership decision (Sprint C5.16).
+    ///
+    /// Both production entry points call this so their detector lists cannot
+    /// drift. Ownership only — nothing here executes, mutates, or approves.
+    fn structured_route(
+        &self,
+        request: &UserRequest,
+        intent: &Intent,
+    ) -> Option<structured_route::StructuredRoute> {
+        let evidence = self.routing_verification_evidence();
+        let state = self.routing_state_snapshot(evidence.as_ref());
+        let route = structured_route::detect_structured_route(request, intent, state);
+        if let Some(route) = route {
+            jaymi_logging::info(
+                "planner",
+                format!("structured route owned by {}", route.as_str()),
+            );
+        }
+        route
+    }
+
+    /// Dispatch an owned [`structured_route::StructuredRoute`] to its existing path.
+    ///
+    /// Every arm delegates to the C2/C3/C4/C5 handler that already owned this
+    /// behavior — this is wiring, not a second pipeline. Review Before Action,
+    /// Permission, and ToolRisk are unchanged and still enforced downstream.
+    fn dispatch_structured_route(
+        &self,
+        route: structured_route::StructuredRoute,
+        request: &UserRequest,
+        context: ContextBundle,
+    ) -> JaymiResult<PlannerResponse> {
+        use structured_route::StructuredRoute as Route;
+        match route {
+            Route::VerificationLoopCancel => {
+                let cancelled = self
+                    .cancel_coding_verification_loop("User stopped the verification workflow.");
+                self.transition_conversation(ConversationState::Completed);
+                let response = PlannerResponse {
+                    content: match &cancelled {
+                        Some(state) => format!(
+                            "Stopped the coding verification workflow.\n\n{}",
+                            state.to_markdown()
+                        ),
+                        None => "Stopped the coding verification workflow.".into(),
+                    },
+                    reasoning_used: false,
+                    stream_lifecycle: Some(StreamingLifecycle::Idle),
+                    coding_verification_loop: cancelled,
+                    ..PlannerResponse::default()
+                };
+                Ok(self.finalize_response(response, context))
+            }
+            Route::CodingActionDeterministic => {
+                let action = request
+                    .coding_action
+                    .ok_or_else(|| JaymiError::new("coding action missing after gate"))?;
+                let surface =
+                    self.synthesize_pair_programming(&PlannerResponse::default(), Some(&context));
+                let response =
+                    coding_actions::deterministic_coding_action_response_with_surface(
+                        action, &surface,
+                    )
+                    .ok_or_else(|| JaymiError::new("coding action detect missed after gate"))?;
+                self.transition_conversation(ConversationState::Completed);
+                Ok(self.finalize_response(response, context))
+            }
+            Route::DeadCode => {
+                self.transition_conversation(ConversationState::Completed);
+                let response = PlannerResponse {
+                    content: coding_actions::find_dead_code_content().to_string(),
+                    reasoning_used: false,
+                    stream_lifecycle: Some(StreamingLifecycle::Idle),
+                    ..PlannerResponse::default()
+                };
+                Ok(self.finalize_response(response, context))
+            }
+            Route::RelationshipTracing => self.complete_relationship_tracing(request, context),
+            Route::DeepInvestigation => self.complete_deep_investigation(request, context),
+            Route::CodebaseQa => self.complete_codebase_qa(request, context),
+            Route::SymbolNavigation => self.complete_symbol_navigation(request, context),
+            Route::CodeSearch => {
+                let response = self
+                    .try_code_search_soft_path(request, &context)
+                    .ok_or_else(|| JaymiError::new("code search detect missed after gate"))?;
+                self.finalize_code_search_soft_path(request, context, response)
+            }
+            Route::CodeGeneration => self.complete_code_generation_from_request(request, context),
+            Route::MultiFile => {
+                let kind = multi_file::detect_multi_file_request(request)
+                    .ok_or_else(|| JaymiError::new("multi-file detect missed after gate"))?;
+                self.complete_multi_file_from_request(kind, request, context)
+            }
+            Route::TestExecution => self.complete_test_execution(request, context),
+            Route::BuildAwareness => self.complete_build_awareness(request, context),
+            Route::FixFromVerification => self.complete_fix_from_verification(request, context),
+            Route::AgentControl => self.complete_agent_pause_resume_cancel(request, context),
+            Route::AgentFailureRecovery => self.complete_agent_failure_recovery(request, context),
+            Route::CodingGoalCompletion => self.complete_coding_goal_completion(request, context),
+            Route::AgentSessionContinuity => {
+                self.complete_agent_session_continuity(request, context)
+            }
+            Route::AgenticCodingExperience => {
+                self.complete_agentic_coding_experience(request, context)
+            }
+            Route::CodingGoal => self.complete_coding_goal(request, context),
+            Route::GoalDecomposition => self.complete_goal_decomposition(request, context),
+            Route::AgentLifecycle => self.complete_agent_lifecycle(request, context),
+            Route::MultiStepExecution => self.complete_multi_step_execution(request, context),
+            Route::AgentContextMaintenance => {
+                self.complete_agent_context_maintenance(request, context)
+            }
+            Route::ApprovalAutonomyPolicy => self.complete_autonomy_policy(request, context),
+            Route::AgentProgress => self.complete_agent_progress(request, context),
+            Route::CodingEdit => self.complete_coding_edit_intent(request, context),
+        }
+    }
+
     /// Conversational path with incremental stream observer (tokens / lifecycle).
     ///
     /// Blocking delivery mode: collects the shared [`ConversationStream`] to a
@@ -2384,121 +2464,9 @@ impl Planner {
             // Not a conversational turn — fall back to full handle.
             return self.handle(request);
         }
-        if let Some(action) = request.coding_action {
-            if matches!(assembled.intent, Intent::Unknown) {
-                let surface = self.synthesize_pair_programming(
-                    &PlannerResponse::default(),
-                    Some(&assembled.context),
-                );
-                if let Some(response) =
-                    coding_actions::deterministic_coding_action_response_with_surface(
-                        action, &surface,
-                    )
-                {
-                    self.transition_conversation(ConversationState::Completed);
-                    return Ok(self.finalize_response(response, assembled.context));
-                }
-            }
-        }
-        if pair_programming::looks_like_dead_code_request(
-            &request.content.trim().to_ascii_lowercase(),
-        ) {
-            self.transition_conversation(ConversationState::Completed);
-            let response = PlannerResponse {
-                content: coding_actions::find_dead_code_content().to_string(),
-                reasoning_used: false,
-                stream_lifecycle: Some(StreamingLifecycle::Idle),
-                ..PlannerResponse::default()
-            };
-            return Ok(self.finalize_response(response, assembled.context));
-        }
-        if relationship_tracing::detect_relationship_trace_request(&request).is_some() {
-            return self.complete_relationship_tracing(&request, assembled.context);
-        }
-        if deep_investigation::detect_deep_investigation_request(&request).is_some() {
-            return self.complete_deep_investigation(&request, assembled.context);
-        }
-        if codebase_qa::detect_codebase_qa_request(&request).is_some() {
-            return self.complete_codebase_qa(&request, assembled.context);
-        }
-        if symbol_navigation::detect_symbol_navigation_request(&request).is_some()
-            && request.lsp.is_none()
-        {
-            return self.complete_symbol_navigation(&request, assembled.context);
-        }
-        if let Some(response) =
-            self.try_code_search_soft_path(&request, &assembled.context)
-        {
-            return self.finalize_code_search_soft_path(
-                &request,
-                assembled.context,
-                response,
-            );
-        }
-        if code_generation::detect_generation_request(&request) {
-            return self.complete_code_generation_from_request(&request, assembled.context);
-        }
-        if let Some(kind) = multi_file::detect_multi_file_request(&request) {
-            return self.complete_multi_file_from_request(kind, &request, assembled.context);
-        }
-        if test_execution::detect_test_execution_request(&request).is_some() {
-            return self.complete_test_execution(&request, assembled.context);
-        }
-        if build_awareness::detect_build_awareness_request(&request).is_some() {
-            return self.complete_build_awareness(&request, assembled.context);
-        }
-        {
-            let evidence = fix_from_verification::load_verification_evidence(
-                self.clone_last_verification_evidence().as_ref(),
-                &self.context.session_inputs(),
-            );
-            if fix_from_verification::detect_fix_from_verification_request(
-                &request,
-                evidence.as_ref(),
-            )
-            .is_some()
-            {
-                return self.complete_fix_from_verification(&request, assembled.context);
-            }
-        }
-        if agent_pause_resume_cancel::detect_control_request(&request).is_some() {
-            return self.complete_agent_pause_resume_cancel(&request, assembled.context);
-        }
-        if agent_failure_recovery::detect_recovery_request(&request).is_some() {
-            return self.complete_agent_failure_recovery(&request, assembled.context);
-        }
-        if coding_goal_completion::detect_completion_request(&request).is_some() {
-            return self.complete_coding_goal_completion(&request, assembled.context);
-        }
-        if agent_session_continuity::detect_continuity_request(&request).is_some() {
-            return self.complete_agent_session_continuity(&request, assembled.context);
-        }
-        if agentic_coding_experience::detect_agentic_experience_request(&request).is_some() {
-            return self.complete_agentic_coding_experience(&request, assembled.context);
-        }
-        if coding_goal::detect_coding_goal_request(&request).is_some() {
-            return self.complete_coding_goal(&request, assembled.context);
-        }
-        if goal_decomposition::detect_decomposition_request(&request).is_some() {
-            return self.complete_goal_decomposition(&request, assembled.context);
-        }
-        if agent_state_machine::detect_agent_lifecycle_request(&request).is_some() {
-            return self.complete_agent_lifecycle(&request, assembled.context);
-        }
-        if multi_step_execution::detect_multi_step_execution_request(&request).is_some() {
-            return self.complete_multi_step_execution(&request, assembled.context);
-        }
-        if agent_context_maintenance::detect_agent_context_request(&request).is_some() {
-            return self.complete_agent_context_maintenance(&request, assembled.context);
-        }
-        if approval_autonomy_policy::detect_autonomy_policy_request(&request).is_some() {
-            return self.complete_autonomy_policy(&request, assembled.context);
-        }
-        if agent_progress_ux::detect_progress_request(&request).is_some() {
-            return self.complete_agent_progress(&request, assembled.context);
-        }
-        if coding_edit::detect_coding_edit_request(&request).is_some() {
-            return self.complete_coding_edit_intent(&request, assembled.context);
+        // C5.16 — one shared ownership decision; dispatch to the existing path.
+        if let Some(route) = self.structured_route(&request, &assembled.intent) {
+            return self.dispatch_structured_route(route, &request, assembled.context);
         }
         // Coding Review — WI scaffold without tools / edits / plans.
         if let Some(assessment) = assembled.review.clone() {
@@ -2638,14 +2606,20 @@ impl Planner {
                 "start_conversation_stream requires a conversational / unknown request",
             ));
         }
-        if let Some(action) = request.coding_action {
-            if matches!(assembled.intent, Intent::Unknown)
-                && coding_actions::deterministic_coding_action_response(action).is_some()
-            {
-                return Err(JaymiError::new(
-                    "coding action uses deterministic planner reply",
-                ));
-            }
+        // C5.16 — every Planner-owned structured path yields the live stream.
+        //
+        // These paths build their own deterministic PlannerResponse (Coding Plan,
+        // ExecutionPlan + Review Card, verification evidence, goal state) and
+        // cannot be represented as a pumpable token stream. Returning Err sends
+        // the caller (`run_generation_start` in apps/jaymi/src/boot.rs) to its
+        // existing fallback, which dispatches through the same shared route.
+        // Ownership is decided once, in `structured_route`, so this list can
+        // never drift from the observer path again.
+        if let Some(route) = self.structured_route(request, &assembled.intent) {
+            return Err(JaymiError::new(format!(
+                "planner-owned route `{}` is not a conversational stream",
+                route.as_str()
+            )));
         }
         // Review / coding plan / understanding without a reasoning backend → soft path.
         if assembled.review.is_some() && !self.reasoning.is_implemented() {
@@ -2735,7 +2709,8 @@ impl Planner {
         );
         response.coding_understanding = self.take_understanding();
         response.coding_review = self.take_review();
-        response.coding_plan = self.take_coding_plan();
+        // C5.16 — never destroy a Coding Plan published by this same turn.
+        response.coding_plan = self.take_coding_plan_for_turn_end();
         if let Some(early) = early_pipeline {
             let mut merged = early;
             if let Some(later) = response.pipeline_timing.take() {
@@ -2760,6 +2735,8 @@ impl Planner {
         request: &UserRequest,
     ) -> JaymiResult<conversational::ConversationalAssemble> {
         self.invalidate_paused("new user request")?;
+        // C5.16 — a new turn starts with no plan published yet.
+        self.reset_coding_plan_turn_marker();
         // Host may already have acknowledged Thinking (Reasoning) on the UI
         // thread — do not attempt an illegal Reasoning → PreparingContext hop.
         self.enter_or_continue_preparing_context();
@@ -9135,6 +9112,692 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// C1.5 / C3.4 — Application's live-chat entry point (`run_generation_start`
+    /// in `apps/jaymi/src/boot.rs`) always tries `start_conversation_stream`
+    /// first and only falls back to `handle_conversational_with_observer` when
+    /// it returns `Err`. Before this fix, `start_conversation_stream` never
+    /// checked `code_generation::detect_generation_request`, so with a
+    /// reasoning backend configured (the real production shape) it opened a
+    /// live LLM stream and answered "Generate code." in prose — bypassing
+    /// Review Before Action entirely instead of consuming the actionable
+    /// Coding Plan through C3 patch generation.
+    #[test]
+    fn generate_code_yields_stream_to_c3_patch_review_not_conversational_prose() {
+        let dir = temp_dir();
+        let html = dir.join("index.html");
+
+        for phrase in [
+            "Generate code.",
+            "Generate the code.",
+            "Implement it.",
+            "Go ahead and code it.",
+        ] {
+            let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+            let planner = planner_with_tools_policies_routes_and_reasoning(
+                |tools, filesystem, _content| {
+                    tools
+                        .register_tool(Arc::new(jaymi_tools::WriteFileTool::new(filesystem)))
+                        .unwrap();
+                },
+                |policies| {
+                    policies.initialize().unwrap();
+                },
+                ToolRouteTable::builtin(),
+                Some(provider),
+            );
+            planner.remember_coding_plan(Some(mutation_plan_for_paths(
+                vec![format!("`{}` Pong canvas shell", html.display())],
+                vec![],
+                vec![],
+                "Create a simple Pong game.",
+            )));
+
+            // The streaming entry point must refuse — never let the LLM free-answer.
+            assert!(
+                planner
+                    .start_conversation_stream(&UserRequest::new(phrase), Vec::new())
+                    .is_err(),
+                "{phrase}: must not open a live conversational stream while an \
+                 actionable Coding Plan is pending generation"
+            );
+
+            // The caller's documented fallback (soft_or_tool_generation_fallback in
+            // boot.rs) is handle_conversational_with_observer — assert it actually
+            // reaches C3 patch generation under Review Before Action.
+            let response = planner
+                .handle_conversational_with_observer(UserRequest::new(phrase), Vec::new(), |_| {})
+                .unwrap();
+            assert!(
+                response.awaiting_review,
+                "{phrase}: expected Review Card / awaiting_review"
+            );
+            assert!(
+                response.blocked,
+                "{phrase}: generation must pause before mutation"
+            );
+            assert!(
+                response.patch_generation.is_some() || response.code_generation.is_some(),
+                "{phrase}: expected patch/codegen path, not conversational reasoning"
+            );
+            assert!(
+                response.execution_plan.is_some(),
+                "{phrase}: expected ExecutionPlan awaiting review"
+            );
+            assert_eq!(
+                response.execution_plan.as_ref().unwrap().status(),
+                ExecutionStatus::AwaitingReview
+            );
+            assert!(!html.exists(), "{phrase}: must not write before Approve");
+        }
+    }
+
+    /// Same trigger phrase, no actionable Coding Plan yet — must not blindly
+    /// mutate or silently author a new plan; the existing deterministic
+    /// "ask to plan first" soft path still owns this turn.
+    #[test]
+    fn generate_code_without_plan_yields_stream_to_deterministic_prompt() {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        let planner = planner_with_reasoning(provider);
+
+        assert!(
+            planner
+                .start_conversation_stream(&UserRequest::new("Generate code."), Vec::new())
+                .is_err(),
+            "must still yield to the soft path even with no remembered plan"
+        );
+
+        let response = planner
+            .handle_conversational_with_observer(
+                UserRequest::new("Generate code."),
+                Vec::new(),
+                |_| {},
+            )
+            .unwrap();
+        assert!(!response.awaiting_review);
+        assert!(!response.blocked);
+        assert!(response.execution_plan.is_none());
+        assert!(response
+            .content
+            .contains("I don't have a Coding Plan to generate from yet"));
+    }
+
+    /// Requirement: intentional conversational asks must keep streaming live —
+    /// the C1.5 gate must not swallow "show me" / "how would I" / "give me an
+    /// example" phrasing just because it mentions code.
+    #[test]
+    fn conversational_code_questions_still_stream_live() {
+        for phrase in [
+            "Show me code for a binary search.",
+            "How would I implement a binary search?",
+            "Give me an example of a binary search.",
+        ] {
+            let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+            let planner = planner_with_reasoning(provider);
+            planner.remember_coding_plan(Some(mutation_plan_for_paths(
+                vec!["`src/search.rs` binary search".into()],
+                vec![],
+                vec![],
+                "Add binary search.",
+            )));
+            assert!(
+                planner
+                    .start_conversation_stream(&UserRequest::new(phrase), Vec::new())
+                    .is_ok(),
+                "{phrase}: intentional conversational ask must keep streaming live"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Acceptance matrix — product-level routing spec.
+    //
+    // Drives requests through the same dispatch shape as the app's
+    // `run_generation_start` (apps/jaymi/src/boot.rs): try
+    // `start_conversation_stream` first (pumping it to completion on success),
+    // fall back to `handle_conversational_with_observer` on `Err`. This is the
+    // exact entry-point sequence that was bypassing Review Before Action, so
+    // asserting through it (rather than calling `handle()` directly) is what
+    // makes these acceptance tests meaningful.
+    // ---------------------------------------------------------------------
+
+    fn fresh_acceptance_planner() -> Planner {
+        let provider = Arc::new(CountingReasoningProvider::new("chat-mock"));
+        planner_with_tools_policies_routes_and_reasoning(
+            |tools, filesystem, _content| {
+                tools
+                    .register_tool(Arc::new(jaymi_tools::WriteFileTool::new(filesystem)))
+                    .unwrap();
+            },
+            |policies| {
+                policies.initialize().unwrap();
+            },
+            ToolRouteTable::builtin(),
+            Some(provider),
+        )
+    }
+
+    fn acceptance_dispatch(planner: &Planner, phrase: &str) -> PlannerResponse {
+        match planner.start_conversation_stream(&UserRequest::new(phrase), Vec::new()) {
+            Ok((context, mut stream, prompt_diagnostics, early_pipeline)) => {
+                let mut terminal = None;
+                for _ in 0..64 {
+                    match stream.pump().unwrap() {
+                        Some(event) if event.is_terminal() => {
+                            terminal = Some(event);
+                            break;
+                        }
+                        Some(_) => {}
+                        None => break,
+                    }
+                }
+                planner
+                    .complete_conversation_stream(
+                        context,
+                        terminal.expect("stream must terminate"),
+                        Some(prompt_diagnostics),
+                        Some(early_pipeline),
+                    )
+                    .unwrap()
+            }
+            Err(_) => planner
+                .handle_conversational_with_observer(UserRequest::new(phrase), Vec::new(), |_| {})
+                .unwrap(),
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // C5.16 — production-entry-point routing pyramid.
+    //
+    // C5.15 found that ~20 of 24 Planner detectors were unreachable from the
+    // only entry point the real UI uses, because every routing test targeted
+    // `handle()` / `handle_conversational_with_observer()` instead. These tests
+    // assert ownership at `start_conversation_stream` itself: a Planner-owned
+    // request must YIELD (Err) so `run_generation_start`'s fallback dispatches
+    // it, and must never be answered as ordinary LLM prose.
+    // ---------------------------------------------------------------------
+
+    /// Every Planner-owned structured phrase must yield the live stream.
+    #[test]
+    fn c516_production_entry_yields_every_planner_owned_route() {
+        // (phrase, expected owning route) across C2 / C3 / C4 / C5.
+        let cases: &[(&str, structured_route::StructuredRoute)] = &[
+            // C2 — read / investigation
+            (
+                "What happens when I click Save?",
+                structured_route::StructuredRoute::RelationshipTracing,
+            ),
+            (
+                "Why is this slow?",
+                structured_route::StructuredRoute::DeepInvestigation,
+            ),
+            (
+                // codebase_qa deliberately yields to narrower C2 modes, so this
+                // exact phrase is owned by symbol navigation.
+                "Who calls this?",
+                structured_route::StructuredRoute::SymbolNavigation,
+            ),
+            (
+                "How does Jaymi handle permissions?",
+                structured_route::StructuredRoute::CodebaseQa,
+            ),
+            // C3 — mutation
+            (
+                "Generate the code.",
+                structured_route::StructuredRoute::CodeGeneration,
+            ),
+            (
+                "Extract class",
+                structured_route::StructuredRoute::MultiFile,
+            ),
+            (
+                "Refactor the parser module.",
+                structured_route::StructuredRoute::CodingEdit,
+            ),
+            // C4 — verification
+            (
+                "Run the tests.",
+                structured_route::StructuredRoute::TestExecution,
+            ),
+            (
+                "Does this build?",
+                structured_route::StructuredRoute::BuildAwareness,
+            ),
+            // C5 — goal / control / recovery
+            (
+                // C5.12 agentic experience owns "begin a goal" phrasing; it sits
+                // ahead of the bare C5.1 goal path in the historical chain.
+                "Build a login system.",
+                structured_route::StructuredRoute::AgenticCodingExperience,
+            ),
+            (
+                "Decompose the goal.",
+                structured_route::StructuredRoute::GoalDecomposition,
+            ),
+            (
+                "Start the goal.",
+                structured_route::StructuredRoute::MultiStepExecution,
+            ),
+            (
+                "Pause this goal.",
+                structured_route::StructuredRoute::AgentControl,
+            ),
+            (
+                "Recover this goal.",
+                structured_route::StructuredRoute::AgentFailureRecovery,
+            ),
+            (
+                "Show goal progress.",
+                structured_route::StructuredRoute::AgentProgress,
+            ),
+            (
+                "Autonomy policy status.",
+                structured_route::StructuredRoute::ApprovalAutonomyPolicy,
+            ),
+            (
+                "Maintain agent context.",
+                structured_route::StructuredRoute::AgentContextMaintenance,
+            ),
+        ];
+
+        for (phrase, expected) in cases {
+            let planner = fresh_acceptance_planner();
+            let request = UserRequest::new(*phrase);
+
+            // Ownership is decided by the one shared helper.
+            let route = planner.structured_route(&request, &Intent::Unknown);
+            assert_eq!(
+                route,
+                Some(*expected),
+                "{phrase}: expected route {}",
+                expected.as_str()
+            );
+
+            // And the production streaming entry point must yield to it.
+            assert!(
+                planner
+                    .start_conversation_stream(&request, Vec::new())
+                    .is_err(),
+                "{phrase}: start_conversation_stream must yield, not answer as prose"
+            );
+        }
+    }
+
+    /// C4.6 loop cancellation is state-gated: only owns the turn while running.
+    #[test]
+    fn c516_verification_loop_cancel_is_state_gated_at_production_entry() {
+        let planner = fresh_acceptance_planner();
+        let stop = UserRequest::new("Stop the verification workflow.");
+        // No active loop ⇒ not this route (stays ordinary conversation).
+        assert_ne!(
+            planner.structured_route(&stop, &Intent::Unknown),
+            Some(structured_route::StructuredRoute::VerificationLoopCancel)
+        );
+    }
+
+    /// C4.4 is evidence-gated even at the production entry point.
+    #[test]
+    fn c516_fix_it_requires_verification_evidence_at_production_entry() {
+        let planner = fresh_acceptance_planner();
+        let fix = UserRequest::new("Fix it.");
+        // Without failure evidence "Fix it." must not claim the corrective path.
+        assert_ne!(
+            planner.structured_route(&fix, &Intent::Unknown),
+            Some(structured_route::StructuredRoute::FixFromVerification),
+            "deictic fix must stay evidence-gated"
+        );
+    }
+
+    /// Ordinary coding questions keep streaming — the gate must not over-claim.
+    #[test]
+    fn c516_conversational_questions_still_stream_at_production_entry() {
+        for phrase in [
+            "Show me code for Pong.",
+            "How would I implement Pong physics?",
+            "Give me an example of Pong collision detection.",
+            "Explain how I could build this.",
+        ] {
+            let planner = fresh_acceptance_planner();
+            // Even with a plan pending, these stay ordinary conversation.
+            planner.remember_coding_plan(Some(mutation_plan_for_paths(
+                vec!["`pong.rs` Pong entry".into()],
+                vec![],
+                vec![],
+                "Create a simple Pong game.",
+            )));
+            let request = UserRequest::new(phrase);
+            assert_eq!(
+                planner.structured_route(&request, &Intent::Unknown),
+                None,
+                "{phrase}: must not be claimed by a structured route"
+            );
+            assert!(
+                planner.start_conversation_stream(&request, Vec::new()).is_ok(),
+                "{phrase}: must keep streaming live"
+            );
+        }
+    }
+
+    /// C5.16 §2 — a Coding Plan published on one streaming turn must survive to
+    /// the next turn. Before the fix `complete_conversation_stream` destroyed it
+    /// via an unconditional `take_coding_plan()`, so "Generate the code." on the
+    /// following turn always answered "I don't have a Coding Plan yet."
+    #[test]
+    fn c516_coding_plan_survives_the_turn_that_published_it() {
+        let planner = fresh_acceptance_planner();
+
+        // Turn A — a C1.4 planning phrase, driven through the real stream.
+        let turn_a = acceptance_dispatch(&planner, "Create a parser.");
+        assert!(
+            turn_a.coding_plan.is_some(),
+            "turn A should publish a Coding Plan"
+        );
+        assert!(
+            planner.clone_last_coding_plan().is_some(),
+            "turn A must NOT erase the plan the next turn needs"
+        );
+
+        // Turn B — the follow-up must find and consume that plan.
+        let turn_b = acceptance_dispatch(&planner, "Generate the code.");
+        assert!(
+            !turn_b
+                .content
+                .contains("I don't have a Coding Plan to generate from yet"),
+            "turn B must consume the remembered plan, not ask for one: {}",
+            turn_b.content
+        );
+        assert!(
+            turn_b.code_generation.is_some() || turn_b.patch_generation.is_some(),
+            "turn B should enter C1.5/C3.4 generation"
+        );
+    }
+
+    /// Staleness cleanup is preserved: an unrelated turn still expires the plan.
+    #[test]
+    fn c516_unrelated_turn_still_expires_a_stale_coding_plan() {
+        let planner = fresh_acceptance_planner();
+        planner.remember_coding_plan(Some(mutation_plan_for_paths(
+            vec!["`pong.rs` Pong entry".into()],
+            vec![],
+            vec![],
+            "Create a simple Pong game.",
+        )));
+        planner.reset_coding_plan_turn_marker();
+
+        let _ = acceptance_dispatch(&planner, "Tell me a joke about parsers.");
+        assert!(
+            planner.clone_last_coding_plan().is_none(),
+            "an unrelated conversational turn must still expire the stale plan"
+        );
+    }
+
+    /// C5.16 §4 — bare affirmatives resolve only against pending Planner state.
+    #[test]
+    fn c516_bare_affirmative_continuation_is_state_scoped() {
+        // (a) Nothing pending ⇒ ordinary conversation.
+        let idle = fresh_acceptance_planner();
+        let go = UserRequest::new("Go ahead.");
+        assert_eq!(idle.structured_route(&go, &Intent::Unknown), None);
+        assert!(idle.start_conversation_stream(&go, Vec::new()).is_ok());
+
+        // (b) Actionable plan pending ⇒ existing generation path (→ Review Card).
+        let dir = temp_dir();
+        let html = dir.join("index.html");
+        let with_plan = fresh_acceptance_planner();
+        with_plan.remember_coding_plan(Some(mutation_plan_for_paths(
+            vec![format!("`{}` Pong canvas shell", html.display())],
+            vec![],
+            vec![],
+            "Create a simple Pong game.",
+        )));
+        assert_eq!(
+            with_plan.structured_route(&go, &Intent::Unknown),
+            Some(structured_route::StructuredRoute::CodeGeneration)
+        );
+        let response = acceptance_dispatch(&with_plan, "Go ahead.");
+        assert!(response.awaiting_review, "continuation must land on Review");
+        assert!(response.blocked);
+        assert_eq!(
+            response.execution_plan.as_ref().unwrap().status(),
+            ExecutionStatus::AwaitingReview
+        );
+        assert!(!html.exists(), "continuation must not write before Approve");
+    }
+
+    /// A bare affirmative must NEVER auto-approve a pending Review Card.
+    #[test]
+    fn c516_bare_affirmative_never_auto_approves_a_pending_review() {
+        let dir = temp_dir();
+        let html = dir.join("index.html");
+        let planner = fresh_acceptance_planner();
+        planner.remember_coding_plan(Some(mutation_plan_for_paths(
+            vec![format!("`{}` Pong canvas shell", html.display())],
+            vec![],
+            vec![],
+            "Create a simple Pong game.",
+        )));
+
+        // Produce a real pending Review Card.
+        let gen = planner
+            .handle_conversational_with_observer(
+                UserRequest::new("Generate the code."),
+                Vec::new(),
+                |_| {},
+            )
+            .unwrap();
+        assert!(gen.awaiting_review);
+        assert!(!html.exists());
+
+        // "Yes." must re-surface the decision, not approve it.
+        // NOTE: a new user request invalidates the paused plan by existing
+        // design (`invalidate_paused("new user request")`), so the key
+        // guarantee asserted here is that nothing was written and nothing
+        // was approved by the affirmative itself.
+        let after = planner
+            .handle_conversational_with_observer(UserRequest::new("Yes."), Vec::new(), |_| {})
+            .unwrap();
+        assert!(
+            !html.exists(),
+            "a bare affirmative must never execute a mutation"
+        );
+        // It re-enters generation and parks on a fresh Review Card instead.
+        assert!(after.awaiting_review && after.blocked);
+        assert_eq!(
+            after.execution_plan.as_ref().map(|p| p.status()),
+            Some(ExecutionStatus::AwaitingReview),
+            "a bare affirmative must never move a plan to Completed"
+        );
+    }
+
+    /// C5.16 §6 — the acceptance journey, driven end-to-end through the same
+    /// entry-point sequence the real UI uses (`start_conversation_stream` first,
+    /// observer fallback on Err), then the real Review Card approval gesture.
+    #[test]
+    fn c516_end_to_end_journey_through_production_entry_point() {
+        let planner = fresh_acceptance_planner();
+        let dir = temp_dir();
+        let target = dir.join("parser.rs");
+
+        // 1. Build request → C5 Coding Goal (never prose, never a mutation).
+        let build = acceptance_dispatch(&planner, "Build me a simple Pong game.");
+        assert!(
+            build.coding_goal.is_some() || build.agentic_coding_experience.is_some(),
+            "build request must reach the C5 goal path"
+        );
+        assert!(build.execution_plan.is_none(), "planning never mutates");
+
+        // 2. Establish an actionable Coding Plan the way C3 already does.
+        planner.remember_coding_plan(Some(mutation_plan_for_paths(
+            vec![format!("`{}` parser entry", target.display())],
+            vec![],
+            vec![],
+            "Add a parser.",
+        )));
+
+        // 3. "Generate the code." → C3 patch generation → AwaitingReview.
+        let generated = acceptance_dispatch(&planner, "Generate the code.");
+        assert!(generated.awaiting_review && generated.blocked);
+        let plan = generated.execution_plan.clone().expect("execution plan");
+        assert_eq!(plan.status(), ExecutionStatus::AwaitingReview);
+        assert!(!target.exists(), "no mutation before approval");
+
+        // 4. Approve via the real Review lifecycle → files written.
+        let approved = planner
+            .resolve_review(ReviewIntent::Approve {
+                plan_id: plan.id().clone(),
+            })
+            .unwrap();
+        assert!(!approved.awaiting_review);
+        assert!(target.exists(), "approval executes the existing ExecutionPlan");
+
+        // 5. "Run the tests." → C4 verification owns the turn (not prose).
+        let verify_route =
+            planner.structured_route(&UserRequest::new("Run the tests."), &Intent::Unknown);
+        assert_eq!(
+            verify_route,
+            Some(structured_route::StructuredRoute::TestExecution),
+            "verification must be reachable from typed chat"
+        );
+    }
+
+    /// Greenfield / persistent objectives ("Build Pong.") route to Coding Goal /
+    /// Agentic Coding Experience (C5.1 / C5.12) in this codebase, not the C1.4
+    /// `CodingPlan` — see `coding_plan::tests::detects_generation_plan_examples`
+    /// ("greenfield pong yields to Coding Goal / agentic experience"). CodingPlan
+    /// is reserved for feature/test/mutation-scoped asks ("Create a parser.",
+    /// "Write tests.", "Fix this."). Same observational guarantees apply either
+    /// way: no ExecutionPlan, no Review gate, no generated ops yet.
+    fn assert_is_coding_goal_or_agentic(response: &PlannerResponse, phrase: &str) {
+        assert!(
+            response.coding_goal.is_some() || response.agentic_coding_experience.is_some(),
+            "{phrase}: expected a Coding Goal / Agentic Coding Experience"
+        );
+        assert!(
+            !response.awaiting_review,
+            "{phrase}: a Coding Goal is observational — it must not gate on Approve"
+        );
+        assert!(
+            response.execution_plan.is_none(),
+            "{phrase}: planning must not produce an ExecutionPlan"
+        );
+        assert!(
+            response.patch_generation.is_none() && response.code_generation.is_none(),
+            "{phrase}: planning must not itself generate patches/ops"
+        );
+    }
+
+    fn assert_is_patch_review(response: &PlannerResponse, phrase: &str) {
+        assert!(
+            response.awaiting_review,
+            "{phrase}: expected Review Card / awaiting_review"
+        );
+        assert!(
+            response.blocked,
+            "{phrase}: generation must pause before mutation"
+        );
+        assert!(
+            response.patch_generation.is_some() || response.code_generation.is_some(),
+            "{phrase}: expected patch/codegen path, not conversational reasoning"
+        );
+        assert!(
+            response.execution_plan.is_some(),
+            "{phrase}: expected ExecutionPlan awaiting review"
+        );
+        assert_eq!(
+            response.execution_plan.as_ref().unwrap().status(),
+            ExecutionStatus::AwaitingReview
+        );
+    }
+
+    /// "Build Pong" → Coding Goal / Agentic Coding Experience (greenfield
+    /// objective, not the C1.4 CodingPlan — see assert_is_coding_goal_or_agentic).
+    #[test]
+    fn acceptance_build_pong_yields_coding_goal() {
+        let planner = fresh_acceptance_planner();
+        let response = acceptance_dispatch(&planner, "Build Pong");
+        assert_is_coding_goal_or_agentic(&response, "Build Pong");
+    }
+
+    /// "Create a Pong game" → Coding Goal / Agentic Coding Experience.
+    #[test]
+    fn acceptance_create_a_pong_game_yields_coding_goal() {
+        let planner = fresh_acceptance_planner();
+        let response = acceptance_dispatch(&planner, "Create a Pong game");
+        assert_is_coding_goal_or_agentic(&response, "Create a Pong game");
+    }
+
+    /// "Generate the changes from that plan" → Patch Generation → Review.
+    #[test]
+    fn acceptance_generate_the_changes_from_that_plan_yields_patch_review() {
+        let dir = temp_dir();
+        let html = dir.join("index.html");
+        let planner = fresh_acceptance_planner();
+        planner.remember_coding_plan(Some(mutation_plan_for_paths(
+            vec![format!("`{}` Pong canvas shell", html.display())],
+            vec![],
+            vec![],
+            "Create a simple Pong game.",
+        )));
+        let response = acceptance_dispatch(&planner, "Generate the changes from that plan");
+        assert_is_patch_review(&response, "Generate the changes from that plan");
+        assert!(!html.exists(), "must not write before Approve");
+    }
+
+    /// "Generate the code" with an actionable plan already remembered →
+    /// Patch Generation → Review (never blind mutation, never conversational).
+    #[test]
+    fn acceptance_generate_the_code_with_plan_yields_patch_review() {
+        let dir = temp_dir();
+        let html = dir.join("index.html");
+        let planner = fresh_acceptance_planner();
+        planner.remember_coding_plan(Some(mutation_plan_for_paths(
+            vec![format!("`{}` Pong canvas shell", html.display())],
+            vec![],
+            vec![],
+            "Create a simple Pong game.",
+        )));
+        let response = acceptance_dispatch(&planner, "Generate the code");
+        assert_is_patch_review(&response, "Generate the code");
+        assert!(!html.exists(), "must not write before Approve");
+    }
+
+    /// "Generate the code" with no plan yet → deterministic plan-first
+    /// response, never blind mutation and never conversational LLM prose.
+    #[test]
+    fn acceptance_generate_the_code_without_plan_yields_deterministic_prompt() {
+        let planner = fresh_acceptance_planner();
+        let response = acceptance_dispatch(&planner, "Generate the code");
+        assert!(!response.awaiting_review);
+        assert!(!response.blocked);
+        assert!(response.execution_plan.is_none());
+        assert!(response.patch_generation.is_none() && response.code_generation.is_none());
+        assert!(
+            response
+                .content
+                .contains("I don't have a Coding Plan to generate from yet"),
+            "expected the deterministic plan-first prompt, got: {}",
+            response.content
+        );
+    }
+
+    /// "Show me code for Pong" → normal conversational reasoning, even with an
+    /// actionable plan already remembered — never hijacked into generation.
+    #[test]
+    fn acceptance_show_me_code_for_pong_stays_conversational() {
+        let planner = fresh_acceptance_planner();
+        planner.remember_coding_plan(Some(mutation_plan_for_paths(
+            vec!["`pong.rs` Pong entry".into()],
+            vec![],
+            vec![],
+            "Create a simple Pong game.",
+        )));
+        let response = acceptance_dispatch(&planner, "Show me code for Pong");
+        assert!(response.reasoning_used, "expected the LLM to answer");
+        assert!(!response.awaiting_review);
+        assert!(!response.blocked);
+        assert!(response.execution_plan.is_none());
+        assert!(response.patch_generation.is_none() && response.code_generation.is_none());
     }
 
     #[test]
